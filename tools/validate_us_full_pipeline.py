@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import importlib
 import json
 import logging
@@ -72,13 +73,18 @@ def validate_receipt(receipt):
         if len(outputs) != selected:
             errors.append(f"Selected/artifact count mismatch: {stage}")
         for output in outputs:
-            if not isinstance(output, str) or not Path(output).is_file() or Path(output).stat().st_size == 0:
+            if not isinstance(output, (str, os.PathLike)) or not Path(output).is_file() or Path(output).stat().st_size == 0:
                 errors.append(f"Missing or empty artifact: {stage}")
     analyses = receipt.get("buy_analyses", [])
     if not selected or len(analyses) != selected or any(not row.get("success") for row in analyses):
         errors.append("BUY analyses missing or unsuccessful")
     if any(any(f.get("code") == "buy_gate_error" for f in row.get("gate", {}).get("findings", [])) for row in analyses):
         errors.append("Deterministic gate failed")
+    if receipt.get("codex_primary_required"):
+        successful_primary = [line for line in receipt.get("usage_log", [])
+                              if "[CODEX_FAST] US scenario" in line and "parse_ok=True" in line]
+        if len(successful_primary) != selected:
+            errors.append("Cron Codex primary backend did not successfully analyze every selected report")
     return errors
 
 
@@ -91,6 +97,16 @@ def readonly_settings(db_path, proxy_url):
             }}}
 
 
+def create_empty_shared_journal(cursor, connection):
+    """Match production's shared KR/US schema, never copy account/history rows."""
+    spec = importlib.util.spec_from_file_location("validation_shared_schema", ROOT / "tracking/db_schema.py")
+    schema = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(schema)
+    for name in ("TABLE_TRADING_JOURNAL", "TABLE_TRADING_INTUITIONS", "TABLE_TRADING_PRINCIPLES"):
+        cursor.execute(getattr(schema, name))
+    connection.commit()
+
+
 async def run_validation(args):
     check_environment(args.proxy_url)
     os.umask(0o077)
@@ -99,6 +115,12 @@ async def run_validation(args):
     receipt = {"schema_version": 1, "mode": args.mode, "date": args.date,
                "deviations": DEVIATIONS, "stages": {}, "blocked_effects": [],
                "buy_analyses": [], "usage_log": [], "degraded_logs": [], "errors": []}
+    receipt["codex_primary_required"] = os.getenv("PRISM_US_CODEX_FAST_TRADING") == "1"
+    receipt["source_hashes"] = {
+        name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+        for name in ("prism-us/us_stock_analysis_orchestrator.py", "prism-us/cores/us_analysis.py",
+                     "prism-us/cores/agents/trading_agents.py", "requirements.txt")
+    }
 
     class UsageHandler(logging.Handler):
         def emit(self, record):
@@ -117,6 +139,11 @@ async def run_validation(args):
     logging.getLogger().addHandler(console_handler)
     try:
         module = importlib.import_module("us_stock_analysis_orchestrator")
+        for attribute, directory in (("US_REPORTS_DIR", "reports"), ("US_PDF_REPORTS_DIR", "pdf_reports"),
+                                     ("US_TELEGRAM_MSGS_DIR", "telegram_messages")):
+            folder = output / "artifacts" / directory
+            folder.mkdir(parents=True, mode=0o700)
+            setattr(module, attribute, folder)
         tracker_module = importlib.import_module("us_stock_tracking_agent")
         from prism_core.isolated_agent_runtime import ROOT_MARKER
         from telegram_config import TelegramConfig
@@ -180,6 +207,8 @@ async def run_validation(args):
                                     "risk_reward_ratio": row.get("risk_reward_ratio"),
                                 }
                 await self.initialize(language)
+                create_empty_shared_journal(self.cursor, self.conn)
+                tracker_module.add_market_column_to_shared_tables(self.cursor, self.conn)
                 try:
                     semaphore = asyncio.Semaphore(3)
 
@@ -231,11 +260,18 @@ async def run_validation(args):
         receipt["errors"].append({"error_type": type(exc).__name__})
         logging.getLogger(__name__).exception("Local validation failed")
     finally:
+        if "module" in locals():
+            cleanup = module._import_from_main_cores("validation_runtime_cleanup", "cores/llm/runtime_cleanup.py")
+            receipt["cleanup_ok"] = await cleanup.shutdown_mcp_logging()
+            receipt["remaining_task_types"] = cleanup.pending_runtime_tasks()
+            if not receipt["cleanup_ok"]:
+                receipt["errors"].append("MCP logging cleanup incomplete")
         logging.getLogger().removeHandler(usage_handler)
         logging.getLogger().removeHandler(console_handler)
         receipt["success"] = not receipt["errors"]
         receipt["degraded_log_count"] = len(receipt["degraded_logs"])
-        receipt["clean_log_run"] = not receipt["degraded_logs"]
+        receipt["standard_logging_clean"] = not receipt["degraded_logs"]
+        receipt["log_capture_scope"] = "stdlib logging only; inspect process stderr separately for MCP framework errors"
         (output / "receipt.json").write_text(json.dumps(receipt, ensure_ascii=False, indent=2, default=str))
     return 0 if receipt["success"] else 1
 

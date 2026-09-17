@@ -144,6 +144,8 @@ Themes are not sectors. Missing quantitative context is UNKNOWN, not neutral evi
 
 ## report_prose Guidelines
 
+For external claims, include the exact public source URL as an inline Markdown link and its publication date in report_prose. Never leave unexplained numeric citations such as [1]; omit claims whose source URL or publication date you cannot establish.
+
 Write a professional 3-5 paragraph narrative in formal English covering:
 1. Current market regime and its rationale
 2. Leading sectors and why they are outperforming
@@ -226,6 +228,8 @@ Energy, Industrials, Basic Materials, Real Estate, Utilities, Communication Serv
 ```
 
 ## report_prose 작성 지침
+
+외부 사실을 서술할 때 report_prose 안에 실제 공개 출처 URL을 Markdown 링크로 넣고 발행일을 함께 적으십시오. [1] 같은 출처 없는 숫자 인용은 금지하며, 출처 URL이나 발행일을 확인하지 못한 주장은 제외하십시오.
 
 다음 내용을 포함하여 정중한 한국어(합쇼체)로 전문적인 3~5문단 서술을 작성하십시오:
 1. 현재 시장 체제와 그 판단 근거

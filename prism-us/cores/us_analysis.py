@@ -122,8 +122,7 @@ _us_agents_module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_us_agents_module)
 get_us_agent_directory = _us_agents_module.get_us_agent_directory
 
-# Market analysis cache storage (global variable)
-_us_market_analysis_cache = {}
+from prism_core.market_report_singleflight import MarketReportCache
 
 # Import chart functions from us_stock_chart module
 _chart_module = _import_from_project_root(
@@ -147,7 +146,8 @@ async def analyze_us_stock(
     reference_date: str = None,
     language: str = "ko",
     include_news: bool = True,
-    macro_context: dict = None
+    macro_context: dict = None,
+    market_report_cache: MarketReportCache | None = None,
 ) -> str:
     """
     Generate comprehensive stock analysis report for US stock.
@@ -158,12 +158,14 @@ async def analyze_us_stock(
         reference_date: Analysis reference date (YYYYMMDD format)
         language: Language code (default: "ko")
         include_news: Whether to include news analysis (requires Perplexity API)
+        market_report_cache: Optional batch-owned market report singleflight.
 
     Returns:
         str: Generated final report markdown text
     """
     # 1. Initial setup and preprocessing
     app = MCPApp(name="us_stock_analysis")
+    market_report_cache = market_report_cache if market_report_cache is not None else MarketReportCache()
 
     # Use today's date if reference_date is not provided
     if reference_date is None:
@@ -255,15 +257,12 @@ async def analyze_us_stock(
                     try:
                         agent = agents[section]
                         if section == "market_index_analysis":
-                            if "report" in _us_market_analysis_cache:
-                                logger.info("Using cached US market analysis")
-                                report = _us_market_analysis_cache["report"]
-                            else:
+                            async def generate_market():
                                 logger.info("Generating new US market analysis")
-                                report = await generate_market_report(
+                                return await generate_market_report(
                                     agent, section, reference_date, logger, language
                                 )
-                                _us_market_analysis_cache["report"] = report
+                            report = await market_report_cache.get(reference_date, language, generate_market)
                         else:
                             report = await generate_report(
                                 agent, section, company_name, ticker, reference_date, logger, language
@@ -449,7 +448,8 @@ async def analyze_us_stock(
         # Build macro section before final report composition
         macro_section = ""
         if macro_context:
-            report_prose = macro_context.get("report_prose", "")
+            from prism_core.market_report_context import public_macro_prose
+            report_prose = public_macro_prose(macro_context, language)
             if report_prose:
                 macro_header = "### 거시경제 환경\n\n" if language == "ko" else "### Macroeconomic Environment\n\n"
                 macro_section = macro_header + report_prose + "\n\n"

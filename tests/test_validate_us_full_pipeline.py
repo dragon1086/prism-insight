@@ -35,6 +35,13 @@ def test_empty_or_partial_pipeline_cannot_pass(tmp_path):
     receipt["stages"] = {stage: {"status": "ok", "result": [str(artifact)]} for stage in harness.STAGES}
     receipt["buy_analyses"] = [{"success": True, "gate": {"allowed": False, "findings": []}}]
     assert not harness.validate_receipt(receipt)
+    for stage in ("convert_to_pdf", "generate_telegram_messages"):
+        receipt["stages"][stage]["result"] = [artifact]
+    assert not harness.validate_receipt(receipt)
+    receipt["codex_primary_required"] = True
+    assert "Cron Codex primary" in " ".join(harness.validate_receipt(receipt))
+    receipt["usage_log"] = ["[CODEX_FAST] US scenario ticker=TEST parse_ok=True mcp_calls=3"]
+    assert not harness.validate_receipt(receipt)
     receipt["buy_analyses"][0]["success"] = False
     assert harness.validate_receipt(receipt)
     receipt["buy_analyses"][0]["success"] = True
@@ -49,3 +56,11 @@ def test_output_root_private_and_fresh(tmp_path):
         harness.prepare_output(root)
     with pytest.raises(ValueError):
         harness.prepare_output(harness.ROOT / "invalid-test-artifacts")
+
+
+def test_empty_journal_schema_has_no_fabricated_history():
+    import sqlite3
+    with sqlite3.connect(":memory:") as conn:
+        harness.create_empty_shared_journal(conn.cursor(), conn)
+        for table in ("trading_journal", "trading_intuitions", "trading_principles"):
+            assert conn.execute("SELECT COUNT(*) FROM " + table).fetchone()[0] == 0

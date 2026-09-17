@@ -39,7 +39,8 @@ jobs:
           PRISM_DISABLE_SIGNAL_PUBLISH: "1"
         run: |
           python -m pytest tests/test_macro_mcp_app.py tests/test_chatgpt_proxy_body_limit.py \
-            tests/test_validate_us_full_pipeline.py -q
+            tests/test_validate_us_full_pipeline.py tests/test_market_report_singleflight.py \
+            tests/test_macro_public_sources.py tests/test_runtime_cleanup.py -q
           python -m pytest tests/test_report_research_prefetch.py tests/test_report_research_context.py \
             tests/test_market_intelligence.py tests/test_market_intelligence_wiring.py \
             tests/test_market_report_context.py tests/test_sector_taxonomy_alignment.py \
