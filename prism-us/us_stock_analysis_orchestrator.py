@@ -405,7 +405,12 @@ class USStockAnalysisOrchestrator:
             from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
             from cores.agents.macro_intelligence_agent import create_us_macro_intelligence_agent
 
-            macro_app = MCPApp(name="us_macro_intelligence")
+            macro_runtime = _import_from_main_cores(
+                "prism_root_macro_mcp_app", "cores/llm/macro_mcp_app.py"
+            )
+            macro_app = macro_runtime.create_macro_mcp_app(
+                MCPApp, name="us_macro_intelligence"
+            )
 
             async with macro_app.run() as macro_run_context:
                 macro_logger = macro_run_context.logger
@@ -615,6 +620,8 @@ class USStockAnalysisOrchestrator:
             f"(bounded parallelism={concurrency})"
         )
         semaphore = asyncio.Semaphore(concurrency)
+        from prism_core.market_report_singleflight import MarketReportCache
+        market_report_cache = MarketReportCache()
 
         async def generate_one(idx, ticker_info):
             if isinstance(ticker_info, dict):
@@ -644,7 +651,8 @@ class USStockAnalysisOrchestrator:
                         company_name=company_name,
                         reference_date=report_date,
                         language=language,
-                        macro_context=macro_context
+                        macro_context=macro_context,
+                        market_report_cache=market_report_cache,
                     )
 
                 if report and len(report.strip()) > 0:
@@ -1686,6 +1694,12 @@ async def main():
             await stop_proxy()
         except Exception:
             pass
+
+    # Process entrypoint only: no agents share the SDK logger after this point.
+    runtime_cleanup = _import_from_main_cores(
+        "prism_root_runtime_cleanup", "cores/llm/runtime_cleanup.py"
+    )
+    await runtime_cleanup.shutdown_mcp_logging()
 
 
 if __name__ == "__main__":

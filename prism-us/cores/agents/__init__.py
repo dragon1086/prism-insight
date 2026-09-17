@@ -126,7 +126,8 @@ def get_us_agent_directory(
         ),
         "market_index_analysis": lambda: create_us_market_index_analysis_agent(
             reference_date, max_years_ago, max_years, language,
-            prefetched_indices=combined_indices
+            prefetched_indices=combined_indices,
+            shared_macro_available=pf.get("shared_macro_available") is True,
         )
     }
 
