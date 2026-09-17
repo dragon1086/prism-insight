@@ -96,7 +96,17 @@ def prefetch_us_stock_ohlcv(ticker: str, period: str = "1y") -> str:
         df.columns = [col.title().replace("_", " ") for col in df.columns]
         df.index.name = "Date"
 
-        return _df_to_markdown(df, f"OHLCV: {ticker} ({period})") + flow_facts
+        # yfinance returns a Close column but no per-row finality attestation.
+        # Supply provenance next to the table rather than relying on prose caveats.
+        observation_note = (
+            "\nOHLCV observation metadata: source=yfinance; interval=1d; "
+            f"fetched_at_utc={datetime.now(ZoneInfo('UTC')).isoformat()}; "
+            f"latest_row_date={df.index[-1]}; latest_row_finality=BAR_FINALITY_UNKNOWN. "
+            "The fetch time and Close column are not proof that the latest session closed. "
+            "Describe the latest row as an observed price/volume unless separate explicit "
+            "finality evidence exists; this does not invalidate confirmed historical bars.\n"
+        )
+        return observation_note + _df_to_markdown(df, f"OHLCV: {ticker} ({period})") + flow_facts
     except Exception as e:
         logger.error(f"Error prefetching OHLCV for {ticker}: {e}")
         return ""

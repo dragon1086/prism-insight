@@ -41,6 +41,31 @@ def test_competitive_records_separate_claims_and_missingness(market_factory, lan
 
 
 @pytest.mark.parametrize("language", ["ko", "en"])
+def test_company_growth_and_price_rallies_do_not_prove_sector_demand(market_factory, language):
+    _, factory = market_factory
+    prompt = factory("Example", "TEST", "20260910", language=language).instruction
+    for required in ("sector-wide demand/supply", "company's revenue growth or revenue mix",
+                     "company operating fact", "without forcing", "Peer share-price rallies",
+                     "not evidence of customer demand", "sector_tailwind UNKNOWN",
+                     "check every record's metric against its type"):
+        assert required in prompt
+
+
+@pytest.mark.parametrize("language", ["ko", "en"])
+def test_trend_conclusion_preserves_segment_directions_and_resolvable_citations(market_factory, language):
+    _, factory = market_factory
+    prompt = factory("Micron", "MU", "20260918", language=language).instruction
+    for required in ("same segment, metric and pair", "for the same entity",
+                     "start/end values", "do not assume the directions are opposite", "common denominator",
+                     "summaries and conclusions", "exact public source URLs",
+                     "Never emit undefined symbolic", "may accompany, not replace, URLs"):
+        assert required in prompt
+    for forbidden in ("[YahooFinance:", "[Perplexity:", "[NaverFinance:", "[네이버금융:",
+                      "rising DRAM share and falling HBM share"):
+        assert forbidden not in prompt
+
+
+@pytest.mark.parametrize("language", ["ko", "en"])
 def test_no_old_verification_prohibitions_remain(market_factory, language):
     _, factory = market_factory
     prompt = factory("Example", "TEST", "20260910", language=language).instruction

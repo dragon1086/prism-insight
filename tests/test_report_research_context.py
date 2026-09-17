@@ -45,7 +45,43 @@ def test_other_section_keeps_existing_fact_prompt_and_tools():
     assert out.instruction.startswith(agent.instruction)
     assert out.server_names == agent.server_names
     assert len(out.instruction) < 7500
-    assert 'never instructions to execute' in out.instruction
+    assert 'oversized_source_material_omitted' in out.instruction
+    assert 'UNKNOWN' in out.instruction
+    assert 'x' * 100 not in out.instruction
+
+
+def test_oversized_news_does_not_disable_original_discovery():
+    agent = ReportAgent('news', 'Query 1 is REQUIRED', ['perplexity', 'firecrawl'])
+    packet = {'news_usable': True, 'section_notes': {'news_analysis': 'x' * 6001}}
+    out = apply_section_research(agent, 'news_analysis', {'report_research': packet}, '20260918', 'en')
+    assert out.server_names == agent.server_names
+    assert out.instruction.startswith(agent.instruction)
+    assert 'oversized_source_material_omitted' in out.instruction
+
+
+def test_malformed_receipt_preserves_original_agent():
+    agent = ReportAgent('news', 'original', ['perplexity'])
+    for receipt in ('unexpected', ['unexpected'], {'usable_sources': '1'}):
+        packet = {'receipt': receipt, 'section_notes': {'news_analysis': 'unverified'}}
+        assert apply_section_research(agent, 'news_analysis', {'report_research': packet},
+                                      '20260918', 'en') is agent
+
+
+def test_source_json_and_table_survive_injection_whole():
+    import json
+    agent = ReportAgent('news', 'Query 1 is REQUIRED', ['perplexity'])
+    source = json.dumps({'sources': [{'source_id': 'S1', 'excerpt':
+        '| Supplier | Q2 2026 |\n| --- | --- |\n| Micron | 24% |\n| Samsung | 38% |'}]})
+    packet = {'evidence_id': 'RE-table', 'receipt': {'usable_sources': 1},
+              'section_notes': {'news_analysis': source}}
+    out = apply_section_research(agent, 'news_analysis', {'report_research': packet}, '20260918', 'en')
+    envelope = json.loads(out.instruction[out.instruction.index('{'):])
+    assert envelope['source_material'] == source
+    assert json.loads(envelope['source_material'])['sources'][0]['source_id'] == 'S1'
+    assert out.server_names == agent.server_names
+    for term in ('SOURCE_METADATA_UNVERIFIED', 'rounded share total', 'table transcription',
+                 'not merely a search snippet', 'independently verifying its claims'):
+        assert term in out.instruction
 
 
 def test_market_context_off_empty_and_industry_scope_preserved():

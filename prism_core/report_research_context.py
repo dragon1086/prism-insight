@@ -19,11 +19,20 @@ def apply_section_research(agent, section, prefetched, reference_date, language)
     note = packet['section_notes'].get(section)
     if not isinstance(note, str) or not note.strip():
         return agent
+    receipt = packet.get('receipt')
+    usable_sources = receipt.get('usable_sources') if isinstance(receipt, dict) else 0
     if (section == 'news_analysis' and packet.get('news_usable') is not True
-            and not (packet.get('receipt') or {}).get('usable_sources')):
+            and not (isinstance(usable_sources, int) and usable_sources > 0)):
         return agent
+    if len(note) > 6000:
+        # Whole omission, never a sliced JSON/table/excerpt that can alter a claim.
+        # In particular, omitted news must not waive the original discovery tools.
+        return _replace_agent(agent, instruction=agent.instruction +
+                              '\n\nOptional research status: UNKNOWN; '
+                              'oversized_source_material_omitted. Preserve the original '
+                              'research workflow; do not infer a source claim from this omission.')
     evidence = json.dumps({'evidence_id': packet.get('evidence_id'),
-                           'reference_date': reference_date, 'source_material': note[:6000]},
+                           'reference_date': reference_date, 'source_material': note},
                           ensure_ascii=False)
     boundary = (
         '\n\n## Optional prefetched research\n'
@@ -31,6 +40,11 @@ def apply_section_research(agent, section, prefetched, reference_date, language)
         'Reuse supplied source IDs and URLs; do not refetch an already supplied excerpt. '
         'Retrieval/text presence does not establish competitive superiority or factual correctness. '
         'Preserve unknown publication times, missing peers and incomparable periods. '
+        'Publication dates marked SOURCE_METADATA_UNVERIFIED are supplied metadata, not independently verified dates. '
+        'Preserve rounding caveats; a rounded share total need not equal 100%. '
+        'Label values transcribed from a source table as table transcription, not a verbatim prose quotation. '
+        'A supplied original excerpt is source content, not merely a search snippet; distinguish '
+        'having read the source text from independently verifying its claims. '
         'Do not overwrite existing price, financial or regime facts using inconsistent units.\n'
         + evidence
     )
