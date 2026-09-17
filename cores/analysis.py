@@ -102,6 +102,15 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             logger.warning(f"Data prefetch failed, falling back to MCP: {e}")
             prefetched = {}
 
+        # Optional research is gathered once before section/model retries.
+        try:
+            from prism_core.report_research_prefetch import prefetch_report_research
+            research = await prefetch_report_research("KR", company_code, reference_date, company_name)
+            if research:
+                prefetched["report_research"] = research
+        except Exception:
+            logger.warning("Optional report research unavailable; retaining existing sources")
+
         # 5. Get agents (with prefetched data)
         agents = get_agent_directory(company_name, company_code, reference_date, base_sections, language, prefetched_data=prefetched)
 
@@ -194,6 +203,11 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             f"status={evidence_receipt['status']} evidence_id={evidence_receipt['evidence_id']} "
             f"record_chars={evidence_receipt['record_chars']}"
         )
+
+        from prism_core.market_report_context import market_report_context
+        shared_market = market_report_context(macro_context, language)
+        if shared_market:
+            section_reports["market_index_analysis"] = section_reports.get("market_index_analysis", "") + shared_market
 
         # 6. Integrate content from other reports
         combined_reports = ""

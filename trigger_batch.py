@@ -1753,6 +1753,8 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
     prev_snapshot = market_data.prev_snapshot
     prev_date = market_data.prev_date
     cap_df = market_data.cap_df
+    from prism_core.market_intelligence import optional_participation
+    market_participation = optional_participation(snapshot, prev_snapshot, "KR", trade_date)
     logger.debug(f"Previous trading date: {prev_date}")
     logger.debug(f"Market cap data stock count: {len(cap_df)}")
 
@@ -1910,6 +1912,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
 
         # Add execution time and metadata
         output_data["metadata"] = {
+            **({"market_participation": market_participation} if market_participation else {}),
             "run_time": datetime.datetime.now().isoformat(),
             "trigger_mode": trigger_time,
             "trade_date": trade_date,

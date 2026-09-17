@@ -12,15 +12,18 @@ import asyncio
 import contextlib
 import logging
 import time
-from typing import Any, Optional
+from typing import Any
 
 from cores.llm.mcp_registry import McpServerRegistry
 from cores.llm.ports import AgentSpec, LLMBackend, LLMParams, LLMResult
 
 # --- SDK import guard ---------------------------------------------------
 try:
-    from agents import Agent, ModelSettings, RunHooks, Runner
     from agents import (
+        Agent,
+        ModelSettings,
+        RunHooks,
+        Runner,
         set_default_openai_api,
         set_default_openai_client,
         set_default_openai_key,
@@ -48,6 +51,37 @@ except ImportError:
 # ------------------------------------------------------------------------
 
 logger = logging.getLogger(__name__)
+
+
+def extract_run_usage(result: Any) -> dict | None:
+    """Aggregate SDK-reported counts without confusing default Usage() with measured zero.
+
+    The Responses adapter creates requests=0 when the provider omits usage. Context
+    totals silently sum those defaults, so use raw_responses for coverage instead.
+    Partial coverage leaves totals unknown (None), never a deceptively small sum.
+    Counts exclude failed/retried calls not surfaced by the SDK; these are not costs.
+    """
+    responses = getattr(result, "raw_responses", None)
+    if not isinstance(responses, (list, tuple)) or not responses:
+        return None
+
+    def count(value: Any) -> int | None:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+    usages = []
+    for response in responses:
+        usage = getattr(response, "usage", None)
+        requests = count(getattr(usage, "requests", None))
+        usages.append(usage if requests == 1 else None)
+    reported = sum(usage is not None for usage in usages)
+    if not reported:
+        return None
+    totals = {"requests": len(responses), "reported_requests": reported,
+              "missing_usage_requests": len(responses) - reported}
+    for field in ("input_tokens", "output_tokens", "total_tokens"):
+        values = [count(getattr(usage, field, None)) for usage in usages]
+        totals[field] = sum(values) if all(value is not None for value in values) else None
+    return totals
 
 
 class _LatencyHooks(RunHooks if _sdk_available else object):
@@ -233,7 +267,7 @@ class OpenAIAgentsBackend(LLMBackend):
     def __init__(
         self,
         registry: McpServerRegistry,
-        runner: Optional[Any] = None,
+        runner: Any | None = None,
     ) -> None:
         self._registry = registry
         # Injectable for testing; defaults to the real SDK Runner class.
@@ -293,10 +327,20 @@ class OpenAIAgentsBackend(LLMBackend):
 
         text = result.final_output if isinstance(result.final_output, str) else ""
         structured = result.final_output if spec.output_schema is not None else None
+        usage = extract_run_usage(result)
+        logger.info(
+            "[LLM_USAGE] requests=%s reported_requests=%s missing_usage_requests=%s "
+            "input_tokens=%s output_tokens=%s total_tokens=%s",
+            *(usage.get(field) if usage is not None else None for field in (
+                "requests", "reported_requests", "missing_usage_requests",
+                "input_tokens", "output_tokens", "total_tokens",
+            )),
+        )
 
         return LLMResult(
             text=text,
             structured=structured,
             response_id=getattr(result, "last_response_id", None),
+            usage=usage,
             raw=result,
         )

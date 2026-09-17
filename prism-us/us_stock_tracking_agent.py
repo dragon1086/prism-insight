@@ -1470,6 +1470,8 @@ class USStockTrackingAgent:
             """
 
             ticker_tag = ticker or "?"
+            from prism_core.report_research_context import market_context_for_buy
+            prompt_message += market_context_for_buy(getattr(self, "_pipeline_market_context", None))
             scenario_json = None
             codex_enabled = os.environ.get(
                 "PRISM_US_CODEX_FAST_TRADING", "0"

@@ -63,6 +63,9 @@ perplexity data provides overwhelming contradictory evidence.
             if kosdaq_md:
                 index_data_context += kosdaq_md + "\n"
 
+    if prefetched_data and prefetched_data.get("market_intelligence_md"):
+        index_data_context += "\n" + str(prefetched_data.get("market_intelligence_md", ""))[:2500]
+
     # JSON schema values (language-agnostic)
     schema_market_regime = prefetched_data.get('computed_regime', {}).get('market_regime', 'sideways') if prefetched_data else 'sideways'
     schema_regime_confidence = prefetched_data.get('computed_regime', {}).get('regime_confidence', 0.5) if prefetched_data else 0.5

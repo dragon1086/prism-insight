@@ -24,7 +24,7 @@ def test_us_identity_is_can_slim_only_en():
 def test_us_can_slim_framework_present_ko():
     agent = create_us_trading_scenario_agent(language="ko")
     for element in ("C — 분기 실적", "A — 연간 실적", "N — New", "S — 수급",
-                    "L — 리더", "I — 기관 매수", "M — 시장 추세"):
+                    "L — 리더", "I — 기관 후원", "M — 시장 추세"):
         assert element in agent.instruction
 
 
@@ -345,16 +345,16 @@ def test_us_distribution_day_kill_switch_en():
 
 def test_us_target_price_fallback_rule_ko():
     agent = create_us_trading_scenario_agent(language="ko")
-    assert "현재가 × 1.05" in agent.instruction
-    assert "stale 또는 현재가 이하" in agent.instruction
-    assert "다음 주요 저항선까지 거리의 80%" in agent.instruction
+    assert "손익비 계산 전에 근거와 보유 기간" in agent.instruction
+    assert "임의 상승률로 목표를 만들거나" in agent.instruction
+    assert "15~30%" not in agent.instruction
 
 
 def test_us_target_price_fallback_rule_en():
     agent = create_us_trading_scenario_agent(language="en")
-    assert "current_price × 1.05" in agent.instruction
-    assert "report target is stale" in agent.instruction
-    assert "80% of the distance" in agent.instruction
+    assert "holding horizon and exit model BEFORE R/R" in agent.instruction
+    assert "Never invent a percentage target" in agent.instruction
+    assert "15~30%" not in agent.instruction
 
 
 def test_us_parabolic_position_sizing_ko():

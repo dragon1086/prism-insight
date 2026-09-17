@@ -392,7 +392,7 @@ class USStockAnalysisOrchestrator:
         try:
             # Step 1: Prefetch index data and compute regime programmatically
             from cores.data_prefetch import prefetch_us_macro_intelligence_data
-            prefetched = prefetch_us_macro_intelligence_data(reference_date)
+            prefetched = await asyncio.to_thread(prefetch_us_macro_intelligence_data, reference_date)
             logger.info(f"US macro prefetch complete: {list(prefetched.keys())}")
 
             if prefetched.get("computed_regime"):
@@ -489,6 +489,8 @@ class USStockAnalysisOrchestrator:
                 except Exception as _regime_e:
                     logger.warning(f"Failed to enforce computed US regime: {_regime_e}")
 
+                if isinstance(prefetched.get("market_intelligence"), dict):
+                    macro_data["market_intelligence"] = prefetched["market_intelligence"]
                 regime = macro_data.get("market_regime", "sideways")
                 macro_logger.info(f"US macro intelligence complete - regime: {regime}, "
                                  f"leading_sectors: {len(macro_data.get('leading_sectors', []))}, "
@@ -541,6 +543,14 @@ class USStockAnalysisOrchestrator:
                 with open(results_file, 'r', encoding='utf-8') as f:
                     full_results = json.load(f)
                 self.selected_tickers[mode] = full_results
+                participation = full_results.get("metadata", {}).get("market_participation")
+                if isinstance(macro_context, dict) and isinstance(participation, dict):
+                    macro_context["market_participation"] = participation
+                    packet = macro_context.get("market_intelligence")
+                    macro_context["market_intelligence"] = {
+                        **(packet if isinstance(packet, dict) else {"market": "US", "status": "PARTICIPATION_ONLY"}),
+                        "participation": participation,
+                    }
 
             # Extract stock info from results
             tickers = []
@@ -1459,6 +1469,8 @@ class USStockAnalysisOrchestrator:
                                     or {}
                                 ),
                                 "leading_sectors": (macro_context or {}).get("leading_sectors"),
+                                **({"market_intelligence": macro_context["market_intelligence"]}
+                                   if isinstance(macro_context, dict) and isinstance(macro_context.get("market_intelligence"), dict) else {}),
                             },
                         )
 

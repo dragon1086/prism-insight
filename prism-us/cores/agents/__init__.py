@@ -133,6 +133,10 @@ def get_us_agent_directory(
     agents = {}
     for section in base_sections:
         if section in agent_creators:
-            agents[section] = agent_creators[section]()
+            agent = agent_creators[section]()
+            if pf.get("report_research"):
+                from prism_core.report_research_context import apply_section_research
+                agent = apply_section_research(agent, section, pf, reference_date, language)
+            agents[section] = agent
 
     return agents

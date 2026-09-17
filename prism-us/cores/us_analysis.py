@@ -211,6 +211,17 @@ async def analyze_us_stock(
             logger.warning(f"US data prefetch failed, falling back to MCP: {e}")
             prefetched = {}
 
+        try:
+            from prism_core.report_research_prefetch import prefetch_report_research
+            research = await prefetch_report_research("US", ticker, reference_date, company_name)
+            if research:
+                prefetched["report_research"] = research
+                if research.get("news_usable") is True and "news_analysis" not in parallel_sections:
+                    parallel_sections.append("news_analysis")
+                    section_reports.pop("news_analysis", None)
+        except Exception:
+            logger.warning("Optional report research unavailable; retaining existing sources")
+
         if include_news and os.getenv("ADANOS_API_KEY"):
             try:
                 social_client = USSocialSentimentClient()
@@ -311,6 +322,11 @@ async def analyze_us_stock(
             f"status={evidence_receipt['status']} evidence_id={evidence_receipt['evidence_id']} "
             f"record_chars={evidence_receipt['record_chars']}"
         )
+
+        from prism_core.market_report_context import market_report_context
+        shared_market = market_report_context(macro_context, language)
+        if shared_market:
+            section_reports["market_index_analysis"] = section_reports.get("market_index_analysis", "") + shared_market
 
         # 6. Integrate content from other reports
         combined_reports = ""

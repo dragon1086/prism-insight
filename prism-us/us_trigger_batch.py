@@ -866,33 +866,18 @@ def trigger_macro_sector_leader(trade_date: str, snapshot: pd.DataFrame,
     # Get sector map for candidate tickers
     sector_map = get_us_sector_map(top100.index.tolist())
 
-    # Build sector confidence lookup and leading sector names
-    sector_confidence = {}
-    leading_names = set()
-    for s in leading_sectors:
-        name = s.get("sector", "")
-        conf = s.get("confidence", 0.5)
-        sector_confidence[name] = conf
-        leading_names.add(name)
-
-    # Filter stocks whose sector matches any leading sector (fuzzy substring match)
+    from prism_core.sector_taxonomy import matched_leader
+    # Narrow industry leadership cannot promote unrelated companies in its sector.
     matched_rows = []
     matched_confs = []
     for ticker in top100.index:
         stock_sector = sector_map.get(ticker, "")
         if not stock_sector:
             continue
-        matched_sector = None
-        if stock_sector in leading_names:
-            matched_sector = stock_sector
-        else:
-            for lead_name in leading_names:
-                if stock_sector in lead_name or lead_name in stock_sector:
-                    matched_sector = lead_name
-                    break
-        if matched_sector:
+        leader = matched_leader(leading_sectors, sector_map, ticker)
+        if leader is not None:
             matched_rows.append(ticker)
-            matched_confs.append(sector_confidence.get(matched_sector, 0.5))
+            matched_confs.append(leader.get("confidence", 0.5))
 
     if not matched_rows:
         logger.debug("trigger_macro_sector_leader: No stocks matched leading sectors")
@@ -1156,15 +1141,7 @@ def _build_topdown_pool(trigger_candidates: dict, macro_context: dict, score_col
     if not sector_map:
         return []
 
-    # Build confidence lookup
-    sector_confidence = {}
-    leading_names = set()
-    for s in leading_sectors:
-        name = s.get("sector", "")
-        conf = s.get("confidence", 0.5)
-        sector_confidence[name] = conf
-        leading_names.add(name)
-
+    from prism_core.sector_taxonomy import matched_leader
     pool = []
     for trigger_name, df in trigger_candidates.items():
         if df.empty or score_column not in df.columns:
@@ -1173,18 +1150,10 @@ def _build_topdown_pool(trigger_candidates: dict, macro_context: dict, score_col
             stock_sector = sector_map.get(ticker, "")
             if not stock_sector:
                 continue
-            # Exact match first, then fuzzy substring match
-            matched_sector = None
-            if stock_sector in leading_names:
-                matched_sector = stock_sector
-            else:
-                for lead_name in leading_names:
-                    if stock_sector in lead_name or lead_name in stock_sector:
-                        matched_sector = lead_name
-                        break
-            if matched_sector:
+            leader = matched_leader(leading_sectors, sector_map, ticker)
+            if leader is not None:
                 base_score = df.loc[ticker, score_column]
-                confidence = sector_confidence.get(matched_sector, 0.5)
+                confidence = leader.get("confidence", 0.5)
                 topdown_score = base_score * (1 + confidence * 0.3)
                 pool.append((ticker, trigger_name, topdown_score, df.loc[[ticker]]))
 
@@ -1195,11 +1164,13 @@ def _build_topdown_pool(trigger_candidates: dict, macro_context: dict, score_col
 def get_us_sector_map(tickers: list) -> dict:
     """Map US tickers to GICS sectors using yfinance."""
     import yfinance as yf
-    sector_map = {}
+    from prism_core.sector_taxonomy import SectorMap
+    sector_map = SectorMap()
     for ticker in tickers:
         try:
             info = yf.Ticker(ticker).info
             sector_map[ticker] = info.get("sector", "Other")
+            sector_map.industries[ticker] = info.get("industry", "")
         except Exception:
             sector_map[ticker] = "Other"
     return sector_map
@@ -1495,6 +1466,8 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
         snapshot = get_snapshot(trade_date, tickers)
 
     prev_snapshot, prev_date = get_previous_snapshot(trade_date, tickers)
+    from prism_core.market_intelligence import optional_participation
+    market_participation = optional_participation(snapshot, prev_snapshot, "US", trade_date, len(tickers))
     logger.debug(f"Previous trading day: {prev_date}")
 
     # Market cap is not a hard universe filter. It is loaded on demand only
@@ -1765,6 +1738,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
 
         # Metadata
         output_data["metadata"] = {
+            **({"market_participation": market_participation} if market_participation else {}),
             "run_time": datetime.datetime.now().isoformat(),
             "trigger_mode": trigger_time,
             "trade_date": trade_date,

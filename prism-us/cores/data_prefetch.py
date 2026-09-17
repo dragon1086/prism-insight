@@ -1030,6 +1030,12 @@ def prefetch_us_macro_intelligence_data(reference_date: str = None) -> dict:
     if result:
         logger.info(f"Prefetched US macro intelligence data: {list(result.keys())}")
 
+    from prism_core.market_intelligence import prefetch_us_context, render_context
+    context = prefetch_us_context(ref_dt.strftime("%Y%m%d"))
+    if context:
+        result["market_intelligence"] = context
+        result["market_intelligence_md"] = render_context(context)
+
     return result
 
 

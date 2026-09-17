@@ -65,7 +65,7 @@ def create_us_trading_scenario_agent(language: str = "ko", sector_names: list = 
 | N — New | 신제품 / 신규 catalyst / 신고가 | 3 뉴스, 1-1 주가 |
 | S — 수급 | 거래량, 유통주식 | 1-1, 1-2 |
 | L — 리더 | 업종 내 리더 위치 | 2-2 기업 개요, 4 시장 |
-| I — 기관 매수 | 기관 누적 순매수 (가능 시) | 1-2 투자자 거래 동향 |
+| I — 기관 후원 | 보유 공시의 기준일·변화와 거래량 대용치를 구분; 실제 순매수는 명시적 자료가 있을 때만 | 1-2 투자자 거래 동향 |
 | M — 시장 추세 | 시장 체제, 주도 섹터 | 4 시장 분석 |
 
 → 단순 P/E 비교만으로 진입 결정을 내리지 마십시오. C·A로 펀더멘털을 검증하고, N·S·I로 모멘텀을, L·M으로 추세를 확인하십시오.
@@ -241,6 +241,7 @@ us_stock_holdings 테이블(account_id='primary' 필터)에서 다음을 확인�
 
 거시 보정은 별도 필드(macro_adjustment)에 분리해서 표기하고, buy_score에 직접 합산하지 마십시오:
 - 종목 섹터가 주도 섹터 OR 직접 수혜 테마: +1
+  주도 항목에 industry가 있으면 해당 산업까지 일치해야 하며 섹터만 같다고 가점하지 않습니다. 종목 산업이 미확인이면 좁은 산업 가점은 없습니다. 독립 근거가 있는 직접 수혜 테마는 기존 기준대로 평가하되 섹터 소속만으로 추정하지 않습니다.
 - 종목 섹터가 소외 섹터 OR 직접 리스크 이벤트 피해: -1
 → effective_score = buy_score + macro_adjustment, min_score 비교는 effective_score로 합니다.
 
@@ -268,11 +269,11 @@ risk_reward_ratio  = expected_return_pct / expected_loss_pct
 ## 진입가 / 목표가 / 손절가 산정
 
 - entry_price: 현재가 그대로 사용. 범위 표현 금지.
-- target_price: 다음 룰을 순서대로 적용해 첫 번째 해당 케이스를 선택하십시오.
-  1. 보고서 명시 목표가 ≥ 현재가 × 1.05 → 그대로 사용 (목표가가 현재가보다 의미있게 위)
-  2. 그렇지 않으면(보고서 목표가가 stale 또는 현재가 이하) → 보고서 1-1 다음 주요 저항선까지 거리의 80% 위치, 또는 그 다음 저항선까지 거리의 80% 위치 중 현재 regime의 R/R floor를 충족하는 가장 가까운 값
-  3. 저항선 정보가 없으면 → 현재가 × (1 + 15~30%)
-  취지: 모멘텀 / 폭주장(parabolic) regime에서는 애널리스트 컨센서스 목표가가 가격을 수개월 따라잡지 못해 R/R 계산이 인위적으로 음수가 되는 경우가 빈번합니다. 룰 1은 컨센서스가 최신일 때 그대로 존중하면서도, stale 경우엔 차트 기반으로 fallback 합니다.
+- target_price: 손익비 계산 전에 근거와 보유 기간·청산 방식에 맞춰 독립적으로 결정합니다.
+  1. 보고서 목표는 출처·기준일·산정 방식과 보유 기간이 적합할 때만 사용합니다. 12개월 컨센서스는 단기 목표로 자동 전용하지 않습니다.
+  2. 구조적 목표는 보고서 1-1의 가장 가까운 주요 저항까지 거리의 80%를 기본으로 평가합니다. 다음 저항은 기존 보유 기간·청산 방식에 맞는 별도 근거가 있을 때만 사용하고 그 이유를 명시합니다.
+  3. 근거가 없으면 target_price와 종속 손익비 필드는 null, 미진입으로 남깁니다. 임의 상승률로 목표를 만들거나 R/R floor를 맞추려고 저항을 건너뛰지 않습니다.
+  목표를 확정한 후 기존 regime R/R floor를 평가합니다. 근거 미확인은 기업 품질 자체의 감점 사유가 아닙니다.
 - stop_loss: 위 "손절가 설정" 규칙대로 산정.
 
 ## 도구 사용
@@ -406,7 +407,7 @@ You buy fundamentally sound US growth stocks when momentum is alive, scaled by m
 | N — New | New product / catalyst / new high | 3 News, 1-1 Price |
 | S — Supply/Demand | Volume, float | 1-1, 1-2 |
 | L — Leader | Leadership position within sector | 2-2 Overview, 4 Market |
-| I — Institutional sponsorship | Institutional cumulative net buying (when reported) | 1-2 Investor Trends |
+| I — Institutional sponsorship | Distinguish dated ownership changes from volume proxies; actual net buying requires explicit data | 1-2 Investor Trends |
 | M — Market direction | Market regime, leading sectors | 4 Market Analysis |
 
 → Do NOT make entry decisions based purely on PE comparisons. Verify fundamentals via C·A,
@@ -599,6 +600,7 @@ system has no "next opportunity", so they must NOT appear as the rejection_reaso
 
 Macro adjustment is reported separately, NOT folded into buy_score:
 - Stock's sector is a leading sector OR direct beneficiary theme: +1
+  If a leader record includes industry, require that exact industry match; sector alone is insufficient. Unknown candidate industry gives no narrow-industry bonus. An independently evidenced direct-beneficiary theme remains eligible under the existing rule; do not infer it from sector membership.
 - Stock's sector is lagging OR direct risk-event victim: -1
 → effective_score = buy_score + macro_adjustment, compared against min_score.
 
@@ -626,15 +628,11 @@ If the resulting R/R is below the matrix floor for the current regime → No Ent
 ## Entry / Target / Stop Computation
 
 - entry_price: current price (no range, no "around"). Range expressions are prohibited.
-- target_price: pick the FIRST applicable rule:
-  1. Report's stated target IF target ≥ current_price × 1.05 (target is meaningfully above current price)
-  2. Otherwise (report target is stale / at-or-below current_price): 80% of the distance from current price
-     to the next major resistance from report 1-1, OR 80% to the resistance after that,
-     choosing whichever satisfies the regime's R/R floor with the smallest distance
-  3. Fallback if no resistance levels are available: current_price × (1 + 15~30%)
-  Rationale: in momentum / parabolic regimes the analyst consensus target frequently lags
-  the actual price by months, producing artificially negative R/R. Rule 1 prevents that
-  while still respecting consensus when it is current.
+- target_price: establish independently from evidence, holding horizon and exit model BEFORE R/R.
+  1. Use a report target only when source, asof, derivation and horizon fit this trade. A 12-month analyst consensus is not automatically a short-term target.
+  2. For a structural target, evaluate 80% of the distance to the nearest major resistance in report 1-1. Use the next resistance only with separate evidence consistent with the existing holding horizon/exit model; explain why.
+  3. If evidence is unavailable, leave target_price and dependent risk fields null and choose NO ENTRY. Never invent a percentage target or skip resistance to satisfy the R/R floor.
+  Evaluate the existing regime R/R floor AFTER target selection. Missing target evidence is not an independent company-quality score penalty.
 - stop_loss: per "Stop Loss Construction" above.
 
 ## Tool Usage
