@@ -219,3 +219,85 @@ def test_aggregated_summary_not_promoted():
         None, "2025-09-18", "Example Corp", "EXM")
     assert source is None
     assert gap == "AGGREGATED_SUMMARY_NOT_ORIGINAL"
+
+
+def test_question_led_search_keeps_network_budget(tmp_path):
+    transport = Transport()
+    packet = run(tmp_path, transport)
+    query = transport.calls[0][2]["query"]
+    assert "direct competitors" in query and "same period" in query
+    assert len(transport.calls) == 3
+    assert packet["receipt"]["comparison_scope"]["coverage"] == "UNVERIFIED_REQUIRES_SOURCE_REVIEW"
+    assert not packet["news_usable"]
+
+
+MEMORY_TABLE = ("Global DRAM Market Share by Revenue\n"
+                "| Market Share | Q1 2025 | Q2 2025 |\n| --- | --- | --- |\n"
+                "| Samsung | 40% | 38% |\n| SK Hynix | 35% | 37% |\n"
+                "| Micron | 25% | 25% |")
+
+
+@pytest.mark.parametrize("market,symbol,company", [
+    ("US", "MU", "Micron Technology"), ("KR", "005930", "삼성전자"),
+    ("KR", "000660", "SK하이닉스"),
+])
+def test_reviewed_memory_source_alias_and_complete_comparison(tmp_path, market, symbol, company):
+    # Synthetic values test preservation, not the publisher's real market data.
+    text = "Navigation text. " * 50 + "\n" + MEMORY_TABLE + "\nRounding may apply."
+    transport = Transport(text)
+    packet = asyncio.run(research.prefetch_report_research(
+        market, symbol, "20250918", company, _transport=transport,
+        _config=CONFIG, _cache_dir=tmp_path))
+    assert transport.calls[1][2]["url"] == research.MEMORY_SOURCE
+    assert len(transport.calls) == 3
+    note = json.loads(packet["section_notes"]["news_analysis"])
+    assert MEMORY_TABLE in note["sources"][0]["excerpt"]
+    assert note["comparison_scope"]["business_scope"].startswith("DRAM and HBM separately")
+    assert not packet["receipt"]["competitive_complete"]
+    assert packet["receipt"]["injected_sources"] == len(note["sources"])
+    assert all("| Samsung" not in packet["section_notes"][section]
+               for section in ("company_status", "company_overview"))
+
+
+def test_known_source_still_collected_when_search_unavailable(tmp_path):
+    async def transport(server, tool, args):
+        if server == "perplexity":
+            raise ValueError("provider unavailable")
+        return {"markdown": MEMORY_TABLE + "\nContext sentence. " * 30}
+    packet = asyncio.run(research.prefetch_report_research(
+        "US", "MU", "20250918", "Micron", _transport=transport,
+        _config=CONFIG, _cache_dir=tmp_path))
+    assert packet["receipt"]["usable_sources"] == 1
+    assert packet["receipt"]["calls"] == 2
+    assert "SEARCH_UNAVAILABLE" in packet["receipt"]["gaps"]
+
+
+def test_comparison_table_outranks_repeated_generic_prose():
+    text = "Revenue increased. " * 70 + "\n" + MEMORY_TABLE
+    excerpt, omitted = research._bounded_excerpt(text, 700)
+    assert MEMORY_TABLE in excerpt
+    assert omitted
+
+
+@pytest.mark.parametrize("scope", [{"US": ["MU"]}, {}, [], {"US": "EXM"},
+                                   {"US": ["EXM"], "KR": [42]}])
+def test_scoped_activation_rechecks_before_existing_cache(tmp_path, scope):
+    transport = Transport()
+    assert run(tmp_path, transport) is not None  # valid cache from unrestricted run
+    calls = len(transport.calls)
+    result = asyncio.run(research.prefetch_report_research(
+        "US", "EXM", "20250918", "Example Corp", _transport=transport,
+        _config={**CONFIG, "validated_symbols": scope}, _cache_dir=tmp_path))
+    assert result is None
+    assert len(transport.calls) == calls
+
+
+def test_approved_symbol_can_reuse_identical_evidence_cache(tmp_path):
+    transport = Transport()
+    first = run(tmp_path, transport)
+    result = asyncio.run(research.prefetch_report_research(
+        "US", "EXM", "20250918", "Example Corp", _transport=transport,
+        _config={**CONFIG, "validated_symbols": {"US": ["EXM"]}}, _cache_dir=tmp_path))
+    assert result["evidence_id"] == first["evidence_id"]
+    assert result["receipt"]["cache_hit"]
+    assert len(transport.calls) == 3

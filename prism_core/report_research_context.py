@@ -19,11 +19,20 @@ def apply_section_research(agent, section, prefetched, reference_date, language)
     note = packet['section_notes'].get(section)
     if not isinstance(note, str) or not note.strip():
         return agent
+    receipt = packet.get('receipt')
+    usable_sources = receipt.get('usable_sources') if isinstance(receipt, dict) else 0
     if (section == 'news_analysis' and packet.get('news_usable') is not True
-            and not (packet.get('receipt') or {}).get('usable_sources')):
+            and not (isinstance(usable_sources, int) and usable_sources > 0)):
         return agent
+    if len(note) > 6000:
+        # Whole omission, never a sliced JSON/table/excerpt that can alter a claim.
+        # In particular, omitted news must not waive the original discovery tools.
+        return _replace_agent(agent, instruction=agent.instruction +
+                              '\n\nOptional research status: UNKNOWN; '
+                              'oversized_source_material_omitted. Preserve the original '
+                              'research workflow; do not infer a source claim from this omission.')
     evidence = json.dumps({'evidence_id': packet.get('evidence_id'),
-                           'reference_date': reference_date, 'source_material': note[:6000]},
+                           'reference_date': reference_date, 'source_material': note},
                           ensure_ascii=False)
     boundary = (
         '\n\n## Optional prefetched research\n'

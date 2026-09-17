@@ -35,6 +35,12 @@ def _competitive_evidence_contract(reference_date):
   source verification. On access/parsing failure preserve that reason without retry loops.
 - Separate sector_tailwind, price_leadership, and business_competitive_position. Price
   momentum, sector membership, company size, or positive news alone proves no market dominance.
+  sector_tailwind requires evidence of sector-wide demand/supply, spending, orders, or policy;
+  an individual company's revenue growth or revenue mix is a company operating fact,
+  not sector demand evidence. Keep such facts in the company/news narrative without forcing
+  them into a competitive evidence type. Peer share-price rallies are price observations,
+  not evidence of customer demand; without a comparable return window they do not establish
+  price_leadership either. If only these observations exist, leave sector_tailwind UNKNOWN.
   price_leadership means share-price relative return or RS with an explicit window and peer_universe,
   not product pricing or cost leadership; those belong to business_competitive_position.
   Separate the listed parent entity from each subsidiary or separately listed affiliate;
@@ -73,6 +79,15 @@ def _competitive_evidence_contract(reference_date):
   means entity/period/scope/metric mismatches prevent comparison despite available data.
   Do not fabricate quotations, peers, values, dates, URLs, or positive leadership. Preserve
   source qualifiers and unknowns in conclusions; absence of evidence is not negative proof.
+  Before finishing, check every record's metric against its type and ensure the narrative
+  and final conclusion do not upgrade company-only facts or price observations into sector demand.
+  Check every trend claim against the actual values for that same segment, metric and pair
+  of periods. When segments move in opposite directions, state the directions separately;
+  rising DRAM share and falling HBM share do not establish expanding overall AI-memory share.
+  Do not average incomparable segment shares or infer a combined market share/rank without
+  an explicitly sourced common denominator. This applies to summaries and conclusions too.
+  Cite exact public source URLs supplied or actually read. Never emit undefined symbolic
+  citation aliases such as [YahooFinance:TICKER]; source IDs may accompany, not replace, URLs.
 """
 
 
