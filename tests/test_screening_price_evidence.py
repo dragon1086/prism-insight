@@ -121,9 +121,9 @@ def test_rank_weights_remove_unearned_agent_component(market):
 def test_topdown_removes_confidence_bonus_on_fake_constant(market):
     path = ROOT / ("trigger_batch.py" if market == "KR" else "prism-us/us_trigger_batch.py")
     build = load_functions(path, {"_build_topdown_pool"}, {})["_build_topdown_pool"]
-    sectors = {"A": "Alpha", "B": "Beta"}
+    sectors = {"A": "Technology", "B": "Healthcare"}
     context = {"sector_map": sectors, "leading_sectors": [
-        {"sector": "Alpha", "confidence": .9}, {"sector": "Beta", "confidence": .5}]}
+        {"sector": "Technology", "confidence": .9}, {"sector": "Healthcare", "confidence": .5}]}
     extra = {"sector_map": sectors} if market == "US" else {}
     old = pd.DataFrame({"score": [.40 + .35, .46 + .35]}, index=["A", "B"])
     new = pd.DataFrame({"score": [.40 / .65, .46 / .65]}, index=["A", "B"])

@@ -29,7 +29,21 @@ def test_missing_usage_is_unknown_not_zero(value):
 
 def test_sdk_default_usage_does_not_become_free_call():
     from agents.usage import Usage
-    assert extract_run_usage(result(Usage())) is None
+    from openai.types.responses.response_usage import (
+        InputTokensDetails,
+        OutputTokensDetails,
+    )
+
+    # Exercise the SDK's default request/token counters, not compatibility of its
+    # detail default factories with every openai release. Agents 0.7 constructs
+    # cached_tokens-only details; newer openai schemas require cache_write_tokens.
+    # Production dependency compatibility needs its own integration check.
+    value = Usage(
+        input_tokens_details=InputTokensDetails.model_construct(cached_tokens=0),
+        output_tokens_details=OutputTokensDetails.model_construct(reasoning_tokens=0),
+    )
+    assert value.requests == 0 and value.total_tokens == 0
+    assert extract_run_usage(result(value)) is None
 
 
 def test_complete_counts_sum_each_response_once_not_context():

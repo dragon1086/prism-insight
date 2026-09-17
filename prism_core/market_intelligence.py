@@ -1,9 +1,9 @@
 """Optional descriptive market evidence; never mutates trading regime or scores."""
-import json
 import hashlib
+import json
 import math
 import os
-import subprocess
+import subprocess  # nosec B404 - fixed local collector, shell disabled, date validated below
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,7 +73,7 @@ def optional_participation(snapshot, previous, market, asof, expected_count=None
 
 def build_etf_packet(series, reference_date, market_days=None):
     """Align each comparison to benchmark sessions strictly before analysis date."""
-    cutoff = datetime.strptime(reference_date, "%Y%m%d").strftime("%Y-%m-%d")
+    cutoff = datetime.strptime(reference_date, "%Y%m%d").replace(tzinfo=timezone.utc).strftime("%Y-%m-%d")
     cleaned = {}
     for symbol, rows in series.items():
         cleaned[symbol] = {str(row[0])[:10]: _number(row[1]) for row in rows
@@ -109,7 +109,11 @@ def prefetch_us_context(reference_date):
     if not enabled():
         return None
     try:
-        run = subprocess.run([sys.executable, str(ROOT / "tools/run_market_intelligence_prefetch.py"),
+        if not isinstance(reference_date, str) or len(reference_date) != 8 or not reference_date.isascii() or not reference_date.isdigit():
+            raise ValueError("invalid_analysis_date")
+        datetime.strptime(reference_date, "%Y%m%d").replace(tzinfo=timezone.utc)
+        run = subprocess.run(  # nosec B603 B607 - fixed interpreter/script; validated YYYYMMDD, no shell
+                             [sys.executable, str(ROOT / "tools/run_market_intelligence_prefetch.py"),
                               "--date", reference_date], capture_output=True, text=True, timeout=20, check=True)
         packet = json.loads(run.stdout)
         if not isinstance(packet, dict) or packet.get("contract") != "market_etf_rotation_v1":

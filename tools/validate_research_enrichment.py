@@ -9,9 +9,9 @@ import asyncio
 import importlib.util
 import json
 import logging
+import sys
 import time
 from pathlib import Path
-import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -22,12 +22,15 @@ async def run(args):
     load_dotenv(args.env)
     from cores.chatgpt_proxy import inject_env, start_proxy, stop_proxy
     from cores.llm.agent_bridge import spec_from_mcp_agent
-    from cores.llm.backends.openai_agents_backend import OpenAIAgentsBackend, configure_openai_agents_for_proxy
+    from cores.llm.backends.openai_agents_backend import (
+        OpenAIAgentsBackend,
+        configure_openai_agents_for_proxy,
+    )
     from cores.llm.config_loader import load_report_mcp_registry
     from cores.llm.ports import LLMParams
-    from prism_core.report_research_prefetch import VERSION, prefetch_report_research
     from prism_core.report_research_context import apply_section_research
-    from report_model_config import REPORT_MODEL, REPORT_EFFORT
+    from prism_core.report_research_prefetch import VERSION, prefetch_report_research
+    from report_model_config import REPORT_EFFORT, REPORT_MODEL
 
     inject_env(args.port)
     if not await start_proxy(args.port):
@@ -60,7 +63,7 @@ async def run(args):
                     "Preserve missing or incomparable evidence. Do not place orders."), timeout=240)
                 record = {"arm": arm, "status": "COMPLETED", "seconds": round(time.monotonic()-started, 3),
                           "model": REPORT_MODEL, "usage": result.usage, "text": result.text}
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - isolated probe records safe failure types
                 record = {"arm": arm, "status": "FAILED", "error_type": type(exc).__name__,
                           "seconds": round(time.monotonic()-started, 3)}
             results.append(record)

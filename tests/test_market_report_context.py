@@ -14,6 +14,7 @@ def test_off_is_empty():
 @pytest.mark.parametrize("language", ["ko", "en"])
 def test_same_facts_period_missing_denominator_and_id_reach_pdf(tmp_path, language):
     from reportlab.pdfgen import canvas
+
     from pdf_converter import pdf_to_markdown_text
     context = {"market_regime": "sideways", "market_intelligence": {
         "price_asof": "2026-09-16", "source": "yfinance_adjusted_daily", "input_sha256": "abcdef1234567890",

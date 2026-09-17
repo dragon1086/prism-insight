@@ -22,7 +22,7 @@ def market_report_context(context, language="ko"):
         for row in rows[:16]:
             if not isinstance(row, dict):
                 continue
-            def values(key):
+            def values(key, row=row):
                 data = row.get(key) or {}
                 return "/".join(str(data.get(str(day), "?")) for day in (5, 20, 60))
             lines.append(f"- {row.get('symbol', '?')}: {values('returns_pct')} · {values('relative_spy_pp')}")

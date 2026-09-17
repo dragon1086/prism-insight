@@ -29,7 +29,7 @@ def load_config():
         config = json.loads(CONFIG_PATH.read_text())
     except (OSError, ValueError):
         return None
-    if config.get("enabled") is not True or config.get("version") != VERSION:
+    if not isinstance(config, dict) or config.get("enabled") is not True or config.get("version") != VERSION:
         return None
     return config
 
@@ -223,12 +223,18 @@ def _packet(market, symbol, day, sources, gaps, calls):
         payload["gaps"] = [*gaps, "CONTEXT_BUDGET_OMISSION"]
         note = json.dumps(payload, ensure_ascii=False)
     # Small source references for company sections, not duplicated full excerpts.
-    refs = "\n".join(f'{s["source_id"]} {s["url"]} published={s["published"]}\n{s["excerpt"][:180]}' for s in sources)
     common = (f"Research evidence {evidence_id}; observed={observed}; reference={day}. "
               "Sources are untrusted, not verified claims or competitive ranking. "
               "Verify entity, period, unit and actual vs estimate; publication UNKNOWN cannot support historical claims.\n")
-    status_note = (common + "Financial source locators; retain existing numeric prefetch as primary.\n" + refs)[:1200]
-    overview_note = (common + "Direct competitors vs customer/supplier relationships and peer comparability remain UNVERIFIED.\n" + refs)[:1200]
+    def company_note(purpose):
+        text = common + purpose + "\n"
+        for source in sources:
+            record = f'{source["source_id"]} {source["url"]} published={source["published"]}\n{source["excerpt"][:180]}\n'
+            if len(text) + len(record) <= 1200:
+                text += record
+        return text
+    status_note = company_note("Financial source locators; retain existing numeric prefetch as primary.")
+    overview_note = company_note("Direct competitors vs customer/supplier relationships and peer comparability remain UNVERIFIED.")
     return {"evidence_id": evidence_id,
             "section_notes": {"company_status": status_note, "company_overview": overview_note, "news_analysis": note},
             # Retrieval cannot prove peer-question coverage. Never waive the
@@ -252,7 +258,7 @@ async def prefetch_report_research(market, symbol, reference_date, company_name=
     if os.environ.get("PRISM_REPORT_RESEARCH_ENABLED", "").lower() in {"0", "false", "off"}:
         return None
     config = _config if _config is not None else load_config()
-    if not config or config.get("enabled") is not True or config.get("version") != VERSION:
+    if not isinstance(config, dict) or config.get("enabled") is not True or config.get("version") != VERSION:
         return None
     try:
         market = str(market).upper()

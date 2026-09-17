@@ -13,7 +13,7 @@ from prism_core.market_intelligence import ETF_LABELS, ROOT, build_etf_packet
 
 def collect(reference_date):
     # Separate per-analysis-date cache: never relabel old observations as fresh.
-    day = datetime.strptime(reference_date, "%Y%m%d")
+    day = datetime.strptime(reference_date, "%Y%m%d").replace(tzinfo=ZoneInfo("America/New_York"))
     if day.date() > datetime.now(ZoneInfo("America/New_York")).date():
         raise ValueError("future_US_analysis_date_could_include_unfinished_session")
     cache = ROOT / "runtime/market_intelligence" / f"us_etf_{reference_date}.json"
@@ -25,8 +25,8 @@ def collect(reference_date):
             return packet
     except (OSError, ValueError):
         pass
-    import yfinance as yf
     import pandas_market_calendars as mcal
+    import yfinance as yf
     market_days = [day.date().isoformat() for day in mcal.get_calendar("NYSE").valid_days(
         start_date=(day - timedelta(days=150)).strftime("%Y-%m-%d"),
         end_date=(day - timedelta(days=1)).strftime("%Y-%m-%d"))]
