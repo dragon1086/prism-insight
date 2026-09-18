@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = "report_research_v1"
-COLLECTOR_VERSION = "competitive_questions_v10"
+COLLECTOR_VERSION = "competitive_questions_v11"
 CONFIG_PATH = ROOT / "runtime/report_research_config.json"
 MEMORY_SOURCE = "https://counterpointresearch.com/en/insights/global-dram-and-hbm-market-share"
 # Reviewed discovery locators and issuer aliases, never financial values or ranks.
@@ -359,6 +359,7 @@ async def _collect(market, symbol, day, company, transport, *, context=None, pro
         gaps.append("SEARCH_UNAVAILABLE")
         result = {}
     seen = set()
+    linked_documents = set()
     candidates = _candidates(result)[:5]
     # Prefer identifiable IR/document paths; this is discovery priority only,
     # never a claim that publisher identity or source facts were verified.
@@ -403,11 +404,15 @@ async def _collect(market, symbol, day, company, transport, *, context=None, pro
                 # Use the remaining scrape for the linked original, without
                 # increasing calls or silently changing any document locator.
                 originals = _document_links(body, url)
+                linked_documents.update(originals)
                 candidates[:0] = [(link, None) for link in originals if link not in seen]
             aliases = tuple(value for value in (alias, context.get('name')) if value)
             source, gap = _source(scraped, url, published, day, company, symbol, aliases=aliases)
             if source:
-                sources.append(source)
+                if url in linked_documents:
+                    sources.insert(0, source)
+                else:
+                    sources.append(source)
             if gap:
                 gaps.append(gap)
         except Exception:  # noqa: BLE001 - optional external provider fail-open boundary

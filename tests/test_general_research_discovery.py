@@ -155,3 +155,19 @@ def test_original_sec_case_preserved_but_priority_case_insensitive(tmp_path):
     asyncio.run(research.prefetch_report_research('US', 'EXM', '20260918', 'Example Corp',
         _transport=transport, _cache_dir=tmp_path, _config={'enabled': True, 'version': research.VERSION}))
     assert calls[1][1]['url'] == original
+
+
+def test_linked_filing_body_outranks_mirror_when_context_is_limited(tmp_path):
+    original = 'https://www.sec.gov/Archives/edgar/data/123/123/example-20251231.htm'
+    async def transport(server, tool, args):
+        if server == 'perplexity':
+            return {'results': [{'url': 'https://example.org/filing-mirror'}]}
+        body = 'Example Corp competes with Other Corp in optical components. ' * 25
+        if args['url'].endswith('filing-mirror'):
+            body += '\n[Original filing](' + original + ')'
+        return {'markdown': body}
+    packet = asyncio.run(research.prefetch_report_research('US', 'EXM', '20260918', 'Example Corp',
+        _transport=transport, _cache_dir=tmp_path, _config={'enabled': True, 'version': research.VERSION}))
+    assert packet['receipt']['calls'] == 3
+    payload = json.loads(packet['section_notes']['news_analysis'])
+    assert payload['sources'][0]['url'] == original
