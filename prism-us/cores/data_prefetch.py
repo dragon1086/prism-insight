@@ -192,7 +192,7 @@ def prefetch_us_market_indices(reference_date: str = None) -> dict:
     return result
 
 
-def prefetch_stock_info(ticker: str) -> str:
+def prefetch_stock_info(ticker: str, company_context: dict = None) -> str:
     """Prefetch company info and key statistics via yfinance.
 
     Replaces yahoo_finance MCP get_stock_info call and
@@ -200,6 +200,7 @@ def prefetch_stock_info(ticker: str) -> str:
 
     Args:
         ticker: Stock ticker symbol
+        company_context: Optional capture of descriptive fields from the same fetch
 
     Returns:
         Markdown formatted company info string, or empty string on error
@@ -211,6 +212,12 @@ def prefetch_stock_info(ticker: str) -> str:
         if not info or not info.get("name"):
             logger.warning(f"No company info for {ticker}")
             return ""
+
+        if company_context is not None:
+            # Discovery context only: never copy financial metrics or infer peers.
+            company_context.update({key: info[key] for key in
+                                    ("name", "sector", "industry", "website", "description")
+                                    if isinstance(info.get(key), str) and info[key].strip()})
 
         def _fmt(val, fmt_type="default"):
             if val is None or val == 0:
@@ -868,9 +875,12 @@ def prefetch_us_analysis_data(ticker: str) -> dict:
         result["market_indices"] = market_indices
 
     # 4. Stock info (for company_status - replaces key-statistics/financials firecrawl + yahoo_finance MCP)
-    stock_info = prefetch_stock_info(ticker)
+    company_research_profile = {}
+    stock_info = prefetch_stock_info(ticker, company_context=company_research_profile)
     if stock_info:
         result["stock_info"] = stock_info
+    if company_research_profile:
+        result["company_research_profile"] = company_research_profile
 
     # 5. Recommendations (for company_status - replaces yahoo_finance MCP get_recommendations)
     recommendations = prefetch_recommendations(ticker)

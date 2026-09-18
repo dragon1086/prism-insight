@@ -42,3 +42,45 @@ def test_oversized_chart_basis_and_table_are_omitted_together():
     excerpt, omitted = _bounded_excerpt(image + '\n' + table, 200)
     assert '| Alpha' not in excerpt
     assert omitted
+
+
+def test_markdown_escaped_rounding_note_is_atomic_with_table():
+    table = 'Global market share by revenue\n| Company | Q2 2026 |\n| Alpha | 33% |\n| Beta | 68% |'
+    note = r'_\*Due to rounding, the total may not add up to 100%._'
+    full, _ = _bounded_excerpt(table + '\n\n' + note, 250)
+    assert note in full
+    small, omitted = _bounded_excerpt(table + '\n\n' + note, len(table) + 1)
+    assert '| Alpha' not in small
+    assert omitted
+
+
+def test_multisentence_scope_footnote_cannot_be_partially_kept():
+    table = 'Revenue share\n| Company | Q2 2026 |\n| Alpha | 33% |'
+    note = 'Note: values are reported as provided. Comparisons exclude a major subsidiary in 2026.'
+    excerpt, omitted = _bounded_excerpt(table + '\n' + note, len(table) + 40)
+    assert '| Alpha' not in excerpt
+    assert omitted
+
+
+def test_competitor_bullet_list_keeps_its_relationship_context():
+    text = 'Our direct competitors include:\n- Alpha Corp\n- Beta Corp\n- Gamma Corp'
+    excerpt, omitted = _bounded_excerpt(text, 60)
+    assert 'competitors include' not in excerpt
+    assert 'Alpha Corp' not in excerpt
+    assert omitted
+
+
+def test_pdf_unicode_competitor_bullets_are_also_atomic():
+    text = 'Our current competitors include:\n• Alpha Corp\n• Beta Corp\n• Gamma Corp'
+    excerpt, omitted = _bounded_excerpt(text, 60)
+    assert 'competitors include' not in excerpt
+    assert 'Alpha Corp' not in excerpt
+    assert omitted
+
+
+def test_pdf_unicode_bullets_without_space_keep_whole_sentences():
+    text = 'Our current competitors include:\n•Alpha Corp. It competes only in optical equipment.\n•Beta Corp'
+    excerpt, omitted = _bounded_excerpt(text, 70)
+    assert 'competitors include' not in excerpt
+    assert 'Alpha Corp' not in excerpt
+    assert omitted

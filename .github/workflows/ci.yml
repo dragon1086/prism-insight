@@ -45,6 +45,9 @@ jobs:
             tests/test_market_analysis_source_guard.py -q
           python -m pytest tests/test_report_research_prefetch.py tests/test_report_research_context.py \
             tests/test_research_excerpt_integrity.py tests/test_research_scoped_config.py \
+            tests/test_general_research_discovery.py tests/test_general_research_adversarial.py \
+            tests/test_research_profile_wiring.py tests/test_research_comparison.py \
+            tests/test_research_table_observations.py \
             tests/test_research_scope_boundary.py \
             tests/test_report_input_evidence.py tests/test_news_competitive_evidence_contract.py \
             tests/test_market_intelligence.py tests/test_market_intelligence_wiring.py \

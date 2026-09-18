@@ -214,8 +214,10 @@ async def analyze_us_stock(
             prefetched = {}
 
         try:
-            from prism_core.report_research_prefetch import prefetch_report_research
-            research = await prefetch_report_research("US", ticker, reference_date, company_name)
+            from prism_core.report_research_prefetch import company_research_context, prefetch_report_research
+            research = await prefetch_report_research(
+                "US", ticker, reference_date, company_name,
+                company_context=company_research_context(prefetched, macro_context, ticker))
             if research:
                 prefetched["report_research"] = research
                 if research.get("news_usable") is True and "news_analysis" not in parallel_sections:
