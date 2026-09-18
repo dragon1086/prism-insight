@@ -192,7 +192,7 @@ def prefetch_us_market_indices(reference_date: str = None) -> dict:
     return result
 
 
-def prefetch_stock_info(ticker: str, company_context: dict = None) -> str:
+def prefetch_stock_info(ticker: str, company_context: dict | None = None) -> str:
     """Prefetch company info and key statistics via yfinance.
 
     Replaces yahoo_finance MCP get_stock_info call and

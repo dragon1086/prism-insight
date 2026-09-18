@@ -104,7 +104,10 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
 
         # Optional research is gathered once before section/model retries.
         try:
-            from prism_core.report_research_prefetch import company_research_context, prefetch_report_research
+            from prism_core.report_research_prefetch import (
+                company_research_context,
+                prefetch_report_research,
+            )
             research = await prefetch_report_research(
                 "KR", company_code, reference_date, company_name,
                 company_context=company_research_context(prefetched, macro_context, company_code))
