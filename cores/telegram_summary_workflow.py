@@ -123,7 +123,6 @@ async def run_telegram_summary_workflow(
 
         if (
             evaluation.rating.value >= QualityRating.EXCELLENT.value
-            or not evaluation.needs_improvement
             or iteration >= max_refinements
         ):
             break

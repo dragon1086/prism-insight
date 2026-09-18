@@ -84,6 +84,7 @@ def _frame_to_markdown(frame: pd.DataFrame, title: str) -> str:
     if frame is None or frame.empty:
         return ""
     rendered = frame.copy().sort_index().tail(5)
+    rendered = rendered.astype(object).where(pd.notna(rendered), "UNKNOWN")
     rendered.index = [
         value.strftime("%Y%m%d") if hasattr(value, "strftime") else str(value)
         for value in rendered.index

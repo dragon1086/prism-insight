@@ -133,6 +133,36 @@ def test_prefetch_summary_context_fails_closed_without_mcp_fallback(monkeypatch)
     assert "UNKNOWN" in context
 
 
+def test_prefetch_converts_partial_kis_cells_to_unknown(monkeypatch):
+    from cores import data_prefetch, market_data
+
+    monkeypatch.setattr(
+        market_data,
+        "get_market_ohlcv_by_date",
+        lambda *args: pd.DataFrame(
+            {"Close": [70000], "Volume": [float("nan")]},
+            index=pd.to_datetime(["2026-09-18"]),
+        ),
+    )
+    monkeypatch.setattr(
+        market_data,
+        "get_market_cap_by_date",
+        lambda *args: pd.DataFrame(
+            {"MarketCap": [float("nan")]},
+            index=pd.to_datetime(["2026-09-19"]),
+        ),
+    )
+
+    context = data_prefetch.prefetch_telegram_summary_data(
+        "005930",
+        "20260918",
+        asof_kst=pd.Timestamp("2026-09-19 09:00:00", tz="Asia/Seoul"),
+    )
+
+    assert "nan" not in context.lower()
+    assert "UNKNOWN" in context
+
+
 def test_responses_workflow_runs_optimizer_and_structured_evaluator_without_tools():
     workflow = importlib.import_module("cores.telegram_summary_workflow")
     optimizer = SimpleNamespace(
@@ -213,7 +243,7 @@ def test_responses_workflow_returns_usable_summary_when_evaluator_is_unavailable
     assert result == "📊 usable optimizer summary"
 
 
-def test_responses_workflow_refines_a_fair_summary_and_rechecks_it():
+def test_responses_workflow_refines_below_threshold_and_rechecks_it():
     workflow = importlib.import_module("cores.telegram_summary_workflow")
     optimizer = SimpleNamespace(name="optimizer", instruction="summarize", server_names=[])
     evaluator = SimpleNamespace(name="evaluator", instruction="evaluate", server_names=[])
@@ -237,7 +267,7 @@ def test_responses_workflow_refines_a_fair_summary_and_rechecks_it():
                 )
             self.evaluator_count += 1
             rating = (
-                workflow.QualityRating.FAIR
+                workflow.QualityRating.GOOD
                 if self.evaluator_count == 1
                 else workflow.QualityRating.EXCELLENT
             )
@@ -245,7 +275,8 @@ def test_responses_workflow_refines_a_fair_summary_and_rechecks_it():
                 structured=workflow.EvaluationResult(
                     rating=rating,
                     feedback="Use the supplied KIS evidence",
-                    needs_improvement=rating is workflow.QualityRating.FAIR,
+                    # Deliberately inconsistent: threshold must win over this field.
+                    needs_improvement=False,
                     focus_areas=["accuracy"],
                 )
             )
