@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from mcp_agent.workflows.evaluator_optimizer.evaluator_optimizer import (
@@ -15,6 +16,7 @@ from cores.llm.mcp_registry import McpServerRegistry
 from cores.llm.ports import AgentSpec, LLMParams
 
 
+logger = logging.getLogger(__name__)
 _backend: OpenAIAgentsBackend | None = None
 
 
@@ -96,13 +98,24 @@ async def run_telegram_summary_workflow(
     best_rating = QualityRating.POOR
 
     for iteration in range(max_refinements + 1):
-        evaluated = await active_backend.run(
-            evaluator_spec,
-            _evaluation_prompt(message, response, iteration),
-        )
+        try:
+            evaluated = await active_backend.run(
+                evaluator_spec,
+                _evaluation_prompt(message, response, iteration),
+            )
+        except Exception as exc:  # noqa: BLE001 - preserve usable optimizer output
+            logger.warning(
+                "Telegram summary evaluation failed; using optimizer output: %s",
+                type(exc).__name__,
+            )
+            return best_response or response
         evaluation = evaluated.structured
         if not isinstance(evaluation, EvaluationResult):
-            raise RuntimeError("Telegram summary evaluator returned no structured result")
+            logger.warning(
+                "Telegram summary evaluator returned no structured result; "
+                "using optimizer output"
+            )
+            return best_response or response
 
         if evaluation.rating.value > best_rating.value:
             best_rating = evaluation.rating

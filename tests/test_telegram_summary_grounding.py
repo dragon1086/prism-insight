@@ -183,6 +183,91 @@ def test_responses_workflow_runs_optimizer_and_structured_evaluator_without_tool
     assert "📊 grounded summary" in evaluation_prompt
 
 
+def test_responses_workflow_returns_usable_summary_when_evaluator_is_unavailable():
+    workflow = importlib.import_module("cores.telegram_summary_workflow")
+    optimizer = SimpleNamespace(name="optimizer", instruction="summarize", server_names=[])
+    evaluator = SimpleNamespace(name="evaluator", instruction="evaluate", server_names=[])
+
+    class FakeBackend:
+        async def run(self, spec, user_input):
+            if spec.output_schema is not None:
+                return LLMResult(structured=None)
+            return LLMResult(text="📊 usable optimizer summary")
+
+    result = asyncio.run(
+        workflow.run_telegram_summary_workflow(
+            optimizer=optimizer,
+            evaluator=evaluator,
+            message="grounded report",
+            model="gpt-5.6-luna",
+            reasoning_effort="low",
+            backend=FakeBackend(),
+        )
+    )
+
+    assert result == "📊 usable optimizer summary"
+
+
+def test_responses_workflow_refines_a_fair_summary_and_rechecks_it():
+    workflow = importlib.import_module("cores.telegram_summary_workflow")
+    optimizer = SimpleNamespace(name="optimizer", instruction="summarize", server_names=[])
+    evaluator = SimpleNamespace(name="evaluator", instruction="evaluate", server_names=[])
+
+    class FakeBackend:
+        def __init__(self):
+            self.calls = []
+            self.optimizer_count = 0
+            self.evaluator_count = 0
+
+        async def run(self, spec, user_input):
+            self.calls.append((spec, user_input))
+            if spec.output_schema is None:
+                self.optimizer_count += 1
+                return LLMResult(
+                    text=(
+                        "📊 initial summary"
+                        if self.optimizer_count == 1
+                        else "📊 revised grounded summary"
+                    )
+                )
+            self.evaluator_count += 1
+            rating = (
+                workflow.QualityRating.FAIR
+                if self.evaluator_count == 1
+                else workflow.QualityRating.EXCELLENT
+            )
+            return LLMResult(
+                structured=workflow.EvaluationResult(
+                    rating=rating,
+                    feedback="Use the supplied KIS evidence",
+                    needs_improvement=rating is workflow.QualityRating.FAIR,
+                    focus_areas=["accuracy"],
+                )
+            )
+
+    backend = FakeBackend()
+    result = asyncio.run(
+        workflow.run_telegram_summary_workflow(
+            optimizer=optimizer,
+            evaluator=evaluator,
+            message="report with KIS evidence",
+            model="gpt-5.6-luna",
+            reasoning_effort="low",
+            backend=backend,
+            max_refinements=1,
+        )
+    )
+
+    assert result == "📊 revised grounded summary"
+    assert backend.optimizer_count == 2
+    assert backend.evaluator_count == 2
+    refinement_spec, refinement_prompt = backend.calls[2]
+    assert refinement_spec.mcp_servers == ()
+    assert refinement_spec.model == "gpt-5.6-luna"
+    assert refinement_spec.params.reasoning_effort == "low"
+    assert "Use the supplied KIS evidence" in refinement_prompt
+
+
 def test_generator_prefetches_once_and_uses_same_evidence_for_both_agents(monkeypatch):
     import telegram_summary_agent as summary_module
 
