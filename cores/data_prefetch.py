@@ -13,6 +13,7 @@ This mirrors the US module's pattern (us_data_client.py direct import).
 
 import logging
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -142,7 +143,12 @@ def prefetch_stock_ohlcv(company_code: str, start_date: str, end_date: str, *, _
         return ""
 
 
-def prefetch_telegram_summary_data(company_code: str, reference_date: str) -> str:
+def prefetch_telegram_summary_data(
+    company_code: str,
+    reference_date: str,
+    *,
+    asof_kst=None,
+) -> str:
     """Fetch compact KIS evidence for Telegram summary generation.
 
     This is a direct Python call to the repository-owned KIS adapter, not an MCP
@@ -163,6 +169,8 @@ def prefetch_telegram_summary_data(company_code: str, reference_date: str) -> st
 
     start_date = (end - timedelta(days=10)).strftime("%Y%m%d")
     end_date = end.strftime("%Y%m%d")
+    current_kst = asof_kst or datetime.now(ZoneInfo("Asia/Seoul"))
+    market_cap_date = current_kst.strftime("%Y%m%d")
 
     try:
         ohlcv = get_market_ohlcv_by_date(start_date, end_date, company_code)
@@ -171,13 +179,20 @@ def prefetch_telegram_summary_data(company_code: str, reference_date: str) -> st
         ohlcv = pd.DataFrame()
 
     try:
-        market_cap = get_market_cap_by_date(start_date, end_date, company_code)
+        market_cap = get_market_cap_by_date(
+            market_cap_date,
+            market_cap_date,
+            company_code,
+        )
     except Exception as exc:  # noqa: BLE001 - fail-soft evidence boundary
         logger.warning("KIS Telegram market cap unavailable: %s", type(exc).__name__)
         market_cap = pd.DataFrame()
 
     ohlcv_md = _frame_to_markdown(ohlcv, "Recent OHLCV")
-    market_cap_md = _frame_to_markdown(market_cap, "Market capitalization")
+    market_cap_md = _frame_to_markdown(
+        market_cap,
+        f"Current market capitalization (KIS snapshot as of {market_cap_date})",
+    )
     if not ohlcv_md and not market_cap_md:
         return _KIS_UNAVAILABLE_CONTEXT
 

@@ -77,7 +77,7 @@ def test_prefetch_summary_context_calls_kis_adapter_directly(monkeypatch):
         calls.append(("market_cap", fromdate, todate, ticker))
         return pd.DataFrame(
             {"Market Cap": [420000000000000]},
-            index=pd.to_datetime(["2026-09-18"]),
+            index=pd.to_datetime(["2026-09-19"]),
         )
 
     monkeypatch.setattr(market_data, "get_market_ohlcv_by_date", fake_ohlcv)
@@ -88,18 +88,23 @@ def test_prefetch_summary_context_calls_kis_adapter_directly(monkeypatch):
         lambda: (_ for _ in ()).throw(AssertionError("MCP adapter must not be used")),
     )
 
-    context = data_prefetch.prefetch_telegram_summary_data("005930", "20260918")
+    context = data_prefetch.prefetch_telegram_summary_data(
+        "005930",
+        "20260918",
+        asof_kst=pd.Timestamp("2026-09-19 09:00:00", tz="Asia/Seoul"),
+    )
 
     assert calls == [
         ("ohlcv", "20260908", "20260918", "005930"),
-        ("market_cap", "20260908", "20260918", "005930"),
+        ("market_cap", "20260919", "20260919", "005930"),
     ]
     assert "KIS verified market data" in context
     assert "20260918" in context
+    assert "Current market capitalization (KIS snapshot as of 20260919)" in context
     assert "70000" in context
-    assert "Market capitalization" in context
+    assert "market capitalization" in context
     assert "### Recent OHLCV\nUNKNOWN" not in context
-    assert "### Market capitalization\nUNKNOWN" not in context
+    assert "Current market capitalization" in context
 
 
 def test_prefetch_summary_context_fails_closed_without_mcp_fallback(monkeypatch):
