@@ -192,6 +192,7 @@ id_ed25519*
 
 # Local development files
 .vscode/
+.worktrees/
 *.local
 archive.db
 archive.db-shm
