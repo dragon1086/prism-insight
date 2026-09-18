@@ -472,7 +472,7 @@ SaaS企業の場合、別途商用ライセンスが必要です。
 
 ## プロジェクトの成長
 
-[![Star History Chart](https://api.star-history.com/svg?repos=dragon1086/prism-insight&type=Date)](https://star-history.com/#dragon1086/prism-insight&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=dragon1086/prism-insight&type=Date)](https://star-history.dera.page/#dragon1086/prism-insight&type=Date)
 
 ---
 
