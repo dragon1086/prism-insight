@@ -5,7 +5,8 @@ def create_telegram_summary_optimizer_agent(
     metadata: dict,
     current_date: str,
     from_lang: str = "ko",
-    to_lang: str = "ko"
+    to_lang: str = "ko",
+    market_data_context: str = "",
 ):
     """
     Create telegram summary optimizer agent
@@ -42,15 +43,17 @@ def create_telegram_summary_optimizer_agent(
 상세한 주식 분석 보고서를 읽고, 일반 투자자를 위한 가치 있는 텔레그램 메시지로 요약해야 합니다.
 메시지는 핵심 정보와 통찰력을 포함해야 하며, 아래 형식을 따라야 합니다:
 
+{market_data_context}
+
+위 KIS 검증 데이터만 현재 시세·거래량·시가총액의 근거로 사용하십시오. 값이 없으면 UNKNOWN으로 표시하고 추측하지 마십시오.
+
 1. 이모지와 함께 트리거 유형 표시 (📊, 📈, 💰 등 적절한 이모지)
 2. 종목명(코드) 정보 및 간략한 사업 설명 (1-2문장)
-3. 핵심 거래 정보 - 현재 날짜({current_date}) 기준으로 통일하여 작성하고,
-    get_stock_ohlcv tool을 사용하여 현재 날짜({current_date})로부터
-    약 5일간의 데이터를 조회해서 메모리에 저장한 뒤 참고하여 작성합니다.:
+3. 핵심 거래 정보 - 현재 날짜({current_date}) 기준으로 위 KIS 데이터를 참고하여 작성합니다.:
    - 현재가
    - 전일 대비 등락률
    - 최근 거래량 (전일 대비 증감 퍼센트 포함)
-4. 시가총액 정보 및 동종 업계 내 위치 (시가총액은 get_stock_market_cap tool 사용해서 현재 날짜({current_date})로부터 약 5일간의 데이터를 조회해서 참고)
+4. 시가총액 정보 및 동종 업계 내 위치 (위 KIS 데이터에 값이 있을 때만 사용)
 5. 가장 관련 있는 최근 뉴스 1개와 잠재적 영향 (출처 링크 반드시 포함)
 6. 핵심 기술적 패턴 2-3개 (지지선/저항선 수치 포함)
 7. 투자 관점 - 단기/중기 전망 또는 주요 체크포인트
@@ -62,7 +65,6 @@ def create_telegram_summary_optimizer_agent(
 
 메시지 끝에는 "본 정보는 투자 참고용이며, 투자 결정과 책임은 투자자에게 있습니다." 문구를 반드시 포함하세요.
 
-##주의사항 : load_all_tickers tool은 절대 사용 금지!!
 """
 
     else:  # English or other languages
@@ -74,16 +76,18 @@ def create_telegram_summary_optimizer_agent(
 Read detailed stock analysis reports and create valuable telegram messages for general investors in {to_lang_name}.
 The message should include key information and insights, following this format:
 
+{market_data_context}
+
+Use only the KIS-verified data above for current price, volume, and market capitalization. If a value is missing, report UNKNOWN and do not infer it.
+
 1. Display trigger type with appropriate emoji (📊, 📈, 💰, etc.)
 2. **Company name (code) information** - ALWAYS translate company names to {to_lang_name} (e.g., "삼성전자" → "Samsung Electronics", "현대차" → "Hyundai Motor")
 3. Brief business description (1-2 sentences)
-4. Core trading information - Use current date ({current_date}) as reference,
-    Query approximately 5 days of data from current date ({current_date}) using get_stock_ohlcv tool,
-    store in memory and reference for writing:
+4. Core trading information - Use current date ({current_date}) and the KIS data above:
    - Current price
    - Change from previous day (percentage)
    - Recent trading volume (including percentage change from previous day)
-5. Market cap information and position in the industry (Use get_stock_market_cap tool to query approximately 5 days of data from current date ({current_date}))
+5. Market cap information and position in the industry (only when present in the KIS data above)
 6. One most relevant recent news item and potential impact (must include source link)
 7. 2-3 key technical patterns (include support/resistance levels)
 8. Investment perspective - short/mid-term outlook or key checkpoints
@@ -95,13 +99,12 @@ Express numbers as specifically as possible, and avoid subjective investment adv
 
 At the end of the message, you must include: "This information is for investment reference only. Investment decisions and responsibilities lie with the investor."
 
-##IMPORTANT: Never use the load_all_tickers tool!!
 """
 
     agent = Agent(
         name="telegram_summary_optimizer",
         instruction=instruction,
-        server_names=["kospi_kosdaq"]
+        server_names=[]
     )
 
     return agent

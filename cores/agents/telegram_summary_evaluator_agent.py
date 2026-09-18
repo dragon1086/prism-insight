@@ -4,7 +4,8 @@ from mcp_agent.agents.agent import Agent
 def create_telegram_summary_evaluator_agent(
     current_date: str,
     from_lang: str = "ko",
-    to_lang: str = "ko"
+    to_lang: str = "ko",
+    market_data_context: str = "",
 ):
     """
     Create telegram summary evaluator agent
@@ -35,9 +36,11 @@ def create_telegram_summary_evaluator_agent(
         instruction = f"""당신은 주식 정보 요약 메시지를 평가하는 전문가입니다.
 주식 분석 보고서와 생성된 텔레그램 메시지를 비교하여 다음 기준에 따라 평가해야 합니다:
 
-1. 정확성: 메시지가 보고서의 사실을 정확하게 반영하는가? 할루시네이션이나 오류가 없는가?
-(이 때, 거래 정보 검증은 get_stock_ohlcv tool을 사용하여 현재 날짜({current_date})로부터 약 5일간의 데이터를 조회해서 검증 진행함.)
-또한, 시가총액은 get_stock_market_cap tool을 사용해서 마찬가지로 현재 날짜({current_date})로부터 약 5일간의 데이터를 조회해서 검증 진행.)
+{market_data_context}
+
+현재 시세·거래량·시가총액은 위 KIS 검증 데이터와만 대조하십시오. 누락값은 UNKNOWN이며 추측하지 마십시오.
+
+1. 정확성: 메시지가 보고서와 위 KIS 검증 데이터를 정확하게 반영하는가? 할루시네이션이나 오류가 없는가?
 
 2. 포맷 준수: 지정된 형식(이모지, 종목 정보, 거래 정보 등)을 올바르게 따르고 있는가?
 3. 명확성: 정보가 명확하고 이해하기 쉽게 전달되는가?
@@ -55,8 +58,6 @@ def create_telegram_summary_evaluator_agent(
 - 개선을 위한 구체적인 제안
 - 특히 할루시네이션이 있다면 명확하게 지적
 
-##주의사항 : load_all_tickers tool은 절대 사용 금지!!
-
 **중요: 반드시 아래 JSON 형식으로 응답해야 합니다:**
 ```json
 {{
@@ -72,9 +73,11 @@ def create_telegram_summary_evaluator_agent(
         instruction = f"""You are an expert in evaluating stock information summary messages written in {to_lang_name}.
 Compare the stock analysis report with the generated telegram message and evaluate based on the following criteria:
 
-1. Accuracy: Does the message accurately reflect the facts in the report? Are there any hallucinations or errors?
-(For trading information verification, use get_stock_ohlcv tool to query approximately 5 days of data from current date ({current_date}).
-For market cap verification, use get_stock_market_cap tool to query approximately 5 days of data from current date ({current_date}).)
+{market_data_context}
+
+Validate current price, volume, and market capitalization only against the KIS-verified data above. Missing values are UNKNOWN and must not be inferred.
+
+1. Accuracy: Does the message accurately reflect the report and the KIS-verified data? Are there any hallucinations or errors?
 
 2. Format Compliance: Does it correctly follow the specified format (emojis, stock information, trading information, etc.)?
 3. Clarity: Is the information clearly and easily communicated?
@@ -94,8 +97,6 @@ Provide the final evaluation in the following structure:
 - If there are any hallucinations, clearly point them out
 - If company names are not properly translated, specifically mention which ones need translation
 
-##IMPORTANT: Never use the load_all_tickers tool!!
-
 **IMPORTANT: You MUST respond with a JSON object in the following exact format:**
 ```json
 {{
@@ -110,7 +111,7 @@ Provide the final evaluation in the following structure:
     agent = Agent(
         name="telegram_summary_evaluator",
         instruction=instruction,
-        server_names=["kospi_kosdaq"]
+        server_names=[]
     )
 
     return agent

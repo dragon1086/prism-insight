@@ -12,11 +12,19 @@ This mirrors the US module's pattern (us_data_client.py direct import).
 """
 
 import logging
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+_KIS_UNAVAILABLE_CONTEXT = """## KIS verified market data
+- Source: KIS
+- Status: KIS data unavailable
+- Price, volume, and market capitalization: UNKNOWN
+"""
 
 
 def _dict_to_markdown(data: dict, title: str = "") -> str:
@@ -70,6 +78,19 @@ def _dict_to_markdown(data: dict, title: str = "") -> str:
     return result
 
 
+def _frame_to_markdown(frame: pd.DataFrame, title: str) -> str:
+    """Render a KIS DataFrame without routing through the MCP compatibility layer."""
+    if frame is None or frame.empty:
+        return ""
+    rendered = frame.copy().sort_index().tail(5)
+    rendered.index = [
+        value.strftime("%Y%m%d") if hasattr(value, "strftime") else str(value)
+        for value in rendered.index
+    ]
+    rendered.index.name = "Date"
+    return f"### {title}\n\n{rendered.to_markdown(index=True)}\n"
+
+
 def _get_mcp_server_module():
     """Reuse the same provider chain as tools, without legacy eager KRX login.
 
@@ -119,6 +140,56 @@ def prefetch_stock_ohlcv(company_code: str, start_date: str, end_date: str, *, _
     except Exception as e:
         logger.error(f"Error prefetching OHLCV for {company_code}: {e}")
         return ""
+
+
+def prefetch_telegram_summary_data(company_code: str, reference_date: str) -> str:
+    """Fetch compact KIS evidence for Telegram summary generation.
+
+    This is a direct Python call to the repository-owned KIS adapter, not an MCP
+    tool call. Missing data stays explicitly unknown; summary agents do not get
+    an MCP fallback that could silently reintroduce retired providers.
+    """
+    try:
+        end = datetime.strptime(str(reference_date), "%Y%m%d")
+    except ValueError:
+        logger.warning("Invalid Telegram summary reference date: %r", reference_date)
+        return _KIS_UNAVAILABLE_CONTEXT
+
+    try:
+        from cores.market_data import get_market_cap_by_date, get_market_ohlcv_by_date
+    except ImportError:
+        logger.warning("KIS market-data adapter unavailable for Telegram summary")
+        return _KIS_UNAVAILABLE_CONTEXT
+
+    start_date = (end - timedelta(days=10)).strftime("%Y%m%d")
+    end_date = end.strftime("%Y%m%d")
+
+    try:
+        ohlcv = get_market_ohlcv_by_date(start_date, end_date, company_code)
+    except Exception as exc:  # noqa: BLE001 - fail-soft evidence boundary
+        logger.warning("KIS Telegram OHLCV unavailable: %s", type(exc).__name__)
+        ohlcv = pd.DataFrame()
+
+    try:
+        market_cap = get_market_cap_by_date(start_date, end_date, company_code)
+    except Exception as exc:  # noqa: BLE001 - fail-soft evidence boundary
+        logger.warning("KIS Telegram market cap unavailable: %s", type(exc).__name__)
+        market_cap = pd.DataFrame()
+
+    ohlcv_md = _frame_to_markdown(ohlcv, "Recent OHLCV")
+    market_cap_md = _frame_to_markdown(market_cap, "Market capitalization")
+    if not ohlcv_md and not market_cap_md:
+        return _KIS_UNAVAILABLE_CONTEXT
+
+    sections = [
+        "## KIS verified market data",
+        f"- Reference date: {end_date}",
+        "- Source: KIS",
+        "- Use only the values below. Missing values are UNKNOWN.",
+    ]
+    sections.append(ohlcv_md or "### Recent OHLCV\nUNKNOWN")
+    sections.append(market_cap_md or "### Market capitalization\nUNKNOWN")
+    return "\n\n".join(sections)
 
 
 def prefetch_stock_trading_volume(company_code: str, start_date: str, end_date: str, *, _capture=None) -> str:
@@ -401,7 +472,6 @@ def _count_distribution_days(df, close_col, volume_col=None,
         valid_vol = [v for v in vols if not _math.isnan(v) and v > 0]
         if not valid_vol:
             return None
-        latest_max_after = closes[-1]  # i 이후 최대 종가를 뒤에서부터 누적
         # 후보: 최근 window 거래일 (각 후보는 직전일 필요 → idx>=1)
         start = max(1, n - window)
         raw = 0

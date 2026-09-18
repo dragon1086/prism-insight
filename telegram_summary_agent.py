@@ -9,69 +9,10 @@ from report_model_config import REPORT_AUX_EFFORT, REPORT_AUX_MODEL
 
 import cores.openai_debug  # noqa: F401 — OpenAI 400/429 request metadata logging
 from mcp_agent.app import MCPApp
-from mcp_agent.workflows.llm.augmented_llm import RequestParams
-from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
-from mcp_agent.workflows.evaluator_optimizer.evaluator_optimizer import (
-    EvaluatorOptimizerLLM,
-    QualityRating,
-)
 
+from cores.data_prefetch import prefetch_telegram_summary_data
 from cores.openai_error_logging import log_openai_error
-
-
-def _extract_last_valid_json(text: str) -> str:
-    """Extract the last complete JSON object from text that may contain multiple objects.
-
-    gpt-5.x reasoning models sometimes emit empty {} thinking tokens before the
-    real JSON payload, producing strings like '{}\n{}\n{"rating":1,...}'.
-    This helper finds the last (most complete) top-level JSON object.
-    """
-    depth = 0
-    start = -1
-    last_complete = None
-    for i, ch in enumerate(text):
-        if ch == '{':
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == '}':
-            depth -= 1
-            if depth == 0 and start != -1:
-                last_complete = text[start:i + 1]
-    return last_complete or text
-
-
-class _RobustEvaluatorLLM:
-    """Thin wrapper around an AugmentedLLM that recovers from multi-JSON responses.
-
-    gpt-5.x reasoning models sometimes return several JSON objects in a single
-    completion (e.g. empty `{}` thinking tokens followed by the real payload).
-    The mcp_agent library calls `json.loads` / `model_validate_json` on the raw
-    content and raises a Pydantic ValidationError for trailing characters.
-
-    This wrapper intercepts that failure, calls `generate_str` as a fallback to
-    get the raw text, extracts the last well-formed JSON object, and re-validates.
-    """
-
-    def __init__(self, llm):
-        self._llm = llm
-
-    def __getattr__(self, name):
-        return getattr(self._llm, name)
-
-    async def generate_structured(self, message, response_model, request_params=None):
-        try:
-            return await self._llm.generate_structured(message, response_model, request_params)
-        except Exception as e:
-            log_openai_error(logger, e, "telegram summary evaluator structured generation")
-            logger.warning(f"generate_structured failed ({e}), retrying with JSON extraction fallback")
-            text = await self._llm.generate_str(message=message, request_params=request_params)
-            candidate = _extract_last_valid_json(text)
-            try:
-                data = json.loads(candidate)
-                return response_model.model_validate(data)
-            except Exception:
-                return response_model.model_validate_json(candidate)
+from cores.telegram_summary_workflow import run_telegram_summary_workflow
 
 # Logging setup
 logging.basicConfig(
@@ -209,7 +150,14 @@ class TelegramSummaryGenerator:
         logger.warning(f"Trigger type not found in result files for stock {stock_code}, using default")
         return "Notable Pattern", "unknown"
 
-    def create_optimizer_agent(self, metadata, current_date, from_lang="ko", to_lang="ko"):
+    def create_optimizer_agent(
+        self,
+        metadata,
+        current_date,
+        from_lang="ko",
+        to_lang="ko",
+        market_data_context="",
+    ):
         """
         Create Telegram summary generation agent
 
@@ -225,10 +173,17 @@ class TelegramSummaryGenerator:
             metadata=metadata,
             current_date=current_date,
             from_lang=from_lang,
-            to_lang=to_lang
+            to_lang=to_lang,
+            market_data_context=market_data_context,
         )
 
-    def create_evaluator_agent(self, current_date, from_lang="ko", to_lang="ko"):
+    def create_evaluator_agent(
+        self,
+        current_date,
+        from_lang="ko",
+        to_lang="ko",
+        market_data_context="",
+    ):
         """
         Create Telegram summary evaluation agent
 
@@ -242,7 +197,8 @@ class TelegramSummaryGenerator:
         return create_telegram_summary_evaluator_agent(
             current_date=current_date,
             from_lang=from_lang,
-            to_lang=to_lang
+            to_lang=to_lang,
+            market_data_context=market_data_context,
         )
 
     async def generate_telegram_message(self, report_content, metadata, trigger_type, from_lang="ko", to_lang="ko"):
@@ -256,25 +212,31 @@ class TelegramSummaryGenerator:
             from_lang: Report source language (default: "ko")
             to_lang: Summary target language (default: "ko")
         """
-        # Set current date (YYYY.MM.DD format)
-        current_date = datetime.now().strftime("%Y.%m.%d")
-
-        # Create optimizer agent
-        optimizer = self.create_optimizer_agent(metadata, current_date, from_lang, to_lang)
-
-        # Create evaluator agent
-        evaluator = self.create_evaluator_agent(current_date, from_lang, to_lang)
-
-        # Configure evaluation-optimization workflow
-        evaluator_optimizer = EvaluatorOptimizerLLM(
-            optimizer=optimizer,
-            evaluator=evaluator,
-            llm_factory=OpenAIAugmentedLLM,
-            min_rating=QualityRating.EXCELLENT
+        # Ground summaries to the report date, not the wall-clock date of a retry.
+        current_date = metadata.get("date") or datetime.now().strftime("%Y.%m.%d")
+        reference_date = current_date.replace(".", "")
+        market_data_context = await asyncio.to_thread(
+            prefetch_telegram_summary_data,
+            metadata["stock_code"],
+            reference_date,
         )
 
-        # Wrap evaluator_llm to handle multi-JSON responses from gpt-5.x reasoning models
-        evaluator_optimizer.evaluator_llm = _RobustEvaluatorLLM(evaluator_optimizer.evaluator_llm)
+        # Create optimizer agent
+        optimizer = self.create_optimizer_agent(
+            metadata,
+            current_date,
+            from_lang,
+            to_lang,
+            market_data_context,
+        )
+
+        # Create evaluator agent
+        evaluator = self.create_evaluator_agent(
+            current_date,
+            from_lang,
+            to_lang,
+            market_data_context,
+        )
 
         # Construct message prompt
         prompt_message = f"""다음은 {metadata['stock_name']}({metadata['stock_code']}) 종목에 대한 상세 분석 보고서입니다.
@@ -289,15 +251,14 @@ class TelegramSummaryGenerator:
             logger.info("Adding warning message for 10-minute post-market-open data")
             prompt_message += "\n⚠️ 주의: 본 정보는 장 시작 후 10분 시점 데이터입니다. 현재 상황과 다를 수 있습니다."
 
-        # Generate Telegram message using evaluation-optimization workflow
-        response = await evaluator_optimizer.generate_str(
+        # Generate and evaluate through the same Responses API backend as reports.
+        response = await run_telegram_summary_workflow(
+            optimizer=optimizer,
+            evaluator=evaluator,
             message=prompt_message,
-            request_params=RequestParams(
-                model=REPORT_AUX_MODEL,
-                reasoning_effort=REPORT_AUX_EFFORT,
-                maxTokens=6000,
-                max_iterations=2
-            )
+            model=REPORT_AUX_MODEL,
+            reasoning_effort=REPORT_AUX_EFFORT,
+            max_tokens=6000,
         )
 
         # Process response - improved method
