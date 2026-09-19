@@ -23,5 +23,5 @@
       {"name": "신한지주", "ticker": "055550", "sector": "financial_holding"}
     ]
   },
-  "limit_note": "Ticker labels are preselected sample identities, not a verified DART mapping. Resolve corporation codes from official exact-name rows before calling collector."
+  "limit_note": "Ticker labels are preselected sample identities. Resolve names or ticker queries in official DART and verify the exact ticker in the returned company profile before calling the collector; never hardcode issuer aliases."
 }

@@ -131,3 +131,21 @@ def test_transport_outage_is_not_company_failure_or_empty_evidence():
     assert all(row['reason'] == 'IDENTITY_TRANSPORT_FAILURE' for row in result['cases'])
     assert all('receipt' not in row for row in result['cases'])
     assert 'private' not in json.dumps(result)
+
+
+def test_cli_records_source_hash_without_spawning_git(tmp_path, monkeypatch):
+    import tools.validate_dart_cohort as module
+
+    async def fake_run(*args, **kwargs):
+        return {'summary': {'case_count': 1, 'complete_count': 1}}
+
+    monkeypatch.setattr(module, 'run_cohort', fake_run)
+    if hasattr(module, 'subprocess'):
+        monkeypatch.setattr(module.subprocess, 'check_output', lambda *a, **kw: pytest.fail('no subprocess allowed'))
+    source = tmp_path / 'manifest.json'
+    source.write_text(json.dumps(MANIFEST))
+    output = tmp_path / 'result.json'
+    assert main(['--live', '--manifest', str(source), '--group', 'development', '--out', str(output)]) == 0
+    result = json.loads(output.read_text())
+    assert len(result['runner_sha256']) == 64
+    assert result['code_version_basis'] == 'SOURCE_SHA256_COMMIT_RECORDED_EXTERNALLY'

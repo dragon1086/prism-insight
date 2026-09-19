@@ -5,7 +5,6 @@ import asyncio
 import hashlib
 import json
 import re
-import subprocess
 import sys
 import time
 from datetime import date, datetime, timezone
@@ -165,12 +164,8 @@ def main(argv=None):
         return 2
     try:
         result = asyncio.run(run_cohort(json.loads(args.manifest.read_text()), args.group))
-        result['git_head'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
         result['runner_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-        result['working_tree_changes_present'] = bool(subprocess.check_output(
-            ['git', 'status', '--porcelain', '--', 'prism_core/dart_public_filings.py',
-             'prism_core/filing_catalog.py', 'tools/validate_dart_cohort.py', 'tools/probe_dart_filings.py'],
-            cwd=ROOT, text=True).strip())
+        result['code_version_basis'] = 'SOURCE_SHA256_COMMIT_RECORDED_EXTERNALLY'
         with args.out.open('x', encoding='utf-8') as stream:
             json.dump(result, stream, ensure_ascii=False, allow_nan=False, indent=2)
         print(json.dumps(result['summary']))
