@@ -196,9 +196,10 @@ async def collect(market, symbol, day, company, transport, *, context, progress,
     )
 
     sources, gaps = progress['sources'], progress['gaps']
-    filing_parser = filing_parser is True and market == 'KR'
+    filing_parser = ('structured_v1' if filing_parser is True else filing_parser)
+    filing_parser = filing_parser if market == 'KR' and filing_parser in ('structured_v1', 'material_v2') else None
     if filing_parser:
-        progress['filing_parser'] = 'structured_v1'
+        progress['filing_parser'] = filing_parser
     progress.setdefault('raw_response_utf8_bytes', 0)
     progress.setdefault('events', [])
     alias = MEMORY_SUBJECTS.get((market, symbol))
@@ -325,7 +326,7 @@ async def collect(market, symbol, day, company, transport, *, context, progress,
             if source and structured_body:
                 from prism_core.filing_report_evidence import filing_blocks
 
-                blocks, parser_gaps = filing_blocks(data, url)
+                blocks, parser_gaps = filing_blocks(data, url, material_notes=filing_parser == 'material_v2')
                 gaps.extend(parser_gaps)
             if (not blocks and not links and maps < 1 and progress['calls'] < MAX_CALLS
                     and re.search(r'(?i)/(?:ir|ir-comp|investors?|annual-reports?)(?:/|$)', urlsplit(url).path)):
@@ -377,7 +378,7 @@ def packet(market, symbol, day, progress):
         # against long financial tables. Existing data remains with its owner.
         queues = {topic: [(source, block) for source in sources
                           for block in [b for b in source.get('blocks', []) if b['topic'] == topic][
-                              :24 if any(b.get('provenance', {}).get('parser_version') == 'structured_v1'
+                              :24 if any(b.get('provenance', {}).get('parser_version') in ('structured_v1', 'material_v2')
                                          for b in source.get('blocks', [])) else 2]]
                   for topic in topics}
         for position in range(max((len(rows) for rows in queues.values()), default=0)):
@@ -392,8 +393,22 @@ def packet(market, symbol, day, progress):
                     if 'provenance' in block:
                         record['provenance'] = block['provenance']
                     trial = {**payload, 'sources': [*payload['sources'], record], 'omitted_blocks': omissions}
+                    provenance = record.get('provenance', {})
+                    shared_keys = ('parser_version', 'representation', 'representation_sha256', 'markdown_sha256')
+                    if (provenance.get('parser_version') == 'material_v2'
+                            and all(key in provenance for key in shared_keys)):
+                        common = {key: provenance[key] for key in shared_keys}
+                        references = payload.get('source_provenance', {})
+                        source_id = record['source_id']
+                        if source_id in references and references[source_id] != common:
+                            omissions += 1
+                            if 'SOURCE_PROVENANCE_CONFLICT' not in payload['gaps']:
+                                payload['gaps'].append('SOURCE_PROVENANCE_CONFLICT')
+                            continue
+                        record['provenance'] = {key: value for key, value in provenance.items() if key not in shared_keys}
+                        trial['source_provenance'] = {**references, source_id: common}
                     if _size(trial) <= SECTION_BYTES - 80:
-                        payload['sources'].append(record)
+                        payload = trial
                         seen.add(digest)
                     else:
                         omissions += 1

@@ -82,3 +82,17 @@ def test_only_delivered_records_count_after_owner_budget(tmp_path, monkeypatch):
         assert result[method]['delivered_record_count'] == 0
         assert result[method]['source_evaluation_unit_count'] == 0
         assert all(size <= 6000 for size in result[method]['section_utf8_bytes'].values())
+
+
+def test_material_policy_is_explicit_and_uses_same_source_bound_metric(tmp_path):
+    text = '## III. 재무에 관한 사항\n### 3. 연결재무제표 주석\n9. 매출채권\n매출채권 손실충당금은 100억원입니다.\n'
+    source = tmp_path / 'material.json'
+    source.write_text(json.dumps({'response': {'markdown': text}}))
+    document = {'document_id': 'material', 'source_file': str(source), 'facts': [{
+        'id': 'one', 'scope': 'consolidated', 'evidence_groups': [{'needles': ['100억원']}]}]}
+    out = evaluate_document(document, treatment='material_v2')['treatment']
+    assert out['source_scope_audit']['full_items'] == 1
+    assert out['provenance_errors'] == []
+    assert all(size <= 6000 for size in out['section_utf8_bytes'].values())
+    with pytest.raises(ValueError, match='Unsupported treatment'):
+        evaluate_document(document, treatment='anything')

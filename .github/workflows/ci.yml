@@ -52,6 +52,8 @@ jobs:
             tests/test_filing_table_projection.py tests/test_filing_extraction_evaluation.py \
             tests/test_filing_html.py tests/test_filing_html_tables.py \
             tests/test_filing_report_evidence.py tests/test_filing_report_quality.py \
+            tests/test_filing_materiality.py tests/test_material_filing_selection.py \
+            tests/test_material_filing_wiring.py tests/test_material_report_consumers.py \
             tests/test_report_mcp_capability_audit.py tests/test_report_insight_manifest.py \
             tests/test_report_insight_prefetch.py tests/test_report_insight_wiring.py \
             tests/test_snapshot_price_leaders.py tests/test_insight_leader_rendering.py \

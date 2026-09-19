@@ -36,10 +36,18 @@ def delivered_records(packet, text, *, baseline):
     digest = hashlib.sha256(text.encode()).hexdigest()
     records, errors, missing = [], [], 0
     for owner, serialized in packet['section_notes'].items():
-        for index, row in enumerate(json.loads(serialized)['sources']):
+        section = json.loads(serialized)
+        for index, row in enumerate(section['sources']):
             block_id = f'{owner}:{index}'
             excerpt = row['excerpt']
             provenance = row.get('provenance', {})
+            shared = section.get('source_provenance', {}).get(row.get('source_id'), {})
+            if shared:
+                # Conflicts are not repaired by choosing one representation.
+                if any(key in provenance and provenance[key] != value for key, value in shared.items()):
+                    errors.append({'block_id': block_id, 'reason': 'SOURCE_PROVENANCE_CONFLICT'})
+                    continue
+                provenance = {**shared, **provenance}
             if not provenance:
                 missing += 1
             try:
@@ -84,10 +92,12 @@ def _metrics(facts, records):
     return score
 
 
-def evaluate_document(document):
+def evaluate_document(document, *, treatment='structured_v1'):
     from prism_core import report_insight_prefetch as insight
     from prism_core.filing_report_evidence import filing_blocks
 
+    if treatment not in ('structured_v1', 'material_v2'):
+        raise ValueError('Unsupported treatment policy')
     text, url = load_source(document), source_url(document)
     result = {'document_id': document['document_id'], 'source_url': url,
               'source_file_sha256': hashlib.sha256(Path(document['source_file']).read_bytes()).hexdigest(),
@@ -95,7 +105,8 @@ def evaluate_document(document):
               'source_bytes': len(text.encode()), 'provider_calls': 0, 'model_calls': 0}
     for method in ('baseline', 'treatment'):
         start = time.perf_counter()
-        blocks, gaps = (insight.topic_blocks(text), []) if method == 'baseline' else filing_blocks({'markdown': text}, url)
+        blocks, gaps = (insight.topic_blocks(text), []) if method == 'baseline' else filing_blocks(
+            {'markdown': text}, url, **({'material_notes': True} if treatment == 'material_v2' else {}))
         source = {'source_id': document['document_id'], 'url': url, 'published': 'UNKNOWN',
                   'publication_basis': 'UNKNOWN', 'blocks': blocks}
         packet = insight.packet('KR', document.get('ticker', 'UNKNOWN'), '2026-09-18', {
@@ -125,25 +136,27 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--gold', action='append', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--treatment', choices=('structured_v1', 'material_v2'), default='structured_v1')
     args = parser.parse_args(argv)
     if args.out.exists():
         parser.error('--out must be a new file')
     documents = load_documents(args.gold)
     root = Path(__file__).resolve().parents[1]
-    report = {'schema_version': 1, 'status': 'OFFLINE_REGRESSION_INPUT_EVIDENCE_ONLY',
+    report = {'schema_version': 1, 'status': 'OFFLINE_REGRESSION_INPUT_EVIDENCE_ONLY', 'treatment_policy': args.treatment,
               'gold_files': [{'name': path.name, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()} for path in args.gold],
               'evaluator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'implementation_sha256': {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
                   for name in ('prism_core/filing_report_evidence.py', 'prism_core/filing_selection.py',
                                'prism_core/filing_structure.py', 'prism_core/filing_table_projection.py',
-                               'prism_core/report_insight_prefetch.py', 'tools/evaluate_filing_extraction.py')},
+                               'prism_core/report_insight_prefetch.py', 'tools/evaluate_filing_extraction.py',
+                               'prism_core/material_filing_selection.py', 'prism_core/filing_materiality.py')},
               'limits': ['Previously used regression corpus, not an unseen holdout.',
                          'Saved Markdown only; no new filing retrieval, HTML assessment or freshness proof.',
                          'Source fidelity is not independent factual validation.',
                          'Baseline source_scope_audit infers scope offline; downstream receives no such metadata.',
                          'No generated prose, PDF, investment decision or profit quality is measured.',
                          'Same 6000-byte owner ceilings; delivered sizes may differ.'],
-              'documents': [evaluate_document(document) for document in documents]}
+              'documents': [evaluate_document(document, treatment=args.treatment) for document in documents]}
     with args.out.open('x', encoding='utf-8') as stream:
         json.dump(report, stream, ensure_ascii=False, indent=2)
     print(json.dumps({'status': report['status'], 'documents': len(documents), 'out': str(args.out)}))

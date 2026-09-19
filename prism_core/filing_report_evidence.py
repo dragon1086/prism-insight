@@ -10,6 +10,7 @@ from prism_core.filing_selection import _classify, select_filing_evidence
 from prism_core.filing_structure import parse_filing
 
 VERSION = 'structured_v1'
+MATERIAL_VERSION = 'material_v2'
 _ROUTES = {
     'customer_revenue': 'financial_quality_valuation', 'cashflow': 'financial_quality_valuation',
     'financial_quality': 'financial_quality_valuation', 'tax': 'financial_quality_valuation',
@@ -127,7 +128,7 @@ def _legacy_peer_units(markdown):
     return records, gaps
 
 
-def filing_blocks(data, url):
+def filing_blocks(data, url, *, material_notes=False):
     """Return complete candidate records and explicit representation gaps.
 
     Callers must first admit the source through existing URL/issuer/date gates.
@@ -159,9 +160,21 @@ def filing_blocks(data, url):
         if parsed['status'] not in {'COMPLETE', 'PARTIAL'}:
             return [], gaps or ['FILING_HTML_UNSUPPORTED']
         records = parsed['records']
+        if material_notes is True:
+            from prism_core.material_filing_selection import material_html_records
+
+            records, grouping_gaps = material_html_records(records)
+            gaps.extend(grouping_gaps)
         representation = 'FIRECRAWL_CLEANED_HTML'
         digest = parsed['source_sha256']
         markdown_units = parse_filing(markdown)
+    elif material_notes is True:
+        from prism_core.material_filing_selection import material_filing_records
+
+        peers, peer_gaps = _legacy_peer_units(markdown)
+        records, material_gaps = material_filing_records(markdown, peer_records=peers)
+        gaps.extend([*peer_gaps, *material_gaps])
+        representation, digest = 'FIRECRAWL_MARKDOWN', md_hash
     else:
         # Independently rank each owner's candidates at the unchanged 6 KB
         # ceiling. The final packet also charges provenance and source metadata.
@@ -183,9 +196,14 @@ def filing_blocks(data, url):
         representation, digest = 'FIRECRAWL_MARKDOWN', md_hash
     blocks = []
     for record in records:
-        topic, score = _classify({**record, 'text': '\n'.join((record.get('context_before', ''),
-                                                               record['text'], record.get('footnotes', '')))})
-        if score <= 0:
+        source_text = '\n'.join((record.get('context_before', ''), record['text'], record.get('footnotes', '')))
+        tags = ()
+        if material_notes is True:
+            from prism_core.filing_materiality import TOPICS, material_topics
+
+            tags = material_topics(source_text, record['section_path'])
+        topic, score = _classify({**record, 'text': source_text})
+        if score <= 0 and not tags:
             continue
         if representation == 'FIRECRAWL_CLEANED_HTML' and not _same_markdown_unit(record, markdown_units, markdown):
             gaps.append('FILING_HTML_MARKDOWN_MISMATCH')
@@ -195,14 +213,28 @@ def filing_blocks(data, url):
         route = _ROUTES.get(topic)
         if topic == 'business_competition' and re.search('경쟁사|경쟁업체|시장점유율|competitor', text, re.IGNORECASE):
             route = 'direct_peers_competitive_position'
+        if tags and route != 'direct_peers_competitive_position':
+            # A tax/asset table mentioning options or insurance is not an
+            # issuance/post-period event. Prefer its explicit local heading.
+            heading_tags = next((found for heading in reversed(record['section_path'])
+                                 if (found := material_topics('', (heading,)))), ())
+            route_tags = heading_tags or (tags if record['kind'] == 'prose' or not route else ())
+            if route_tags:
+                primary = next(tag for tag in ('subsequent_events', 'audit_contingencies', 'liquidity_covenants',
+                    'dilution_overhang', 'business_contracts', 'asset_rnd_quality', 'related_parties', 'earnings_quality') if tag in route_tags)
+                route = {'news_analysis': 'catalysts_risks_counterevidence',
+                         'company_status': 'financial_quality_valuation',
+                         'company_overview': 'business_segments'}[TOPICS[primary]['owner_section']]
         if not route:
             continue
         provenance = {key: record[key] for key in (
             'section_path', 'scope', 'kind', 'source_path', 'source_paths', 'source_spans', 'context_before',
             'footnotes', 'footnote_paths', 'projected', 'projection_kind', 'selected_data_rows',
             'original_data_rows') if key in record}
-        provenance.update(parser_version=VERSION, representation=representation,
+        provenance.update(parser_version=MATERIAL_VERSION if material_notes is True else VERSION, representation=representation,
                           representation_sha256=digest, markdown_sha256=md_hash)
+        if tags:
+            provenance['material_topics'] = tags
         blocks.append({'topic': route, 'excerpt': text, 'status': 'SOURCE_TEXT_NOT_FACT_VALIDATED',
                        'provenance': provenance})
     return blocks, list(dict.fromkeys(gaps))

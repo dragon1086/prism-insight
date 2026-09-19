@@ -161,7 +161,7 @@ def parse_filing_html(html):
     path, scope, notes = {}, 'unknown', False
     footnote_target, context_records = None, []
     records = out['records']
-    for node, text, source_path, source_paths in events:
+    for event_index, (node, text, source_path, source_paths) in enumerate(events):
         level = None if _FOOT.match(text) else _heading(node, text, notes)
         if level is not None:
             footnote_target, context_records = None, []
@@ -175,7 +175,7 @@ def parse_filing_html(html):
             out['errors'].append('HTML_RECORD_LIMIT')
             break
         record = {'kind': 'prose', 'text': text, 'section_path': [path[k] for k in sorted(path)],
-                  'scope': scope, 'source_path': source_path, 'source_paths': source_paths,
+                  'scope': scope, 'source_path': source_path, 'source_paths': source_paths, 'event_index': event_index,
                   'context_before': '', 'footnotes': ''}
         if node.tag == 'table':
             footnote_target = None
