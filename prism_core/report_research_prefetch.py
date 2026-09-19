@@ -514,6 +514,8 @@ async def prefetch_report_research(market, symbol, reference_date, company_name=
     config = _config if _config is not None else load_config()
     if not isinstance(config, dict) or config.get("enabled") is not True or config.get("version") != VERSION:
         return None
+    enhanced = False
+    progress = {"sources": [], "gaps": [], "calls": 0}
     try:
         market = str(market).upper()
         day = datetime.strptime(str(reference_date).replace("-", ""), "%Y%m%d").replace(tzinfo=timezone.utc).date()
@@ -536,9 +538,12 @@ async def prefetch_report_research(market, symbol, reference_date, company_name=
                 return None
         company_name = " ".join(str(company_name).split())[:150]
         company_context = company_research_context({'company_research_profile': company_context}, None, symbol)
-        budget = min(60.0, max(0.01, float(config.get("timeout_seconds", 60))))
+        from prism_core import report_insight_prefetch as insights
+        enhanced = insights.enabled(config)
+        collector_version = insights.PROFILE if enhanced else COLLECTOR_VERSION
+        budget = min(90.0 if enhanced else 60.0, max(0.01, float(config.get("timeout_seconds", 60))))
         cache = Path(_cache_dir) if _cache_dir else ROOT / "runtime/report_research_cache"
-        key = hashlib.sha256(json.dumps([VERSION, COLLECTOR_VERSION, market, symbol, day, company_name, company_context,
+        key = hashlib.sha256(json.dumps([VERSION, collector_version, market, symbol, day, company_name, company_context,
                                         config.get("namespace", "default")]).encode()).hexdigest()
         cache.mkdir(parents=True, exist_ok=True, mode=0o700)
         path = cache / (key + ".json")
@@ -551,6 +556,9 @@ async def prefetch_report_research(market, symbol, reference_date, company_name=
                     break
                 except BlockingIOError:
                     if time.monotonic() - start >= budget:
+                        if enhanced:
+                            return insights.packet(market, symbol, day,
+                                {'sources': [], 'gaps': ['CACHE_LOCK_TIMEOUT'], 'calls': 0})
                         return None
                     await asyncio.sleep(0.05)
             try:
@@ -561,14 +569,15 @@ async def prefetch_report_research(market, symbol, reference_date, company_name=
                         or not isinstance(saved.get('evidence_id'), str)
                         or saved.get('news_usable') is not False
                         or any(receipt.get(key) != value for key, value in {
-                            'version': VERSION, 'collector_version': COLLECTOR_VERSION,
+                            'version': VERSION, 'collector_version': collector_version,
                             'market': market, 'symbol': symbol, 'reference_date': day}.items())
-                        or any(not isinstance(notes.get(section), str) or len(notes[section]) > limit
+                        or any(not isinstance(notes.get(section), str)
+                               or (len(notes[section].encode('utf-8')) > insights.SECTION_BYTES if enhanced else len(notes[section]) > limit)
                                for section, limit in [('news_analysis', 3500), ('company_status', 1200), ('company_overview', 1200)])
                         or type(receipt.get('usable_sources')) is not int
-                        or not 0 <= receipt['usable_sources'] <= 2):
+                        or not 0 <= receipt['usable_sources'] <= (5 if enhanced else 2)):
                     raise ValueError('invalid_cache_packet')
-                ttl = 21600 if receipt["usable_sources"] else 300
+                ttl = 21600 if receipt.get('injected_sources', 0) else 300
                 age = time.time() - path.stat().st_mtime
                 if 0 <= age < ttl:
                     saved["receipt"]["cache_hit"] = True
@@ -577,15 +586,16 @@ async def prefetch_report_research(market, symbol, reference_date, company_name=
             except (OSError, ValueError, KeyError, TypeError):
                 pass
             remaining = budget - (time.monotonic() - start)
-            progress = {"sources": [], "gaps": [], "calls": 0}
             try:
                 sources, gaps, calls = await asyncio.wait_for(
-                    _collect(market, symbol, day, company_name, _transport or native_call,
+                    (insights.collect if enhanced else _collect)(market, symbol, day, company_name, _transport or native_call,
                              context=company_context, progress=progress),
                     timeout=max(0.001, remaining))
             except asyncio.TimeoutError:
                 sources, gaps, calls = progress['sources'], [*progress['gaps'], "TIME_BUDGET_EXHAUSTED"], progress['calls']
-            packet = _packet(market, symbol, day, sources, gaps, calls, company_context)
+            progress.update(sources=sources, gaps=gaps, calls=calls)
+            packet = (insights.packet(market, symbol, day, progress) if enhanced else
+                      _packet(market, symbol, day, sources, gaps, calls, company_context))
             import tempfile
             fd, name = tempfile.mkstemp(dir=cache, prefix=key, suffix=".tmp")
             try:
@@ -597,4 +607,9 @@ async def prefetch_report_research(market, symbol, reference_date, company_name=
                     os.unlink(name)
             return packet
     except Exception:  # noqa: BLE001 - never stop a report for optional research
+        if enhanced:
+            # Eligible opt-in reports still need the output guard if local cache
+            # I/O fails. Do not silently return to an unbounded direct-tool path.
+            return insights.packet(market, symbol, day,
+                {**progress, 'gaps': [*progress['gaps'], 'PREFETCH_UNAVAILABLE']})
         return None

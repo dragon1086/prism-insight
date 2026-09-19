@@ -245,6 +245,13 @@ async def analyze_us_stock(
 
         # 5. Get US-specific agents (with prefetched data)
         prefetched["shared_macro_available"] = bool(macro_context)
+        from prism_core.report_insight_prefetch import (
+            enabled as insight_prefetch_enabled,
+        )
+        if insight_prefetch_enabled() and prefetched.get('report_research'):
+            from prism_core.report_insight_manifest import build_insight_manifest
+            prefetched['report_insight_manifest'] = build_insight_manifest(
+                'US', ticker, reference_date, prefetched, macro_context)
         agents = get_us_agent_directory(company_name, ticker, reference_date, base_sections, language, prefetched_data=prefetched)
 
         # 6. Execute base analysis using HYBRID mode
