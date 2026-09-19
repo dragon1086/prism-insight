@@ -9,7 +9,7 @@ pytest.importorskip("agents")
 from agents import Agent, RunContextWrapper
 from agents.mcp import MCPServerStdio
 from agents.mcp.util import MCPUtil
-from mcp.types import CallToolResult, TextContent, Tool
+from mcp.types import CallToolResult, ImageContent, TextContent, Tool
 
 from cores.llm.tool_result_budget import ResearchToolResultBudget, _serialized_size
 
@@ -255,3 +255,77 @@ async def test_backend_runner_sees_guarded_sdk_result(monkeypatch, enabled):
     assert ("SOURCE_SENTINEL" not in captured[0]) is enabled
     if enabled:
         assert len(captured[0].encode()) <= 512
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("structured", [False, True])
+async def test_discovery_sdk_replacement_and_full_accounting(structured):
+    prose = "WITHHELD_CAUSE " * 300 + "\n[1] https://example.com/wrong-issuer"
+    raw = text_result(prose, structuredContent={"response": prose}, _meta={"secret": "PRIVATE"})
+    server = server_for(raw, structured)
+    budget = ResearchToolResultBudget(1400, 2000)
+    budget.wrap(server, "perplexity")
+    visible = await sdk_output(server, "perplexity_ask")
+    assert "wrong-issuer" in visible and "WITHHELD_CAUSE" not in visible and "PRIVATE" not in visible
+    assert "discovery_only" in visible and "UNKNOWN" in visible
+    assert budget.fallback_count == 1
+    assert budget.original_withheld_bytes == _serialized_size(raw)[0]
+    assert len(visible.encode()) <= budget.evidence_bytes <= 1400
+
+
+def test_discovery_admission_exact_limits_and_legacy_identity():
+    raw = text_result("x" * 4000 + "\n" + "\n".join(f"[{i}] https://example.com/{i}" for i in range(10)))
+    context = {"server_name": "perplexity", "tool_name": "perplexity_search"}
+    budget = ResearchToolResultBudget(1400, 1600)
+    first = budget.admit(raw, **context)
+    assert first.structuredContent is None and first.meta is None
+    assert budget.evidence_bytes == _serialized_size(first)[0]
+    assert json.loads(first.content[0].text)["sha256"] == _serialized_size(raw)[1]
+    second = budget.admit(raw, **context)
+    assert "discovery_only" not in second.content[0].text
+    assert budget.evidence_bytes <= 1600 and _serialized_size(second)[0] <= 512
+    assert "discovery_only" not in ResearchToolResultBudget(1400, 1600).admit(raw).content[0].text
+    small = text_result("small")
+    assert budget.admit(small, **context) is small
+
+
+@pytest.mark.asyncio
+async def test_discovery_shared_parallel_budget():
+    raw = text_result("x" * 4000 + "\n[1] https://example.com/a")
+    budget = ResearchToolResultBudget(1400, 2000)
+    servers = [server_for(raw) for _ in range(8)]
+    for server in servers:
+        budget.wrap(server, "perplexity")
+    await asyncio.gather(*(sdk_output(server, "perplexity_ask") for server in servers))
+    assert 0 < budget.evidence_bytes <= 2000
+    assert budget.fallback_count + budget.notice_count == 8
+
+
+@pytest.mark.parametrize("case", ["error", "image", "wrong_server", "wrong_tool", "large", "tight", "exhausted"])
+def test_discovery_ineligible_cases_remain_refusals(case):
+    raw = text_result("x" * (140000 if case == "large" else 4000) + "\n[1] https://example.com/a",
+                      isError=case == "error")
+    if case == "image":
+        raw.content.append(ImageContent(type="image", data="abc", mimeType="image/png"))
+    budget = ResearchToolResultBudget(512 if case == "tight" else 1400, 2000)
+    if case == "exhausted":
+        budget.evidence_bytes = 2000
+    output = budget.admit(raw, server_name="firecrawl" if case == "wrong_server" else "perplexity",
+                          tool_name="perplexity_reason" if case == "wrong_tool" else "perplexity_ask")
+    assert "discovery_only" not in output.content[0].text
+    assert _serialized_size(output)[0] <= 512
+    assert budget.fallback_count == 0
+
+
+def test_discovery_exact_fit_and_trailing_record_removal():
+    raw = text_result("x" * 4000 + "\n[1] https://example.com/a\n[2] https://example.com/b")
+    context = {"server_name": "perplexity", "tool_name": "perplexity_ask"}
+    first = ResearchToolResultBudget(2000, 2000).admit(raw, **context)
+    size = _serialized_size(first)[0]
+    exact = ResearchToolResultBudget(size, size)
+    assert len(json.loads(exact.admit(raw, **context).content[0].text)["sources"]) == 2
+    assert exact.evidence_bytes == size
+    tight = ResearchToolResultBudget(size - 1, size - 1)
+    note = json.loads(tight.admit(raw, **context).content[0].text)
+    assert len(note["sources"]) == 1 and note["truncated"] is True
+    assert tight.evidence_bytes < size

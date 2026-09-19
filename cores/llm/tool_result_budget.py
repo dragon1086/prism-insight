@@ -48,6 +48,8 @@ class ResearchToolResultBudget:
         self.evidence_bytes = 0
         self.notice_bytes = 0
         self.notice_count = 0
+        self.fallback_count = 0
+        self.original_withheld_bytes = 0
 
     def refuse(self, reason: str, *, is_error: bool = True,
                size: int | None = None, digest: str | None = None):
@@ -67,7 +69,32 @@ class ResearchToolResultBudget:
         self.notice_count += 1
         return result
 
-    def admit(self, result: Any):
+    def _discovery(self, result, size, digest):
+        from mcp.types import CallToolResult, TextContent
+
+        from prism_core.search_discovery_fallback import discovery_fallback
+
+        remaining = self.cumulative_evidence_bytes - self.evidence_bytes
+        if remaining <= 0:
+            return None
+        envelope = discovery_fallback([item.text for item in result.content], result.structuredContent,
+                                      size=size, digest=digest)
+        if envelope is None:
+            return None
+        while envelope["sources"]:
+            fresh = CallToolResult(content=[TextContent(type="text", text=json.dumps(envelope, separators=(",", ":")))],
+                                   isError=False)
+            visible_size, _ = _serialized_size(fresh)
+            if visible_size <= min(self.per_result_bytes, remaining):
+                self.evidence_bytes += visible_size
+                self.fallback_count += 1
+                self.original_withheld_bytes += size
+                return fresh
+            envelope["sources"].pop()
+            envelope["truncated"] = True
+        return None
+
+    def admit(self, result: Any, *, server_name: str | None = None, tool_name: str | None = None):
         from mcp.types import CallToolResult
 
         is_error = True
@@ -82,6 +109,10 @@ class ResearchToolResultBudget:
                 reason = "non_text_requires_prefetch"
             elif size > self.per_result_bytes:
                 reason = "result_limit"
+                if server_name == "perplexity" and tool_name in DIRECT_RESEARCH_TOOLS["perplexity"]:
+                    fallback = self._discovery(result, size, digest)
+                    if fallback is not None:
+                        return fallback
             elif self.evidence_bytes + size > self.cumulative_evidence_bytes:
                 reason = "run_evidence_limit"
             else:
@@ -112,6 +143,6 @@ class ResearchToolResultBudget:
                 result = await original(tool_name, arguments)
             except Exception:  # noqa: BLE001 - external tool exceptions must not leak secrets
                 return self.refuse("tool_call_failed")
-            return self.admit(result)
+            return self.admit(result, server_name=server_name, tool_name=tool_name)
 
         server.call_tool = guarded_call_tool

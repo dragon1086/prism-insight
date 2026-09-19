@@ -63,7 +63,8 @@ jobs:
             tests/test_source_observation_quality.py tests/test_tradingview_collection.py \
             tests/test_tradingview_transport.py tests/test_tradingview_credentials.py \
             tests/test_filing_catalog.py tests/test_tradingview_document_discovery.py \
-            tests/test_dart_public_filings.py tests/test_probe_dart_filings.py -q
+            tests/test_dart_public_filings.py tests/test_probe_dart_filings.py \
+            tests/test_validate_dart_cohort.py tests/test_search_discovery_fallback.py -q
           python -m pytest tests/test_screening_price_evidence.py tests/test_screening_orchestrator_rr_contract.py tests/test_agent_fit_score_constant_tripwire.py -q
           python -m pytest tests/test_agent_lazy_broker_imports.py -q
           python -m pytest tests/test_agent_virtual_initialization.py \

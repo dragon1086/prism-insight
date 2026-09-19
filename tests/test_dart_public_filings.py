@@ -56,6 +56,208 @@ def cover(record):
 BODY = '<h2>연결재무상태표</h2><table><tr><td>자산총계</td><td>1,000</td></tr><tr><td>부채총계</td><td>300</td></tr></table>'
 
 
+EDITIONS = [
+    ('20260619000667', '[정정]사업', '2025.12', '2026-06-19'),
+    ('20260324000835', '[정정]사업', '2025.12', '2026-03-24'),
+    ('20260313001191', '사업', '2025.12', '2026-03-13'),
+]
+
+
+def family(records):
+    return '<select id="family">' + ''.join(
+        f'<option value="rcpNo={rid}">{submitted.replace("-", ".")} {kind}보고서</option>'
+        for rid, kind, _, submitted in records) + '</select>'
+
+
+def editions_run(records=None, mutate=None, **kwargs):
+    records = records or [RECORDS[0], *EDITIONS]
+    def handler(request):
+        rid = request.url.params.get('rcpNo')
+        record = next((r for r in records if r[0] == rid), None)
+        if request.method == 'POST':
+            body = catalog(records)
+        elif request.url.path.endswith('main.do'):
+            body = main(rid) + (family(EDITIONS) if rid in {r[0] for r in EDITIONS} else '')
+        elif request.url.params['eleId'] == '0':
+            clean = (rid, record[1].replace('[정정]', ''), record[2],
+                     '2026-03-13' if rid in {r[0] for r in EDITIONS} else record[3])
+            body = cover(clean)
+        else:
+            body = BODY
+        return httpx.Response(200, text=mutate(request, body) if mutate else body)
+    return asyncio.run(collect_with_transport(handler, **kwargs))
+
+
+def test_three_edition_family_preserves_catalog_publication():
+    result = editions_run()
+    assert result['status'] == 'COMPLETE_WITHIN_QUERY'
+    assert result['selection']['annual_supplement_id'] == EDITIONS[0][0]
+    rows = {r['receipt_id']: r for r in result['filings']}
+    assert rows[EDITIONS[0][0]]['submitted_date'] == '2026-06-19'
+    assert rows[EDITIONS[0][0]]['cover_submitted_date'] == '2026-03-13'
+    assert rows[EDITIONS[0][0]]['amendment_of'] == EDITIONS[1][0]
+    assert rows[EDITIONS[1][0]]['amendment_of'] == EDITIONS[2][0]
+
+
+def test_official_first_family_placeholder_for_original_and_three_editions():
+    def mutate(req, body):
+        if not req.url.path.endswith('main.do'):
+            return body
+        if req.url.params['rcpNo'] == RECORDS[0][0]:
+            body += family([RECORDS[0]])
+        return body.replace('<select id="family">',
+                            '<select id="family"><option value="null"> +본문선택+ </option>')
+    result = editions_run(mutate=mutate)
+    assert result['status'] == 'COMPLETE_WITHIN_QUERY'
+    assert result['selection']['primary_id'] == RECORDS[0][0]
+    assert result['selection']['annual_supplement_id'] == EDITIONS[0][0]
+    assert all(not r['lineage_errors'] for r in result['filings'])
+
+
+@pytest.mark.parametrize('placeholder', [
+    '<option value="null">+본문선택+</option>' * 2,
+    '<option value="">+본문선택+</option>',
+    '<option value="null">다른 선택</option>',
+])
+def test_family_rejects_noncanonical_or_duplicate_placeholder(placeholder):
+    result = editions_run(mutate=lambda req, body: body.replace(
+        '<select id="family">', '<select id="family">' + placeholder))
+    assert result['selection']['primary_id'] is None
+    assert result['status'] == 'PARTIAL'
+
+
+def test_family_rejects_placeholder_after_edition():
+    result = editions_run(mutate=lambda req, body: body.replace(
+        '</select>', '<option value="null">+본문선택+</option></select>'))
+    assert result['selection']['primary_id'] is None
+
+
+@pytest.mark.parametrize('current', [False, True])
+def test_unknown_family_guards_current_but_retains_newer_primary(current):
+    records = [RECORDS[0], *EDITIONS]
+    if current:
+        records[0] = (RECORDS[0][0], '[정정]반기', *RECORDS[0][2:])
+    result = editions_run(records, lambda req, body: body.split('<select')[0])
+    assert result['status'] == 'PARTIAL'
+    assert result['selection']['primary_id'] == (None if current else RECORDS[0][0])
+    assert result['selection']['annual_supplement_id'] is None
+
+
+def test_old_unread_correction_does_not_suppress_current_primary():
+    result = editions_run(max_filings=1)
+    assert result['selection']['primary_id'] == RECORDS[0][0]
+    assert result['status'] == 'PARTIAL'
+
+
+@pytest.mark.parametrize('case', ['duplicate', 'cycle', 'cross_period', 'cross_scope',
+                                  'same_day', 'missing_parent', 'future_cover', 'original_cover'])
+def test_family_adversarial_guards(case):
+    records = [RECORDS[0], *EDITIONS]
+    if case == 'missing_parent':
+        records.remove(EDITIONS[1])
+    def mutate(req, body):
+        rid = req.url.params.get('rcpNo')
+        if req.url.path.endswith('main.do') and rid == EDITIONS[0][0]:
+            if case == 'duplicate':
+                return body.replace('</select>', family(EDITIONS)[20:])
+            if case == 'cycle':
+                return body.replace(EDITIONS[2][0], EDITIONS[0][0])
+            if case == 'same_day':
+                return body.replace('2026.03.24', '2026.06.19')
+        if req.url.path.endswith('viewer.do'):
+            if case == 'cross_period' and rid == EDITIONS[1][0] and req.url.params['eleId'] == '0':
+                return body.replace('01월 01일', '02월 01일')
+            if case == 'cross_scope' and rid == EDITIONS[1][0] and req.url.params['eleId'] != '0':
+                return body.replace('연결재무상태표', '재무상태표')
+            if case == 'future_cover' and rid == EDITIONS[0][0]:
+                return body.replace('2026-03-13', '2026-07-01')
+            if case == 'original_cover' and rid == EDITIONS[2][0]:
+                return body.replace('2026-03-13', '2026-03-12')
+        return body
+    result = editions_run(records, mutate)
+    assert result['status'] == 'PARTIAL'
+    assert result['selection']['annual_supplement_id'] is None
+    rows = {r['receipt_id']: r for r in result['filings']}
+    assert rows[EDITIONS[0][0]]['lineage_verified'] is False
+    if case in {'duplicate', 'cycle', 'cross_period', 'future_cover', 'original_cover'}:
+        assert result['selection']['primary_id'] is None
+    else:
+        assert result['selection']['primary_id'] == RECORDS[0][0]
+
+
+def test_future_family_edition_is_not_predecessor():
+    records = [RECORDS[0], *EDITIONS[1:]]
+    result = editions_run(records)
+    assert result['status'] == 'COMPLETE_WITHIN_QUERY'
+    row = next(r for r in result['filings'] if r['receipt_id'] == EDITIONS[1][0])
+    assert row['amendment_of'] == EDITIONS[2][0]
+    assert result['selection']['annual_supplement_id'] == EDITIONS[1][0]
+
+
+def test_original_family_integrity_conflict_is_not_ignored():
+    result = editions_run(mutate=lambda req, body: body.replace(
+        '2026.03.13 사업보고서', '2026.03.12 사업보고서')
+        if req.url.path.endswith('main.do') and req.url.params['rcpNo'] == EDITIONS[2][0] else body)
+    assert result['selection']['primary_id'] is None
+    assert result['status'] == 'PARTIAL'
+
+
+def test_old_fourteen_row_catalog_body_cap_preserves_newer_primary():
+    old = [(f'2025031800{i:04}', '[정정]사업', '2024.12', '2025-03-18') for i in range(13)]
+    result = editions_run([RECORDS[0], *old], max_filings=1)
+    assert result['selection']['primary_id'] == RECORDS[0][0]
+    assert len(result['selection']['unresolved_older_corrections']) == 13
+    assert result['status'] == 'PARTIAL'
+
+
+def test_current_unread_correction_cannot_fall_back():
+    records = [(RECORDS[0][0], '[정정]반기', *RECORDS[0][2:]), *EDITIONS]
+    result = editions_run(records, lambda req, body: '<p>Unavailable</p>'
+                          if req.url.path.endswith('viewer.do') and req.url.params['rcpNo'] == RECORDS[0][0] else body)
+    assert result['selection']['primary_id'] is None
+    assert result['selection']['annual_supplement_id'] is None
+
+
+@pytest.mark.parametrize('prefix, expected', [
+    ('[첨부정정]', 'attachment'), ('[기재정정]', 'body'),
+    ('[정정]', 'body'), ('[기타첨부정정]', 'unknown'), ('', None),
+])
+def test_exact_catalog_correction_role(prefix, expected):
+    markup = catalog().replace('반기보고서',
+        f'<span title="본 보고서명으로 이미 제출된 보고서의 첨부내용이 변경되어 제출된 것임">{prefix}</span>반기보고서', 1)
+    assert parse_catalog_page(markup, CORP)['rows'][0]['correction_type'] == expected
+
+
+@pytest.mark.parametrize('current', [False, True])
+def test_attachment_gap_is_not_a_periodic_edition_or_financial_slot(current):
+    attachment = ('20260910000001', '[첨부정정]반기' if current else '[첨부정정]사업',
+                  '2026.06' if current else '2025.12', '2026-09-10')
+    records = [attachment, RECORDS[0], EDITIONS[-1]]
+    requested = []
+    def mutate(req, body):
+        requested.append(req.url.params.get('rcpNo'))
+        if req.method == 'POST':
+            return body.replace('[첨부정정]', '<span title="본 보고서명으로 이미 제출된 보고서의 첨부내용이 변경되어 제출된 것임">[첨부정정]</span>')
+        if req.url.params.get('rcpNo') == attachment[0]:
+            # Real attachment documents expose audit/charter nodes and a
+            # periodic-family selector that intentionally excludes this ID.
+            return main(attachment[0]).replace('반기보고서', '감사보고서') + family(EDITIONS)
+        return body
+    result = editions_run(records, mutate, max_filings=2)
+    assert attachment[0] not in requested
+    assert result['status'] == 'PARTIAL'
+    assert result['selection']['primary_id'] == (None if current else RECORDS[0][0])
+    assert result['selection']['annual_supplement_id'] is None
+    assert result['selection']['attachment_gaps'] == [attachment[0]]
+    rows = {r['receipt_id']: r for r in result['filings']}
+    assert rows[attachment[0]]['body_status'] == 'unread'
+    assert rows[attachment[0]]['amendment_of'] is None
+    assert rows[attachment[0]]['family_members'] == []
+    assert rows[attachment[0]]['errors'] == ['ATTACHMENT_CONTENT_NOT_ACQUIRED']
+    assert rows[EDITIONS[-1][0]]['body_status'] == 'available'
+    assert result['metrics']['calls'] == 7
+
+
 def run(mutator=None, **kwargs):
     requests = []
     clients = []

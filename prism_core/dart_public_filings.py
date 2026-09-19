@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from datetime import date, datetime, timezone
+from itertools import pairwise
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 from zoneinfo import ZoneInfo
 
@@ -104,6 +105,9 @@ def parse_catalog_page(html, corp_code):
         label = re.fullmatch(r'(?:\[[^\]]*정정[^\]]*\]\s*)?(사업보고서|반기보고서|분기보고서)\s*\((\d{4})\.(\d{2})\)', title)
         if not label or not 1 <= int(label[3]) <= 12:
             _fail('CATALOG_KIND_OR_PERIOD_INVALID')
+        prefix = re.match(r'^\[[^\]]+\]', title)
+        correction_type = ({'[첨부정정]': 'attachment', '[기재정정]': 'body', '[정정]': 'body'}
+                           .get(prefix[0], 'unknown') if prefix else None)
         try:
             submitted = date.fromisoformat(_text(cells[4]).replace('.', '-'))
         except ValueError:
@@ -111,7 +115,8 @@ def parse_catalog_page(html, corp_code):
         rows.append({'ordinal': int(_text(cells[0])), 'receipt_id': receipt,
                      'source_url': url, 'display_name': _text(cells[1]),
                      'kind': _KINDS[label[1]], 'report_period_label': f'{label[2]}.{label[3]}',
-                     'submitted_date': submitted, 'is_correction': '정정' in title})
+                     'submitted_date': submitted, 'is_correction': correction_type is not None,
+                     'correction_type': correction_type})
     ids = [r['receipt_id'] for r in rows]
     ordinals = [r['ordinal'] for r in rows]
     expected = list(range((page - 1) * 100 + 1, min(page * 100, total) + 1))
@@ -339,6 +344,88 @@ def _provenance(body, node):
             'preview': _text(_tree(body))[:1200], 'preview_not_complete': True}
 
 
+def _family(html, row):
+    """Literal official edition evidence only; never attachment or receipt order."""
+    selectors = _tree(html).xpath('//select[@id="family"]')
+    if not selectors:
+        _fail('FAMILY_MISSING')
+    if len(selectors) != 1:
+        _fail('FAMILY_INTEGRITY_CONFLICT')
+    options = selectors[0].xpath('./option')
+    # Official UI prompt is not an edition. Accept it only once, first, with
+    # the observed literal value and whitespace-normalized label.
+    if (options and options[0].get('value') == 'null'
+            and _text(options[0]) == '+본문선택+'):
+        options = options[1:]
+    if not 1 <= len(options) <= 100:
+        _fail('FAMILY_INTEGRITY_CONFLICT')
+    members = []
+    for option in options:
+        value = re.fullmatch(r'rcpNo=(\d{14})', option.get('value', ''))
+        label = re.fullmatch(r'(\d{4}\.\d{2}\.\d{2})\s+(\[정정\]\s*)?(사업보고서|반기보고서|분기보고서)', _text(option))
+        if not value or not label:
+            _fail('FAMILY_INTEGRITY_CONFLICT')
+        try:
+            submitted = date.fromisoformat(label[1].replace('.', '-'))
+        except ValueError:
+            _fail('FAMILY_INTEGRITY_CONFLICT')
+        members.append({'receipt_id': value[1], 'submitted_date': submitted.isoformat(),
+                        'kind': _KINDS[label[3]], 'is_correction': bool(label[2])})
+    if (len({m['receipt_id'] for m in members}) != len(members)
+            or any(m['kind'] != row['kind'] for m in members)
+            or members[-1]['is_correction']
+            or any(not m['is_correction'] for m in members[:-1])):
+        _fail('FAMILY_INTEGRITY_CONFLICT')
+    dates = [m['submitted_date'] for m in members]
+    if any(a < b for a, b in pairwise(dates)):
+        _fail('FAMILY_INTEGRITY_CONFLICT')
+    current = next((m for m in members if m['receipt_id'] == row['receipt_id']), None)
+    if (current is None or current['submitted_date'] != row['submitted_date'].isoformat()
+            or current['is_correction'] != row['is_correction']):
+        _fail('FAMILY_INTEGRITY_CONFLICT')
+    if len(set(dates)) != len(dates):
+        _fail('FAMILY_SAME_DAY_UNRESOLVED')
+    return members
+
+
+def _resolve_lineage(rows):
+    by_id = {row['receipt_id']: row for row in rows}
+    for row in rows:
+        members = row.get('family_members', [])
+        if row.get('correction_type') != 'body' or not members:
+            continue
+        index = next(i for i, m in enumerate(members) if m['receipt_id'] == row['receipt_id'])
+        parent_evidence = members[index + 1]
+        parent = by_id.get(parent_evidence['receipt_id'])
+        if parent is None:
+            row['lineage_errors'].append('FAMILY_PARENT_NOT_ACQUIRED')
+            continue
+        if (parent['submitted_date'].isoformat() != parent_evidence['submitted_date']
+                or parent['kind'] != parent_evidence['kind']
+                or parent['is_correction'] != parent_evidence['is_correction']):
+            row['lineage_errors'].append('FAMILY_INTEGRITY_CONFLICT')
+            continue
+        if not all(r.get('scope_verified') and r.get('body_status') == 'available' for r in (row, parent)):
+            row['lineage_errors'].append('FAMILY_PARENT_OR_BODY_UNVERIFIED')
+            continue
+        if (any(row[k] != parent[k] for k in ('kind', 'period_start', 'period_end', 'scope'))
+                or row['cover_submitted_date'].isoformat() not in {m['submitted_date'] for m in members}
+                or 'FAMILY_INTEGRITY_CONFLICT' in parent.get('lineage_errors', [])):
+            row['lineage_errors'].append('FAMILY_INTEGRITY_CONFLICT')
+            continue
+        row['amendment_of'] = parent['receipt_id']
+
+    # An immediate edge is insufficient when an ancestor remains unresolved.
+    def verified(row, seen):
+        if not row['is_correction']:
+            return True
+        if row['receipt_id'] in seen or not row.get('amendment_of'):
+            return False
+        return verified(by_id[row['amendment_of']], seen | {row['receipt_id']})
+    for row in rows:
+        row['lineage_verified'] = verified(row, set())
+
+
 async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, scope,
                                        client_factory=None, max_pages=3, max_filings=8,
                                        max_calls=28, timeout_seconds=90):
@@ -422,20 +509,36 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                     break
             for row in rows:
                 row.update(period_start=None, period_end=None, scope=None, body_status='unread',
-                           scope_verified=False, sections={}, errors=[], body_coverage='selected_sections')
-            ordered = sorted(rows, key=lambda r: (r['report_period_label'], r['submitted_date']), reverse=True)
+                           scope_verified=False, sections={}, errors=[], body_coverage='selected_sections',
+                           cover_submitted_date=None, amendment_of=None, family_members=[], lineage_errors=[])
+                if row['correction_type'] == 'attachment':
+                    row['errors'].append('ATTACHMENT_CONTENT_NOT_ACQUIRED')
+            # Attachment amendments may contain material audit/charter changes,
+            # but are not whole periodic financial-body editions. Preserve their
+            # explicit gaps without spending periodic-body acquisition slots.
+            ordered = sorted((r for r in rows if r['correction_type'] != 'attachment'),
+                             key=lambda r: (r['report_period_label'], r['submitted_date']), reverse=True)
             for row in ordered[:max_filings]:
                 try:
-                    nodes = parse_viewer_nodes(await request('GET', row['source_url']), row['receipt_id'], corp_code)
+                    main_html = await request('GET', row['source_url'])
+                    row['main_sha256'] = hashlib.sha256(main_html.encode('utf-8')).hexdigest()
+                    nodes = parse_viewer_nodes(main_html, row['receipt_id'], corp_code)
+                    try:
+                        row['family_members'] = _family(main_html, row)
+                    except _SourceError as exc:
+                        row['lineage_errors'].append(str(exc))
                     covers = [n for n in nodes if _compact(n['text']) in _KINDS]
                     if len(covers) != 1:
                         _fail('COVER_NODE_AMBIGUOUS')
                     body = await request('GET', covers[0]['viewer_url'])
                     meta = parse_cover_metadata(body)
-                    if (meta['kind'] != row['kind'] or meta['submitted_date'] != row['submitted_date']
+                    cover_date = meta.pop('submitted_date')
+                    if (meta['kind'] != row['kind']
+                            or (cover_date > row['submitted_date'] if row['is_correction']
+                                else cover_date != row['submitted_date'])
                             or meta['period_end'].strftime('%Y.%m') != row['report_period_label']):
                         _fail('COVER_CATALOG_MISMATCH')
-                    row.update(meta, scope=scope)
+                    row.update(meta, scope=scope, cover_submitted_date=cover_date)
                     row['sections']['cover'] = _provenance(body, covers[0])
                     label = '연결재무제표' if scope == 'consolidated' else '재무제표'
                     sections = [n for n in nodes if re.fullmatch(r'\d+\.' + label, _compact(n['text']))]
@@ -462,30 +565,45 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
     except Exception:  # noqa: BLE001 -- public boundary must redact provider exceptions
         # CancelledError is a BaseException and deliberately propagates.
         out['errors'].append('ACQUISITION_FAILURE')
+    _resolve_lineage(rows)
     for row in rows:
+        if row['is_correction'] and not row['lineage_verified']:
+            continue
         candidates.append(FilingCandidate(row['receipt_id'], f'DART:{corp_code}', row['source_url'],
             row['kind'], row.get('period_start'), row.get('period_end'), row.get('scope'),
-            row['submitted_date'], True, None, row.get('body_status', 'unread')))
+            row['submitted_date'], True, row.get('amendment_of'), row.get('body_status', 'unread')))
     selection = select_periodic_filings(candidates, entity_id=f'DART:{corp_code}', scope=scope,
         decision_at=decision_at, market_timezone='Asia/Seoul', listing_complete=False)
     primary = next((r for r in rows if r['receipt_id'] == selection['primary_id']), None)
-    unresolved = [r for r in rows if r.get('body_status') != 'available' or r['submitted_date'] == cutoff]
-    corrections = [r['receipt_id'] for r in rows if r['is_correction'] and r['submitted_date'] <= cutoff]
-    blockers = [r['receipt_id'] for r in unresolved if primary is None
-                or not r.get('report_period_label') or r['report_period_label'] >= primary['report_period_label']]
+    corrections = [r for r in rows if r['is_correction'] and not r['lineage_verified']]
+    unresolved = [r for r in rows if r.get('body_status') != 'available'
+                  or r['submitted_date'] == cutoff or r in corrections
+                  or 'FAMILY_INTEGRITY_CONFLICT' in r.get('lineage_errors', [])]
+
+    def blocks(row, chosen):
+        if (chosen is None or 'FAMILY_INTEGRITY_CONFLICT' in row.get('lineage_errors', [])
+                or any(e in {'COVER_CATALOG_MISMATCH', 'MAIN_CORP_MISMATCH'} for e in row.get('errors', []))):
+            return True
+        if row.get('period_end') is not None and chosen.get('period_end') is not None:
+            return row['period_end'] >= chosen['period_end']
+        # A literal catalog month proves only strict oldness, never a day/period.
+        return not row.get('report_period_label') or row['report_period_label'] >= chosen['report_period_label']
+
+    blockers = [r['receipt_id'] for r in unresolved if blocks(r, primary)]
+    selection['unresolved_corrections'] = [r['receipt_id'] for r in corrections]
+    selection['attachment_gaps'] = [r['receipt_id'] for r in rows if r['correction_type'] == 'attachment']
+    selection['unresolved_older_corrections'] = [r['receipt_id'] for r in corrections if not blocks(r, primary)]
     annual = next((r for r in rows if r['receipt_id'] == selection['annual_supplement_id']), None)
-    if annual and any(r['kind'] == 'annual' and (
-            not r.get('report_period_label') or r['report_period_label'] >= annual['report_period_label'])
-            for r in unresolved):
+    if annual and any(r['kind'] == 'annual' and blocks(r, annual) for r in unresolved):
         selection['annual_supplement_id'] = None
         selection['reasons'].append('ANNUAL_SUPPLEMENT_ACQUISITION_INCOMPLETE')
     if not page_complete:
         blockers.append('PAGE_COVERAGE_UNCONFIRMED')
-    if blockers or corrections:
-        reason = 'CORRECTION_LINEAGE_UNRESOLVED' if corrections else 'ACQUISITION_INCOMPLETE'
+    if blockers:
+        reason = 'CORRECTION_LINEAGE_UNRESOLVED' if any(r['receipt_id'] in blockers for r in corrections) else 'ACQUISITION_INCOMPLETE'
         selection.update(status=reason, best_known_candidate_id=selection['latest_candidate_id'],
                          primary_id=None, latest_candidate_id=None, annual_supplement_id=None,
-                         latest_confirmed=False, blocked_by=sorted(set(blockers + corrections)))
+                         latest_confirmed=False, blocked_by=sorted(set(blockers)))
         selection['reasons'].append(reason)
     out['selection'] = selection
     out['coverage'].update(complete_within_query=page_complete, seen_count=len(rows))
