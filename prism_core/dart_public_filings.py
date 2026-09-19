@@ -1,0 +1,495 @@
+"""Bounded public DART acquisition; diagnostic metadata, never certified facts."""
+import asyncio
+import hashlib
+import json
+import re
+from datetime import date, datetime, timezone
+from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
+from zoneinfo import ZoneInfo
+
+import httpx
+from lxml import html as lhtml
+
+from prism_core.filing_catalog import FilingCandidate, select_periodic_filings
+
+BASE = 'https://dart.fss.or.kr'
+_ZONE = ZoneInfo('Asia/Seoul')
+_KINDS = {'사업보고서': 'annual', '반기보고서': 'interim', '분기보고서': 'quarterly'}
+_FIELDS = ('text', 'rcpNo', 'dcmNo', 'eleId', 'offset', 'length', 'dtd')
+_LIMIT = 2 * 1024 * 1024
+
+
+class _SourceError(ValueError):
+    """Only internal code-only failures may appear in diagnostic results."""
+
+
+def _fail(code):
+    raise _SourceError(code)
+
+
+def _tree(text):
+    try:
+        return lhtml.fromstring(text)
+    except (ValueError, TypeError, lhtml.etree.ParserError):
+        _fail('HTML_INVALID')
+
+
+def _text(node):
+    return ' '.join(node.text_content().split())
+
+
+def _compact(text):
+    return re.sub(r'\s+', '', text)
+
+
+def _corp_ids(text):
+    return set(re.findall(r"""openCorpInfoNew\(\s*['"](\d{8})['"]""", text))
+
+
+def _main_url(href):
+    url = urljoin(BASE, href)
+    parsed = urlsplit(url)
+    query = parse_qs(parsed.query)
+    if (parsed.scheme != 'https' or parsed.netloc != 'dart.fss.or.kr'
+            or parsed.path != '/dsaf001/main.do' or parsed.fragment
+            or set(query) != {'rcpNo'} or len(query['rcpNo']) != 1
+            or not re.fullmatch(r'\d{14}', query['rcpNo'][0])):
+        _fail('CATALOG_RECEIPT_URL_INVALID')
+    return url, query['rcpNo'][0]
+
+
+def parse_catalog_page(html, corp_code):
+    """Parse verified-shape rows. Query-wide completeness is assessed separately."""
+    root = _tree(html)
+    infos = root.xpath('//*[contains(concat(" ", normalize-space(@class), " "), " pageInfo ")]')
+    bodies = root.xpath('//tbody[@id="tbody"]')
+    if len(bodies) != 1:
+        _fail('CATALOG_STRUCTURE_INVALID')
+    placeholders = bodies[0].xpath('./tr')
+    cells = placeholders[0].xpath('./td') if len(placeholders) == 1 else []
+    normal_empty = (
+        len(cells) == 1 and not bodies[0].xpath('.//a|.//script|.//table')
+        and _compact(_text(cells[0])) == '조회결과가없습니다.')
+    if (not infos and normal_empty and cells[0].get('colspan') == '6'
+            and set(cells[0].get('class', '').split()) == {'no_data', 'end'}
+            and cells[0].get('align') == 'center'):
+        return {'rows': [], 'page': 1, 'total_pages': 1, 'total_count': 0,
+                'empty_basis': 'CANONICAL_NO_DATA_PLACEHOLDER'}
+    if len(infos) != 1:
+        _fail('CATALOG_PAGE_INFO_MISSING')
+    match = re.fullmatch(r'\[\s*(\d+)\s*/\s*(\d+)\s*\]\s*\[\s*총\s*([\d,]+)\s*건\s*\]', _text(infos[0]))
+    if not match:
+        _fail('CATALOG_PAGE_INFO_INVALID')
+    page, pages, total = (int(x.replace(',', '')) for x in match.groups())
+    if len(bodies) != 1 or not 0 <= page <= max(pages, 1):
+        _fail('CATALOG_STRUCTURE_INVALID')
+    if total == 0:
+        if page != 1 or pages != 1 or not normal_empty:
+            _fail('CATALOG_EMPTY_UNCONFIRMED')
+        return {'rows': [], 'page': page, 'total_pages': pages, 'total_count': 0}
+    if page < 1 or pages < 1:
+        _fail('CATALOG_PAGE_INFO_INVALID')
+    rows = []
+    for tr in bodies[0].xpath('./tr'):
+        cells = tr.xpath('./td')
+        if len(cells) != 6 or not _text(cells[0]).isdigit():
+            _fail('CATALOG_ROW_INVALID')
+        if _corp_ids(lhtml.tostring(cells[1], encoding='unicode')) != {corp_code}:
+            _fail('CATALOG_CORP_MISMATCH')
+        anchors = cells[2].xpath('.//a[@href]')
+        if len(anchors) != 1:
+            _fail('CATALOG_RECEIPT_MISSING')
+        url, receipt = _main_url(anchors[0].get('href'))
+        title = _text(anchors[0])
+        label = re.fullmatch(r'(?:\[[^\]]*정정[^\]]*\]\s*)?(사업보고서|반기보고서|분기보고서)\s*\((\d{4})\.(\d{2})\)', title)
+        if not label or not 1 <= int(label[3]) <= 12:
+            _fail('CATALOG_KIND_OR_PERIOD_INVALID')
+        try:
+            submitted = date.fromisoformat(_text(cells[4]).replace('.', '-'))
+        except ValueError:
+            _fail('CATALOG_DATE_INVALID')
+        rows.append({'ordinal': int(_text(cells[0])), 'receipt_id': receipt,
+                     'source_url': url, 'display_name': _text(cells[1]),
+                     'kind': _KINDS[label[1]], 'report_period_label': f'{label[2]}.{label[3]}',
+                     'submitted_date': submitted, 'is_correction': '정정' in title})
+    ids = [r['receipt_id'] for r in rows]
+    ordinals = [r['ordinal'] for r in rows]
+    expected = list(range((page - 1) * 100 + 1, min(page * 100, total) + 1))
+    if len(ids) != len(set(ids)) or ordinals != expected:
+        _fail('CATALOG_ROW_COVERAGE_INVALID')
+    if pages != max(1, (total + 99) // 100):
+        _fail('CATALOG_PAGE_COUNT_INVALID')
+    return {'rows': rows, 'page': page, 'total_pages': pages, 'total_count': total}
+
+
+def _lex_js(scripts):
+    """Mask strings/comments in one bounded pass; this is not a JS interpreter."""
+    if len(scripts) > _LIMIT:
+        _fail('VIEWER_SCRIPT_LIMIT')
+    code, uncommented, tokens, previous, i = [], [], [], 0, 0
+    while i < len(scripts):
+        start, char = i, scripts[i]
+        if char == chr(96):
+            _fail('VIEWER_TEMPLATE_UNSUPPORTED')
+        comment = scripts.startswith('//', i) or scripts.startswith('/*', i)
+        if char not in {'"', "'"} and not comment:
+            i += 1
+            continue
+        if scripts.startswith('//', i):
+            end = scripts.find('\n', i + 2)
+            i = len(scripts) if end < 0 else end
+        elif scripts.startswith('/*', i):
+            end = scripts.find('*/', i + 2)
+            if end < 0:
+                _fail('VIEWER_SCRIPT_UNTERMINATED')
+            i = end + 2
+        else:
+            i += 1
+            while i < len(scripts) and scripts[i] != char:
+                i += 2 if scripts[i] == '\\' else 1
+            if i >= len(scripts):
+                _fail('VIEWER_SCRIPT_UNTERMINATED')
+            i += 1
+        if len(tokens) >= 50_000:
+            _fail('VIEWER_SCRIPT_LIMIT')
+        value = scripts[start:i]
+        gap = scripts[previous:start]
+        mask = ' ' * len(value)
+        code.extend((gap, mask))
+        uncommented.extend((gap, mask if comment else value))
+        tokens.append((start, value))
+        previous = i
+    code.append(scripts[previous:])
+    uncommented.append(scripts[previous:])
+    return ''.join(code), ''.join(uncommented), tokens
+
+
+def _viewer_function_present(code, tokens):
+    # Only the observed viewDoc declaration is accepted. Never rescan a suffix
+    # for every function (adversarial nested declarations were quadratic).
+    declarations = list(re.finditer(r'\bfunction\s+viewDoc\b', code))
+    if len(declarations) != 1:
+        return False
+    starts = list(re.finditer(r'\bfunction\s{1,64}viewDoc\s{0,64}\([^()]{0,512}\)\s{0,64}\{', code))
+    if len(starts) != 1:
+        return False
+    start, end, depth = starts[0].end(), None, 1
+    for i in range(start, len(code)):
+        if code[i] == '{':
+            depth += 1
+        elif code[i] == '}':
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    return end is not None and any(
+        start <= position < end and re.fullmatch(r"""['"]/report/viewer\.do\??['"]""", value)
+        for position, value in tokens)
+
+
+def _node_assignments(code, uncommented, tokens):
+    """Inspect node property writes with bounded cursors, not suffix regexes."""
+    strings = {position: value for position, value in tokens if value.startswith(('"', "'"))}
+    assignments = []
+    for node in re.finditer(r'\bnode\d+\b', code):
+        cursor = node.end()
+        while cursor < len(code) and code[cursor].isspace():
+            cursor += 1
+        if cursor >= len(code) or code[cursor] not in '[.':
+            continue
+        dot = code[cursor] == '.'
+        if dot:
+            match = re.match(r'\.\w{1,64}', code[cursor:cursor + 65])
+            if not match:
+                _fail('VIEWER_NODE_UNSUPPORTED_WRITE')
+            end = cursor + match.end()
+            key = None
+        else:
+            end = code.find(']', cursor + 1, cursor + 66)
+            if end < 0 or '[' in code[cursor + 1:end]:
+                _fail('VIEWER_NODE_UNSUPPORTED_WRITE')
+            match = re.fullmatch(r"""\[\s{0,16}['"](\w{1,32})['"]\s{0,16}\]""", uncommented[cursor:end + 1])
+            if not match:
+                _fail('VIEWER_NODE_UNSUPPORTED_WRITE')
+            key = match[1]
+            end += 1
+        cursor = end
+        while cursor < len(code) and code[cursor].isspace():
+            cursor += 1
+        op = re.match(r'[+\-*/%&|^!?<>=~]{1,8}', code[cursor:cursor + 8])
+        if op is None:
+            continue
+        operator = op.group()
+        if '=' not in operator and operator not in {'++', '--'}:
+            continue
+        if dot or operator != '=':
+            _fail('VIEWER_NODE_UNSUPPORTED_WRITE')
+        if key not in _FIELDS:
+            continue
+        cursor += 1
+        while cursor < len(uncommented) and uncommented[cursor].isspace():
+            cursor += 1
+        literal = strings.get(cursor)
+        if literal is None:
+            _fail('VIEWER_NODE_NONLITERAL')
+        end = cursor + len(literal)
+        while end < len(uncommented) and uncommented[end].isspace():
+            end += 1
+        if end >= len(uncommented) or uncommented[end] != ';':
+            _fail('VIEWER_NODE_NONLITERAL')
+        assignments.append((node.group(), key, literal))
+    return assignments
+
+
+def parse_viewer_nodes(html, receipt_id, corp_code):
+    """Read literal records without executing JS; DART reuses node variables."""
+    if _corp_ids(html) != {corp_code}:
+        _fail('MAIN_CORP_MISMATCH')
+    scripts = '\n'.join(_tree(html).xpath('//script/text()'))
+    code, uncommented, tokens = _lex_js(scripts)
+    if not _viewer_function_present(code, tokens):
+        _fail('VIEWER_FUNCTION_UNCONFIRMED')
+    assignments = _node_assignments(code, uncommented, tokens)
+    records, current, variable = [], None, None
+    for var, key, literal in assignments:
+        if key not in _FIELDS:
+            continue
+        if key == 'text':
+            if current is not None:
+                records.append(current)
+            current, variable = {}, var
+        if current is None or variable != var or key in current:
+            _fail('VIEWER_NODE_AMBIGUOUS')
+        try:
+            value = json.loads(literal)
+        except (ValueError, TypeError):
+            _fail('VIEWER_NODE_NONLITERAL')
+        if not isinstance(value, str):
+            _fail('VIEWER_NODE_NONLITERAL')
+        current[key] = value
+    if current is not None:
+        records.append(current)
+    if not records:
+        _fail('VIEWER_NODES_MISSING')
+    identities = set()
+    for record in records:
+        if set(record) != set(_FIELDS) or record['rcpNo'] != receipt_id:
+            _fail('VIEWER_NODE_INCOMPLETE')
+        for key in ('rcpNo', 'dcmNo', 'eleId', 'offset', 'length'):
+            if not re.fullmatch(r'\d{1,14}', record[key]) or int(record[key]) > (10**14 if key == 'rcpNo' else 100_000_000):
+                _fail('VIEWER_NODE_RANGE_INVALID')
+        if int(record['length']) == 0 or not re.fullmatch(r'dart\d{1,2}\.xsd', record['dtd']):
+            _fail('VIEWER_NODE_RANGE_INVALID')
+        identity = (record['dcmNo'], record['eleId'])
+        if identity in identities:
+            _fail('VIEWER_NODE_DUPLICATE')
+        identities.add(identity)
+        record['viewer_url'] = BASE + '/report/viewer.do?' + urlencode({k: record[k] for k in _FIELDS if k != 'text'})
+    return records
+
+
+def _dates(text):
+    values = re.findall(r'(?<!\d)(\d{4})\s*(?:년|[-.])\s*(\d{1,2})\s*(?:월|[-.])\s*(\d{1,2})(?!\d)\s*일?', text)
+    try:
+        return [date(*map(int, v)) for v in values]
+    except ValueError:
+        _fail('COVER_DATE_INVALID')
+
+
+def parse_cover_metadata(html):
+    root = _tree(html)
+    headings = {_KINDS[k] for k in _KINDS if any(_compact(_text(n)) == k for n in root.xpath('//h1|//h2|//p|//td'))}
+    if len(headings) != 1:
+        _fail('COVER_KIND_AMBIGUOUS')
+    rows = [[_text(c) for c in r.xpath('./td|./th')] for r in root.xpath('//tr')]
+    starts = [i for i, r in enumerate(rows) if r and _compact(r[0]) == '사업연도']
+    if len(starts) != 1:
+        _fail('COVER_PERIOD_MISSING')
+    i = starts[0]
+    period_rows = rows[i:i + 2]
+    start = [d for r in period_rows if '부터' in _compact(''.join(r)) for d in _dates(' '.join(r))]
+    end = [d for r in period_rows if '까지' in _compact(''.join(r)) for d in _dates(' '.join(r))]
+    names = [r[1:] for r in rows if r and _compact(r[0]).rstrip(':') == '회사명']
+    submitted = [d for r in rows if r and _compact(r[0]) == '한국거래소귀중' for d in _dates(' '.join(r[1:]))]
+    if len(start) != 1 or len(end) != 1 or start[0] > end[0] or len(names) != 1 or not ' '.join(names[0]).strip() or len(submitted) != 1:
+        _fail('COVER_METADATA_AMBIGUOUS')
+    if end[0] > submitted[0]:
+        _fail('COVER_PERIOD_AFTER_PUBLICATION')
+    return {'kind': headings.pop(), 'period_start': start[0], 'period_end': end[0],
+            'submitted_date': submitted[0], 'legal_name': ' '.join(names[0])}
+
+
+def _scope_body(html, scope):
+    root = _tree(html)
+    title = '연결재무상태표' if scope == 'consolidated' else '재무상태표'
+    headings = [_compact(_text(n)) for n in root.xpath('//h1|//h2|//h3|//p|//caption|//td')]
+    if title not in headings:
+        _fail('SCOPE_BODY_UNVERIFIED')
+    for table in root.xpath('//table'):
+        text = _compact(_text(table))
+        cells = [_compact(_text(n)) for n in table.xpath('.//td|.//th')]
+        if '자산' in text and '부채' in text and any(re.fullmatch(r'\(?-?\d[\d,.]*\)?', c) for c in cells):
+            return
+    _fail('SCOPE_FINANCIAL_TABLE_MISSING')
+
+
+def _provenance(body, node):
+    return {'url': node['viewer_url'], 'tuple': {k: node[k] for k in _FIELDS if k != 'text'},
+            'utf8_bytes': len(body.encode('utf-8')), 'sha256': hashlib.sha256(body.encode('utf-8')).hexdigest(),
+            'preview': _text(_tree(body))[:1200], 'preview_not_complete': True}
+
+
+async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, scope,
+                                       client_factory=None, max_pages=3, max_filings=8,
+                                       max_calls=28, timeout_seconds=90):
+    """Return JSON-safe provenance for a finite query; never full HTML."""
+    now = datetime.now(timezone.utc)
+    try:
+        cutoff = decision_at.astimezone(_ZONE).date() if isinstance(decision_at, datetime) else None
+    except (ValueError, OverflowError):
+        raise ValueError('INVALID_ACQUISITION_POLICY') from None
+    if (not isinstance(corp_code, str) or not re.fullmatch(r'\d{8}', corp_code)
+            or not isinstance(decision_at, datetime) or decision_at.utcoffset() is None
+            or decision_at > now or type(start_date) is not date
+            or start_date > cutoff
+            or not isinstance(scope, str) or scope not in {'consolidated', 'standalone'}
+            or any(type(v) is not int or not 1 <= v <= cap for v, cap in ((max_pages, 5), (max_filings, 20), (max_calls, 64)))
+            or type(timeout_seconds) not in (int, float) or not 0 < timeout_seconds <= 180):
+        raise ValueError('INVALID_ACQUISITION_POLICY')
+    out = {'status': 'FAILED', 'query': {'corp_code': corp_code, 'decision_at': decision_at.isoformat(),
+            'start_date': start_date.isoformat(), 'end_date': cutoff.isoformat(), 'scope': scope},
+           'observed_at': now.isoformat(), 'coverage': {'complete_within_query': False,
+            'global_complete': False, 'expected_count': None, 'seen_count': 0}, 'filings': [],
+           'limitations': ['QUERY_WINDOW_ONLY', 'CURRENT_RETRIEVAL_NOT_HISTORICAL_SNAPSHOT',
+                          'DATE_ONLY_PUBLICATION', 'SELECTED_SECTIONS_NOT_FULL_DOCUMENT'],
+           'metrics': {'calls': 0, 'response_bytes': 0}, 'historical_version_verified': False,
+           'fact_validated': False, 'errors': []}
+    rows, candidates = [], []
+    page_complete, empty = False, False
+
+    async def acquire():
+        nonlocal page_complete, empty
+        factory = client_factory or httpx.AsyncClient
+        async with factory(timeout=15, follow_redirects=False, trust_env=False) as client:
+            async def request(method, url, **kwargs):
+                if out['metrics']['calls'] >= max_calls:
+                    _fail('CALL_BUDGET_EXHAUSTED')
+                if out['metrics']['response_bytes'] >= 4 * _LIMIT:
+                    _fail('RESPONSE_BYTES_EXCEEDED')
+                out['metrics']['calls'] += 1
+                try:
+                    client.cookies.clear()
+                    async with client.stream(method, url, headers={'Accept-Encoding': 'identity'}, **kwargs) as response:
+                        if response.status_code != 200:
+                            _fail('HTTP_STATUS_FAILURE')
+                        if response.headers.get('content-encoding', 'identity').lower() != 'identity':
+                            _fail('HTTP_ENCODING_REJECTED')
+                        body = bytearray()
+                        # MockTransport may supply an already-buffered response.
+                        chunks = response.aiter_bytes() if response.is_stream_consumed else response.aiter_raw()
+                        async for chunk in chunks:
+                            out['metrics']['response_bytes'] += len(chunk)
+                            if len(body) + len(chunk) > _LIMIT or out['metrics']['response_bytes'] > 4 * _LIMIT:
+                                _fail('RESPONSE_BYTES_EXCEEDED')
+                            body.extend(chunk)
+                        try:
+                            return body.decode('utf-8')
+                        except UnicodeDecodeError:
+                            _fail('HTTP_UTF8_INVALID')
+                except httpx.HTTPError:
+                    _fail('HTTP_TRANSPORT_FAILURE')
+            expected = None
+            for number in range(1, max_pages + 1):
+                data = {'currentPage': str(number), 'maxResults': '100', 'maxLinks': '10',
+                        'sort': 'date', 'series': 'desc', 'textCrpCik': corp_code, 'pageGubun': 'corp',
+                        'startDate': start_date.strftime('%Y%m%d'), 'endDate': cutoff.strftime('%Y%m%d'),
+                        'publicType': ['A001', 'A002', 'A003']}
+                page = parse_catalog_page(await request('POST', BASE + '/dsab001/searchCorp.ax', data=data), corp_code)
+                stamp = page['total_pages'], page['total_count']
+                if ((page['page'] != number and page['total_count'])
+                        or (expected is not None and expected != stamp)):
+                    _fail('CATALOG_PAGE_INCONSISTENT')
+                expected = stamp
+                out['coverage']['expected_count'] = page['total_count']
+                if any(not start_date <= r['submitted_date'] <= cutoff for r in page['rows']):
+                    _fail('CATALOG_DATE_OUTSIDE_QUERY')
+                if {r['receipt_id'] for r in rows} & {r['receipt_id'] for r in page['rows']}:
+                    _fail('CATALOG_DUPLICATE_RECEIPT')
+                rows.extend(page['rows'])
+                if number >= page['total_pages']:
+                    page_complete = len(rows) == page['total_count']
+                    empty = page_complete and not rows
+                    break
+            for row in rows:
+                row.update(period_start=None, period_end=None, scope=None, body_status='unread',
+                           scope_verified=False, sections={}, errors=[], body_coverage='selected_sections')
+            ordered = sorted(rows, key=lambda r: (r['report_period_label'], r['submitted_date']), reverse=True)
+            for row in ordered[:max_filings]:
+                try:
+                    nodes = parse_viewer_nodes(await request('GET', row['source_url']), row['receipt_id'], corp_code)
+                    covers = [n for n in nodes if _compact(n['text']) in _KINDS]
+                    if len(covers) != 1:
+                        _fail('COVER_NODE_AMBIGUOUS')
+                    body = await request('GET', covers[0]['viewer_url'])
+                    meta = parse_cover_metadata(body)
+                    if (meta['kind'] != row['kind'] or meta['submitted_date'] != row['submitted_date']
+                            or meta['period_end'].strftime('%Y.%m') != row['report_period_label']):
+                        _fail('COVER_CATALOG_MISMATCH')
+                    row.update(meta, scope=scope)
+                    row['sections']['cover'] = _provenance(body, covers[0])
+                    label = '연결재무제표' if scope == 'consolidated' else '재무제표'
+                    sections = [n for n in nodes if re.fullmatch(r'\d+\.' + label, _compact(n['text']))]
+                    if len(sections) != 1:
+                        _fail('SCOPE_NODE_AMBIGUOUS')
+                    body = await request('GET', sections[0]['viewer_url'])
+                    _scope_body(body, scope)
+                    row['sections']['financial_statements'] = _provenance(body, sections[0])
+                    row.update(body_status='available', scope_verified=True)
+                except _SourceError as exc:
+                    row.update(body_status='unavailable')
+                    row['errors'].append(str(exc))
+
+    try:
+        await asyncio.wait_for(acquire(), timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        out['errors'].append('TOTAL_TIMEOUT')
+    except _SourceError as exc:
+        out['errors'].append(str(exc))
+    except ValueError:
+        out['errors'].append('ACQUISITION_INVALID_RESPONSE')
+    except httpx.HTTPError:
+        out['errors'].append('HTTP_TRANSPORT_FAILURE')
+    except Exception:  # noqa: BLE001 -- public boundary must redact provider exceptions
+        # CancelledError is a BaseException and deliberately propagates.
+        out['errors'].append('ACQUISITION_FAILURE')
+    for row in rows:
+        candidates.append(FilingCandidate(row['receipt_id'], f'DART:{corp_code}', row['source_url'],
+            row['kind'], row.get('period_start'), row.get('period_end'), row.get('scope'),
+            row['submitted_date'], True, None, row.get('body_status', 'unread')))
+    selection = select_periodic_filings(candidates, entity_id=f'DART:{corp_code}', scope=scope,
+        decision_at=decision_at, market_timezone='Asia/Seoul', listing_complete=False)
+    primary = next((r for r in rows if r['receipt_id'] == selection['primary_id']), None)
+    unresolved = [r for r in rows if r.get('body_status') != 'available' or r['submitted_date'] == cutoff]
+    corrections = [r['receipt_id'] for r in rows if r['is_correction'] and r['submitted_date'] <= cutoff]
+    blockers = [r['receipt_id'] for r in unresolved if primary is None
+                or not r.get('report_period_label') or r['report_period_label'] >= primary['report_period_label']]
+    annual = next((r for r in rows if r['receipt_id'] == selection['annual_supplement_id']), None)
+    if annual and any(r['kind'] == 'annual' and (
+            not r.get('report_period_label') or r['report_period_label'] >= annual['report_period_label'])
+            for r in unresolved):
+        selection['annual_supplement_id'] = None
+        selection['reasons'].append('ANNUAL_SUPPLEMENT_ACQUISITION_INCOMPLETE')
+    if not page_complete:
+        blockers.append('PAGE_COVERAGE_UNCONFIRMED')
+    if blockers or corrections:
+        reason = 'CORRECTION_LINEAGE_UNRESOLVED' if corrections else 'ACQUISITION_INCOMPLETE'
+        selection.update(status=reason, best_known_candidate_id=selection['latest_candidate_id'],
+                         primary_id=None, latest_candidate_id=None, annual_supplement_id=None,
+                         latest_confirmed=False, blocked_by=sorted(set(blockers + corrections)))
+        selection['reasons'].append(reason)
+    out['selection'] = selection
+    out['coverage'].update(complete_within_query=page_complete, seen_count=len(rows))
+    out['status'] = ('EMPTY' if empty else 'COMPLETE_WITHIN_QUERY'
+                     if page_complete and not unresolved and not corrections else 'PARTIAL' if rows else 'FAILED')
+    out['filings'] = [{k: v.isoformat() if isinstance(v, date) else v for k, v in r.items()} for r in rows]
+    return out

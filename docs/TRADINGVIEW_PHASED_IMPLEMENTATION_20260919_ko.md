@@ -2,6 +2,11 @@
 
 ## 후속 갱신
 
+2026-09-20: 공개 조건에 근거한 TV 자동매매 입력 운영 판정은 NO-GO로 정리했다.
+상세 근거는 `TRADINGVIEW_USAGE_DECISION_20260920_ko.md`를 따른다. 직접 DART를 쓰는
+P4b 진단 수집 경로를 구현하여 실제 RF 정기공시 7건의 표지/연결재무 본문과 기본·보완 선택을
+확인했다. `DART_PUBLIC_FILING_ACQUISITION_20260920_ko.md` 참조. 정규 배치/BUY 연결은 미실행이다.
+
 P3b credential supplier와 P4a 시점 기준 공시 선택기/문서 탐색 메타데이터 보존을 추가 구현했다.
 최신 상세 상태는 `TRADINGVIEW_P3B_P4A_20260919_ko.md`와
 `TRADINGVIEW_CREDENTIAL_AND_FILING_CONTRACTS_20260919.md`를 따른다.
