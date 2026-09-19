@@ -1,5 +1,14 @@
 # TradingView 선택형 입력 품질: 단계별 구현 기록
 
+## 후속 갱신
+
+P3b credential supplier와 P4a 시점 기준 공시 선택기/문서 탐색 메타데이터 보존을 추가 구현했다.
+최신 상세 상태는 `TRADINGVIEW_P3B_P4A_20260919_ko.md`와
+`TRADINGVIEW_CREDENTIAL_AND_FILING_CONTRACTS_20260919.md`를 따른다.
+신규 115개 테스트를 포함한 연구/보고서 회귀 830개와 KR/US 공급자 회귀 46개 통과.
+실제 OAuth·전체 공식 공시 목록 수집·보고서/매매 입력 통합·운영 적용은 아직 완료하지 않았다.
+아래 P3b~P7 미완료 표기는 초기 기반 커밋 당시의 기록이며 위 최신 결과와 구분한다.
+
 ## 최신 사용자 요구
 
 OHLCV의 지연 표시만으로 TV를 부적합하다고 배제하지 않는다. KIS/yfinance도 포함하여
