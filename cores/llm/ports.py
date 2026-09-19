@@ -26,6 +26,9 @@ class LLMParams:
     parallel_tool_calls: Optional[bool] = None
     max_iterations: int = 10
     stop_sequences: tuple = ()
+    # Report-only opt-in: (per-result serialized UTF-8 bytes, admitted evidence
+    # bytes per run). These are conservative text-token bounds, NOT token counts.
+    report_research_tool_budget: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)

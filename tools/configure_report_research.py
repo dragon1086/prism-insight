@@ -12,7 +12,11 @@ from prism_core.report_research_prefetch import CONFIG_PATH, VERSION
 
 
 def configure(path, enabled, timeout_seconds=60, namespace="production", market_context_enabled=None,
-              validated_symbols=None):
+              validated_symbols=None, all_symbols=False):
+    if not isinstance(all_symbols, bool):
+        raise TypeError("all_symbols must be a boolean")
+    if all_symbols and validated_symbols is not None:
+        raise ValueError("all_symbols and validated_symbols are mutually exclusive")
     if not 1 <= timeout_seconds <= 60:
         raise ValueError("timeout_seconds must be 1..60")
     if not namespace or len(namespace) > 80:
@@ -36,7 +40,7 @@ def configure(path, enabled, timeout_seconds=60, namespace="production", market_
                "tradingview_status": "RIGHTS_UNCONFIRMED"}
     if validated_symbols is not None:
         payload["validated_symbols"] = validated_symbols
-    elif "validated_symbols" in existing:
+    elif not all_symbols and "validated_symbols" in existing:
         payload["validated_symbols"] = existing["validated_symbols"]
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, temporary = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
@@ -63,8 +67,11 @@ def main():
                         help="Enable market prefetch; otherwise preserve existing setting")
     market.add_argument("--disable-market-context", dest="market_context", action="store_false",
                         help="Explicitly disable market prefetch independently of research")
-    parser.add_argument("--validated-symbol", action="append", metavar="MARKET:SYMBOL",
-                        help="Limit enrichment to validated symbols, e.g. US:MU (repeatable)")
+    scope_options = parser.add_mutually_exclusive_group()
+    scope_options.add_argument("--validated-symbol", action="append", metavar="MARKET:SYMBOL",
+                               help="Limit enrichment to validated symbols, e.g. US:MU (repeatable)")
+    scope_options.add_argument("--all-symbols", action="store_true",
+                               help="Explicitly remove the symbol limit; omission preserves existing scope")
     args = parser.parse_args()
     scope = None
     if args.validated_symbol:
@@ -75,7 +82,8 @@ def main():
                 parser.error('--validated-symbol requires MARKET:SYMBOL')
             scope.setdefault(market, []).append(symbol)
     result = configure(args.path, args.enable, args.timeout_seconds, args.namespace,
-                       market_context_enabled=args.market_context, validated_symbols=scope)
+                       market_context_enabled=args.market_context, validated_symbols=scope,
+                       all_symbols=args.all_symbols)
     print(json.dumps(result))
 
 

@@ -76,7 +76,8 @@ def test_bad_source_not_usable(tmp_path, text, publication, expected):
 
 def test_unknown_publication_explicit(tmp_path):
     packet = run(tmp_path, Transport(publication=None))
-    assert '"published": "UNKNOWN"' in packet["section_notes"]["news_analysis"]
+    assert all(source['published'] == 'UNKNOWN' for source in
+               json.loads(packet["section_notes"]["news_analysis"])['sources'])
 
 
 def test_failure_safe_negative_cache(tmp_path):
@@ -225,7 +226,8 @@ def test_question_led_search_keeps_network_budget(tmp_path):
     transport = Transport()
     packet = run(tmp_path, transport)
     query = transport.calls[0][2]["query"]
-    assert "direct competitors" in query and "same period" in query
+    assert "competition" in query and "annual report" in query
+    assert "same-period" in packet["receipt"]["comparison_scope"]["questions"][1]
     assert len(transport.calls) == 3
     assert packet["receipt"]["comparison_scope"]["coverage"] == "UNVERIFIED_REQUIRES_SOURCE_REVIEW"
     assert not packet["news_usable"]

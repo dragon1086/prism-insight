@@ -1911,7 +1911,13 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
         )
 
         # Add execution time and metadata
+        from prism_core.snapshot_price_leaders import optional_snapshot_price_leaders
+        snapshot_price_leaders = optional_snapshot_price_leaders(
+            snapshot, prev_snapshot, (macro_context or {}).get("sector_map"),
+            prior_date=prev_date, source=market_data.source, trigger_mode=trigger_time,
+        )
         output_data["metadata"] = {
+            **({"snapshot_price_leaders": snapshot_price_leaders} if snapshot_price_leaders is not None else {}),
             **({"market_participation": market_participation} if market_participation else {}),
             "run_time": datetime.datetime.now().isoformat(),
             "trigger_mode": trigger_time,

@@ -104,14 +104,26 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
 
         # Optional research is gathered once before section/model retries.
         try:
-            from prism_core.report_research_prefetch import prefetch_report_research
-            research = await prefetch_report_research("KR", company_code, reference_date, company_name)
+            from prism_core.report_research_prefetch import (
+                company_research_context,
+                prefetch_report_research,
+            )
+            research = await prefetch_report_research(
+                "KR", company_code, reference_date, company_name,
+                company_context=company_research_context(prefetched, macro_context, company_code))
             if research:
                 prefetched["report_research"] = research
         except Exception:
             logger.warning("Optional report research unavailable; retaining existing sources")
 
         # 5. Get agents (with prefetched data)
+        from prism_core.report_insight_prefetch import (
+            enabled as insight_prefetch_enabled,
+        )
+        if insight_prefetch_enabled() and prefetched.get('report_research'):
+            from prism_core.report_insight_manifest import build_insight_manifest
+            prefetched['report_insight_manifest'] = build_insight_manifest(
+                'KR', company_code, reference_date, prefetched, macro_context)
         agents = get_agent_directory(company_name, company_code, reference_date, base_sections, language, prefetched_data=prefetched)
 
         # 6. Execute base analysis

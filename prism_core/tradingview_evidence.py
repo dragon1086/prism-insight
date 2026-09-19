@@ -56,6 +56,46 @@ def _row(payload):
     return result
 
 
+def _document_row(payload):
+    """Preserve discovery labels without deriving submission dates or periods."""
+    result = _row(payload)
+    identified = any(isinstance(result.get(key), str) and result[key].strip()
+                     for key in ("id", "title", "source_url", "url", "link"))
+    identified = identified or any(isinstance(view.get("id"), str) and view["id"].strip()
+                                   for view in result.get("views", []))
+    if not identified:
+        return {}  # Empty metadata/labels alone cannot create a document.
+    category = payload.get("category")
+    if isinstance(category, Mapping):
+        fields = {key: category[key] for key in ("id", "title")
+                  if isinstance(category.get(key), str) and category[key].strip()}
+        if fields:
+            result["category"] = fields
+    if type(payload.get("fiscal_year")) is int:
+        result["fiscal_year"] = payload["fiscal_year"]
+    if isinstance(payload.get("fiscal_period"), str):
+        result["fiscal_period"] = payload["fiscal_period"]
+    if isinstance(payload.get("status"), str):
+        result["provider_status"] = payload["status"]
+    symbols = payload.get("symbols")
+    if isinstance(symbols, list):
+        members = sorted({row["symbol"] for row in symbols[:100] if isinstance(row, Mapping)
+                          and isinstance(row.get("symbol"), str) and row["symbol"].strip()})
+        if members:
+            result["symbols"] = members
+        if len(symbols) > 100:
+            result["symbol_membership_truncated"] = True
+    return result
+
+
+def _document_catalog_metadata(payload):
+    fields = {"discovery_only": True, "official_listing_complete": False,
+              "publication_basis": "UNVERIFIED_PROVIDER_METADATA"}
+    if type(payload.get("total")) is int and payload["total"] >= 0:
+        fields["provider_total"] = payload["total"]
+    return fields
+
+
 def _text(ast):
     """Extract only text nodes/paragraphs, with bounded traversal and output."""
     parts, remaining = [], 6000
@@ -200,18 +240,27 @@ def normalize_evidence(tool, payload, is_error=False, requested_symbols=None):
             return finish("MALFORMED", "EXPECTED_ROW_LIST")
         if not rows:
             facts = {"returned_count": 0}
+            if name == "get_documents":
+                facts.update(_document_catalog_metadata(payload))
             if requested_symbols is not None:
                 facts.update(requested_count=len(set(requested_symbols)),
                              observed_symbols=[], missing_symbols=sorted(set(requested_symbols)))
             return finish("EMPTY", "RETURNED_EMPTY_NOT_PROOF_OF_NO_EVENTS", facts)
-        valid = [row for row in rows[:100] if isinstance(row, Mapping) and _row(row)]
+        normalize_row = _document_row if name == "get_documents" else _row
+        valid = [normalize_row(row) for row in rows[:100] if isinstance(row, Mapping) and normalize_row(row)]
         if not valid:
             return finish("MALFORMED", "NO_OBJECT_ROWS")
-        facts = {"rows": [_row(row) for row in valid], "returned_count": len(rows)}
+        facts = {"rows": valid, "returned_count": len(rows)}
         partial = len(valid) != len(rows)
+        if name == "get_documents":
+            facts.update(_document_catalog_metadata(payload))
+            partial = partial or facts.get("provider_total", len(rows)) != len(rows)
+            partial = partial or any(row.get("symbol_membership_truncated") for row in valid)
         if requested_symbols is not None:
             requested = set(requested_symbols)
             returned = {row.get("symbol") for row in valid if isinstance(row.get("symbol"), str)}
+            if name == "get_documents":
+                returned.update(symbol for row in valid for symbol in row.get("symbols", []))
             facts.update(requested_count=len(requested),
                          observed_symbols=sorted(requested & returned),
                          missing_symbols=sorted(requested - returned))

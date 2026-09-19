@@ -16,6 +16,7 @@ from typing import Any
 
 from cores.llm.mcp_registry import McpServerRegistry
 from cores.llm.ports import AgentSpec, LLMBackend, LLMParams, LLMResult
+from cores.llm.tool_result_budget import ResearchToolResultBudget
 
 # --- SDK import guard ---------------------------------------------------
 try:
@@ -290,6 +291,10 @@ class OpenAIAgentsBackend(LLMBackend):
             )
 
         started = time.monotonic()
+        research_budget = (
+            ResearchToolResultBudget(*spec.params.report_research_tool_budget)
+            if spec.params.report_research_tool_budget is not None else None
+        )
         logger.info(
             "[AGENT_LATENCY] agent=%s phase=start model=%s servers=%s",
             spec.name,
@@ -302,6 +307,10 @@ class OpenAIAgentsBackend(LLMBackend):
                     await stack.enter_async_context(build_mcp_server(srv_name, self._registry))
                     for srv_name in spec.mcp_servers
                 ]
+
+                if research_budget is not None:
+                    for server_name, server in zip(spec.mcp_servers, servers):
+                        research_budget.wrap(server, server_name)
 
                 agent = build_agent(spec, servers)
 
@@ -324,6 +333,12 @@ class OpenAIAgentsBackend(LLMBackend):
             spec.name,
             time.monotonic() - started,
         )
+        if research_budget is not None:
+            logger.info(
+                "[RESEARCH_TOOL_BUDGET] evidence_utf8_bytes=%s notice_utf8_bytes=%s notices=%s",
+                research_budget.evidence_bytes, research_budget.notice_bytes,
+                research_budget.notice_count,
+            )
 
         text = result.final_output if isinstance(result.final_output, str) else ""
         structured = result.final_output if spec.output_schema is not None else None

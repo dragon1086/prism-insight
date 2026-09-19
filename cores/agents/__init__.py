@@ -82,6 +82,9 @@ def get_agent_directory(company_name, company_code, reference_date, base_section
             if pf.get("report_research"):
                 from prism_core.report_research_context import apply_section_research
                 agent = apply_section_research(agent, section, pf, reference_date, language)
+            if pf.get('report_insight_manifest'):
+                from prism_core.report_research_context import apply_insight_manifest
+                agent = apply_insight_manifest(agent, section, pf)
             agents[section] = replace(agent, instruction=agent.instruction + report_time_contract(reference_date, language))
     
     return agents

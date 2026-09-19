@@ -32,6 +32,8 @@ async def _generate_agent_text(
     max_iterations: int,
 ) -> str:
     """Run one SDK-neutral report definition through the shared LLM port."""
+    from prism_core.report_insight_prefetch import PROFILE
+
     spec = AgentSpec(
         name=agent.name,
         instructions=agent.instruction,
@@ -42,6 +44,7 @@ async def _generate_agent_text(
             reasoning_effort=REPORT_EFFORT,
             parallel_tool_calls=True,
             max_iterations=max_iterations,
+            report_research_tool_budget=(6000, 18000) if getattr(agent, 'report_research_profile', None) == PROFILE else None,
         ),
     )
     result = await _get_report_backend().run(spec, message)

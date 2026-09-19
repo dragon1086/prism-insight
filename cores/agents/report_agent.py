@@ -34,13 +34,16 @@ class ReportAgent:
     name: str
     instruction: str
     server_names: tuple[str, ...] = ()
+    report_research_profile: str | None = None
 
     def __init__(
         self,
         name: str,
         instruction: str,
         server_names: Iterable[str] | None = None,
+        report_research_profile: str | None = None,
     ) -> None:
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "instruction", instruction)
         object.__setattr__(self, "server_names", tuple(server_names or ()))
+        object.__setattr__(self, "report_research_profile", report_research_profile)

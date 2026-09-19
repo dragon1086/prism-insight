@@ -517,6 +517,10 @@ class StockAnalysisOrchestrator:
                     full_results = json.load(f)
                 # Save results
                 self.selected_tickers[mode] = full_results
+                # Report-only descriptive context; never nested in BUY market_intelligence.
+                snapshot_leaders = full_results.get("metadata", {}).get("snapshot_price_leaders")
+                if isinstance(macro_context, dict) and isinstance(snapshot_leaders, dict):
+                    macro_context["snapshot_price_leaders"] = snapshot_leaders
                 participation = full_results.get("metadata", {}).get("market_participation")
                 if isinstance(macro_context, dict) and isinstance(participation, dict):
                     macro_context["market_participation"] = participation

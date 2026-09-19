@@ -80,7 +80,16 @@ def test_optional_new_fields_are_checked_when_present():
     assert {"fundamental_gate_failed", "momentum_count_below_floor", "confirmation_count_below_floor"} <= codes
 
 
-def test_stop_volatility_noise_floor_is_shadow_only():
+def test_stop_volatility_noise_floor_is_shadow_only(monkeypatch):
+    from datetime import date
+
+    from cores import shadow_lifecycle
+
+    # Gate behavior under active SHADOW must not depend on the calendar date
+    # or an operator's local lifecycle state file.
+    review_day = date.fromisoformat(shadow_lifecycle.POLICIES['atr_stop_width']['review_by'])
+    monkeypatch.setattr(shadow_lifecycle, '_today', lambda now=None: review_day)
+    monkeypatch.setattr(shadow_lifecycle, '_read_state', lambda path=None: {})
     result = evaluate_production_buy_gate(
         _scenario(target_price=110.0, stop_loss=98.0, risk_reward_ratio=5.0),
         current_price=100.0,
@@ -92,3 +101,20 @@ def test_stop_volatility_noise_floor_is_shadow_only():
         item["code"] == "stop_below_volatility_noise_floor"
         for item in result["shadow_findings"]
     )
+
+
+def test_expired_stop_volatility_shadow_remains_off(monkeypatch):
+    from datetime import date, timedelta
+
+    from cores import shadow_lifecycle
+
+    expired_day = date.fromisoformat(shadow_lifecycle.POLICIES['atr_stop_width']['review_by']) + timedelta(days=1)
+    monkeypatch.setattr(shadow_lifecycle, '_today', lambda now=None: expired_day)
+    monkeypatch.setattr(shadow_lifecycle, '_read_state', lambda path=None: {})
+    result = evaluate_production_buy_gate(
+        _scenario(target_price=110.0, stop_loss=98.0, risk_reward_ratio=5.0),
+        current_price=100.0, market_regime='moderate_bull',
+        trend_facts='- Volatility: ATR20=8.0% / ADR20=10.0%',
+    )
+    assert result['allowed']
+    assert not any(item['code'] == 'stop_below_volatility_noise_floor' for item in result['shadow_findings'])

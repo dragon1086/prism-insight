@@ -214,8 +214,13 @@ async def analyze_us_stock(
             prefetched = {}
 
         try:
-            from prism_core.report_research_prefetch import prefetch_report_research
-            research = await prefetch_report_research("US", ticker, reference_date, company_name)
+            from prism_core.report_research_prefetch import (
+                company_research_context,
+                prefetch_report_research,
+            )
+            research = await prefetch_report_research(
+                "US", ticker, reference_date, company_name,
+                company_context=company_research_context(prefetched, macro_context, ticker))
             if research:
                 prefetched["report_research"] = research
                 if research.get("news_usable") is True and "news_analysis" not in parallel_sections:
@@ -240,6 +245,13 @@ async def analyze_us_stock(
 
         # 5. Get US-specific agents (with prefetched data)
         prefetched["shared_macro_available"] = bool(macro_context)
+        from prism_core.report_insight_prefetch import (
+            enabled as insight_prefetch_enabled,
+        )
+        if insight_prefetch_enabled() and prefetched.get('report_research'):
+            from prism_core.report_insight_manifest import build_insight_manifest
+            prefetched['report_insight_manifest'] = build_insight_manifest(
+                'US', ticker, reference_date, prefetched, macro_context)
         agents = get_us_agent_directory(company_name, ticker, reference_date, base_sections, language, prefetched_data=prefetched)
 
         # 6. Execute base analysis using HYBRID mode
