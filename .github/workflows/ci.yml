@@ -48,6 +48,8 @@ jobs:
             tests/test_general_research_discovery.py tests/test_general_research_adversarial.py \
             tests/test_research_profile_wiring.py tests/test_research_comparison.py \
             tests/test_research_table_observations.py \
+            tests/test_filing_structure.py tests/test_filing_selection.py \
+            tests/test_filing_table_projection.py tests/test_filing_extraction_evaluation.py \
             tests/test_report_mcp_capability_audit.py tests/test_report_insight_manifest.py \
             tests/test_report_insight_prefetch.py tests/test_report_insight_wiring.py \
             tests/test_snapshot_price_leaders.py tests/test_insight_leader_rendering.py \
