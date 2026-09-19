@@ -12,7 +12,7 @@ import json
 import os
 import re
 import sys
-from contextlib import closing
+from contextlib import AsyncExitStack, closing
 from functools import partial
 from pathlib import Path
 
@@ -83,8 +83,9 @@ async def list_registered(spec):
                                    env={**get_default_environment(), **spec.env}, cwd=spec.cwd or str(ROOT))
     # Subprocess stderr can contain credentials; it must not enter the transcript.
     with closing(await asyncio.to_thread(open, os.devnull, "w")) as sink:
-        async with (stdio_client(params, errlog=sink) as (read, write),
-                    ClientSession(read, write) as session):
+        async with AsyncExitStack() as stack:
+            read, write = await stack.enter_async_context(stdio_client(params, errlog=sink))
+            session = await stack.enter_async_context(ClientSession(read, write))
             return await collect_session(session)
 
 
