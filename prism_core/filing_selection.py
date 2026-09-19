@@ -200,7 +200,7 @@ def _note_bundles(text, envelope, budget_bytes):
 
 
 def select_filing_evidence(text, source_id='S', source_url='', budget_bytes=6000,
-                           method='structured'):
+                           method='structured', *, topic_filter=None):
     """Return compact-JSON-bounded evidence, including source and method metadata.
 
     Serialize with ``json.dumps(result, ensure_ascii=False, separators=(',', ':'))``.
@@ -213,6 +213,11 @@ def select_filing_evidence(text, source_id='S', source_url='', budget_bytes=6000
         raise ValueError('budget_bytes must be an integer >= 2')
     if method not in {'structured', 'structured_projected', 'structure_order', 'legacy', 'note_bundles'}:
         raise ValueError('unknown selection method')
+    if topic_filter is not None and (
+            not isinstance(topic_filter, (tuple, list, set, frozenset))
+            or any(not isinstance(t, str) or t not in _TOPICS for t in topic_filter)
+            or method == 'note_bundles'):
+        raise ValueError('topic_filter requires known topics and a block-based method')
     if not isinstance(text, str):
         raise TypeError('text must be a string')
     envelope = {
@@ -253,6 +258,8 @@ def select_filing_evidence(text, source_id='S', source_url='', budget_bytes=6000
                                ('projection_kind', 'selected_data_rows', 'original_data_rows')})
             candidates.append((record, score))
 
+    if topic_filter is not None:
+        candidates = [item for item in candidates if item[0]['topic'] in topic_filter]
     consolidated_topics = {r['topic'] for r, _ in candidates if r['scope'] == 'consolidated'}
     topics, sections, seen = Counter(), Counter(), set()
     costs = {r['block_id']: _size(r) for r, _ in candidates}

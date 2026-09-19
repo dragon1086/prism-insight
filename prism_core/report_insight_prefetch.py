@@ -184,7 +184,7 @@ def topic_blocks(text, max_block_bytes=2400):
     return output
 
 
-async def collect(market, symbol, day, company, transport, *, context, progress):
+async def collect(market, symbol, day, company, transport, *, context, progress, filing_parser=False):
     from prism_core.report_research_prefetch import (
         MEMORY_SOURCE,
         MEMORY_SUBJECTS,
@@ -196,6 +196,9 @@ async def collect(market, symbol, day, company, transport, *, context, progress)
     )
 
     sources, gaps = progress['sources'], progress['gaps']
+    filing_parser = filing_parser is True and market == 'KR'
+    if filing_parser:
+        progress['filing_parser'] = 'structured_v1'
     progress.setdefault('raw_response_utf8_bytes', 0)
     progress.setdefault('events', [])
     alias = MEMORY_SUBJECTS.get((market, symbol))
@@ -252,6 +255,9 @@ async def collect(market, symbol, day, company, transport, *, context, progress)
             break
         viewer = urlsplit(url).hostname == 'kind.krx.co.kr' and '/common/disclsviewer.do' in url
         args = {'url': url, 'formats': ['markdown', 'links'], 'onlyMainContent': not viewer}
+        structured_body = filing_parser and kind_viewer_candidate(url) is not None
+        if structured_body:
+            args['formats'].append('html')
         if viewer:
             args.update(waitFor=3000, maxAge=0)
         if not reuse:
@@ -316,6 +322,11 @@ async def collect(market, symbol, day, company, transport, *, context, progress)
             if listing:
                 source, gap = None, 'DOCUMENT_INDEX_NOT_BODY'
             blocks = topic_blocks(data.get('markdown', '')) if source else []
+            if source and structured_body:
+                from prism_core.filing_report_evidence import filing_blocks
+
+                blocks, parser_gaps = filing_blocks(data, url)
+                gaps.extend(parser_gaps)
             if (not blocks and not links and maps < 1 and progress['calls'] < MAX_CALLS
                     and re.search(r'(?i)/(?:ir|ir-comp|investors?|annual-reports?)(?:/|$)', urlsplit(url).path)):
                 maps += 1
@@ -365,7 +376,9 @@ def packet(market, symbol, day, progress):
         # Round-robin by topic avoids making risk evidence compete solely on rank
         # against long financial tables. Existing data remains with its owner.
         queues = {topic: [(source, block) for source in sources
-                          for block in [b for b in source.get('blocks', []) if b['topic'] == topic][:2]]
+                          for block in [b for b in source.get('blocks', []) if b['topic'] == topic][
+                              :24 if any(b.get('provenance', {}).get('parser_version') == 'structured_v1'
+                                         for b in source.get('blocks', [])) else 2]]
                   for topic in topics}
         for position in range(max((len(rows) for rows in queues.values()), default=0)):
             for topic in topics:
@@ -376,6 +389,8 @@ def packet(market, symbol, day, progress):
                         continue
                     record = {key: source.get(key, 'UNKNOWN') for key in ('source_id', 'url', 'published', 'publication_basis')}
                     record.update(topic=topic, excerpt=block['excerpt'], status=block['status'])
+                    if 'provenance' in block:
+                        record['provenance'] = block['provenance']
                     trial = {**payload, 'sources': [*payload['sources'], record], 'omitted_blocks': omissions}
                     if _size(trial) <= SECTION_BYTES - 80:
                         payload['sources'].append(record)
@@ -406,4 +421,5 @@ def packet(market, symbol, day, progress):
                         'raw_response_utf8_bytes': progress.get('raw_response_utf8_bytes', 0),
                         'section_utf8_bytes': {k: len(v.encode('utf-8')) for k, v in notes.items()},
                         'competitive_complete': False, 'collection_complete': False, 'usage': 'UNKNOWN',
-                        'events': progress.get('events', []), 'tradingview': 'RIGHTS_UNCONFIRMED'}}
+                        'events': progress.get('events', []), 'tradingview': 'RIGHTS_UNCONFIRMED',
+                        **({'filing_parser': progress['filing_parser']} if 'filing_parser' in progress else {})}}

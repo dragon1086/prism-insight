@@ -540,11 +540,17 @@ async def prefetch_report_research(market, symbol, reference_date, company_name=
         company_context = company_research_context({'company_research_profile': company_context}, None, symbol)
         from prism_core import report_insight_prefetch as insights
         enhanced = insights.enabled(config)
+        filing_parser = enhanced and market == 'KR' and config.get('filing_parser') == 'structured_v1'
+        if filing_parser:
+            progress['filing_parser'] = 'structured_v1'
         collector_version = insights.PROFILE if enhanced else COLLECTOR_VERSION
         budget = min(90.0 if enhanced else 60.0, max(0.01, float(config.get("timeout_seconds", 60))))
         cache = Path(_cache_dir) if _cache_dir else ROOT / "runtime/report_research_cache"
-        key = hashlib.sha256(json.dumps([VERSION, collector_version, market, symbol, day, company_name, company_context,
-                                        config.get("namespace", "default")]).encode()).hexdigest()
+        cache_identity = [VERSION, collector_version, market, symbol, day, company_name, company_context,
+                          config.get("namespace", "default")]
+        if filing_parser:
+            cache_identity.append('filing_parser:structured_v1')
+        key = hashlib.sha256(json.dumps(cache_identity).encode()).hexdigest()
         cache.mkdir(parents=True, exist_ok=True, mode=0o700)
         path = cache / (key + ".json")
         import fcntl
@@ -558,7 +564,7 @@ async def prefetch_report_research(market, symbol, reference_date, company_name=
                     if time.monotonic() - start >= budget:
                         if enhanced:
                             return insights.packet(market, symbol, day,
-                                {'sources': [], 'gaps': ['CACHE_LOCK_TIMEOUT'], 'calls': 0})
+                                {**progress, 'gaps': ['CACHE_LOCK_TIMEOUT']})
                         return None
                     await asyncio.sleep(0.05)
             try:
@@ -566,6 +572,7 @@ async def prefetch_report_research(market, symbol, reference_date, company_name=
                 receipt = saved.get('receipt') if isinstance(saved, dict) else None
                 notes = saved.get('section_notes') if isinstance(saved, dict) else None
                 if (not isinstance(receipt, dict) or not isinstance(notes, dict)
+                        or (filing_parser and receipt.get('filing_parser') != 'structured_v1')
                         or not isinstance(saved.get('evidence_id'), str)
                         or saved.get('news_usable') is not False
                         or any(receipt.get(key) != value for key, value in {
@@ -589,7 +596,8 @@ async def prefetch_report_research(market, symbol, reference_date, company_name=
             try:
                 sources, gaps, calls = await asyncio.wait_for(
                     (insights.collect if enhanced else _collect)(market, symbol, day, company_name, _transport or native_call,
-                             context=company_context, progress=progress),
+                             context=company_context, progress=progress,
+                             **({'filing_parser': True} if filing_parser else {})),
                     timeout=max(0.001, remaining))
             except asyncio.TimeoutError:
                 sources, gaps, calls = progress['sources'], [*progress['gaps'], "TIME_BUDGET_EXHAUSTED"], progress['calls']
