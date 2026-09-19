@@ -165,9 +165,9 @@ jobs:
           pip install \
             pydantic \
             pyyaml \
-            "openai>=2.9,<3" \
+            "openai==2.43.0" \
             "openai-agents==0.7.0" \
-            mcp \
+            "mcp==1.26.0" \
             tenacity \
             pytest \
             pytest-asyncio \
