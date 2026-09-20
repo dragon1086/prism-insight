@@ -5,11 +5,11 @@ from datetime import datetime, timezone
 import pytest
 
 from tools.evaluate_us_inline_cohort import (
-    baseline_parser,
     compare_baseline,
     compare_body,
     evaluate_case,
     frozen_cohort,
+    isolated_case,
     provider_identity,
 )
 
@@ -73,17 +73,9 @@ def test_fetch_exception_redacted_and_case_retained():
     assert 'unsafe' not in str(result)
 
 
-def test_baseline_helper_loading_does_not_execute_other_code(monkeypatch):
-    from types import SimpleNamespace
-
-    # CI can be shallow. Real fixed-commit A/B is recorded by the live evaluator;
-    # this unit checks the loader without requiring hidden repository history.
-    source = ('raise RuntimeError("must not import production module")\n'
-              'def _clean_xbrl_label(value):\n    return value\n'
-              'def _parse_10k_segment_revenue(value: str) -> str:\n    return ""\n')
-    monkeypatch.setattr('tools.evaluate_us_inline_cohort.subprocess.run',
-                        lambda *args, **kwargs: SimpleNamespace(stdout=source))
-    assert baseline_parser()('<html/>') == ''
+def test_missing_baseline_is_not_silently_replayed():
+    result = compare_body(b'<html/>', '123')
+    assert result['baseline']['status'] == 'NOT_REPLAYED'
 
 
 def test_expected_provider_cik_is_passed_to_exact_parser(monkeypatch):
@@ -130,3 +122,84 @@ def test_baseline_body_comparison_does_not_call_changed_body_stable():
                                       {'ticker': 'B', 'source_sha256': 'hash'}]})
     assert cases[0]['baseline_body_unchanged'] is False
     assert cases[1]['baseline_body_unchanged'] is None
+
+
+def test_prior_baseline_metrics_require_identical_body_and_are_not_a_new_run():
+    cases = [{'ticker': 'A', 'source_sha256': 'same'}]
+    compare_baseline(cases, {'baseline_commit': '3a8bfac0', 'cases': [
+        {'ticker': 'A', 'source_sha256': 'same', 'baseline': {'status': 'EMPTY'}}]})
+    assert cases[0]['baseline']['status'] == 'EMPTY'
+    assert cases[0]['baseline_verification'] == 'IMPORTED_PRIOR_RUN_METRICS_SAME_BODY_NOT_RERUN'
+    assert cases[0]['baseline_provenance']['commit'] == '3a8bfac0'
+    assert len(cases[0]['baseline_provenance']['artifact_sha256']) == 64
+
+
+@pytest.mark.parametrize('ready', [True, False])
+def test_fixed_worker_cleanup_and_bounded_bytes_only_channel(ready):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    receiver = Mock()
+    receiver.recv_bytes.return_value = b'{"ticker":"XYZ","status":"EVIDENCE"}'
+    if not ready:
+        receiver.recv_bytes.side_effect = EOFError
+    sender = Mock()
+    worker = Mock()
+    worker.is_alive.side_effect = [True, False]
+    process = Mock(return_value=worker)
+    context = SimpleNamespace(Pipe=Mock(return_value=(receiver, sender)), Process=process)
+    result = isolated_case(CASE, datetime(2026, 9, 20, tzinfo=timezone.utc), context=context)
+    assert result['status'] == ('EVIDENCE' if ready else 'FAILED')
+    assert callable(process.call_args.kwargs['target'])
+    assert process.call_args.kwargs['args'][1] == CASE
+    worker.terminate.assert_called_once()
+    receiver.close.assert_called_once()
+    if ready:
+        receiver.recv_bytes.assert_called_once_with(1024 * 1024)
+
+
+def test_different_baseline_code_cannot_supply_old_metrics():
+    cases = [{'ticker': 'A', 'source_sha256': 'same', 'baseline': {'status': 'NOT_REPLAYED'}}]
+    compare_baseline(cases, {'baseline_commit': 'different', 'cases': [
+        {'ticker': 'A', 'source_sha256': 'same', 'baseline': {'status': 'EMPTY'}}]})
+    assert cases[0]['baseline']['status'] == 'NOT_REPLAYED'
+    assert cases[0]['baseline_verification'] == 'REJECTED_BASELINE_VERSION'
+
+
+def _partial_message_worker(connection, case, cutoff):
+    import os
+    import struct
+    import time
+
+    data = b'{"ticker":"XYZ","status":"TOO_LATE"}'
+    os.write(connection.fileno(), struct.pack('!i', len(data)))
+    time.sleep(.4)
+    os.write(connection.fileno(), data)
+    connection.close()
+
+
+def test_partial_message_cannot_extend_worker_deadline():
+    import multiprocessing
+    import threading
+    from types import SimpleNamespace
+
+    if 'fork' not in multiprocessing.get_all_start_methods():
+        pytest.skip('requires local pipe framing and fork')
+    context = multiprocessing.get_context('fork')
+    replacement = SimpleNamespace(Pipe=context.Pipe, Process=lambda **kw: context.Process(
+        target=_partial_message_worker, args=kw['args'], daemon=True))
+    result = isolated_case(CASE, datetime(2026, 9, 20, tzinfo=timezone.utc), timeout=.05, context=replacement)
+    assert result['status'] == 'FAILED'
+    assert not any(t.name == 'sec-inline-result' and t.is_alive() for t in threading.enumerate())
+
+
+def test_actual_worker_process_returns_only_json_without_network(monkeypatch):
+    import multiprocessing
+
+    if 'fork' not in multiprocessing.get_all_start_methods():
+        pytest.skip('fork context needed to inherit a network-free test substitute')
+    monkeypatch.setattr('tools.evaluate_us_inline_cohort._live_case',
+                        lambda case, cutoff: {'ticker': case['ticker'], 'status': 'FIXTURE'})
+    result = isolated_case(CASE, datetime(2026, 9, 20, tzinfo=timezone.utc), timeout=2,
+                           context=multiprocessing.get_context('fork'))
+    assert result == {'ticker': 'XYZ', 'status': 'FIXTURE'}

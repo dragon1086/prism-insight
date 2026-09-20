@@ -1,17 +1,18 @@
 """Frozen US development cohort, existing Yahoo feed/CDN only, never SEC access.
 
-Compare fixed baseline parser and current inline parser against identical bytes.
+Compare current parsing with stored baseline metrics only for identical bytes.
 This is provider-only evidence, not an official issuer/latest-filing certificate.
-Each live case runs in a subprocess with a hard timeout; failed cases remain.
+Each live case runs in an isolated process with a hard timeout; failed cases remain.
 """
 import argparse
-import ast
 import hashlib
 import json
 import logging
+import multiprocessing
 import re
-import subprocess
 import sys
+import threading
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -39,31 +40,21 @@ def provider_identity(url):
     return {'cik': match[1], 'accession': match[2]}
 
 
-def baseline_parser():
-    source = subprocess.run(['git', 'show', f'{BASELINE}:prism-us/cores/data_prefetch.py'],
-        cwd=ROOT, check=True, capture_output=True, text=True, timeout=10).stdout
-    names = {'_clean_xbrl_label', '_parse_10k_segment_revenue'}
-    nodes = [n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name in names]
-    if {n.name for n in nodes} != names:
-        raise ValueError('BASELINE_HELPERS_MISSING')
-    namespace = {}
-    exec(compile(ast.Module(body=nodes, type_ignores=[]), '<fixed-baseline-helpers>', 'exec'), namespace)  # noqa: S102 -- two named trusted local git functions, never provider code
-    return namespace['_parse_10k_segment_revenue']
-
-
-def compare_body(body, cik, *, old_parser):
+def compare_body(body, cik, *, old_parser=None):
     if not isinstance(body, bytes) or len(body) > MAX_BYTES:
         raise ValueError('PROVIDER_BODY_LIMIT')
     result = {'source_sha256': hashlib.sha256(body).hexdigest(), 'source_bytes': len(body)}
-    try:
-        old = old_parser(body.decode('utf-8'))
-        result['baseline'] = {'status': 'OUTPUT' if old else 'EMPTY', 'output_bytes': len(old.encode()),
-            'assumed_millions_usd': 'in millions USD' in old,
-            'fy_labels': sorted(set(re.findall(r'\bFY\d{4}\b', old))),
-            'zero_cells': old.count('$0M'),
-            'caveat': 'Zero cells may be missing-value fills; not proof of reported zero.'}
-    except (ValueError, UnicodeError, KeyError, TypeError):
-        result['baseline'] = {'status': 'FAILED', 'reason': 'BASELINE_PARSE_FAILURE'}
+    result['baseline'] = {'status': 'NOT_REPLAYED', 'reason': 'STORED_SAME_BODY_BASELINE_REQUIRED'}
+    if old_parser is not None:  # In-process test/comparison callable, never loaded from text.
+        try:
+            old = old_parser(body.decode('utf-8'))
+            result['baseline'] = {'status': 'OUTPUT' if old else 'EMPTY', 'output_bytes': len(old.encode()),
+                'assumed_millions_usd': 'in millions USD' in old,
+                'fy_labels': sorted(set(re.findall(r'\bFY\d{4}\b', old))),
+                'zero_cells': old.count('$0M'),
+                'caveat': 'Zero cells may be missing-value fills; not proof of reported zero.'}
+        except (ValueError, UnicodeError, KeyError, TypeError):
+            result['baseline'] = {'status': 'FAILED', 'reason': 'BASELINE_PARSE_FAILURE'}
     parsed = parse_inline_revenue(body, expected_cik=cik)
     facts = parsed['facts']
     periods = sorted({(f['period']['start'], f['period']['end']) for f in facts})
@@ -99,7 +90,7 @@ def _fetch_cdn(url):
         return bytes(body)
 
 
-def evaluate_case(case, filings, *, fetch, old_parser, decision_at=None):
+def evaluate_case(case, filings, *, fetch, old_parser=None, decision_at=None):
     out = {**case, 'status': 'FAILED', 'identity_basis': 'PROVIDER_ONLY_NOT_OFFICIAL',
         'latest_certified': False, 'selection_basis': 'PROVIDER_FIRST_PERIODIC_NOT_LATEST_CERTIFIED'}
     filing = next((f for f in filings if isinstance(f, dict) and f.get('type') in {'10-K', '10-Q', '20-F', '40-F'}), None)
@@ -137,7 +128,7 @@ def _live_case(case, decision_at):
     logging.disable(logging.CRITICAL)
     try:
         filings = yf.Ticker(case['ticker']).sec_filings
-        result = evaluate_case(case, filings or [], fetch=_fetch_cdn, old_parser=baseline_parser(), decision_at=decision_at)
+        result = evaluate_case(case, filings or [], fetch=_fetch_cdn, decision_at=decision_at)
     except Exception:  # noqa: BLE001 -- no upstream payload or credential leakage
         result = {**case, 'status': 'FAILED', 'reason': 'PROVIDER_FEED_FAILURE',
                   'identity_basis': 'PROVIDER_ONLY_NOT_OFFICIAL', 'latest_certified': False}
@@ -145,6 +136,72 @@ def _live_case(case, decision_at):
     result['parser_sha256'] = PARSER_SHA256
     result['feed_http_request_count'] = None  # yfinance may issue internal requests.
     return result
+
+
+def _case_worker(connection, case, decision_at):
+    """Send only bounded JSON bytes; no executable source or pickle input IPC."""
+    try:
+        encoded = json.dumps(_live_case(case, decision_at), ensure_ascii=False).encode()
+        if len(encoded) <= 1024 * 1024:
+            connection.send_bytes(encoded)
+    finally:
+        connection.close()
+
+
+def _receive_worker(receiver, state, done):
+    try:
+        state['result'] = json.loads(receiver.recv_bytes(1024 * 1024))
+    except (EOFError, OSError, ValueError, TypeError):
+        state['invalid'] = True
+    finally:
+        done.set()
+
+
+def isolated_case(case, decision_at, *, timeout=100, context=None):
+    """Run a fixed trusted function, not a user-derived executable/command line."""
+    context = context or multiprocessing.get_context('spawn')
+    receiver, sender = context.Pipe(duplex=False)
+    worker = context.Process(target=_case_worker, args=(sender, case, decision_at), daemon=True)
+    started = False
+    failure = {**case, 'status': 'FAILED', 'reason': 'BOUNDED_WORKER_FAILURE',
+               'identity_basis': 'PROVIDER_ONLY_NOT_OFFICIAL', 'latest_certified': False}
+    result, reader = None, None
+    deadline = time.monotonic() + timeout
+    try:
+        worker.start()
+        started = True
+        sender.close()
+        state, done = {}, threading.Event()
+        reader = threading.Thread(target=_receive_worker, args=(receiver, state, done),
+                                  name='sec-inline-result', daemon=True)
+        reader.start()
+        # poll() only proves a message header exists; the body may still stall.
+        if done.wait(max(0, deadline - time.monotonic())):
+            candidate = state.get('result')
+            if isinstance(candidate, dict) and candidate.get('ticker') == case['ticker']:
+                result = candidate
+            else:
+                failure['reason'] = 'BOUNDED_WORKER_OUTPUT_INVALID'
+    except (EOFError, OSError, ValueError, TypeError):
+        failure['reason'] = 'BOUNDED_WORKER_OUTPUT_INVALID'
+    finally:
+        sender.close()
+        if started:
+            worker.join(.2)
+            if worker.is_alive():
+                worker.terminate()
+                worker.join(2)
+            if worker.is_alive():
+                worker.kill()
+                worker.join(2)
+            worker.close()
+        if reader is not None:
+            reader.join(.2)  # Killing the only writer releases a partial body read.
+            if reader.is_alive():
+                result = None
+                failure['reason'] = 'WORKER_READER_CLEANUP_UNCONFIRMED'
+        receiver.close()
+    return result if result is not None else failure
 
 
 def frozen_cohort(manifest, group):
@@ -159,13 +216,24 @@ def frozen_cohort(manifest, group):
     return cohort
 
 
-def compare_baseline(cases, baseline):
+def compare_baseline(cases, baseline, *, artifact_sha256=None):
+    basis = 'FILE_BYTES' if artifact_sha256 is not None else 'CANONICAL_JSON'
+    digest = artifact_sha256 or hashlib.sha256(json.dumps(baseline, sort_keys=True,
+        separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
     earlier = {case['ticker']: case for case in baseline['cases']}
     for case in cases:
         previous = earlier.get(case['ticker'], {})
         old_hash, new_hash = previous.get('source_sha256'), case.get('source_sha256')
         case['baseline_source_sha256'] = old_hash
         case['baseline_body_unchanged'] = old_hash == new_hash if old_hash and new_hash else None
+        if case['baseline_body_unchanged'] and isinstance(previous.get('baseline'), dict):
+            if baseline.get('baseline_commit') == BASELINE:
+                case['baseline'] = previous['baseline']
+                case['baseline_verification'] = 'IMPORTED_PRIOR_RUN_METRICS_SAME_BODY_NOT_RERUN'
+                case['baseline_provenance'] = {'commit': BASELINE, 'artifact_sha256': digest,
+                                              'artifact_hash_basis': basis}
+            else:
+                case['baseline_verification'] = 'REJECTED_BASELINE_VERSION'
 
 
 def main():
@@ -175,7 +243,6 @@ def main():
     parser.add_argument('--group', choices=('development', 'holdout'), default='development')
     parser.add_argument('--compare-baseline', type=Path)
     parser.add_argument('--out', type=Path)
-    parser.add_argument('--worker-ticker')
     args = parser.parse_args()
     manifest = json.loads(MANIFEST.read_text())
     cohort = frozen_cohort(manifest, args.group)
@@ -186,28 +253,15 @@ def main():
         parser.error('--run-development cannot select holdout')
     if not args.live and not args.run_development:
         parser.error('Explicit --live or --run-development required')
-    if args.worker_ticker:
-        case = next((c for c in cohort if c['ticker'] == args.worker_ticker), None)
-        if case is None:
-            parser.error('Only the named frozen cohort is allowed')
-        print(json.dumps(_live_case(case, decision_at), ensure_ascii=False))
-        return
     if args.out is None or args.out.exists():
         parser.error('A new --out path is required')
     parser_before = hashlib.sha256(PARSER_PATH.read_bytes()).hexdigest()
     cases = []
     for case in cohort:
-        try:
-            process = subprocess.run([sys.executable, str(Path(__file__).resolve()), '--live', '--group', args.group,
-                '--worker-ticker', case['ticker']],
-                cwd=ROOT, capture_output=True, text=True, timeout=100, check=True)
-            result = json.loads(process.stdout.strip().splitlines()[-1])
-        except (subprocess.SubprocessError, ValueError, IndexError):
-            result = {**case, 'status': 'FAILED', 'reason': 'BOUNDED_WORKER_FAILURE',
-                      'identity_basis': 'PROVIDER_ONLY_NOT_OFFICIAL', 'latest_certified': False}
-        cases.append(result)
+        cases.append(isolated_case(case, decision_at))
     if args.compare_baseline:
-        compare_baseline(cases, json.loads(args.compare_baseline.read_text()))
+        raw = args.compare_baseline.read_bytes()
+        compare_baseline(cases, json.loads(raw), artifact_sha256=hashlib.sha256(raw).hexdigest())
     parser_after = hashlib.sha256(PARSER_PATH.read_bytes()).hexdigest()
     out = {'observed_at': datetime.now(timezone.utc).isoformat(), 'baseline_commit': BASELINE,
         'parser_sha256_before': parser_before, 'parser_sha256_after': parser_after,
