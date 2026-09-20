@@ -14,6 +14,10 @@ from prism_core.filing_html_tables import parse_html_table
 
 _MAJOR = re.compile(r'^(?:I|II|III|IV|V|VI|VII|VIII|IX|X|XI|XII)[.)]\s*\S.{0,110}$')
 _NUMBER = re.compile(r'^\d{1,3}(?:-\d{1,3})*[.)]\s*\S.{0,100}$')
+_FINANCIAL_TITLE = re.compile(r'^(?:\d{1,3}[.)]\s*)?(?:연결\s*)?재무제표(?:\s*주석)?$')
+_ACCOUNTING_NOTE = re.compile(
+    r'^\d{1,3}[.)]\s*재무제표\s*작성(?:\s*기준|\s*의\s*기초)'
+    r'(?:\s*및\s*중요한\s*회계정책)?(?:\s*\((?:연결|별도)\))?$')
 _SUB = re.compile(r'^(?:\(\d{1,3}\)|[가-힣][.)])\s*\S.{0,100}$')
 _CONTEXT = re.compile(r'단\s*위\s*[:：]|제\s*\d+\s*기|(?:당|전)(?:반기|분기|기)(?:말)?|재무상태표|손익계산서|현금흐름표')
 _FOOT = re.compile(r'^(?:※|주\s*\d*\s*[):：.]|\(주\s*\d*\)|\(\*\d*\)|\*\d*\))')
@@ -101,7 +105,10 @@ def _heading(node, text, notes):
     if re.search(r'(?:니다|이다|있다|한다)[.。]?$', text):
         return None
     if _NUMBER.fullmatch(text):
-        return 4 if re.match(r'^\d+-\d+', text) or notes and '재무제표' not in text else 3
+        # Unknown/decorated financial titles must end the previous scope. Only
+        # known accounting-preparation notes retain their explicit parent.
+        nested_note = notes and ('재무제표' not in text or _ACCOUNTING_NOTE.fullmatch(text))
+        return 4 if re.match(r'^\d+-\d+', text) or nested_note else 3
     if _SUB.fullmatch(text):
         return 5
     if node.tag in {'h1', 'h2', 'h3', 'h4', 'h5', 'h6'}:
@@ -135,13 +142,18 @@ class _Reducer:
         if node.tag != 'table' and _MAJOR.fullmatch(text):
             self.major_counts[text] += 1
         level = None if _FOOT.match(text) else _heading(node, text, self.notes)
+        if self.notes and level is not None:
+            qualifier = re.search(r'\((연결|별도)\)$', text)
+            if qualifier and self.scope != ('consolidated' if qualifier[1] == '연결' else 'standalone'):
+                level = 3  # Contradictory explicit scope must not inherit its parent.
         if level is not None:
             self.footnote_target, self.context_records = None, []
             self.path = {k: v for k, v in self.path.items() if k < level}
             self.path[level] = text
             if level <= 3:
-                self.scope = ('consolidated' if '연결' in text else 'standalone') if '재무제표' in text else 'unknown'
-                self.notes = '재무제표' in text and '주석' in text
+                financial_title = bool(_FINANCIAL_TITLE.fullmatch(text))
+                self.scope = ('consolidated' if '연결' in text else 'standalone') if financial_title else 'unknown'
+                self.notes = financial_title and '주석' in text
             return
         records = self.out['records']
         if len(records) >= 2000:

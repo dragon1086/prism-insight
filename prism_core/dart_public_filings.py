@@ -344,6 +344,20 @@ def _provenance(body, node):
             'preview': _text(_tree(body))[:1200], 'preview_not_complete': True}
 
 
+def _section_scope(body, scope, *, notes=False):
+    """Reject conflicting scope; never manufacture missing section context."""
+    headings = {_compact(_text(n)) for n in _tree(body).xpath('//h1|//h2|//h3|//p|//caption|//td')}
+    headings = {re.sub(r'^\d+\.', '', h) for h in headings}
+    opposite = ({'재무상태표', '재무제표주석'} if scope == 'consolidated'
+                else {'연결재무상태표', '연결재무제표주석'})
+    if headings & opposite:
+        _fail('SECTION_SCOPE_MISMATCH')
+    if notes:
+        title = '연결재무제표주석' if scope == 'consolidated' else '재무제표주석'
+        if title not in headings:
+            _fail('NOTES_BODY_UNVERIFIED')
+
+
 def _family(html, row):
     """Literal official edition evidence only; never attachment or receipt order."""
     selectors = _tree(html).xpath('//select[@id="family"]')
@@ -428,8 +442,14 @@ def _resolve_lineage(rows):
 
 async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, scope,
                                        client_factory=None, max_pages=3, max_filings=8,
-                                       max_calls=28, timeout_seconds=90):
-    """Return JSON-safe provenance for a finite query; never full HTML."""
+                                       max_calls=28, timeout_seconds=90,
+                                       include_section_bodies=False, _metrics=None):
+    """Return provenance, optionally exact bounded viewer-section HTML.
+
+    Opt-in bodies are section-local originals, not a reconstructed whole filing.
+    Individual sections retain the 2 MiB cap; all requests share the 8 MiB/call
+    budgets. A missing or oversized section is a gap, never a truncated success.
+    """
     now = datetime.now(timezone.utc)
     try:
         cutoff = decision_at.astimezone(_ZONE).date() if isinstance(decision_at, datetime) else None
@@ -440,18 +460,22 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
             or decision_at > now or type(start_date) is not date
             or start_date > cutoff
             or not isinstance(scope, str) or scope not in {'consolidated', 'standalone'}
+            or type(include_section_bodies) is not bool
             or any(type(v) is not int or not 1 <= v <= cap for v, cap in ((max_pages, 5), (max_filings, 20), (max_calls, 64)))
             or type(timeout_seconds) not in (int, float) or not 0 < timeout_seconds <= 180):
         raise ValueError('INVALID_ACQUISITION_POLICY')
+    metrics = _metrics if _metrics is not None else {}
+    metrics.update(calls=0, response_bytes=0)
     out = {'status': 'FAILED', 'query': {'corp_code': corp_code, 'decision_at': decision_at.isoformat(),
             'start_date': start_date.isoformat(), 'end_date': cutoff.isoformat(), 'scope': scope},
            'observed_at': now.isoformat(), 'coverage': {'complete_within_query': False,
             'global_complete': False, 'expected_count': None, 'seen_count': 0}, 'filings': [],
            'limitations': ['QUERY_WINDOW_ONLY', 'CURRENT_RETRIEVAL_NOT_HISTORICAL_SNAPSHOT',
                           'DATE_ONLY_PUBLICATION', 'SELECTED_SECTIONS_NOT_FULL_DOCUMENT'],
-           'metrics': {'calls': 0, 'response_bytes': 0}, 'historical_version_verified': False,
+           'metrics': metrics, 'historical_version_verified': False,
            'fact_validated': False, 'errors': []}
     rows, candidates = [], []
+    section_nodes = {}
     page_complete, empty = False, False
 
     async def acquire():
@@ -511,6 +535,9 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                 row.update(period_start=None, period_end=None, scope=None, body_status='unread',
                            scope_verified=False, sections={}, errors=[], body_coverage='selected_sections',
                            cover_submitted_date=None, amendment_of=None, family_members=[], lineage_errors=[])
+                if include_section_bodies:
+                    row['section_delivery'] = {'status': 'UNAVAILABLE',
+                        'missing_sections': ['financial_statements', 'financial_notes'], 'errors': []}
                 if row['correction_type'] == 'attachment':
                     row['errors'].append('ATTACHMENT_CONTENT_NOT_ACQUIRED')
             # Attachment amendments may contain material audit/charter changes,
@@ -544,13 +571,38 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                     sections = [n for n in nodes if re.fullmatch(r'\d+\.' + label, _compact(n['text']))]
                     if len(sections) != 1:
                         _fail('SCOPE_NODE_AMBIGUOUS')
+                    if include_section_bodies and sections[0]['dcmNo'] != covers[0]['dcmNo']:
+                        _fail('SECTION_DOCUMENT_MISMATCH')
                     body = await request('GET', sections[0]['viewer_url'])
                     _scope_body(body, scope)
+                    if include_section_bodies:
+                        _section_scope(body, scope)
                     row['sections']['financial_statements'] = _provenance(body, sections[0])
+                    if include_section_bodies:
+                        row['sections']['financial_statements']['html'] = body
+                        section_nodes[row['receipt_id']] = [n for n in nodes if re.fullmatch(
+                            r'\d+\.' + label + '주석', _compact(n['text']))]
                     row.update(body_status='available', scope_verified=True)
                 except _SourceError as exc:
                     row.update(body_status='unavailable')
                     row['errors'].append(str(exc))
+            # Supplementary notes cannot consume calls needed to establish the
+            # catalog's latest available edition. Acquire them only afterwards.
+            if include_section_bodies:
+                for row in ordered[:max_filings]:
+                    if not row['scope_verified']:
+                        continue
+                    try:
+                        notes = section_nodes[row['receipt_id']]
+                        if len(notes) != 1:
+                            _fail('NOTES_NODE_AMBIGUOUS')
+                        if notes[0]['dcmNo'] != row['sections']['financial_statements']['tuple']['dcmNo']:
+                            _fail('SECTION_DOCUMENT_MISMATCH')
+                        body = await request('GET', notes[0]['viewer_url'])
+                        _section_scope(body, scope, notes=True)
+                        row['sections']['financial_notes'] = {**_provenance(body, notes[0]), 'html': body}
+                    except _SourceError as exc:
+                        row['section_delivery']['errors'].append(str(exc))
 
     try:
         await asyncio.wait_for(acquire(), timeout=timeout_seconds)
@@ -609,5 +661,15 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
     out['coverage'].update(complete_within_query=page_complete, seen_count=len(rows))
     out['status'] = ('EMPTY' if empty else 'COMPLETE_WITHIN_QUERY'
                      if page_complete and not unresolved and not corrections else 'PARTIAL' if rows else 'FAILED')
+    if include_section_bodies:
+        for row in rows:
+            delivery = row.get('section_delivery')
+            if delivery is None:
+                continue
+            missing = [name for name in ('financial_statements', 'financial_notes')
+                       if 'html' not in row['sections'].get(name, {})]
+            delivery['missing_sections'] = missing
+            delivery['status'] = 'AVAILABLE' if not missing else 'UNAVAILABLE' if len(missing) == 2 else 'PARTIAL'
+            delivery['errors'] = sorted(set(delivery['errors'] + row['errors'] + out['errors']))
     out['filings'] = [{k: v.isoformat() if isinstance(v, date) else v for k, v in r.items()} for r in rows]
     return out

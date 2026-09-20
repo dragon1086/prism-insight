@@ -251,6 +251,16 @@ def filing_blocks(data, url, *, material_notes=False):
                     records.append(record)
                     seen.add(record['block_id'])
         representation, digest = 'FIRECRAWL_MARKDOWN', md_hash
+    return _record_blocks(records, material_notes=material_notes, representation=representation,
+                          digest=digest, md_hash=md_hash, gaps=gaps,
+                          parsed=parsed if 'html' in data else None,
+                          markdown_units=markdown_units if 'html' in data else None,
+                          markdown=markdown)
+
+
+def _record_blocks(records, *, material_notes, representation, digest, md_hash,
+                   gaps, parsed=None, markdown_units=None, markdown=None):
+    """Shared semantic routing; representation admission stays with the caller."""
     blocks = []
     for record in records:
         source_text = '\n'.join((record.get('context_before', ''), record['text'], record.get('footnotes', '')))
@@ -290,7 +300,7 @@ def filing_blocks(data, url, *, material_notes=False):
             'original_data_rows') if key in record}
         provenance.update(parser_version=MATERIAL_VERSION if material_notes is True else VERSION, representation=representation,
                           representation_sha256=digest, markdown_sha256=md_hash)
-        if representation == 'FIRECRAWL_CLEANED_HTML':
+        if representation in {'FIRECRAWL_CLEANED_HTML', 'DART_VIEWER_HTML'}:
             provenance.update(html_parser_version=parsed['parser_version'],
                               locator_model='HTML_DOCUMENT' if parsed['parser_version'] == 'filing_html_v2' else 'LEGACY_HTML_FRAGMENT')
         if tags:

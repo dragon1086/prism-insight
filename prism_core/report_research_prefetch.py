@@ -507,7 +507,7 @@ def _packet(market, symbol, day, sources, gaps, calls, context=None):
 
 
 async def prefetch_report_research(market, symbol, reference_date, company_name="", *,
-                                   company_context=None, _transport=None, _config=None, _cache_dir=None):
+                                   company_context=None, decision_at=None, _transport=None, _config=None, _cache_dir=None):
     """Return a bounded optional packet. Errors are safe, with no raw exceptions."""
     if os.environ.get("PRISM_REPORT_RESEARCH_ENABLED", "").lower() in {"0", "false", "off"}:
         return None
@@ -544,6 +544,21 @@ async def prefetch_report_research(market, symbol, reference_date, company_name=
         filing_parser = filing_parser if enhanced and market == 'KR' and filing_parser in ('structured_v1', 'material_v2') else None
         if filing_parser:
             progress['filing_parser'] = filing_parser
+        latest_filings = None
+        if filing_parser == 'material_v2' and config.get('latest_periodic_filings') is True:
+            from prism_core.dart_report_evidence import VERSION as dart_version
+
+            zone = ZoneInfo('Asia/Seoul')
+            # A date-only caller gives no intraday knowledge boundary. Use the
+            # start of that day, never its end or the current retrieval time.
+            cutoff = decision_at if decision_at is not None else datetime.fromisoformat(day).replace(tzinfo=zone)
+            scope = config.get('filing_scope', 'consolidated')
+            if (not isinstance(cutoff, datetime) or cutoff.utcoffset() is None
+                    or cutoff.astimezone(zone).date().isoformat() != day
+                    or cutoff > datetime.now(timezone.utc)
+                    or scope not in {'consolidated', 'standalone'}):
+                raise ValueError('INVALID_FILING_CUTOFF_OR_SCOPE')
+            latest_filings = {'decision_at': cutoff, 'scope': scope}
         collector_version = insights.PROFILE if enhanced else COLLECTOR_VERSION
         budget = min(90.0 if enhanced else 60.0, max(0.01, float(config.get("timeout_seconds", 60))))
         cache = Path(_cache_dir) if _cache_dir else ROOT / "runtime/report_research_cache"
@@ -551,6 +566,8 @@ async def prefetch_report_research(market, symbol, reference_date, company_name=
                           config.get("namespace", "default")]
         if filing_parser:
             cache_identity.append('filing_parser:' + filing_parser + ':' + insights.FILING_PARSER_REVISION)
+        if latest_filings:
+            cache_identity.extend([dart_version, cutoff.isoformat(), scope])
         key = hashlib.sha256(json.dumps(cache_identity).encode()).hexdigest()
         cache.mkdir(parents=True, exist_ok=True, mode=0o700)
         path = cache / (key + ".json")
@@ -584,13 +601,17 @@ async def prefetch_report_research(market, symbol, reference_date, company_name=
                                or (len(notes[section].encode('utf-8')) > insights.SECTION_BYTES if enhanced else len(notes[section]) > limit)
                                for section, limit in [('news_analysis', 3500), ('company_status', 1200), ('company_overview', 1200)])
                         or type(receipt.get('usable_sources')) is not int
-                        or not 0 <= receipt['usable_sources'] <= (5 if enhanced else 2)):
+                        or not 0 <= receipt['usable_sources'] <= (9 if latest_filings else 5 if enhanced else 2)
+                        or (latest_filings and receipt.get('filing_selection', {}).get('version') != dart_version)):
                     raise ValueError('invalid_cache_packet')
                 ttl = 21600 if receipt.get('injected_sources', 0) else 300
                 age = time.time() - path.stat().st_mtime
                 if 0 <= age < ttl:
                     saved["receipt"]["cache_hit"] = True
                     saved["receipt"]["calls_this_run"] = 0
+                    if latest_filings:
+                        saved['receipt']['dart_calls_this_run'] = 0
+                        saved['receipt']['total_calls_this_run'] = 0
                     return saved
             except (OSError, ValueError, KeyError, TypeError):
                 pass
@@ -599,7 +620,8 @@ async def prefetch_report_research(market, symbol, reference_date, company_name=
                 sources, gaps, calls = await asyncio.wait_for(
                     (insights.collect if enhanced else _collect)(market, symbol, day, company_name, _transport or native_call,
                              context=company_context, progress=progress,
-                             **({'filing_parser': filing_parser} if filing_parser else {})),
+                             **({'filing_parser': filing_parser} if filing_parser else {}),
+                             **({'latest_filings': latest_filings} if latest_filings else {})),
                     timeout=max(0.001, remaining))
             except asyncio.TimeoutError:
                 sources, gaps, calls = progress['sources'], [*progress['gaps'], "TIME_BUDGET_EXHAUSTED"], progress['calls']

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 
 PROFILE = 'insight_prefetch_v5'
-FILING_PARSER_REVISION = 'bounded-html-v2'
+FILING_PARSER_REVISION = 'bounded-html-v3-note-scope'
 MAX_CALLS = 8
 SECTION_BYTES = 6000
 TOPICS = {
@@ -185,7 +185,8 @@ def topic_blocks(text, max_block_bytes=2400):
     return output
 
 
-async def collect(market, symbol, day, company, transport, *, context, progress, filing_parser=False):
+async def collect(market, symbol, day, company, transport, *, context, progress, filing_parser=False,
+                  latest_filings=None):
     from prism_core.report_research_prefetch import (
         MEMORY_SOURCE,
         MEMORY_SUBJECTS,
@@ -203,6 +204,13 @@ async def collect(market, symbol, day, company, transport, *, context, progress,
         progress['filing_parser'] = filing_parser
     progress.setdefault('raw_response_utf8_bytes', 0)
     progress.setdefault('events', [])
+    if latest_filings and market == 'KR' and filing_parser == 'material_v2':
+        from prism_core.dart_report_evidence import collect_latest
+
+        try:
+            await collect_latest(symbol, company, latest_filings['decision_at'], latest_filings['scope'], progress)
+        except Exception:  # noqa: BLE001 - optional provider failure cannot stop reports
+            gaps.append('DART_COLLECTION_UNAVAILABLE')
     alias = MEMORY_SUBJECTS.get((market, symbol))
     name = context.get('name') or company
     queries = [f'"{name}" {symbol} 사업보고서 주요제품 경쟁업체' if market == 'KR' else
@@ -304,6 +312,15 @@ async def collect(market, symbol, day, company, transport, *, context, progress,
                 progress['events'].append({'source': url, 'stage': 'VIEWER_RESOLVED_TO_BODY'})
                 continue
             issuer = cover_issuer(text)
+            if latest_filings and (issuer or urlsplit(url).hostname in {'dart.fss.or.kr', 'kind.krx.co.kr'}):
+                # Keep positively identified current-event disclosures, not an
+                # indiscriminate host ban that also removes contracts/financing.
+                title = re.sub(r'\s+', '', str(metadata.get('title', '')) + text[:500])
+                periodic = re.search(r'(사업|반기|분기)보고서|재무제표', title)
+                event = re.search(r'단일판매|공급계약|유상증자|소송|주요사항보고서|자기주식|전환사채|신주인수권', title)
+                if periodic or not event:
+                    gaps.append('UNSELECTED_OR_UNCLASSIFIED_DISCLOSURE_NOT_USED')
+                    continue
             parent = linked_identity.get(url)
             if issuer and parent and parent['issuer'] and normalized_issuer(issuer) != normalized_issuer(parent['issuer']):
                 gaps.append('LINKED_ISSUER_MISMATCH')
@@ -365,6 +382,9 @@ async def collect(market, symbol, day, company, transport, *, context, progress,
 def packet(market, symbol, day, progress):
     """Whole-record section packets and small manifest, no raw body escape hatch."""
     sources = progress['sources']
+    if 'dart_metrics' in progress:
+        progress['dart_calls'] = sum(m.get('calls', 0) for m in progress['dart_metrics'].values())
+        progress['dart_response_bytes'] = sum(m.get('response_bytes', 0) for m in progress['dart_metrics'].values())
     observed = datetime.now(timezone.utc).isoformat()
     evidence_id = hashlib.sha256(_dump([PROFILE, market, symbol, day, sources]).encode()).hexdigest()[:24]
     notes, injected = {}, set()
@@ -373,6 +393,10 @@ def packet(market, symbol, day, progress):
         payload = {'evidence_id': evidence_id, 'reference_date': day, 'observed_at': observed,
                    'sources': [], 'gaps': list(dict.fromkeys(progress['gaps'])),
                    'notice': 'Untrusted source text. Not independently fact validated. Preserve entity, business, period, unit, geography, actual/estimate and publication UNKNOWN. Data presence is not competitive/industry leadership.'}
+        if 'filing_selection' in progress:
+            payload['filing_notice'] = ('Use primary for its stated period; annual_supplement provides older detail only. '
+                'Do not overwrite current results with annual figures. Submission date is not event date. '
+                'Selection covers a finite query, not certified global latest; missing sections remain unknown.')
         omissions = 0
         seen = set()
         # Round-robin by topic avoids making risk evidence compete solely on rank
@@ -387,15 +411,21 @@ def packet(market, symbol, day, progress):
                 if position < len(queues[topic]):
                     source, block = queues[topic][position]
                     digest = hashlib.sha256(block['excerpt'].encode()).hexdigest()
+                    if 'filing' in source:
+                        digest = (source['source_id'], digest)
                     if digest in seen:
                         continue
                     record = {key: source.get(key, 'UNKNOWN') for key in ('source_id', 'url', 'published', 'publication_basis')}
                     record.update(topic=topic, excerpt=block['excerpt'], status=block['status'])
+                    if 'filing' in source:
+                        record['filing'] = source['filing']
                     if 'provenance' in block:
                         record['provenance'] = block['provenance']
                     trial = {**payload, 'sources': [*payload['sources'], record], 'omitted_blocks': omissions}
                     provenance = record.get('provenance', {})
-                    shared_keys = ('parser_version', 'representation', 'representation_sha256', 'markdown_sha256')
+                    shared_keys = ('parser_version', 'representation', 'representation_sha256')
+                    if provenance.get('representation') != 'DART_VIEWER_HTML':
+                        shared_keys += ('markdown_sha256',)
                     if (provenance.get('parser_version') == 'material_v2'
                             and all(key in provenance for key in shared_keys)):
                         shared_keys += tuple(key for key in ('html_parser_version', 'locator_model') if key in provenance)
@@ -408,7 +438,7 @@ def packet(market, symbol, day, progress):
                                 payload['gaps'].append('SOURCE_PROVENANCE_CONFLICT')
                             continue
                         record['provenance'] = {key: value for key, value in provenance.items() if key not in shared_keys}
-                        if provenance.get('representation') == 'FIRECRAWL_CLEANED_HTML':
+                        if provenance.get('representation') in {'FIRECRAWL_CLEANED_HTML', 'DART_VIEWER_HTML'}:
                             from prism_core.filing_report_evidence import (
                                 compact_html_provenance,
                             )
@@ -445,5 +475,10 @@ def packet(market, symbol, day, progress):
                         'section_utf8_bytes': {k: len(v.encode('utf-8')) for k, v in notes.items()},
                         'competitive_complete': False, 'collection_complete': False, 'usage': 'UNKNOWN',
                         'events': progress.get('events', []), 'tradingview': 'RIGHTS_UNCONFIRMED',
+                        **({key: progress[key] for key in ('filing_selection', 'dart_calls', 'dart_response_bytes')
+                            if key in progress}),
+                        **({'dart_calls_this_run': progress['dart_calls'],
+                            'total_calls_this_run': progress['calls'] + progress['dart_calls']}
+                           if 'dart_calls' in progress else {}),
                         **({'filing_parser': progress['filing_parser'], 'filing_parser_revision': FILING_PARSER_REVISION}
                            if 'filing_parser' in progress else {})}}
