@@ -77,7 +77,8 @@ def test_real_latest_and_annual_are_distinct_in_actual_report_prompt(monkeypatch
     assert receipt['dart_calls'] > 2
     assert receipt['filing_selection']['decision_at'] == DAY + 'T00:00:00+09:00'
     assert '"html":' not in json.dumps(receipt).lower()
-    records = [r for note in result['section_notes'].values() for r in json.loads(note)['sources']]
+    records = [insight.expand_filing_record(r, json.loads(note))
+               for note in result['section_notes'].values() for r in json.loads(note)['sources']]
     assert records
     roles = {r['filing']['role'] for r in records}
     assert roles == {'primary', 'annual_supplement'}

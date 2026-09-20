@@ -610,181 +610,48 @@ def _clean_xbrl_label(raw: str) -> str:
     return label.strip()
 
 
-def _parse_10k_segment_revenue(html_content: str) -> str:
-    """Parse segment revenue data from 10-K XBRL inline HTML.
+def _parse_10k_segment_revenue(html_content: str, expected_cik=None) -> str:
+    """Render independently scoped inline-XBRL facts, never inferred totals."""
+    from prism_core.sec_inline_evidence import parse_inline_revenue
 
-    Extracts Products/Services split, product line breakdown,
-    geographic segment revenue, and country-level revenue from
-    XBRL inline tags embedded in SEC 10-K filings.
-
-    Args:
-        html_content: Raw HTML content of 10-K filing
-
-    Returns:
-        Markdown formatted segment revenue data, or empty string
-    """
-    import re
-
-    # 1. Parse all XBRL contexts (dimension definitions)
-    context_pattern = r'<xbrli:context[^>]*id="([^"]+)"[^>]*>(.*?)</xbrli:context>'
-    contexts = {}
-    for m in re.finditer(context_pattern, html_content, re.DOTALL):
-        ctx_id = m.group(1)
-        ctx_body = m.group(2)
-        dims = re.findall(
-            r'<xbrldi:explicitMember[^>]*dimension="([^"]+)"[^>]*>([^<]+)', ctx_body
+    evidence = parse_inline_revenue(html_content, expected_cik=expected_cik)
+    lines = ["### Segment Revenue Evidence (from SEC filing)",
+             "Exact context dates and base currency units; not an additive/comparable table.",
+             f"Source SHA256: {evidence['source_sha256']}"]
+    # This is a bounded display, not a ranking or a claim of full coverage.
+    omitted = 0
+    used = sum(len(line) for line in lines)
+    for index, fact in enumerate(evidence['facts']):
+        scope = "; ".join(f"{d['axis']}={d['member']}" for d in fact['dimensions']) or "no explicit dimensions (not an inferred total)"
+        period = fact['period']
+        line = (
+            f"- {fact['concept']}: {fact['value']} {fact['unit']}; "
+            f"period={period['start']}..{period['end']}; "
+            f"issuer={fact['entity']['scheme']}:{fact['entity']['identifier']}; "
+            f"scope={scope}; context={fact['context_ref']}; "
+            f"raw={fact['raw_value']}; scale={fact['scale']}; sign={fact['sign']}; "
+            f"decimals={fact['decimals']}; precision={fact['precision']}; "
+            f"location={fact['source_path']}"
         )
-        periods = re.findall(r'<xbrli:(?:startDate|endDate)>([^<]+)', ctx_body)
-        period = f"{periods[0]}~{periods[1]}" if len(periods) >= 2 else ""
-        contexts[ctx_id] = {"dims": dict(dims), "period": period}
-
-    # 2. Parse all revenue XBRL tags
-    rev_pattern = (
-        r'<ix:nonFraction[^>]*contextRef="([^"]+)"[^>]*'
-        r'name="[^"]*Revenue[^"]*"[^>]*>([^<]+)</ix:nonFraction>'
-    )
-    revenues = []
-    for m in re.finditer(rev_pattern, html_content):
-        ctx_id = m.group(1)
-        value_str = m.group(2).strip().replace(',', '')
-        try:
-            value = int(value_str)
-        except ValueError:
+        if index >= 40 or used + len(line) > 18000:
+            omitted += 1
             continue
-        ctx = contexts.get(ctx_id, {"dims": {}, "period": ""})
-        revenues.append({"value": value, "dims": ctx["dims"], "period": ctx["period"]})
-
-    if not revenues:
-        return ""
-
-    # 3. Categorize revenues by dimension type
-    product_service = {}  # {(category, period): value}
-    product_lines = {}    # {(product, period): value}
-    geographic = {}       # {(region, period): value}
-    geo_country = {}      # {(country, period): value}
-    totals = {}           # {period: value}
-
-    for r in revenues:
-        dims = r["dims"]
-        period = r["period"]
-        value = r["value"]
-
-        if not period or value < 5:
-            continue
-
-        seg_axis = dims.get("us-gaap:StatementBusinessSegmentsAxis", "")
-        product_axis = dims.get("srt:ProductOrServiceAxis", "")
-        consol_axis = dims.get("srt:ConsolidationItemsAxis", "")
-        geo_axis = dims.get("srt:StatementGeographicalAxis", "")
-
-        if seg_axis and consol_axis:
-            region = seg_axis.split(":")[-1].replace("SegmentMember", "").replace("Member", "")
-            geographic[(region, period)] = value
-        elif product_axis:
-            product = product_axis.split(":")[-1].replace("Member", "")
-            if product in ("Product", "Service"):
-                product_service[(product, period)] = value
-            else:
-                product_lines[(product, period)] = value
-        elif geo_axis:
-            country = geo_axis.split(":")[-1].replace("Member", "")
-            geo_country[(country, period)] = value
-        elif not dims:
-            if period not in totals or value > totals.get(period, 0):
-                totals[period] = value
-
-    # 4. Format as markdown
-    result = "### Segment Revenue Data (from 10-K filing, in millions USD)\n\n"
-
-    all_periods = sorted(set(
-        p for _, p in list(product_service.keys()) + list(product_lines.keys()) +
-        list(geographic.keys()) + list(geo_country.keys())
-    ), reverse=True)
-
-    if not all_periods:
-        return ""
-
-    def _period_label(p):
-        parts = p.split("~")
-        return f"FY{parts[1][:4]}" if len(parts) == 2 else p
-
-    def _fmt_value(v):
-        if v >= 1000:
-            return f"${v / 1000:.1f}B"
-        return f"${v:,}M"
-
-    # Products vs Services (skip if Services is zero)
-    has_services = any(v > 0 for (k, _), v in product_service.items() if k == "Service")
-    if product_service and has_services:
-        periods = sorted(set(p for _, p in product_service.keys()), reverse=True)
-        cols = [_period_label(p) for p in periods]
-        result += "#### Revenue by Category\n\n"
-        result += "| Category | " + " | ".join(cols) + " |\n"
-        result += "|----------|" + "|".join(["--------"] * len(cols)) + "|\n"
-        for seg_type in ["Product", "Service"]:
-            vals = [_fmt_value(product_service.get((seg_type, p), 0)) for p in periods]
-            result += f"| {seg_type}s | " + " | ".join(vals) + " |\n"
-        total_vals = [_fmt_value(totals.get(p, 0)) for p in periods]
-        result += "| **Total** | " + " | ".join(total_vals) + " |\n\n"
-
-    # Product lines
-    if product_lines:
-        periods = sorted(set(p for _, p in product_lines.keys()), reverse=True)
-        cols = [_period_label(p) for p in periods]
-        result += "#### Revenue by Product Line\n\n"
-        result += "| Product | " + " | ".join(cols) + " |\n"
-        result += "|---------|" + "|".join(["--------"] * len(cols)) + "|\n"
-        products = list(set(prod for prod, _ in product_lines.keys()))
-        latest = periods[0] if periods else ""
-        products.sort(key=lambda x: product_lines.get((x, latest), 0), reverse=True)
-        products = products[:8]  # Limit to top 8 to control token usage
-        for prod in products:
-            label = _clean_xbrl_label(prod)
-            vals = [_fmt_value(product_lines.get((prod, p), 0)) for p in periods]
-            result += f"| {label} | " + " | ".join(vals) + " |\n"
-        result += "\n"
-
-    # Geographic segments
-    if geographic:
-        periods = sorted(set(p for _, p in geographic.keys()), reverse=True)
-        cols = [_period_label(p) for p in periods]
-        result += "#### Revenue by Geographic Segment\n\n"
-        result += "| Region | " + " | ".join(cols) + " |\n"
-        result += "|--------|" + "|".join(["--------"] * len(cols)) + "|\n"
-        regions = list(set(r for r, _ in geographic.keys()))
-        latest = periods[0] if periods else ""
-        regions.sort(key=lambda x: geographic.get((x, latest), 0), reverse=True)
-        for region in regions:
-            label = _clean_xbrl_label(region)
-            vals = [_fmt_value(geographic.get((region, p), 0)) for p in periods]
-            result += f"| {label} | " + " | ".join(vals) + " |\n"
-        total_vals = [_fmt_value(totals.get(p, 0)) for p in periods]
-        result += "| **Total** | " + " | ".join(total_vals) + " |\n\n"
-
-    # Country-level (skip if geographic segments already provide regional breakdown)
-    if geo_country and not geographic:
-        periods = sorted(set(p for _, p in geo_country.keys()), reverse=True)
-        cols = [_period_label(p) for p in periods]
-        result += "#### Revenue by Country\n\n"
-        result += "| Country | " + " | ".join(cols) + " |\n"
-        result += "|---------|" + "|".join(["--------"] * len(cols)) + "|\n"
-        countries = list(set(c for c, _ in geo_country.keys()))
-        latest = periods[0] if periods else ""
-        countries.sort(key=lambda x: geo_country.get((x, latest), 0), reverse=True)
-        for country in countries:
-            label = _clean_xbrl_label(country)
-            vals = [_fmt_value(geo_country.get((country, p), 0)) for p in periods]
-            result += f"| {label} | " + " | ".join(vals) + " |\n"
-        result += "\n"
-
-    return result
+        lines.append(line)
+        used += len(line)
+    if omitted:
+        lines.append(f"Omitted: {omitted} additional facts (display budget).")
+    if evidence['gaps']:
+        reasons = sorted({gap['reason'] for gap in evidence['gaps']})
+        lines.append("Evidence gaps: " + ", ".join(reasons))
+    lines.append("Missing/omitted evidence is unknown, not zero. No ratios or totals inferred.")
+    return "\n".join(lines) + "\n"
 
 
 def prefetch_segment_revenue(ticker: str) -> str:
-    """Prefetch segment revenue data from latest 10-K filing via Yahoo Finance CDN.
+    """Read provider-selected periodic filing evidence via Yahoo Finance CDN.
 
-    Uses yfinance sec_filings to find 10-K URL, downloads XBRL inline HTML from
-    cdn.yahoofinance.com, and parses segment revenue breakdowns.
+    Supports 10-K/10-Q/20-F/40-F inline evidence, not event-form replacements.
+    Provider ordering is retained; official latest-filing status is not verified.
 
     Args:
         ticker: Stock ticker symbol
@@ -793,8 +660,14 @@ def prefetch_segment_revenue(ticker: str) -> str:
         Markdown formatted segment revenue data, or empty string on error
     """
     try:
-        import yfinance as yf
+        import re
         import urllib.request
+        from datetime import date
+        from urllib.parse import urlsplit
+
+        import yfinance as yf
+
+        from prism_core.sec_inline_evidence import MAX_BYTES
 
         stock = yf.Ticker(ticker)
         filings = stock.sec_filings
@@ -803,38 +676,62 @@ def prefetch_segment_revenue(ticker: str) -> str:
             logger.warning(f"No SEC filings for {ticker}")
             return ""
 
-        # Find latest 10-K or 10-Q (whichever is most recent)
-        # sec_filings are returned in date-descending order
+        # Select the first supported periodic form in provider order, not a
+        # claim that the feed contains the latest officially accepted filing.
         filing = None
         for f in filings:
             ftype = f.get('type', '')
-            if ftype in ('10-K', '10-Q'):
+            if ftype in ('10-K', '10-Q', '20-F', '40-F'):
                 filing = f
                 break
 
         if not filing:
-            logger.warning(f"No 10-K/10-Q filing found for {ticker}")
+            logger.warning(f"No supported periodic filing found for {ticker}")
             return ""
 
-        filing_type = filing.get('type', '10-K')
+        filing_type = filing['type']
+        provider_date = filing.get('date')
+        if provider_date is not None:
+            try:
+                filing_day = date.fromisoformat(str(provider_date))
+            except (ValueError, TypeError):
+                return "SEC segment evidence unavailable: invalid provider filing date.\n"
+            if filing_day > datetime.now(ZoneInfo('America/New_York')).date():
+                return "SEC segment evidence unavailable: future provider filing date.\n"
         url = filing.get('exhibits', {}).get(filing_type, '')
         if not url:
             logger.warning(f"No {filing_type} exhibit URL for {ticker}")
             return ""
 
-        # Download filing HTML from Yahoo Finance CDN
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        resp = urllib.request.urlopen(req, timeout=30)
-        html_content = resp.read().decode('utf-8', errors='replace')
+        # This legacy provider feed is not an official SEC latest-filing check.
+        parsed = urlsplit(url)
+        path_match = re.fullmatch(r'/prod/sec-filings/([0-9]{1,10})/([0-9]{18})/([A-Za-z0-9_.-]+\.html?)', parsed.path)
+        if (parsed.scheme != 'https' or parsed.hostname != 'cdn.yahoofinance.com'
+                or parsed.username or parsed.password or parsed.port not in (None, 443)
+                or parsed.query or parsed.fragment or not path_match
+                or int(path_match.group(1)) == 0):
+            return "SEC segment evidence unavailable: unsupported provider URL.\n"
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        req = urllib.request.Request(url, headers={'User-Agent': 'PRISM-INSIGHT/1.0'})
+        with urllib.request.build_opener(NoRedirect).open(req, timeout=30) as resp:
+            html_content = resp.read(MAX_BYTES + 1)
+        if len(html_content) > MAX_BYTES:
+            return "SEC segment evidence unavailable: provider document exceeds byte limit.\n"
 
         if not html_content:
             logger.warning(f"Empty {filing_type} HTML for {ticker}")
             return ""
 
-        result = _parse_10k_segment_revenue(html_content)
+        result = _parse_10k_segment_revenue(html_content, expected_cik=path_match.group(1))
         if result:
-            # Update title to reflect actual filing type
-            result = result.replace("from 10-K filing", f"from {filing_type} filing")
+            result = (f"Provider: Yahoo Finance CDN; form={filing_type}; "
+                      f"provider filing date={filing.get('date', 'unknown')}; "
+                      f"URL={url}. Official latest-filing status NOT verified. "
+                      "Identity=PROVIDER_PATH_ONLY_NOT_OFFICIAL (not independent ticker verification).\n" + result)
             logger.info(f"Parsed segment revenue for {ticker} from {filing_type} ({len(html_content):,} chars HTML)")
         else:
             logger.warning(f"No segment revenue data found in {filing_type} for {ticker}")

@@ -50,6 +50,17 @@ def _size(value):
     return len(_dump(value).encode('utf-8'))
 
 
+def expand_filing_record(record, payload):
+    """Losslessly resolve source-local filing metadata for audit/consumers."""
+    if 'filing_ref' not in record:
+        return dict(record)
+    key = record['filing_ref']
+    filing = payload.get('source_filings', {}).get(key)
+    if key != record.get('source_id') or not isinstance(filing, dict) or 'filing' in record:
+        raise ValueError('INVALID_FILING_REFERENCE')
+    return {k: v for k, v in {**record, 'filing': filing}.items() if k != 'filing_ref'}
+
+
 def _mentions(text, word):
     if word == '수주':
         return bool(re.search(r'(?<![가-힣])(?:(?:신규|누적|총|주요)\s*)?수주', text))
@@ -199,7 +210,8 @@ async def collect(market, symbol, day, company, transport, *, context, progress,
 
     sources, gaps = progress['sources'], progress['gaps']
     filing_parser = ('structured_v1' if filing_parser is True else filing_parser)
-    filing_parser = filing_parser if market == 'KR' and filing_parser in ('structured_v1', 'material_v2') else None
+    filing_parser = filing_parser if ((market == 'KR' and filing_parser in ('structured_v1', 'material_v2'))
+                                     or (market == 'US' and filing_parser == 'sec_inline_v1')) else None
     if filing_parser:
         progress['filing_parser'] = filing_parser
     progress.setdefault('raw_response_utf8_bytes', 0)
@@ -211,6 +223,13 @@ async def collect(market, symbol, day, company, transport, *, context, progress,
             await collect_latest(symbol, company, latest_filings['decision_at'], latest_filings['scope'], progress)
         except Exception:  # noqa: BLE001 - optional provider failure cannot stop reports
             gaps.append('DART_COLLECTION_UNAVAILABLE')
+    if latest_filings and market == 'US' and filing_parser == 'sec_inline_v1':
+        from prism_core.sec_report_evidence import collect_latest
+
+        try:
+            await collect_latest(symbol, latest_filings['decision_at'], latest_filings.get('user_agent'), progress)
+        except Exception:  # noqa: BLE001 - never expose provider/auth messages
+            gaps.append('SEC_COLLECTION_UNAVAILABLE')
     alias = MEMORY_SUBJECTS.get((market, symbol))
     name = context.get('name') or company
     queries = [f'"{name}" {symbol} 사업보고서 주요제품 경쟁업체' if market == 'KR' else
@@ -255,6 +274,11 @@ async def collect(market, symbol, day, company, transport, *, context, progress,
         url = public_url(raw_url)
         reuse = url in pending and url in linked_identity
         if not url or (url in seen and not reuse):
+            continue
+        if latest_filings and market == 'US' and urlsplit(url).hostname in {'sec.gov', 'www.sec.gov', 'data.sec.gov'}:
+            # The dedicated official collector owns these documents, including
+            # access errors. Never turn a 403 into a different-host scrape retry.
+            gaps.append('SEC_DOCUMENT_REQUIRES_SELECTED_OFFICIAL_PATH')
             continue
         seen.add(url)
         if _discovery_only(url):
@@ -385,6 +409,9 @@ def packet(market, symbol, day, progress):
     if 'dart_metrics' in progress:
         progress['dart_calls'] = sum(m.get('calls', 0) for m in progress['dart_metrics'].values())
         progress['dart_response_bytes'] = sum(m.get('response_bytes', 0) for m in progress['dart_metrics'].values())
+    if 'sec_metrics' in progress:
+        progress['sec_calls'] = sum(m.get('calls', 0) for m in progress['sec_metrics'].values())
+        progress['sec_response_bytes'] = sum(m.get('response_bytes', 0) for m in progress['sec_metrics'].values())
     observed = datetime.now(timezone.utc).isoformat()
     evidence_id = hashlib.sha256(_dump([PROFILE, market, symbol, day, sources]).encode()).hexdigest()[:24]
     notes, injected = {}, set()
@@ -396,14 +423,15 @@ def packet(market, symbol, day, progress):
         if 'filing_selection' in progress:
             payload['filing_notice'] = ('Use primary for its stated period; annual_supplement provides older detail only. '
                 'Do not overwrite current results with annual figures. Submission date is not event date. '
-                'Selection covers a finite query, not certified global latest; missing sections remain unknown.')
+                'Selection covers a finite query, not certified global latest; missing sections remain unknown. '
+                'Resolve each filing_ref using source_filings; never transfer metadata between sources.')
         omissions = 0
         seen = set()
         # Round-robin by topic avoids making risk evidence compete solely on rank
         # against long financial tables. Existing data remains with its owner.
         queues = {topic: [(source, block) for source in sources
                           for block in [b for b in source.get('blocks', []) if b['topic'] == topic][
-                              :24 if any(b.get('provenance', {}).get('parser_version') in ('structured_v1', 'material_v2')
+                              :24 if any(b.get('provenance', {}).get('parser_version') in ('structured_v1', 'material_v2', 'sec_inline_v1')
                                          for b in source.get('blocks', [])) else 2]]
                   for topic in topics}
         for position in range(max((len(rows) for rows in queues.values()), default=0)):
@@ -422,11 +450,21 @@ def packet(market, symbol, day, progress):
                     if 'provenance' in block:
                         record['provenance'] = block['provenance']
                     trial = {**payload, 'sources': [*payload['sources'], record], 'omitted_blocks': omissions}
+                    if 'filing' in record:
+                        refs = payload.get('source_filings', {})
+                        source_id = record['source_id']
+                        if source_id in refs and refs[source_id] != record['filing']:
+                            omissions += 1
+                            if 'SOURCE_FILING_CONFLICT' not in payload['gaps']:
+                                payload['gaps'].append('SOURCE_FILING_CONFLICT')
+                            continue
+                        trial['source_filings'] = {**refs, source_id: record.pop('filing')}
+                        record['filing_ref'] = source_id
                     provenance = record.get('provenance', {})
                     shared_keys = ('parser_version', 'representation', 'representation_sha256')
-                    if provenance.get('representation') != 'DART_VIEWER_HTML':
+                    if provenance.get('representation') not in {'DART_VIEWER_HTML', 'SEC_INLINE_XBRL'}:
                         shared_keys += ('markdown_sha256',)
-                    if (provenance.get('parser_version') == 'material_v2'
+                    if (provenance.get('parser_version') in {'material_v2', 'sec_inline_v1'}
                             and all(key in provenance for key in shared_keys)):
                         shared_keys += tuple(key for key in ('html_parser_version', 'locator_model') if key in provenance)
                         common = {key: provenance[key] for key in shared_keys}
@@ -457,6 +495,10 @@ def packet(market, symbol, day, progress):
         # Reserve metadata budget without ever slicing source text.
         while _size(payload) > SECTION_BYTES and payload['sources']:
             removed = payload['sources'].pop()
+            retained = {row['source_id'] for row in payload['sources']}
+            for reference_table in ('source_filings', 'source_provenance'):
+                if reference_table in payload:
+                    payload[reference_table] = {k: v for k, v in payload[reference_table].items() if k in retained}
             payload['omitted_blocks'] += 1
             if not any(row['topic'] == removed['topic'] for row in payload['sources']):
                 payload['topic_gaps'][removed['topic']] = 'BYTE_BUDGET'
@@ -475,10 +517,14 @@ def packet(market, symbol, day, progress):
                         'section_utf8_bytes': {k: len(v.encode('utf-8')) for k, v in notes.items()},
                         'competitive_complete': False, 'collection_complete': False, 'usage': 'UNKNOWN',
                         'events': progress.get('events', []), 'tradingview': 'RIGHTS_UNCONFIRMED',
-                        **({key: progress[key] for key in ('filing_selection', 'dart_calls', 'dart_response_bytes')
+                        **({key: progress[key] for key in ('filing_selection', 'dart_calls', 'dart_response_bytes',
+                                                          'sec_calls', 'sec_response_bytes')
                             if key in progress}),
                         **({'dart_calls_this_run': progress['dart_calls'],
                             'total_calls_this_run': progress['calls'] + progress['dart_calls']}
                            if 'dart_calls' in progress else {}),
+                        **({'sec_calls_this_run': progress['sec_calls'],
+                            'total_calls_this_run': progress['calls'] + progress['sec_calls']}
+                           if 'sec_calls' in progress else {}),
                         **({'filing_parser': progress['filing_parser'], 'filing_parser_revision': FILING_PARSER_REVISION}
                            if 'filing_parser' in progress else {})}}

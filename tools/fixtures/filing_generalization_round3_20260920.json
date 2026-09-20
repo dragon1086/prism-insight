@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "frozen_at": "2026-09-20T01:28:11+00:00",
+  "decision_at": "2026-09-20T01:28:11+00:00",
+  "scope": "consolidated",
+  "policy": "Freeze before inspecting this round's outputs. No per-ticker parsing or selection rules. Failed cases remain in denominator; holdout becomes regression if used for changes.",
+  "KR": {
+    "development": [
+      {"ticker": "068270", "name": "셀트리온", "sector": "biopharmaceutical"},
+      {"ticker": "028260", "name": "삼성물산", "sector": "diversified_holding"},
+      {"ticker": "005490", "name": "POSCO홀딩스", "sector": "steel_holding"},
+      {"ticker": "035720", "name": "카카오", "sector": "platform"},
+      {"ticker": "373220", "name": "LG에너지솔루션", "sector": "battery"},
+      {"ticker": "011200", "name": "HMM", "sector": "shipping"}
+    ],
+    "holdout": [
+      {"ticker": "010130", "name": "고려아연", "sector": "metals"},
+      {"ticker": "034020", "name": "두산에너빌리티", "sector": "power_equipment"},
+      {"ticker": "032830", "name": "삼성생명", "sector": "insurance"},
+      {"ticker": "192820", "name": "코스맥스", "sector": "cosmetics_manufacturing"}
+    ]
+  },
+  "US": {
+    "development": [
+      {"ticker": "MSFT", "name": "Microsoft", "sector": "software"},
+      {"ticker": "JPM", "name": "JPMorgan Chase", "sector": "bank"},
+      {"ticker": "XOM", "name": "Exxon Mobil", "sector": "energy"},
+      {"ticker": "PLD", "name": "Prologis", "sector": "reit"},
+      {"ticker": "REGN", "name": "Regeneron", "sector": "biotechnology"},
+      {"ticker": "COST", "name": "Costco", "sector": "retail_noncalendar_fiscal"}
+    ],
+    "holdout": [
+      {"ticker": "TSM", "name": "Taiwan Semiconductor Manufacturing", "sector": "foreign_semiconductor"},
+      {"ticker": "BABA", "name": "Alibaba", "sector": "foreign_platform"},
+      {"ticker": "NVO", "name": "Novo Nordisk", "sector": "foreign_pharmaceutical"},
+      {"ticker": "DE", "name": "Deere", "sector": "industrial_noncalendar_fiscal"}
+    ]
+  }
+}

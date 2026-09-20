@@ -9,7 +9,7 @@ from prism_core.filing_html import parse_filing_html
 from prism_core.filing_report_evidence import _record_blocks
 from prism_core.material_filing_selection import material_html_records
 
-VERSION = 'dart-selected-sections-v1'
+VERSION = 'dart-selected-sections-v2'
 
 
 def section_blocks(row, section):
@@ -84,6 +84,7 @@ async def collect_latest(symbol, company, decision_at, scope, progress):
         return
     rows = {r['receipt_id']: r for r in result['filings']}
     progress['filing_selection']['selected_section_delivery'] = {}
+    progress['filing_selection']['selected_section_provenance'] = {}
     for role, key in (('primary', selection['primary_id']),
                       ('annual_supplement', selection.get('annual_supplement_id'))):
         if not key:
@@ -91,6 +92,10 @@ async def collect_latest(symbol, company, decision_at, scope, progress):
         row = rows[key]
         delivery = row.get('section_delivery', {})
         progress['filing_selection']['selected_section_delivery'][key] = delivery
+        progress['filing_selection']['selected_section_provenance'][key] = {
+            name: {field: section[field] for field in ('sha256', 'utf8_bytes', 'url')}
+            for name, section in row['sections'].items()
+            if name in {'financial_statements', 'financial_notes'} and 'html' in section}
         if delivery.get('status') != 'AVAILABLE':
             progress['gaps'].append('DART_SELECTED_SECTIONS_PARTIAL')
         for section_name, section in row['sections'].items():

@@ -14,14 +14,28 @@ from test_dart_public_filings import (
     main,
 )
 
+from prism_core import dart_public_filings
+
 NOTES = ('<h2>3. 연결재무제표 주석</h2><p>(단위: 백만원)</p>'
          '<p>계약금은 허가 취득 조건 충족 시 수령합니다.</p><p>주1) 반환 의무가 있습니다.</p>')
 
 
-def run_sections(*, notes=NOTES, financial=BODY, include=True, node=True, main_mutate=None, **kwargs):
+@pytest.fixture(autouse=True)
+def no_wall_pacing(monkeypatch):
+    async def no_wait(seconds):
+        pass
+    monkeypatch.setattr(dart_public_filings.asyncio, 'sleep', no_wait)
+
+
+def run_sections(*, notes=NOTES, financial=BODY, include=True, node=True, main_mutate=None,
+                 response_hook=None, **kwargs):
     requests = []
     def handler(request):
         requests.append(request)
+        if response_hook:
+            response = response_hook(request)
+            if response is not None:
+                return response
         if request.method == 'POST':
             body = catalog(RECORDS[:1])
         elif request.url.path.endswith('main.do'):
@@ -159,3 +173,103 @@ def test_bad_financial_section_is_never_delivered(financial, code):
     assert row['section_delivery']['status'] == 'UNAVAILABLE'
     assert code in row['section_delivery']['errors']
     assert 'financial_statements' not in row['sections']
+
+
+def test_selected_annual_notes_precede_unused_interim_notes_with_same_budget():
+    records = RECORDS[:3]
+    notes_requested = []
+    def handler(request):
+        rid = request.url.params.get('rcpNo')
+        record = next((r for r in records if r[0] == rid), None)
+        if request.method == 'POST':
+            body = catalog(records)
+        elif request.url.path.endswith('main.do'):
+            body = main(rid)
+            fields = {'text': '3. 연결재무제표 주석', 'rcpNo': rid,
+                      'dcmNo': '12345678', 'eleId': '3', 'offset': '100',
+                      'length': '100', 'dtd': 'dart4.xsd'}
+            script = ''.join(f'node3["{k}"] = {json.dumps(v, ensure_ascii=False)};\n' for k, v in fields.items())
+            body = body.replace('</script>', script + '</script>')
+        elif request.url.params['eleId'] == '0':
+            body = cover(record)
+        elif request.url.params['eleId'] == '3':
+            notes_requested.append(rid)
+            body = NOTES
+        else:
+            body = BODY
+        return httpx.Response(200, text=body)
+    result = asyncio.run(collect_with_transport(handler, include_section_bodies=True, max_calls=12))
+    assert result['metrics']['calls'] == 12  # catalog + 3 cores * 3 + 2 selected notes
+    assert notes_requested == [records[0][0], records[2][0]]
+    assert result['selection']['primary_id'] == records[0][0]
+    assert result['selection']['annual_supplement_id'] == records[2][0]
+    rows = {r['receipt_id']: r for r in result['filings']}
+    assert rows[records[2][0]]['section_delivery']['status'] == 'AVAILABLE'
+    assert rows[records[1][0]]['section_delivery']['missing_sections'] == ['financial_notes']
+
+
+@pytest.mark.parametrize('exception', [httpx.RemoteProtocolError, httpx.ConnectError])
+def test_one_transient_note_retry_is_counted_in_same_budget(exception):
+    attempts = 0
+    def hook(request):
+        nonlocal attempts
+        if request.url.params.get('eleId') == '3':
+            attempts += 1
+            if attempts == 1:
+                raise exception('private transport error')
+    result, requests = run_sections(response_hook=hook)
+    assert len(requests) == result['metrics']['calls'] == 6
+    assert attempts == 2
+    assert result['metrics']['transport_retries'] == 1
+    assert result['filings'][0]['section_delivery']['status'] == 'AVAILABLE'
+
+
+def test_persistent_transport_failure_and_budget_cannot_be_bypassed():
+    def hook(request):
+        if request.url.params.get('eleId') == '3':
+            raise httpx.RemoteProtocolError('private error')
+    result, requests = run_sections(response_hook=hook, max_calls=5)
+    assert len(requests) == result['metrics']['calls'] == 5
+    assert result['filings'][0]['section_delivery']['status'] == 'PARTIAL'
+    assert 'CALL_BUDGET_EXHAUSTED' in result['filings'][0]['section_delivery']['errors']
+    result, requests = run_sections(response_hook=hook)
+    assert len(requests) == 6
+    assert 'HTTP_TRANSPORT_FAILURE' in result['filings'][0]['section_delivery']['errors']
+    assert 'private' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('status', [403, 429])
+def test_http_denial_is_not_retried(status):
+    result, requests = run_sections(response_hook=lambda request: httpx.Response(status)
+                                   if request.url.params.get('eleId') == '3' else None)
+    assert len(requests) == 5
+    assert 'HTTP_STATUS_FAILURE' in result['filings'][0]['section_delivery']['errors']
+
+
+def test_opt_in_requests_are_paced_without_changing_default(monkeypatch):
+    sleeps = []
+    async def observed_sleep(seconds):
+        sleeps.append(seconds)
+    monkeypatch.setattr(dart_public_filings.asyncio, 'sleep', observed_sleep)
+    run_sections()
+    assert len(sleeps) == 4 and all(0 < x <= 0.2 for x in sleeps)
+    sleeps.clear()
+    run_sections(include=False)
+    assert sleeps == []
+
+
+def test_post_transport_failure_is_never_retried():
+    def fail(request):
+        raise httpx.RemoteProtocolError('private')
+    result, requests = run_sections(response_hook=fail)
+    assert len(requests) == 1
+    assert result['errors'] == ['HTTP_TRANSPORT_FAILURE']
+
+
+def test_timeout_is_not_retried_and_preserves_missing_body():
+    def fail(request):
+        if request.url.params.get('eleId') == '3':
+            raise httpx.ReadTimeout('private')
+    result, requests = run_sections(response_hook=fail)
+    assert len(requests) == 5
+    assert result['filings'][0]['section_delivery']['missing_sections'] == ['financial_notes']

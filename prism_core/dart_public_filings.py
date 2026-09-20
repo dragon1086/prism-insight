@@ -466,6 +466,7 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
         raise ValueError('INVALID_ACQUISITION_POLICY')
     metrics = _metrics if _metrics is not None else {}
     metrics.update(calls=0, response_bytes=0)
+    metrics.pop('transport_retries', None)
     out = {'status': 'FAILED', 'query': {'corp_code': corp_code, 'decision_at': decision_at.isoformat(),
             'start_date': start_date.isoformat(), 'end_date': cutoff.isoformat(), 'scope': scope},
            'observed_at': now.isoformat(), 'coverage': {'complete_within_query': False,
@@ -482,11 +483,19 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
         nonlocal page_complete, empty
         factory = client_factory or httpx.AsyncClient
         async with factory(timeout=15, follow_redirects=False, trust_env=False) as client:
-            async def request(method, url, **kwargs):
+            last_request_at = None
+
+            async def request_once(method, url, **kwargs):
+                nonlocal last_request_at
                 if out['metrics']['calls'] >= max_calls:
                     _fail('CALL_BUDGET_EXHAUSTED')
                 if out['metrics']['response_bytes'] >= 4 * _LIMIT:
                     _fail('RESPONSE_BYTES_EXCEEDED')
+                if include_section_bodies and last_request_at is not None:
+                    delay = 0.2 - (asyncio.get_running_loop().time() - last_request_at)
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                last_request_at = asyncio.get_running_loop().time()
                 out['metrics']['calls'] += 1
                 try:
                     client.cookies.clear()
@@ -507,8 +516,23 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                             return body.decode('utf-8')
                         except UnicodeDecodeError:
                             _fail('HTTP_UTF8_INVALID')
+                except (httpx.RemoteProtocolError, httpx.ConnectError):
+                    raise
                 except httpx.HTTPError:
                     _fail('HTTP_TRANSPORT_FAILURE')
+
+            async def request(method, url, **kwargs):
+                for attempt in range(2):
+                    try:
+                        return await request_once(method, url, **kwargs)
+                    except (httpx.RemoteProtocolError, httpx.ConnectError):
+                        if attempt or not include_section_bodies or method != 'GET':
+                            _fail('HTTP_TRANSPORT_FAILURE')
+                        if out['metrics']['calls'] >= max_calls:
+                            _fail('CALL_BUDGET_EXHAUSTED')
+                        out['metrics']['transport_retries'] = out['metrics'].get('transport_retries', 0) + 1
+                _fail('HTTP_TRANSPORT_FAILURE')
+
             expected = None
             for number in range(1, max_pages + 1):
                 data = {'currentPage': str(number), 'maxResults': '100', 'maxLinks': '10',
@@ -589,7 +613,21 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
             # Supplementary notes cannot consume calls needed to establish the
             # catalog's latest available edition. Acquire them only afterwards.
             if include_section_bodies:
-                for row in ordered[:max_filings]:
+                # Resolve tentative priorities from the same verified core
+                # evidence, without changing final lineage/blocker admission.
+                priority_rows = [{**r, 'lineage_errors': list(r['lineage_errors'])} for r in rows]
+                _resolve_lineage(priority_rows)
+                priority_candidates = [FilingCandidate(
+                    r['receipt_id'], f'DART:{corp_code}', r['source_url'], r['kind'],
+                    r.get('period_start'), r.get('period_end'), r.get('scope'),
+                    r['submitted_date'], True, r.get('amendment_of'), r.get('body_status', 'unread'))
+                    for r in priority_rows if not r['is_correction'] or r['lineage_verified']]
+                priorities = select_periodic_filings(priority_candidates, entity_id=f'DART:{corp_code}',
+                    scope=scope, decision_at=decision_at, market_timezone='Asia/Seoul', listing_complete=False)
+                selected_ids = [priorities['primary_id'], priorities['annual_supplement_id']]
+                note_order = sorted(ordered[:max_filings], key=lambda r: (
+                    selected_ids.index(r['receipt_id']) if r['receipt_id'] in selected_ids else 2))
+                for row in note_order:
                     if not row['scope_verified']:
                         continue
                     try:

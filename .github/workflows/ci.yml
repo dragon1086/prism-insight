@@ -75,6 +75,9 @@ jobs:
             tests/test_dart_public_filings.py tests/test_probe_dart_filings.py \
             tests/test_dart_identity.py tests/test_dart_section_collection.py \
             tests/test_dart_report_evidence.py tests/test_latest_filing_report_wiring.py \
+            tests/test_general_filing_report_evaluation.py tests/test_filing_metadata_compaction.py \
+            tests/test_sec_inline_evidence.py tests/test_sec_public_filings.py \
+            tests/test_sec_report_evidence.py tests/test_us_inline_cohort.py \
             tests/test_validate_dart_cohort.py tests/test_search_discovery_fallback.py -q
           python -m pytest tests/test_screening_price_evidence.py tests/test_screening_orchestrator_rr_contract.py tests/test_agent_fit_score_constant_tripwire.py -q
           python -m pytest tests/test_agent_lazy_broker_imports.py -q
