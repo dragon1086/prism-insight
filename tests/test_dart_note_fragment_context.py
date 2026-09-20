@@ -50,6 +50,19 @@ def call(row, child, main, **kwargs):
                                 parent_key=kwargs.get('parent_key', '123:3'))
 
 
+@pytest.mark.parametrize('title', ['별도 소송', '개별 소송', '연결 소송'])
+def test_unknown_fragment_layout_scope_is_not_promoted_by_verified_parent(title):
+    row, _, main = fixture()
+    body = ('<p>15-3. 차입금 및 약정사항 (연결)</p>'
+            f'<table class="nb"><tr><td colspan="2">{title}</td></tr>'
+            '<tr><td>당기말</td><td>(단위:백만원)</td></tr></table>'
+            '<table><tr><td>소송 충당부채</td><td>100</td></tr></table>')
+    parsed = parse_filing_html(body)
+    assert parsed['records'][-1]['scope'] == 'unknown'
+    assert parsed['records'][-1]['context_incomplete'] is True
+    assert call(row, section(4, body), main)[0] == []
+
+
 @pytest.mark.parametrize('scope', ['consolidated', 'standalone'])
 def test_verified_parent_scope_is_external_provenance_without_source_rewrite(scope, monkeypatch):
     row, child, main = fixture(scope)

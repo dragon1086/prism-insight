@@ -127,6 +127,11 @@ def material_html_records(records):
     """
     groups, active = [], []
     for record in records:
+        if record.get('layout_role') or record.get('context_incomplete'):
+            if active:
+                groups.append(active)
+                active = []
+            continue
         previous = active[-1] if active else None
         adjacent = (previous is not None and previous['kind'] == record['kind'] == 'prose'
                     and type(previous.get('event_index')) is int and type(record.get('event_index')) is int

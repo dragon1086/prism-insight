@@ -31,6 +31,52 @@ def test_mutated_source_text_is_not_accepted():
     assert audit_source_paths(HTML, parsed)['errors'][0]['reason'] == 'PROSE_LOCATOR_TEXT_MISMATCH'
 
 
+def _context_fixture():
+    html = ('<html><body><table><tr><td>충당부채</td><td>당기</td><td>단위: 백만원</td></tr></table>'
+            '<table><tr><th>항목</th><th>금액</th></tr><tr><td>기말</td><td>0</td></tr></table></body></html>')
+    parsed = parse_filing_html(html)
+    record = parsed['records'][1]
+    record['context_before'] = '기존 prose 문맥\n충당부채\n당기\n단위: 백만원'
+    record['context_paths'] = [f'/html/body/table[1]/tr/td[{i}]' for i in (1, 2, 3)]
+    return html, parsed
+
+
+def test_layout_context_paths_resolve_without_requiring_all_prose_locators():
+    html, parsed = _context_fixture()
+    assert not audit_source_paths(html, parsed)['errors']
+
+
+@pytest.mark.parametrize('last', [
+    '<table class="nb"><tr><td>(주2) 소송은 미확정입니다.</td></tr></table>',
+    '<p>(주2) 소송은 <span>미확정</span>입니다.</p>',
+])
+def test_separate_footnote_cells_keep_boundaries_without_splitting_inline_text(last):
+    html = ('<html><body><table><tr><td>충당부채</td><td>100</td></tr></table>'
+            '<table class="nb"><tr><td>(주1) 최선의 추정치입니다.</td></tr></table>' + last + '</body></html>')
+    parsed = parse_filing_html(html)
+    target = parsed['records'][0]
+    assert target['footnotes'] == '(주1) 최선의 추정치입니다.\n(주2) 소송은 미확정입니다.'
+    assert not audit_source_paths(html, parsed)['errors']
+
+
+@pytest.mark.parametrize('mutation', ['missing', 'value', 'order', 'duplicate', 'later'])
+def test_layout_context_locator_corruption_is_rejected(mutation):
+    html, parsed = _context_fixture()
+    record = parsed['records'][1]
+    if mutation == 'missing':
+        record['context_paths'][0] = '/html/body/table[99]/tr/td'
+    elif mutation == 'value':
+        record['context_before'] = record['context_before'].replace('백만원', '천원')
+    elif mutation == 'order':
+        record['context_paths'].reverse()
+    elif mutation == 'duplicate':
+        record['context_paths'].append(record['context_paths'][0])
+    else:
+        record['context_paths'] = ['/html/body/table[2]/tr[2]/td[2]']
+        record['context_before'] = '0'
+    assert audit_source_paths(html, parsed)['errors']
+
+
 def test_input_hash_and_actual_final_packet_are_measured(tmp_path):
     path = tmp_path / 'fixture.json'
     data = {'html': HTML, 'markdown': '## III. 재무에 관한 사항\n### 3. 연결재무제표 주석\n\n매출채권은 1,000원입니다.\n\n',

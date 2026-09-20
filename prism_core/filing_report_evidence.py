@@ -263,6 +263,8 @@ def _record_blocks(records, *, material_notes, representation, digest, md_hash,
     """Shared semantic routing; representation admission stays with the caller."""
     blocks = []
     for record in records:
+        if record.get('layout_role') or record.get('context_incomplete'):
+            continue
         source_text = '\n'.join((record.get('context_before', ''), record['text'], record.get('footnotes', '')))
         tags = ()
         if material_notes is True:
@@ -296,7 +298,7 @@ def _record_blocks(records, *, material_notes, representation, digest, md_hash,
             continue
         provenance = {key: record[key] for key in (
             'section_path', 'scope', 'kind', 'source_path', 'source_paths', 'source_spans', 'context_before',
-            'footnotes', 'footnote_paths', 'projected', 'projection_kind', 'selected_data_rows',
+            'footnotes', 'footnote_paths', 'context_paths', 'projected', 'projection_kind', 'selected_data_rows',
             'original_data_rows', 'scope_context') if key in record}
         provenance.update(parser_version=MATERIAL_VERSION if material_notes is True else VERSION, representation=representation,
                           representation_sha256=digest, markdown_sha256=md_hash)

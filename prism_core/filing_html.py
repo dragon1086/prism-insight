@@ -24,6 +24,66 @@ _FOOT = re.compile(r'^(?:※|주\s*\d*\s*[):：.]|\(주\s*\d*\)|\(\*\d*\)|\*\d*\
 _SKIP = {'head', 'script', 'style', 'noscript', 'iframe', 'object', 'embed', 'nav'}
 _BLOCK = {'p', 'div', 'section', 'article', 'table', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'title'}
 _MAX_LOCATOR_BYTES = 16 * 1024 * 1024
+_LAYOUT_LIMIT = 4096
+_LAYOUT_PERIOD = re.compile(r'(?:당|전)(?:기|반기|분기)(?:말)?')
+_LAYOUT_UNIT = re.compile(r'\(단위:(?:원|천원|백만원|억원|USD|천USD|백만USD|달러|천달러|백만달러)\)')
+
+
+def _layout_role(node, table):
+    """Recognize only lossless, non-data layout geometry, never by class alone."""
+    if 'nb' not in node.get('class', '').split() or node.get('border', '').strip() not in {'', '0'}:
+        return None
+    groups = node.xpath('.//colgroup')
+    if len(groups) > 1:
+        return None
+    if groups:
+        group = groups[0]
+        if (group.getparent() is not node or group.attrib or (group.text or '').strip()
+                or len(group) != table['column_count']):
+            return None
+        for col in group:
+            if (col.tag != 'col' or set(col.attrib) - {'width'} or len(col)
+                    or (col.text or '').strip() or (col.tail or '').strip()
+                    or ('width' in col.attrib and not re.fullmatch(r'[0-9]+', col.get('width')))):
+                return None
+    inline = {'span', 'font', 'b', 'strong', 'i', 'em', 'u', 'sup', 'sub', 'br'}
+    for item in node.iter():
+        if not isinstance(item.tag, str) or _hidden(item):
+            return None
+        if item.tag not in {'table', 'tbody', 'tr', 'td', 'colgroup', 'col'} | inline or 'rowspan' in item.attrib:
+            return None
+        allowed_parent = {'tbody': {'table'}, 'tr': {'table', 'tbody'}, 'td': {'tr'}, 'colgroup': {'table'}, 'col': {'colgroup'}}
+        if item.tag in allowed_parent and item.getparent().tag not in allowed_parent[item.tag]:
+            return None
+        in_cell = item.tag == 'td' or any(p.tag == 'td' for p in item.iterancestors())
+        if not in_cell and (item.text or '').strip():
+            return None
+        if item is not node and (item.tail or '').strip() and not any(p.tag == 'td' for p in item.iterancestors()):
+            return None
+        if item.tag in inline and not in_cell:
+            return None
+    cells = table['cells']
+    shape = [(c['row'], c['col'], c['rowspan'], c['colspan']) for c in cells]
+    if not cells or table['row_count'] != max(c['row'] + c['rowspan'] for c in cells):
+        return None
+    span_nodes = node.xpath('.//*[@colspan]')
+    if span_nodes and not (len(span_nodes) == 1 and span_nodes[0].tag == 'td'
+                           and span_nodes[0].get('colspan') == '2'
+                           and shape == [(0, 0, 1, 2), (1, 0, 1, 1), (1, 1, 1, 1)]):
+        return None
+    if shape == [(0, 0, 1, 1)]:
+        return 'spacer' if not cells[0]['text'] else 'footnote' if _FOOT.match(cells[0]['text']) else None
+    if shape == [(0, 0, 1, 2), (1, 0, 1, 1), (1, 1, 1, 1)]:
+        title = cells[0]['text']
+        if not 1 <= len(title) <= 240 or not re.search(r'[가-힣A-Za-z]', title):
+            return None
+        role, pair = 'caption', cells[1:]
+    elif shape == [(0, 0, 1, 1), (0, 1, 1, 1)]:
+        role, pair = 'period_unit', cells
+    else:
+        return None
+    period, unit = (c['text'] for c in pair)
+    return role if (not period or _LAYOUT_PERIOD.fullmatch(period)) and _LAYOUT_UNIT.fullmatch(re.sub(r'\s+', '', unit)) else None
 
 
 def _hidden(node):
@@ -131,11 +191,13 @@ class _Reducer:
         self.out, self.resolve_path = out, resolve_path
         self.path, self.scope, self.notes = {}, 'unknown', False
         self.footnote_target, self.context_records = None, []
+        self.layout_context = None
+        self.blocked_footnotes = False
         self.major_counts = Counter()
         self.event_index = 0
 
     def accept(self, node, text, source_path, source_paths, *, check_navigation=True):
-        if not text or check_navigation and _navigation(node, text):
+        if (not text and node.tag != 'table') or check_navigation and _navigation(node, text):
             return
         event_index = self.event_index
         self.event_index += 1
@@ -151,6 +213,8 @@ class _Reducer:
                 level = 3  # Contradictory explicit scope must not inherit its parent.
         if level is not None:
             self.footnote_target, self.context_records = None, []
+            self.layout_context = None
+            self.blocked_footnotes = False
             self.path = {k: v for k, v in self.path.items() if k < level}
             self.path[level] = text
             if level <= 3:
@@ -173,12 +237,23 @@ class _Reducer:
                   'section_path': [self.path[k] for k in sorted(self.path)],
                   'scope': self.scope, 'source_path': source_path, 'source_paths': source_paths,
                   'event_index': event_index, 'context_before': '', 'footnotes': ''}
+        if node.tag != 'table' and _FOOT.match(text) and self.blocked_footnotes:
+            record['context_incomplete'] = True
+            records.append(record)
+            return
         if node.tag == 'table':
-            self.footnote_target = None
             table = parse_html_table(node, path_resolver=self.resolve_path)
             if table['status'] != 'COMPLETE':
                 self.out['errors'].append('TABLE_' + table['status'])
                 self.context_records = []
+                self.footnote_target, self.layout_context = None, None
+                return
+            role = _layout_role(node, table)
+            if role == 'spacer':
+                self.event_index -= 1  # Strict empty layout is adjacency-transparent.
+                return
+            if not text:
+                self.footnote_target, self.layout_context, self.context_records = None, None, []
                 return
             # Small atomic tables can still amplify the retained document via
             # merged-cell grids. Bound aggregate output, not just active DOM.
@@ -203,16 +278,53 @@ class _Reducer:
                      for c in table['cells']]
             record.update(kind='table', table=table,
                           text=json.dumps({'cells': cells}, ensure_ascii=False, separators=(',', ':')))
-            self.footnote_target, self.context_records = record, []
+            if role:
+                record['layout_role'] = role
+            if role != 'footnote':
+                self.blocked_footnotes = False
+            if role in {'caption', 'period_unit'}:
+                self.layout_context = record
+                self.footnote_target = None
+            elif role == 'footnote':
+                target = self.footnote_target
+                foot = table['cells'][0]['text']
+                self._append_bounded_footnote(target, foot, [table['cells'][0]['source_path']])
+                self.layout_context, self.context_records = None, []
+            else:
+                pending = self.layout_context
+                if pending is not None and pending['section_path'] == record['section_path'] and pending['scope'] == record['scope']:
+                    labels = re.findall(r'연결|별도|개별', pending['table']['cells'][0]['text']) if pending['layout_role'] == 'caption' else []
+                    expected = {'consolidated': '연결', 'standalone': '별도'}.get(record['scope'])
+                    if any(label != expected for label in labels):
+                        record['context_incomplete'] = True
+                        self.out['errors'].append('LAYOUT_SCOPE_CONFLICT')
+                    else:
+                        values = [c['text'] for c in pending['table']['cells']]
+                        record['context_before'] = '\n'.join(filter(None, [*preceding, *values, *captions]))
+                        record['context_paths'] = [c['source_path'] for c in pending['table']['cells']]
+                self.footnote_target, self.context_records, self.layout_context = record, [], None
         elif _FOOT.match(text) and self.footnote_target is not None:
-            self.footnote_target['footnotes'] += ('\n' if self.footnote_target['footnotes'] else '') + text
-            self.footnote_target.setdefault('footnote_paths', []).extend(source_paths)
+            self._append_bounded_footnote(self.footnote_target, text, source_paths)
             return
         else:
             self.footnote_target = None
+            self.layout_context = None
+            self.blocked_footnotes = False
             self.context_records.append(record)
             self.context_records = self.context_records[-3:]
         records.append(record)
+
+    def _append_bounded_footnote(self, target, text, paths):
+        prior = target['footnotes'] if target is not None else ''
+        if len(prior.encode('utf-8')) + bool(prior) + len(text.encode('utf-8')) > _LAYOUT_LIMIT:
+            self.out['errors'].append('LAYOUT_CONTEXT_LIMIT')
+            if target is not None:
+                target['context_incomplete'] = True
+            self.footnote_target = None
+            self.blocked_footnotes = True
+        elif target is not None:
+            target['footnotes'] = (prior + '\n' if prior else '') + text
+            target.setdefault('footnote_paths', []).extend(paths)
 
 
 _CONTAINERS = {'html', 'body', 'div', 'section', 'article'}

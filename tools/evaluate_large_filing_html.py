@@ -32,6 +32,7 @@ def audit_source_paths(html, parsed):
     """Resolve every retained path against the unchanged full document model."""
     root = lhtml.document_fromstring(html, parser=lhtml.HTMLParser(no_network=True))
     tree = root.getroottree()
+    node_order = {node: index for index, node in enumerate(root.iter())}
     errors, checked = [], set()
 
     def resolve(path):
@@ -46,11 +47,16 @@ def audit_source_paths(html, parsed):
         checked.add(path)
         return values[0]
 
-    def joined(paths):
+    def joined(paths, *, footnote_units=False):
         parts = []
+        previous_cell = False
         for path in paths:
             node = resolve(path)
+            cell = isinstance(node, etree._Element) and node.tag == 'td'
+            if footnote_units and parts and (cell or previous_cell):
+                parts.append(' ')
             parts.append(_text(node, normalized=False) if isinstance(node, etree._Element) else str(node))
+            previous_cell = cell
         return _normalized(''.join(parts))
 
     for index, record in enumerate(parsed['records']):
@@ -72,8 +78,27 @@ def audit_source_paths(html, parsed):
                     if _visible_text(value) != cell['text'] or any(expected[k] != cell[k]
                             for k in ('row', 'col', 'rowspan', 'colspan', 'text', 'tag')):
                         raise ValueError('CELL_LOCATOR_OR_VALUE_MISMATCH')
-            if record.get('footnotes') and joined(record['footnote_paths']) != _normalized(record['footnotes']):
+            if record.get('footnotes') and joined(record['footnote_paths'], footnote_units=True) != _normalized(record['footnotes']):
                 raise ValueError('FOOTNOTE_LOCATOR_TEXT_MISMATCH')
+            if 'context_paths' in record:
+                paths = record['context_paths']
+                if not isinstance(paths, list) or not paths or any(not isinstance(p, str) for p in paths):
+                    raise ValueError('INVALID_CONTEXT_PATHS')
+                context = _normalized(record.get('context_before', ''))
+                cursor, previous = 0, -1
+                target = resolve(record['source_path'])
+                for path in paths:
+                    value = resolve(path)
+                    if (not isinstance(value, etree._Element) or value.tag != 'td'
+                            or not previous < node_order[value] < node_order[target]):
+                        raise ValueError('CONTEXT_LOCATOR_ORDER_MISMATCH')
+                    previous = node_order[value]
+                    text = _normalized(_text(value))
+                    if text:
+                        position = context.find(text, cursor)
+                        if position < 0:
+                            raise ValueError('CONTEXT_LOCATOR_TEXT_MISMATCH')
+                        cursor = position + len(text)
         except (ValueError, KeyError, TypeError) as exc:
             errors.append({'record_index': index, 'reason': str(exc)})
     return {'original_document_nodes': sum(1 for _ in root.iter()),
@@ -111,7 +136,7 @@ def evaluate_case(case, *, parser=parse_filing_html, adapter=filing_blocks):
             provenance = expand_html_provenance(row.get('provenance', {}))
             matches = [block for block in blocks if block['excerpt'] == row['excerpt'] and all(
                 block['provenance'].get(key) == provenance.get(key)
-                for key in ('source_path', 'source_paths', 'footnote_paths', 'scope', 'section_path'))]
+                for key in ('source_path', 'source_paths', 'footnote_paths', 'context_paths', 'scope', 'section_path'))]
             if len(matches) != 1:
                 delivered_provenance_errors.append({'owner': owner, 'index': index, 'reason': 'DELIVERED_LOCATOR_MISMATCH'})
     return {'symbol': case['symbol'], 'name': case['name'], 'file_sha256': digest,
