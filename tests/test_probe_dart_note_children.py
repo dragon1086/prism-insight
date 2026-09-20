@@ -113,6 +113,23 @@ def test_limits_leave_incomplete_fixture(tmp_path, monkeypatch, mode):
         assert not list((tmp_path / 'new').glob('response-*.bin'))
 
 
+@pytest.mark.parametrize('buffered', [False, True])
+def test_diagnostic_body_limit_stops_before_persistence_and_second_call(tmp_path, monkeypatch, buffered):
+    from tests.test_dart_fixture_transport import Stream
+
+    monkeypatch.setattr(tool, '_source_graph', graph)
+    calls = []
+    body = b'x' * (2 * 1024 * 1024 + 1)
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, **({'content': body} if buffered else {'stream': Stream([body])}))
+    path = tmp_path / 'new'
+    result = asyncio.run(tool.probe(path, live=True, transport_factory=lambda: httpx.MockTransport(handler)))
+    assert result['complete'] is False and len(calls) == 1
+    assert (path / 'INCOMPLETE').exists()
+    assert not list(path.glob('response-*.bin'))
+
+
 def test_cancellation_during_fetch_retains_marker(tmp_path, monkeypatch):
     monkeypatch.setattr(tool, '_source_graph', graph)
     async def run():

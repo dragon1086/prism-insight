@@ -11,6 +11,9 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
+from prism_core.filing_html_policy import MAX_HTML_BYTES
+
+# Control responses retain their independent original cap.
 MAX_BODY = 2 * 1024 * 1024
 MAX_TOTAL = 12 * 1024 * 1024
 MAX_MANIFEST = 1024 * 1024
@@ -26,6 +29,13 @@ _ERRORS = {name: getattr(httpx, name) for name in (
 
 class FixtureError(ValueError):
     """Static diagnostic failure; never contains a body or credentials."""
+
+
+def _body_limit(key):
+    # Called only after _request_key validates the official URL. Transport cannot
+    # infer cover/section semantics from eleId: this is a viewer envelope, not
+    # admission as evidence. The collector applies stricter scope/request checks.
+    return MAX_HTML_BYTES if urlsplit(key['url']).path == '/report/viewer.do' else MAX_BODY
 
 
 def _request_key(request):
@@ -90,7 +100,11 @@ def _private_read(path, limit):
 
 
 class FixtureRecorder:
-    def __init__(self, path, transport_factory):
+    def __init__(self, path, transport_factory, *, max_body_bytes=MAX_HTML_BYTES):
+        # Narrow diagnostic callers may lower, never expand, the URL envelope.
+        if type(max_body_bytes) is not int or not 0 < max_body_bytes <= MAX_HTML_BYTES:
+            raise FixtureError('INVALID_BODY_LIMIT')
+        self._max_body_bytes = max_body_bytes
         self.path = path
         self.transport_factory = transport_factory or (lambda: httpx.AsyncHTTPTransport(trust_env=False))
         self.responses = []
@@ -101,8 +115,9 @@ class FixtureRecorder:
         self._finished = False
 
     @classmethod
-    async def create(cls, path, transport_factory=None):
+    async def create(cls, path, transport_factory=None, *, max_body_bytes=MAX_HTML_BYTES):
         path = _path(path)
+        recorder = cls(path, transport_factory, max_body_bytes=max_body_bytes)
         def create():
             path.mkdir(mode=0o700)
             _write(path / MARKER, b'INCOMPLETE\n')
@@ -116,7 +131,7 @@ class FixtureRecorder:
                 raise
         except OSError as exc:
             raise FixtureError('CREATE_FAILED') from exc
-        return cls(path, transport_factory)
+        return recorder
 
     async def _io(self, function, *args):
         task = asyncio.create_task(asyncio.to_thread(function, *args))
@@ -143,7 +158,7 @@ class FixtureRecorder:
 
     def _capture_limit(self, entry):
         codes = []
-        if entry['observed_bytes'] > MAX_BODY:
+        if entry['observed_bytes'] > min(_body_limit(entry['request']), self._max_body_bytes):
             codes.append('CAPTURE_BODY_LIMIT')
         if self._total > MAX_TOTAL:
             codes.append('CAPTURE_TOTAL_LIMIT')
@@ -351,7 +366,7 @@ class FixtureReplay:
                     filename = f'response-{number:04d}.bin'
                     if entry['file'] != filename or status != 200 or (encoding is not None and encoding.strip().lower() != 'identity'):
                         raise FixtureError('MANIFEST_SCHEMA')
-                    body = _private_read(root / filename, MAX_BODY)
+                    body = _private_read(root / filename, _body_limit(key))
                     if (type(entry['size']) is not int or len(body) != entry['size']
                             or len(body) != entry['observed_bytes'] or hashlib.sha256(body).hexdigest() != entry['sha256']):
                         raise FixtureError('BODY_HASH_MISMATCH')

@@ -51,7 +51,7 @@ def test_section_hash_url_scope_or_receipt_mismatch_fails_closed():
 
 def test_unknown_scope_not_silently_assigned_and_oversize_not_sliced():
     row, section = fixture()
-    for html in ('<p>차입금 약정은 위반하지 않았습니다.</p>', ' ' * (2 * 1024 * 1024 + 1)):
+    for html in ('<p>차입금 약정은 위반하지 않았습니다.</p>', ' ' * (8 * 1024 * 1024 + 1)):
         section.update(html=html, sha256=hashlib.sha256(html.encode()).hexdigest(), utf8_bytes=len(html.encode()))
         blocks, gaps = section_blocks(row, section)
         assert not blocks and gaps

@@ -94,7 +94,7 @@ def test_document_larger_than_limit_is_not_fetched_or_truncated():
     ({'node': False}, 'NOTES_NODE_AMBIGUOUS'),
     ({'notes': '<h2>5. 재무제표 주석</h2>'}, 'SECTION_SCOPE_MISMATCH'),
     ({'notes': '<p>자료 없음</p>'}, 'NOTES_BODY_UNVERIFIED'),
-    ({'notes': NOTES + 'x' * (2 * 1024 * 1024)}, 'RESPONSE_BYTES_EXCEEDED'),
+    ({'notes': NOTES + 'x' * (8 * 1024 * 1024)}, 'RESPONSE_BYTES_EXCEEDED'),
     ({'max_calls': 4}, 'CALL_BUDGET_EXHAUSTED'),
 ])
 def test_missing_notes_explicit_without_poisoning_verified_latest(kwargs, code):
@@ -164,7 +164,7 @@ def test_ambiguous_notes_are_not_requested():
 
 @pytest.mark.parametrize('financial,code', [
     (BODY + '<h2>재무상태표</h2>', 'SECTION_SCOPE_MISMATCH'),
-    (BODY + 'x' * (2 * 1024 * 1024), 'RESPONSE_BYTES_EXCEEDED'),
+    (BODY + 'x' * (8 * 1024 * 1024), 'RESPONSE_BYTES_EXCEEDED'),
 ])
 def test_bad_financial_section_is_never_delivered(financial, code):
     result, _ = run_sections(financial=financial)

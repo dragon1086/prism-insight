@@ -98,6 +98,8 @@ class Harness:
 
 @pytest.fixture(autouse=True)
 def no_pacing(monkeypatch):
+    # Exercise the legacy per-body fallback independently of the total budget.
+    monkeypatch.setattr(dart_public_filings, 'MAX_HTML_BYTES', LIMIT)
     async def no_wait(seconds):
         pass
     monkeypatch.setattr(dart_public_filings.asyncio, 'sleep', no_wait)

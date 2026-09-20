@@ -52,6 +52,8 @@ def _filing(source):
 
 def _fragment_delivery(values):
     """Project only bounded metadata; raw context is never an evaluator result."""
+    from prism_core.filing_html_policy import MAX_HTML_BYTES
+
     def key(value):
         return value if type(value) is str and re.fullmatch(r'[0-9]{1,14}:[0-9]{1,14}', value) else None
 
@@ -105,7 +107,7 @@ def _fragment_delivery(values):
                 'context_verified': item.get('context_verified') if type(item.get('context_verified')) is bool else None,
                 'candidate_count': count(item.get('candidate_count')),
                 'gaps': _codes(gaps[:64]) if type(gaps) is list else ['UNCLASSIFIED_SOURCE_ERROR'],
-                'sha256': digest(item.get('sha256')), 'utf8_bytes': count(item.get('utf8_bytes'), 2 * 1024 * 1024),
+                'sha256': digest(item.get('sha256')), 'utf8_bytes': count(item.get('utf8_bytes'), MAX_HTML_BYTES),
                 'url': url(item.get('url'))}
         result[receipt] = row
     return result

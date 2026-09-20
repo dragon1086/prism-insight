@@ -11,13 +11,16 @@ from zoneinfo import ZoneInfo
 import httpx
 from lxml import html as lhtml
 
+from prism_core.dart_section_html import SectionHTML, SectionHTMLLimit
 from prism_core.filing_catalog import FilingCandidate, select_periodic_filings
+from prism_core.filing_html_policy import MAX_HTML_BYTES
 
 BASE = 'https://dart.fss.or.kr'
 _ZONE = ZoneInfo('Asia/Seoul')
 _KINDS = {'사업보고서': 'annual', '반기보고서': 'interim', '분기보고서': 'quarterly'}
 _FIELDS = ('text', 'rcpNo', 'dcmNo', 'eleId', 'offset', 'length', 'dtd')
 _LIMIT = 2 * 1024 * 1024
+_TOTAL_LIMIT = 8 * 1024 * 1024
 
 
 class _SourceError(ValueError):
@@ -328,7 +331,21 @@ def parse_cover_metadata(html):
             'submitted_date': submitted[0], 'legal_name': ' '.join(names[0])}
 
 
-def _scope_body(html, scope):
+def _scope_body(html, scope, scan=None):
+    scan = scan or _section_scan(html)
+    if scan is not None:
+        title = '연결재무상태표' if scope == 'consolidated' else '재무상태표'
+        if not any(scan.text(n, compact=True) == title for n in
+                   scan.nodes({'h1', 'h2', 'h3', 'p', 'caption', 'td'})):
+            _fail('SCOPE_BODY_UNVERIFIED')
+        for table in scan.nodes({'table'}):
+            text = scan.text(table, compact=True)
+            if '자산' in text and '부채' in text and any(
+                    re.fullmatch(r'\(?-?\d[\d,.]*\)?', scan.text(n, compact=True))
+                    for n in scan.nodes({'td', 'th'}, table)):
+                scan.check()
+                return
+        _fail('SCOPE_FINANCIAL_TABLE_MISSING')
     root = _tree(html)
     title = '연결재무상태표' if scope == 'consolidated' else '재무상태표'
     headings = [_compact(_text(n)) for n in root.xpath('//h1|//h2|//h3|//p|//caption|//td')]
@@ -342,18 +359,42 @@ def _scope_body(html, scope):
     _fail('SCOPE_FINANCIAL_TABLE_MISSING')
 
 
-def _provenance(body, node):
+def _section_scan(body):
+    return SectionHTML(body) if len(body.encode('utf-8')) > _LIMIT else None
+
+
+def _provenance(body, node, scan=None):
+    scan = scan or _section_scan(body)
+    preview = scan.text(scan.root, limit=1200) if scan else _text(_tree(body))[:1200]
+    raw = body.encode('utf-8')
+    digest = hashlib.sha256(raw).hexdigest()
+    if scan:
+        scan.check()
     return {'url': node['viewer_url'], 'tuple': {k: node[k] for k in _FIELDS if k != 'text'},
-            'utf8_bytes': len(body.encode('utf-8')), 'sha256': hashlib.sha256(body.encode('utf-8')).hexdigest(),
-            'preview': _text(_tree(body))[:1200], 'preview_not_complete': True}
+            'utf8_bytes': len(raw), 'sha256': digest,
+            'preview': preview, 'preview_not_complete': True}
 
 
-def _section_scope(body, scope, *, notes=False):
+def _section_scope(body, scope, *, notes=False, scan=None):
     """Reject conflicting scope; never manufacture missing section context."""
-    headings = {_compact(_text(n)) for n in _tree(body).xpath('//h1|//h2|//h3|//p|//caption|//td')}
-    headings = {re.sub(r'^\d+\.', '', h) for h in headings}
     opposite = ({'재무상태표', '재무제표주석'} if scope == 'consolidated'
                 else {'연결재무상태표', '연결재무제표주석'})
+    scan = scan or _section_scan(body)
+    if scan:
+        title = '연결재무제표주석' if scope == 'consolidated' else '재무제표주석'
+        found = False
+        for node in scan.nodes({'h1', 'h2', 'h3', 'p', 'caption', 'td'}):
+            heading = re.sub(r'^\d+\.', '', scan.text(node, compact=True))
+            scan.check()
+            if heading in opposite:
+                _fail('SECTION_SCOPE_MISMATCH')
+            found = found or heading == title
+        scan.check()
+        if notes and not found:
+            _fail('NOTES_BODY_UNVERIFIED')
+        return
+    headings = {_compact(_text(n)) for n in _tree(body).xpath('//h1|//h2|//h3|//p|//caption|//td')}
+    headings = {re.sub(r'^\d+\.', '', h) for h in headings}
     if headings & opposite:
         _fail('SECTION_SCOPE_MISMATCH')
     if notes:
@@ -536,11 +577,11 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
         async with factory(timeout=15, follow_redirects=False, trust_env=False) as client:
             last_request_at = None
 
-            async def request_once(method, url, *, _on_request=None, **kwargs):
+            async def request_once(method, url, *, _on_request=None, _body_limit=_LIMIT, **kwargs):
                 nonlocal last_request_at
                 if out['metrics']['calls'] >= max_calls:
                     _fail('CALL_BUDGET_EXHAUSTED')
-                if out['metrics']['response_bytes'] >= 4 * _LIMIT:
+                if out['metrics']['response_bytes'] >= _TOTAL_LIMIT:
                     _fail('RESPONSE_BYTES_EXCEEDED')
                 if include_section_bodies and last_request_at is not None:
                     delay = 0.2 - (asyncio.get_running_loop().time() - last_request_at)
@@ -562,9 +603,9 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                         chunks = response.aiter_bytes() if response.is_stream_consumed else response.aiter_raw()
                         async for chunk in chunks:
                             out['metrics']['response_bytes'] += len(chunk)
-                            if out['metrics']['response_bytes'] > 4 * _LIMIT:
+                            if out['metrics']['response_bytes'] > _TOTAL_LIMIT:
                                 _fail('RESPONSE_BYTES_EXCEEDED')
-                            if len(body) + len(chunk) > _LIMIT:
+                            if len(body) + len(chunk) > _body_limit:
                                 raise _SectionBodyLimitExceeded('RESPONSE_BYTES_EXCEEDED')
                             body.extend(chunk)
                         try:
@@ -654,17 +695,19 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                         _fail('SCOPE_NODE_AMBIGUOUS')
                     if include_section_bodies and sections[0]['dcmNo'] != covers[0]['dcmNo']:
                         _fail('SECTION_DOCUMENT_MISMATCH')
-                    body = await request('GET', sections[0]['viewer_url'])
-                    _scope_body(body, scope)
+                    body = await request('GET', sections[0]['viewer_url'],
+                                         _body_limit=MAX_HTML_BYTES if include_section_bodies else _LIMIT)
+                    scan = _section_scan(body)
+                    _scope_body(body, scope, scan)
                     if include_section_bodies:
-                        _section_scope(body, scope)
-                    row['sections']['financial_statements'] = _provenance(body, sections[0])
+                        _section_scope(body, scope, scan=scan)
+                    row['sections']['financial_statements'] = _provenance(body, sections[0], scan)
                     if include_section_bodies:
                         row['sections']['financial_statements']['html'] = body
                         section_nodes[row['receipt_id']] = [n for n in nodes if re.fullmatch(
                             r'\d+\.' + label + '주석', _compact(n['text']))]
                     row.update(body_status='available', scope_verified=True)
-                except _SourceError as exc:
+                except (_SourceError, SectionHTMLLimit) as exc:
                     row.update(body_status='unavailable')
                     row['errors'].append(str(exc))
             # Supplementary notes cannot consume calls needed to establish the
@@ -695,15 +738,16 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                             _fail('NOTES_NODE_AMBIGUOUS')
                         if notes[0]['dcmNo'] != row['sections']['financial_statements']['tuple']['dcmNo']:
                             _fail('SECTION_DOCUMENT_MISMATCH')
-                        body = await request('GET', notes[0]['viewer_url'])
-                        _section_scope(body, scope, notes=True)
-                        row['sections']['financial_notes'] = {**_provenance(body, notes[0]), 'html': body}
+                        body = await request('GET', notes[0]['viewer_url'], _body_limit=MAX_HTML_BYTES)
+                        scan = _section_scan(body)
+                        _section_scope(body, scope, notes=True, scan=scan)
+                        row['sections']['financial_notes'] = {**_provenance(body, notes[0], scan), 'html': body}
                     except _SectionBodyLimitExceeded as exc:
                         row['section_delivery']['errors'].append(str(exc))
                         if selected:
                             row['note_fragment_selection'] = _fragment_state(row, notes[0])
                             oversized.append((row, notes[0]))
-                    except _SourceError as exc:
+                    except (_SourceError, SectionHTMLLimit) as exc:
                         row['section_delivery']['errors'].append(str(exc))
                         if selected and _supplementary_failure(str(exc)):
                             stop_reason = str(exc)
@@ -744,7 +788,7 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                     if metrics['calls'] >= max_calls:
                         stop_reason = 'CALL_BUDGET_EXHAUSTED'
                         continue
-                    if metrics['response_bytes'] >= 4 * _LIMIT:
+                    if metrics['response_bytes'] >= _TOTAL_LIMIT:
                         stop_reason = 'RESPONSE_BYTES_EXCEEDED'
                         continue
                     def started(state=state, key=child['key']):
@@ -752,7 +796,8 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                             state['requested_keys'].append(key)
 
                     try:
-                        body = await request('GET', child['viewer_url'], _on_request=started)
+                        body = await request('GET', child['viewer_url'], _on_request=started,
+                                             _body_limit=MAX_HTML_BYTES)
                         fragment = {**_provenance(body, child), 'html': body,
                                     'parent_key': state['parent_key'], 'child_key': child['key']}
                         row.setdefault('note_fragments', []).append(fragment)
@@ -760,7 +805,7 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                         state['acquired_keys'].append(child['key'])
                     except _SectionBodyLimitExceeded as exc:
                         state['failures'].append({'child_key': child['key'], 'code': str(exc)})
-                    except _SourceError as exc:
+                    except (_SourceError, SectionHTMLLimit) as exc:
                         state['failures'].append({'child_key': child['key'], 'code': str(exc)})
                         if _supplementary_failure(str(exc)):
                             stop_reason = str(exc)

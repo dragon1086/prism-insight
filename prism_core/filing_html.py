@@ -7,9 +7,11 @@ import hashlib
 import json
 import re
 from collections import Counter
+from time import monotonic
 
 from lxml import etree
 
+from prism_core.filing_html_policy import MAX_HTML_BYTES
 from prism_core.filing_html_tables import parse_html_table
 
 _MAJOR = re.compile(r'^(?:I|II|III|IV|V|VI|VII|VIII|IX|X|XI|XII)[.)]\s*\S.{0,110}$')
@@ -24,6 +26,7 @@ _FOOT = re.compile(r'^(?:※|주\s*\d*\s*[):：.]|\(주\s*\d*\)|\(\*\d*\)|\*\d*\
 _SKIP = {'head', 'script', 'style', 'noscript', 'iframe', 'object', 'embed', 'nav'}
 _BLOCK = {'p', 'div', 'section', 'article', 'table', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'title'}
 _MAX_LOCATOR_BYTES = 16 * 1024 * 1024
+_MAX_PARSE_SECONDS = 10.0
 _LAYOUT_LIMIT = 4096
 _LAYOUT_PERIOD = re.compile(r'(?:당|전)(?:기|반기|분기)(?:말)?')
 _LAYOUT_UNIT = re.compile(r'\(단위:(?:원|천원|백만원|억원|USD|천USD|백만USD|달러|천달러|백만달러)\)')
@@ -499,6 +502,13 @@ def parse_filing_html(html, *, _feed_size=8192, _capture_headings=False):
     """
     if type(_feed_size) is not int or not 0 < _feed_size <= 65536:
         raise ValueError('feed size must be an integer from 1 to 65536')
+    deadline = monotonic() + _MAX_PARSE_SECONDS
+
+    def check_time():
+        # Cooperative, including reducer work; not preemption of libxml calls.
+        if monotonic() >= deadline:
+            raise _ParseLimit('HTML_TIME_LIMIT')
+
     out = {'status': 'UNSUPPORTED', 'errors': [], 'records': [], 'source_sha256': None,
            'parser_version': 'filing_html_v2', 'fact_validated': False,
            'document_complete': False, 'streaming': {
@@ -511,7 +521,7 @@ def parse_filing_html(html, *, _feed_size=8192, _capture_headings=False):
     if not isinstance(html, str) or not html.strip():
         out['errors'].append('HTML_EMPTY_OR_INVALID')
         return out
-    if len(html) > 2 * 1024 * 1024:
+    if len(html) > MAX_HTML_BYTES:
         out.update(status='LIMIT_EXCEEDED', errors=['HTML_BYTE_LIMIT'])
         return out
     try:
@@ -519,7 +529,7 @@ def parse_filing_html(html, *, _feed_size=8192, _capture_headings=False):
     except UnicodeEncodeError:
         out['errors'].append('HTML_ENCODING_INVALID')
         return out
-    if len(encoded) > 2 * 1024 * 1024:
+    if len(encoded) > MAX_HTML_BYTES:
         out.update(status='LIMIT_EXCEEDED', errors=['HTML_BYTE_LIMIT'])
         return out
     out['source_sha256'] = hashlib.sha256(encoded).hexdigest()
@@ -527,16 +537,24 @@ def parse_filing_html(html, *, _feed_size=8192, _capture_headings=False):
         out['errors'].append('HTML_ENCODING_OR_ENTITY_UNSUPPORTED')
         return out
     try:
+        check_time()
         parser = etree.HTMLPullParser(events=('start', 'end', 'comment'),
                                       encoding='utf-8', no_network=True)
         stream = _Stream(out)
         for offset in range(0, len(encoded), _feed_size):
+            check_time()
             parser.feed(encoded[offset:offset + _feed_size])
+            check_time()
             for kind, node in parser.read_events():
+                check_time()
                 stream.event(kind, node)
+        check_time()
         parser.close()
+        check_time()
         for kind, node in parser.read_events():
+            check_time()
             stream.event(kind, node)
+        check_time()
     except _ParseLimit as error:
         out.update(status='LIMIT_EXCEEDED', errors=[str(error)], records=[])
         if 'heading_events' in out:

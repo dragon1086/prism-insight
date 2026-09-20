@@ -217,7 +217,8 @@ def main():
     result = {'schema_version': 1, 'scope': manifest['scope'],
               'manifest_sha256': hashlib.sha256(args.manifest.read_bytes()).hexdigest(),
               'implementation_sha256': {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in (
-                  'prism_core/filing_html.py', 'prism_core/filing_html_tables.py',
+                  'prism_core/filing_html.py', 'prism_core/filing_html_policy.py',
+                  'prism_core/filing_html_tables.py',
                   'prism_core/filing_report_evidence.py', 'prism_core/material_filing_selection.py',
                   'prism_core/report_insight_prefetch.py', 'tools/evaluate_large_filing_html.py')},
               'limitations': ['Regression corpus, not unseen company holdout.',

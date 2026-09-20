@@ -66,7 +66,7 @@ def test_unsupported_table_is_a_gap_not_fallback_prose():
 
 
 def test_input_and_node_limits_fail_without_partial_evidence():
-    assert parse_filing_html('x' * (2 * 1024 * 1024 + 1))['status'] == 'LIMIT_EXCEEDED'
+    assert parse_filing_html('x' * (8 * 1024 * 1024 + 1))['status'] == 'LIMIT_EXCEEDED'
     assert parse_filing_html('<p>x</p>' * 30001)['records'] == []
 
 

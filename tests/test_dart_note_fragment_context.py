@@ -163,7 +163,7 @@ def test_child_source_and_tuple_are_not_reconstructed(mutation):
     elif mutation == 'bytes':
         child['utf8_bytes'] += 1
     else:
-        child = section(4, ' ' * (2 * 1024 * 1024 + 1))
+        child = section(4, ' ' * (8 * 1024 * 1024 + 1))
     assert call(row, child, main)[0] == []
 
 

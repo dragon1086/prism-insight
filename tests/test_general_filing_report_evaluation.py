@@ -10,7 +10,8 @@ MANIFEST = {'version': 1, 'decision_at': '2026-09-20T01:28:11+00:00', 'scope': '
                                    {'ticker': '000002', 'name': 'Failure', 'sector': 'test'}]}}
 
 
-def test_fragment_summary_separates_counts_and_scrubs_raw_context():
+@pytest.mark.parametrize('size', [100, 2 * 1024 * 1024 + 1, 8 * 1024 * 1024])
+def test_fragment_summary_separates_counts_and_scrubs_raw_context(size):
     from prism_core.report_insight_prefetch import packet
     from tools.evaluate_general_filing_reports import _summary
 
@@ -25,13 +26,14 @@ def test_fragment_summary_separates_counts_and_scrubs_raw_context():
             'failures': [{'child_key': key, 'code': 'PRIVATE BODY <script>', 'html': '<script>private</script>'}],
             'note_main_html': '<script>private</script>',
             'fragments': {key: {'context_verified': True, 'candidate_count': 0, 'gaps': [],
-                                'sha256': 'b' * 64, 'utf8_bytes': 100,
+                                'sha256': 'b' * 64, 'utf8_bytes': size,
                                 'html': '<p>private source</p>'}}}}}}
     value = _summary(state, packet('KR', '000001', '2026-09-20', state))['fragment_delivery'][receipt]
     assert value['child_total'] == 54 and value['planned_keys'] == [key, '123:5']
     assert value['fragments'][key]['context_verified'] is True
     assert value['fragments'][key]['candidate_count'] == 0
     assert value['fragments'][key]['sha256'] == 'b' * 64
+    assert value['fragments'][key]['utf8_bytes'] == size
     assert value['full_notes_acquired'] is False
     assert 'private' not in json.dumps(value).lower()
 
@@ -48,6 +50,14 @@ def test_fragment_summary_preserves_unknown_counts_and_default_shape():
         'full_notes_acquired': False, 'failures': [], 'fragments': {}}}}
     value = _summary(state, packet('KR', '000001', '2026-09-20', state))['fragment_delivery']['20260318000123']
     assert value['child_total'] is None and value['eligible_total'] is None
+
+
+def test_fragment_summary_rejects_over_limit_byte_count():
+    from tools.evaluate_general_filing_reports import _fragment_delivery
+
+    value = _fragment_delivery({'20260318000123': {'fragments': {
+        '123:4': {'utf8_bytes': 8 * 1024 * 1024 + 1}}}})
+    assert value['20260318000123']['fragments']['123:4']['utf8_bytes'] is None
 
 
 def test_fragment_summary_handles_malformed_metadata_without_raw_errors():

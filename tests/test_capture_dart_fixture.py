@@ -113,7 +113,8 @@ def test_capture_requires_explicit_live_and_valid_inputs(tmp_path, capsys):
 def test_code_fingerprint_includes_geometry_selection_and_summary_dependencies():
     from tools.capture_dart_fixture import _hashes
 
-    required = {'prism_core/filing_html_codec.py', 'prism_core/dart_viewer_tree.py', 'prism_core/filing_html_tables.py', 'prism_core/filing_catalog.py',
+    required = {'prism_core/filing_html_policy.py', 'prism_core/dart_section_html.py',
+                'prism_core/filing_html_codec.py', 'prism_core/dart_viewer_tree.py', 'prism_core/filing_html_tables.py', 'prism_core/filing_catalog.py',
                 'prism_core/filing_selection.py', 'prism_core/filing_structure.py',
                 'prism_core/material_filing_selection.py', 'prism_core/filing_materiality.py',
                 'prism_core/filing_table_projection.py', 'prism_core/report_research_prefetch.py',
@@ -125,11 +126,12 @@ def test_code_fingerprint_includes_geometry_selection_and_summary_dependencies()
 
 @pytest.mark.parametrize('streamed', [False, True])
 def test_adapter_caught_local_capture_limit_remains_explicit(tmp_path, streamed):
+    from prism_core.filing_html_policy import MAX_HTML_BYTES
     from tests.test_dart_fixture_transport import Stream
     from tools.capture_dart_fixture import capture
-    from tools.dart_fixture_transport import MAX_BODY, FixtureError, FixtureReplay
+    from tools.dart_fixture_transport import FixtureError, FixtureReplay
 
-    body = b'x' * (MAX_BODY + 1)
+    body = b'x' * (MAX_HTML_BYTES + 1)
     def oversized(request):
         if request.url.params.get('eleId') == '3':
             return httpx.Response(200, stream=Stream([body])) if streamed else httpx.Response(200, content=body)

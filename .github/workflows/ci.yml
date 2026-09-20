@@ -51,6 +51,8 @@ jobs:
             tests/test_filing_structure.py tests/test_filing_selection.py \
             tests/test_filing_table_projection.py tests/test_filing_extraction_evaluation.py \
             tests/test_filing_html.py tests/test_filing_html_tables.py \
+            tests/test_filing_html_limits.py tests/test_dart_html_limits.py \
+            tests/test_dart_fixture_html_limits.py \
             tests/test_filing_html_streaming.py tests/test_filing_html_streaming_adversarial.py \
             tests/test_filing_html_note_scope.py \
             tests/test_filing_html_layout_context.py \

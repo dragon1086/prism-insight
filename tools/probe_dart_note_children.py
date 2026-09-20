@@ -74,7 +74,9 @@ async def probe(path, *, live=False, transport_factory=None):
     if live is not True:
         raise FixtureError('LIVE_ACK_REQUIRED')
     nodes = _targets(await asyncio.to_thread(_source_graph))
-    recorder = await FixtureRecorder.create(path, transport_factory)
+    # This diagnostic approval remains 2 MiB per child, independently of the
+    # ordinary viewer envelope. Reject before buffered or streamed persistence.
+    recorder = await FixtureRecorder.create(path, transport_factory, max_body_bytes=2 * 1024 * 1024)
     summary = {'purpose': 'NOTE_CHILD_DIAGNOSTIC', 'main_sha256': MAIN_SHA256,
                'parent_key': PARENT, 'target_keys': list(TARGETS),
                'production_input_allowed': False, 'body_sha256': []}

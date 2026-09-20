@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from prism_core.dart_viewer_tree import parse_viewer_tree
 from prism_core.filing_html import parse_filing_html
+from prism_core.filing_html_policy import MAX_HTML_BYTES
 from prism_core.filing_report_evidence import _record_blocks
 from prism_core.material_filing_selection import material_html_records
 
@@ -17,15 +18,15 @@ _PLAIN_FINANCIAL_TITLE = re.compile(
 
 
 def _admit_section(row, section):
-    """Shared, unchanged admission of an exact hashed viewer representation."""
+    """Admit an exact hashed viewer HTML representation within its own byte cap."""
     try:
         body = section['html']
-        if not isinstance(body, str) or len(body) > 2 * 1024 * 1024:
+        if not isinstance(body, str) or len(body) > MAX_HTML_BYTES:
             raise ValueError
         raw = body.encode('utf-8')
         node = section['tuple']
         url = urlsplit(section['url'])
-        if (len(raw) > 2 * 1024 * 1024 or len(raw) != section['utf8_bytes']
+        if (len(raw) > MAX_HTML_BYTES or len(raw) != section['utf8_bytes']
                 or hashlib.sha256(raw).hexdigest() != section['sha256']
                 or url.scheme != 'https' or url.netloc != 'dart.fss.or.kr'
                 or url.path != '/report/viewer.do' or url.fragment
@@ -70,7 +71,7 @@ def _section_record_blocks(records, parsed, section, gaps):
     return blocks, gaps
 
 
-def _graph_section(meta, nodes, receipt, document):
+def _graph_section(meta, nodes, receipt, document, *, max_bytes=MAX_HTML_BYTES):
     """Check retained cover/financial provenance without inventing body hashes."""
     if not isinstance(meta, dict) or not isinstance(meta['url'], str):
         raise TypeError
@@ -85,7 +86,7 @@ def _graph_section(meta, nodes, receipt, document):
             or url.path != '/report/viewer.do' or url.fragment
             or len(query) != len(fields) or dict(query) != fields
             or not isinstance(meta['sha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', meta['sha256'])
-            or type(meta['utf8_bytes']) is not int or not 0 < meta['utf8_bytes'] <= 2 * 1024 * 1024):
+            or type(meta['utf8_bytes']) is not int or not 0 < meta['utf8_bytes'] <= max_bytes):
         raise ValueError
     return node
 
@@ -103,7 +104,8 @@ def _fragment_context(row, section, main_html, corp_code, parent_key):
     child = _graph_section(section, nodes, row['receipt_id'], parent['dcmNo'])
     if child['parent_key'] != parent_key or child['key'] not in parent['children_keys']:
         raise ValueError
-    cover = _graph_section(row['sections']['cover'], nodes, row['receipt_id'], parent['dcmNo'])
+    cover = _graph_section(row['sections']['cover'], nodes, row['receipt_id'], parent['dcmNo'],
+                           max_bytes=2 * 1024 * 1024)
     financial = _graph_section(row['sections']['financial_statements'], nodes, row['receipt_id'], parent['dcmNo'])
     for name in ('cover', 'financial_statements'):
         meta = row['sections'][name]
