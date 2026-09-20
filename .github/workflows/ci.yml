@@ -79,6 +79,7 @@ jobs:
             tests/test_capture_dart_large_section.py \
             tests/test_dart_viewer_tree.py tests/test_probe_dart_note_children.py \
             tests/test_dart_note_fragment_context.py \
+            tests/test_dart_note_fragment_collection.py \
             tests/test_general_filing_report_evaluation.py tests/test_filing_metadata_compaction.py \
             tests/test_sec_inline_evidence.py tests/test_sec_public_filings.py \
             tests/test_sec_report_evidence.py tests/test_us_inline_cohort.py \

@@ -169,6 +169,18 @@ def note_fragment_blocks(row, section, *, main_html, corp_code, parent_key):
     return _section_record_blocks(records, parsed, section, ['DART_NOTE_FRAGMENT_PARTIAL_COVERAGE'])
 
 
+def _fragment_selection_receipt(state):
+    receipt = {key: state[key] for key in (
+        'version', 'basis', 'parent_key', 'main_sha256', 'child_total', 'eligible_total',
+        'unselected_count', 'full_notes_acquired', 'discarded_due_to_final_selection', 'stop_reason') if key in state}
+    for key in ('planned_keys', 'requested_keys', 'acquired_keys', 'budget_omitted_keys'):
+        receipt[key] = list(state.get(key, []))
+    receipt['failures'] = [{key: item[key] for key in ('child_key', 'code') if key in item}
+                           for item in state.get('failures', [])]
+    receipt['fragments'] = {}
+    return receipt
+
+
 async def collect_latest(symbol, company, decision_at, scope, progress, *, client_factory=None):
     """Separate bounded DART budget; no raw HTML is retained in report receipts."""
     from prism_core.dart_identity import resolve_dart_identity
@@ -195,6 +207,10 @@ async def collect_latest(symbol, company, decision_at, scope, progress, *, clien
     selection = result['selection']
     progress['filing_selection'].update(selection=selection, coverage=result['coverage'],
         observed_at=result['observed_at'], limitations=result['limitations'], errors=result['errors'])
+    fragment_states = {row['receipt_id']: _fragment_selection_receipt(row['note_fragment_selection'])
+                       for row in result.get('filings', []) if 'note_fragment_selection' in row}
+    if fragment_states:
+        progress['filing_selection']['selected_note_fragments'] = fragment_states
     progress['gaps'].extend(selection['reasons'])
     if not selection.get('primary_id'):
         progress['gaps'].append('DART_LATEST_FILING_UNAVAILABLE')
@@ -202,6 +218,16 @@ async def collect_latest(symbol, company, decision_at, scope, progress, *, clien
     rows = {r['receipt_id']: r for r in result['filings']}
     progress['filing_selection']['selected_section_delivery'] = {}
     progress['filing_selection']['selected_section_provenance'] = {}
+
+    def append_source(row, role, name, section, blocks, source_id):
+        filing = {k: row[k] for k in ('receipt_id', 'kind', 'period_start', 'period_end', 'scope')}
+        filing.update(role=role, entity_id='DART:' + identity['corp_code'],
+                      event_date='UNKNOWN', observed_at=result['observed_at'],
+                      decision_at=decision_at.isoformat(), latest_confirmed=selection['latest_confirmed'], section=name)
+        progress['sources'].append({'source_id': source_id, 'url': section['url'],
+            'published': row['submitted_date'], 'publication_basis': 'OFFICIAL_CATALOG_DATE',
+            'status': 'SOURCE_TEXT_NOT_FACT_VALIDATED', 'blocks': blocks, 'filing': filing})
+
     for role, key in (('primary', selection['primary_id']),
                       ('annual_supplement', selection.get('annual_supplement_id'))):
         if not key:
@@ -222,12 +248,16 @@ async def collect_latest(symbol, company, decision_at, scope, progress, *, clien
             progress['gaps'].extend(gaps)
             if not blocks:
                 continue
-            filing = {k: row[k] for k in ('receipt_id', 'kind', 'period_start', 'period_end', 'scope')}
-            filing.update(role=role, entity_id='DART:' + identity['corp_code'],
-                          event_date='UNKNOWN', observed_at=result['observed_at'],
-                          decision_at=decision_at.isoformat(), latest_confirmed=selection['latest_confirmed'],
-                          section=section_name)
-            progress['sources'].append({'source_id': 'D-' + key + '-' + section_name,
-                'url': section['url'], 'published': row['submitted_date'], 'publication_basis': 'OFFICIAL_CATALOG_DATE',
-                'status': 'SOURCE_TEXT_NOT_FACT_VALIDATED', 'blocks': blocks, 'filing': filing})
+            append_source(row, role, section_name, section, blocks, 'D-' + key + '-' + section_name)
+        for fragment in row.get('note_fragments', []):
+            blocks, gaps = note_fragment_blocks(row, fragment, main_html=row.get('note_main_html'),
+                corp_code=identity['corp_code'], parent_key=fragment['parent_key'])
+            progress['gaps'].extend(gaps)
+            entry = {field: fragment[field] for field in ('sha256', 'utf8_bytes', 'url')}
+            entry.update(context_verified='DART_NOTE_FRAGMENT_PARTIAL_COVERAGE' in gaps,
+                         candidate_count=len(blocks), gaps=list(gaps))
+            fragment_states[key]['fragments'][fragment['child_key']] = entry
+            if blocks:
+                source_id = 'D-' + key + '-financial_notes_fragment-' + fragment['child_key'].replace(':', '-')
+                append_source(row, role, 'financial_notes_fragment', fragment, blocks, source_id)
     progress['gaps'].append('DART_SELECTED_SECTIONS_NOT_FULL_DOCUMENT')

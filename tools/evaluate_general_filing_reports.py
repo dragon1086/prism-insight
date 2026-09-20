@@ -9,6 +9,7 @@ import sys
 import time
 from collections import Counter
 from datetime import datetime, timezone
+from itertools import islice
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -49,6 +50,67 @@ def _filing(source):
         'receipt_id', 'role', 'kind', 'period_start', 'period_end', 'scope', 'section', 'entity_id')}
 
 
+def _fragment_delivery(values):
+    """Project only bounded metadata; raw context is never an evaluator result."""
+    def key(value):
+        return value if type(value) is str and re.fullmatch(r'[0-9]{1,14}:[0-9]{1,14}', value) else None
+
+    def digest(value):
+        return value if type(value) is str and re.fullmatch(r'[a-f0-9]{64}', value) else None
+
+    def count(value, ceiling=2000):
+        return value if type(value) is int and 0 <= value <= ceiling else None
+
+    def keys(value):
+        return [v for v in value[:2000] if key(v)] if type(value) is list else []
+
+    def url(value):
+        if type(value) is not str or len(value) > 1024:
+            return None
+        import httpx
+
+        from tools.dart_fixture_transport import _request_key
+
+        try:
+            request = httpx.Request('GET', value)
+            _request_key(request)
+            return value if request.url.path == '/report/viewer.do' else None
+        except (ValueError, UnicodeError, httpx.InvalidURL):
+            return None
+
+    result = {}
+    if type(values) is not dict:
+        return result
+    for receipt, value in islice(values.items(), 20):
+        if type(receipt) is not str or not re.fullmatch(r'[0-9]{14}', receipt) or type(value) is not dict:
+            continue
+        row = {'version': value.get('version') if value.get('version') == 'dart-note-fragments-v1' else None,
+               'basis': value.get('basis') if value.get('basis') == 'title-label-presence-v1' else None,
+               'parent_key': key(value.get('parent_key')), 'main_sha256': digest(value.get('main_sha256')),
+               'full_notes_acquired': False,
+               'discarded_due_to_final_selection': value.get('discarded_due_to_final_selection') is True}
+        row.update({k: count(value.get(k)) for k in ('child_total', 'eligible_total', 'unselected_count')})
+        row.update({k: keys(value.get(k)) for k in ('planned_keys', 'requested_keys', 'acquired_keys', 'budget_omitted_keys')})
+        row['stop_reason'] = _codes([value['stop_reason']])[0] if value.get('stop_reason') else None
+        failures = value.get('failures', [])
+        row['failures'] = [{'child_key': key(f.get('child_key')), 'code': _codes([f.get('code')])[0]}
+                           for f in failures[:20] if type(f) is dict] if type(failures) is list else []
+        row['fragments'] = {}
+        fragments = value.get('fragments', {})
+        for child, item in islice(fragments.items(), 2) if type(fragments) is dict else []:
+            if not key(child) or type(item) is not dict:
+                continue
+            gaps = item.get('gaps', [])
+            row['fragments'][child] = {
+                'context_verified': item.get('context_verified') if type(item.get('context_verified')) is bool else None,
+                'candidate_count': count(item.get('candidate_count')),
+                'gaps': _codes(gaps[:64]) if type(gaps) is list else ['UNCLASSIFIED_SOURCE_ERROR'],
+                'sha256': digest(item.get('sha256')), 'utf8_bytes': count(item.get('utf8_bytes'), 2 * 1024 * 1024),
+                'url': url(item.get('url'))}
+        result[receipt] = row
+    return result
+
+
 def _summary(progress, evidence):
     from prism_core.report_insight_prefetch import expand_filing_record
 
@@ -75,7 +137,7 @@ def _summary(progress, evidence):
             'delivered_filings': list({json.dumps(_filing(r), sort_keys=True): _filing(r) for r in rows}.values())}
     metrics = progress.get('dart_metrics', {})
     bodies = selection_context.get('selected_section_delivery', {})
-    return {
+    result = {
         'identity': {'status': identity.get('status', 'NOT_ATTEMPTED'), 'corp_code': identity.get('corp_code'),
                      'ticker_verified': identity.get('ticker_verified_from_company_profile') is True,
                      'reasons': _codes([identity['reason']]) if identity.get('reason') else []},
@@ -92,6 +154,9 @@ def _summary(progress, evidence):
                     'response_bytes': sum(m.get('response_bytes', 0) for m in metrics.values())},
         'gaps': _codes(progress['gaps']),
     }
+    if selection_context.get('selected_note_fragments'):
+        result['fragment_delivery'] = _fragment_delivery(selection_context['selected_note_fragments'])
+    return result
 
 
 async def evaluate(manifest, group, *, collector=None, packet_builder=None):

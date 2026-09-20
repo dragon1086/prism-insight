@@ -24,6 +24,10 @@ class _SourceError(ValueError):
     """Only internal code-only failures may appear in diagnostic results."""
 
 
+class _SectionBodyLimitExceeded(_SourceError):
+    """Only a single body limit, never aggregate or access failure."""
+
+
 def _fail(code):
     raise _SourceError(code)
 
@@ -440,6 +444,53 @@ def _resolve_lineage(rows):
         row['lineage_verified'] = verified(row, set())
 
 
+def _fragment_state(row, parent):
+    return {'version': 'dart-note-fragments-v1', 'basis': 'title-label-presence-v1',
+            'parent_key': parent['dcmNo'] + ':' + parent['eleId'], 'main_sha256': row['main_sha256'],
+            'child_total': None, 'eligible_total': None, 'planned_keys': [], 'requested_keys': [],
+            'acquired_keys': [], 'budget_omitted_keys': [], 'unselected_count': None,
+            'failures': [], 'full_notes_acquired': False, 'stop_reason': None}
+
+
+def _supplementary_failure(code):
+    return code.startswith('HTTP_') or code in {'RESPONSE_BYTES_EXCEEDED', 'CALL_BUDGET_EXHAUSTED', 'TOTAL_TIMEOUT'}
+
+
+def _finish_fragment_state(state, stopped):
+    state['budget_omitted_keys'] = [key for key in state['planned_keys'] if key not in state['requested_keys']]
+    if state['child_total'] is not None:
+        state['unselected_count'] = state['child_total'] - len(state['planned_keys'])
+    if stopped:
+        state['stop_reason'] = stopped
+        failure = {'child_key': None, 'code': stopped}
+        if failure not in state['failures']:
+            state['failures'].append(failure)
+
+
+def _fragment_candidates(row, parent, main_html, corp_code):
+    from prism_core.dart_viewer_tree import parse_viewer_tree
+    from prism_core.filing_materiality import material_topics
+
+    graph = parse_viewer_tree(main_html, row['receipt_id'], corp_code)
+    state = row['note_fragment_selection']
+    nodes = {node['key']: node for node in graph['nodes']}
+    verified = nodes[state['parent_key']]
+    label, opposite = ('연결', '별도') if row['scope'] == 'consolidated' else ('별도', '연결')
+    prefix = '연결' if row['scope'] == 'consolidated' else ''
+    if (graph['main_sha256'] != state['main_sha256']
+            or any(verified[key] != parent[key] for key in _FIELDS)
+            or not re.fullmatch(r'\d+\.' + prefix + '재무제표주석', _compact(verified['text']))):
+        raise ValueError
+    children = [nodes[key] for key in verified['children_keys']]
+    eligible = [child for child in children
+                if child['parent_key'] == state['parent_key'] and child['dcmNo'] == verified['dcmNo']
+                and child['rcpNo'] == row['receipt_id']
+                and opposite not in child['text'] and '개별' not in child['text']
+                and re.fullmatch(r'\d{1,3}(?:-\d{1,3})*[.)].+\(' + label + r'\)', _compact(child['text']))]
+    state.update(child_total=len(children), eligible_total=len(eligible))
+    return sorted(eligible, key=lambda child: not bool(material_topics('', (child['text'],))))
+
+
 async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, scope,
                                        client_factory=None, max_pages=3, max_filings=8,
                                        max_calls=28, timeout_seconds=90,
@@ -476,7 +527,7 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
            'metrics': metrics, 'historical_version_verified': False,
            'fact_validated': False, 'errors': []}
     rows, candidates = [], []
-    section_nodes = {}
+    section_nodes, main_by_receipt = {}, {}
     page_complete, empty = False, False
 
     async def acquire():
@@ -485,7 +536,7 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
         async with factory(timeout=15, follow_redirects=False, trust_env=False) as client:
             last_request_at = None
 
-            async def request_once(method, url, **kwargs):
+            async def request_once(method, url, *, _on_request=None, **kwargs):
                 nonlocal last_request_at
                 if out['metrics']['calls'] >= max_calls:
                     _fail('CALL_BUDGET_EXHAUSTED')
@@ -497,6 +548,8 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                         await asyncio.sleep(delay)
                 last_request_at = asyncio.get_running_loop().time()
                 out['metrics']['calls'] += 1
+                if _on_request is not None:
+                    _on_request()
                 try:
                     client.cookies.clear()
                     async with client.stream(method, url, headers={'Accept-Encoding': 'identity'}, **kwargs) as response:
@@ -509,8 +562,10 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                         chunks = response.aiter_bytes() if response.is_stream_consumed else response.aiter_raw()
                         async for chunk in chunks:
                             out['metrics']['response_bytes'] += len(chunk)
-                            if len(body) + len(chunk) > _LIMIT or out['metrics']['response_bytes'] > 4 * _LIMIT:
+                            if out['metrics']['response_bytes'] > 4 * _LIMIT:
                                 _fail('RESPONSE_BYTES_EXCEEDED')
+                            if len(body) + len(chunk) > _LIMIT:
+                                raise _SectionBodyLimitExceeded('RESPONSE_BYTES_EXCEEDED')
                             body.extend(chunk)
                         try:
                             return body.decode('utf-8')
@@ -521,10 +576,10 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                 except httpx.HTTPError:
                     _fail('HTTP_TRANSPORT_FAILURE')
 
-            async def request(method, url, **kwargs):
+            async def request(method, url, *, _on_request=None, **kwargs):
                 for attempt in range(2):
                     try:
-                        return await request_once(method, url, **kwargs)
+                        return await request_once(method, url, _on_request=_on_request, **kwargs)
                     except (httpx.RemoteProtocolError, httpx.ConnectError):
                         if attempt or not include_section_bodies or method != 'GET':
                             _fail('HTTP_TRANSPORT_FAILURE')
@@ -573,6 +628,8 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                 try:
                     main_html = await request('GET', row['source_url'])
                     row['main_sha256'] = hashlib.sha256(main_html.encode('utf-8')).hexdigest()
+                    if include_section_bodies:
+                        main_by_receipt[row['receipt_id']] = main_html
                     nodes = parse_viewer_nodes(main_html, row['receipt_id'], corp_code)
                     try:
                         row['family_members'] = _family(main_html, row)
@@ -627,9 +684,11 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                 selected_ids = [priorities['primary_id'], priorities['annual_supplement_id']]
                 note_order = sorted(ordered[:max_filings], key=lambda r: (
                     selected_ids.index(r['receipt_id']) if r['receipt_id'] in selected_ids else 2))
-                for row in note_order:
-                    if not row['scope_verified']:
-                        continue
+                selected_rows = [r for r in note_order if r['scope_verified'] and r['receipt_id'] in selected_ids]
+                oversized, stop_reason = [], None
+
+                async def read_notes(row, *, selected):
+                    nonlocal stop_reason
                     try:
                         notes = section_nodes[row['receipt_id']]
                         if len(notes) != 1:
@@ -639,8 +698,79 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                         body = await request('GET', notes[0]['viewer_url'])
                         _section_scope(body, scope, notes=True)
                         row['sections']['financial_notes'] = {**_provenance(body, notes[0]), 'html': body}
+                    except _SectionBodyLimitExceeded as exc:
+                        row['section_delivery']['errors'].append(str(exc))
+                        if selected:
+                            row['note_fragment_selection'] = _fragment_state(row, notes[0])
+                            oversized.append((row, notes[0]))
                     except _SourceError as exc:
                         row['section_delivery']['errors'].append(str(exc))
+                        if selected and _supplementary_failure(str(exc)):
+                            stop_reason = str(exc)
+                            parent = section_nodes[row['receipt_id']][0]
+                            row['note_fragment_selection'] = _fragment_state(row, parent)
+
+                for row in selected_rows:
+                    if stop_reason:
+                        row['section_delivery']['errors'].append('SUPPLEMENTARY_STOPPED')
+                        continue
+                    await read_notes(row, selected=True)
+
+                queues, planned = [], []
+                if not stop_reason:
+                    for row, parent in oversized:
+                        try:
+                            children = _fragment_candidates(row, parent, main_by_receipt[row['receipt_id']], corp_code)
+                            queues.append((row, children))
+                        except (KeyError, TypeError, ValueError):
+                            row['note_fragment_selection']['failures'].append(
+                                {'child_key': None, 'code': 'DART_NOTE_GRAPH_UNVERIFIED'})
+                    unique = set()
+                    while len(planned) < 2 and any(children for _, children in queues):
+                        for row, children in queues:
+                            if not children or len(planned) >= 2:
+                                continue
+                            child = children.pop(0)
+                            identity = (row['receipt_id'], child['key'])
+                            if identity in unique:
+                                continue
+                            unique.add(identity)
+                            row['note_fragment_selection']['planned_keys'].append(child['key'])
+                            planned.append((row, child))
+                for row, child in planned:
+                    state = row['note_fragment_selection']
+                    if stop_reason:
+                        continue
+                    if metrics['calls'] >= max_calls:
+                        stop_reason = 'CALL_BUDGET_EXHAUSTED'
+                        continue
+                    if metrics['response_bytes'] >= 4 * _LIMIT:
+                        stop_reason = 'RESPONSE_BYTES_EXCEEDED'
+                        continue
+                    def started(state=state, key=child['key']):
+                        if key not in state['requested_keys']:
+                            state['requested_keys'].append(key)
+
+                    try:
+                        body = await request('GET', child['viewer_url'], _on_request=started)
+                        fragment = {**_provenance(body, child), 'html': body,
+                                    'parent_key': state['parent_key'], 'child_key': child['key']}
+                        row.setdefault('note_fragments', []).append(fragment)
+                        row['note_main_html'] = main_by_receipt[row['receipt_id']]
+                        state['acquired_keys'].append(child['key'])
+                    except _SectionBodyLimitExceeded as exc:
+                        state['failures'].append({'child_key': child['key'], 'code': str(exc)})
+                    except _SourceError as exc:
+                        state['failures'].append({'child_key': child['key'], 'code': str(exc)})
+                        if _supplementary_failure(str(exc)):
+                            stop_reason = str(exc)
+                for row in selected_rows:
+                    if 'note_fragment_selection' in row:
+                        _finish_fragment_state(row['note_fragment_selection'], stop_reason)
+                if not stop_reason:
+                    for row in note_order:
+                        if row['scope_verified'] and row['receipt_id'] not in selected_ids:
+                            await read_notes(row, selected=False)
 
     try:
         await asyncio.wait_for(acquire(), timeout=timeout_seconds)
@@ -696,6 +826,15 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                          latest_confirmed=False, blocked_by=sorted(set(blockers)))
         selection['reasons'].append(reason)
     out['selection'] = selection
+    final_ids = {selection['primary_id'], selection['annual_supplement_id']} - {None}
+    for row in rows:
+        if 'note_fragment_selection' in row:
+            if 'TOTAL_TIMEOUT' in out['errors']:
+                _finish_fragment_state(row['note_fragment_selection'], 'TOTAL_TIMEOUT')
+            if row['receipt_id'] not in final_ids:
+                row.pop('note_fragments', None)
+                row.pop('note_main_html', None)
+                row['note_fragment_selection']['discarded_due_to_final_selection'] = True
     out['coverage'].update(complete_within_query=page_complete, seen_count=len(rows))
     out['status'] = ('EMPTY' if empty else 'COMPLETE_WITHIN_QUERY'
                      if page_complete and not unresolved and not corrections else 'PARTIAL' if rows else 'FAILED')

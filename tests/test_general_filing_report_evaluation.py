@@ -10,6 +10,61 @@ MANIFEST = {'version': 1, 'decision_at': '2026-09-20T01:28:11+00:00', 'scope': '
                                    {'ticker': '000002', 'name': 'Failure', 'sector': 'test'}]}}
 
 
+def test_fragment_summary_separates_counts_and_scrubs_raw_context():
+    from prism_core.report_insight_prefetch import packet
+    from tools.evaluate_general_filing_reports import _summary
+
+    key, receipt = '123:4', '20260318000123'
+    state = {'sources': [], 'gaps': [], 'calls': 0, 'filing_selection': {
+        'selected_note_fragments': {receipt: {
+            'version': 'dart-note-fragments-v1', 'basis': 'title-label-presence-v1',
+            'parent_key': '123:3', 'main_sha256': 'a' * 64,
+            'child_total': 54, 'eligible_total': 54, 'unselected_count': 52,
+            'planned_keys': [key, '123:5'], 'requested_keys': [key], 'acquired_keys': [key],
+            'budget_omitted_keys': ['123:5'], 'full_notes_acquired': False,
+            'failures': [{'child_key': key, 'code': 'PRIVATE BODY <script>', 'html': '<script>private</script>'}],
+            'note_main_html': '<script>private</script>',
+            'fragments': {key: {'context_verified': True, 'candidate_count': 0, 'gaps': [],
+                                'sha256': 'b' * 64, 'utf8_bytes': 100,
+                                'html': '<p>private source</p>'}}}}}}
+    value = _summary(state, packet('KR', '000001', '2026-09-20', state))['fragment_delivery'][receipt]
+    assert value['child_total'] == 54 and value['planned_keys'] == [key, '123:5']
+    assert value['fragments'][key]['context_verified'] is True
+    assert value['fragments'][key]['candidate_count'] == 0
+    assert value['fragments'][key]['sha256'] == 'b' * 64
+    assert value['full_notes_acquired'] is False
+    assert 'private' not in json.dumps(value).lower()
+
+
+def test_fragment_summary_preserves_unknown_counts_and_default_shape():
+    from prism_core.report_insight_prefetch import packet
+    from tools.evaluate_general_filing_reports import _summary
+
+    state = {'sources': [], 'gaps': [], 'calls': 0}
+    assert 'fragment_delivery' not in _summary(state, packet('KR', '000001', '2026-09-20', state))
+    state['filing_selection'] = {'selected_note_fragments': {'20260318000123': {
+        'child_total': None, 'eligible_total': None, 'unselected_count': None,
+        'planned_keys': [], 'requested_keys': [], 'acquired_keys': [], 'budget_omitted_keys': [],
+        'full_notes_acquired': False, 'failures': [], 'fragments': {}}}}
+    value = _summary(state, packet('KR', '000001', '2026-09-20', state))['fragment_delivery']['20260318000123']
+    assert value['child_total'] is None and value['eligible_total'] is None
+
+
+def test_fragment_summary_handles_malformed_metadata_without_raw_errors():
+    from tools.evaluate_general_filing_reports import _fragment_delivery
+
+    value = _fragment_delivery({'20260318000123': {
+        'version': 'unknown-version', 'basis': 'unknown-basis',
+        'fragments': {'123:4': {'gaps': None, 'url': 'https://[invalid',
+                               'candidate_count': 'private value', 'context_verified': 'yes'}}}})
+    row = value['20260318000123']
+    assert row['version'] is None and row['basis'] is None
+    assert row['fragments']['123:4']['url'] is None
+    assert row['fragments']['123:4']['candidate_count'] is None
+    assert row['fragments']['123:4']['context_verified'] is None
+    assert 'private' not in json.dumps(value)
+
+
 def test_real_packet_and_failed_denominator_without_provider_text():
     seen = []
     async def collector(ticker, name, cutoff, scope, progress):
