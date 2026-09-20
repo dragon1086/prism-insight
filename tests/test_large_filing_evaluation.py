@@ -77,6 +77,70 @@ def test_layout_context_locator_corruption_is_rejected(mutation):
     assert audit_source_paths(html, parsed)['errors']
 
 
+def _codec_delivery():
+    parsed = parse_filing_html(HTML)
+    record = next(r for r in parsed['records'] if r['kind'] == 'table')
+    fields = ['row', 'col', 'rowspan', 'colspan', 'text']
+    table = record['table']
+    excerpt = json.dumps({'schema': 'html_cell_tuples_v1', 'cell_fields': fields,
+                          'shape': [table['row_count'], table['column_count']],
+                          'cells': [[c[k] for k in fields] for c in table['cells']]},
+                         ensure_ascii=False, separators=(',', ':'))
+    shared = {'parser_version': 'material_v2', 'representation': 'DART_VIEWER_HTML',
+              'representation_sha256': parsed['source_sha256']}
+    local = {k: record[k] for k in ('kind', 'source_path', 'source_paths', 'scope', 'section_path')}
+    local['excerpt_encoding'] = 'html_cell_tuples_v1'
+    block = {'excerpt': excerpt, 'provenance': {**shared, **local}}
+    note = {'sources': [{'source_id': 's', 'excerpt': excerpt, 'provenance': local}],
+            'source_provenance': {'s': shared}}
+    return parsed, block, note
+
+
+def test_delivered_table_codec_is_bound_to_original_hash_and_cells():
+    from tools.evaluate_large_filing_html import audit_delivered_provenance
+    parsed, block, note = _codec_delivery()
+    assert audit_delivered_provenance([block], note, parsed, source_id='s') == []
+
+
+@pytest.mark.parametrize('mutation', ['missing_marker', 'unknown_marker', 'hash', 'path', 'cell', 'source', 'conflict',
+                                    'kind', 'representation', 'parser_version', 'both_markers', 'shape'])
+def test_delivered_codec_tampering_fails_even_if_block_and_packet_agree(mutation):
+    from tools.evaluate_large_filing_html import audit_delivered_provenance
+    parsed, block, note = _codec_delivery()
+    row = note['sources'][0]
+    if mutation == 'missing_marker':
+        row['provenance'].pop('excerpt_encoding')
+    elif mutation == 'both_markers':
+        row['provenance'].pop('excerpt_encoding')
+        block['provenance'].pop('excerpt_encoding')
+    elif mutation == 'shape':
+        encoded = json.loads(row['excerpt'])
+        encoded['shape'][0] += 1
+        row['excerpt'] = block['excerpt'] = json.dumps(encoded, ensure_ascii=False, separators=(',', ':'))
+    elif mutation == 'unknown_marker':
+        row['provenance']['excerpt_encoding'] = 'unknown'
+        block['provenance']['excerpt_encoding'] = 'unknown'
+    elif mutation == 'hash':
+        note['source_provenance']['s']['representation_sha256'] = '0' * 64
+        block['provenance']['representation_sha256'] = '0' * 64
+    elif mutation == 'path':
+        row['provenance']['source_path'] = '/html/body/table[99]'
+        block['provenance']['source_path'] = '/html/body/table[99]'
+    elif mutation == 'cell':
+        encoded = json.loads(row['excerpt'])
+        encoded['cells'][-1][-1] = '9999'
+        row['excerpt'] = block['excerpt'] = json.dumps(encoded, ensure_ascii=False, separators=(',', ':'))
+    elif mutation == 'source':
+        row['source_id'] = 'wrong'
+    elif mutation in {'kind', 'representation', 'parser_version'}:
+        destination = row['provenance'] if mutation == 'kind' else note['source_provenance']['s']
+        destination[mutation] = 'wrong'
+        block['provenance'][mutation] = 'wrong'
+    else:
+        row['provenance']['representation_sha256'] = '0' * 64
+    assert audit_delivered_provenance([block], note, parsed, source_id='s')
+
+
 def test_input_hash_and_actual_final_packet_are_measured(tmp_path):
     path = tmp_path / 'fixture.json'
     data = {'html': HTML, 'markdown': '## III. 재무에 관한 사항\n### 3. 연결재무제표 주석\n\n매출채권은 1,000원입니다.\n\n',

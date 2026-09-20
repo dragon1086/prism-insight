@@ -24,6 +24,7 @@ from tools.evaluate_general_filing_reports import _summary
 _CODE_FILES = ('prism_core/dart_identity.py', 'prism_core/dart_public_filings.py',
                'prism_core/dart_viewer_tree.py',
                'prism_core/dart_report_evidence.py', 'prism_core/filing_html.py',
+               'prism_core/filing_html_codec.py',
                'prism_core/filing_html_tables.py', 'prism_core/filing_catalog.py',
                'prism_core/filing_selection.py', 'prism_core/filing_structure.py',
                'prism_core/material_filing_selection.py', 'prism_core/filing_materiality.py',

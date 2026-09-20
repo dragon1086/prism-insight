@@ -307,6 +307,18 @@ def _record_blocks(records, *, material_notes, representation, digest, md_hash,
                               locator_model='HTML_DOCUMENT' if parsed['parser_version'] == 'filing_html_v2' else 'LEGACY_HTML_FRAGMENT')
         if tags:
             provenance['material_topics'] = tags
-        blocks.append({'topic': route, 'excerpt': text, 'status': 'SOURCE_TEXT_NOT_FACT_VALIDATED',
-                       'provenance': provenance})
+        block = {'topic': route, 'excerpt': text, 'status': 'SOURCE_TEXT_NOT_FACT_VALIDATED',
+                 'provenance': provenance}
+        if (material_notes is True and record['kind'] == 'table'
+                and representation in {'DART_VIEWER_HTML', 'FIRECRAWL_CLEANED_HTML'}):
+            from prism_core.filing_html_codec import compact_html_table_excerpt
+
+            compact = compact_html_table_excerpt(record)
+            if compact != text:
+                candidate = {**block, 'excerpt': compact,
+                             'provenance': {**provenance, 'excerpt_encoding': 'html_cell_tuples_v1'}}
+                size = lambda item: len(json.dumps(item, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+                if size(candidate) < size(block):
+                    block = candidate
+        blocks.append(block)
     return blocks, list(dict.fromkeys(gaps))

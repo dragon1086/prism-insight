@@ -113,7 +113,7 @@ def test_capture_requires_explicit_live_and_valid_inputs(tmp_path, capsys):
 def test_code_fingerprint_includes_geometry_selection_and_summary_dependencies():
     from tools.capture_dart_fixture import _hashes
 
-    required = {'prism_core/dart_viewer_tree.py', 'prism_core/filing_html_tables.py', 'prism_core/filing_catalog.py',
+    required = {'prism_core/filing_html_codec.py', 'prism_core/dart_viewer_tree.py', 'prism_core/filing_html_tables.py', 'prism_core/filing_catalog.py',
                 'prism_core/filing_selection.py', 'prism_core/filing_structure.py',
                 'prism_core/material_filing_selection.py', 'prism_core/filing_materiality.py',
                 'prism_core/filing_table_projection.py', 'prism_core/report_research_prefetch.py',

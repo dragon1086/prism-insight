@@ -106,6 +106,60 @@ def audit_source_paths(html, parsed):
             'scope': 'Original DOM position/geometry/text; not independent financial validation.'}
 
 
+def audit_delivered_provenance(blocks, note, parsed, *, source_id=None):
+    """Bind packet paths/encoding to admitted blocks and the original table hash."""
+    errors = []
+    keys = ('source_path', 'source_paths', 'footnote_paths', 'context_paths', 'scope',
+            'section_path', 'kind', 'parser_version', 'representation', 'representation_sha256', 'excerpt_encoding')
+    for index, row in enumerate(note['sources']):
+        reason = 'DELIVERED_LOCATOR_MISMATCH'
+        try:
+            if source_id is not None and row.get('source_id') != source_id:
+                raise ValueError
+            local = row.get('provenance', {})
+            shared = note.get('source_provenance', {}).get(row.get('source_id'), {})
+            if not isinstance(local, dict) or not isinstance(shared, dict):
+                raise TypeError
+            if any(local[key] != shared[key] for key in local.keys() & shared.keys()):
+                raise ValueError
+            provenance = expand_html_provenance({**shared, **local})
+            matches = [block for block in blocks if block['excerpt'] == row['excerpt'] and all(
+                (key in block['provenance']) == (key in provenance)
+                and block['provenance'].get(key) == provenance.get(key) for key in keys)]
+            if len(matches) != 1:
+                raise ValueError
+            originals = [r for r in parsed['records'] if r['kind'] == 'table'
+                         and r['source_path'] == provenance.get('source_path')]
+            if originals:
+                reason = 'DELIVERED_TABLE_SOURCE_MISMATCH'
+                if (len(originals) != 1 or provenance.get('kind') != 'table'
+                        or provenance.get('representation_sha256') != parsed['source_sha256']):
+                    raise ValueError
+                if 'excerpt_encoding' not in provenance and row['excerpt'] != originals[0]['text']:
+                    raise ValueError
+            if 'excerpt_encoding' in provenance:
+                reason = 'DELIVERED_TABLE_CODEC_INVALID'
+                if (provenance['excerpt_encoding'] != 'html_cell_tuples_v1'
+                        or provenance.get('kind') != 'table'
+                        or provenance.get('parser_version') != 'material_v2'
+                        or provenance.get('representation') not in {'DART_VIEWER_HTML', 'FIRECRAWL_CLEANED_HTML'}):
+                    raise ValueError
+                from prism_core.filing_html_codec import expand_html_table_excerpt
+
+                if provenance.get('representation_sha256') != parsed['source_sha256']:
+                    raise ValueError
+                if len(originals) != 1 or expand_html_table_excerpt(row['excerpt']) != originals[0]['text']:
+                    raise ValueError
+                # Decoder validates the bounded schema first; legacy text omits
+                # shape, so compare it separately to the original geometry.
+                table = originals[0]['table']
+                if json.loads(row['excerpt'])['shape'] != [table['row_count'], table['column_count']]:
+                    raise ValueError
+        except (ValueError, KeyError, TypeError):
+            errors.append({'index': index, 'reason': reason})
+    return errors
+
+
 def evaluate_case(case, *, parser=parse_filing_html, adapter=filing_blocks):
     path = Path(case['file'])
     raw = path.read_bytes()
@@ -132,13 +186,8 @@ def evaluate_case(case, *, parser=parse_filing_html, adapter=filing_blocks):
     # Prove that model-envelope compaction did not erase or change audit paths.
     delivered_provenance_errors = []
     for owner, note in notes.items():
-        for index, row in enumerate(note['sources']):
-            provenance = expand_html_provenance(row.get('provenance', {}))
-            matches = [block for block in blocks if block['excerpt'] == row['excerpt'] and all(
-                block['provenance'].get(key) == provenance.get(key)
-                for key in ('source_path', 'source_paths', 'footnote_paths', 'context_paths', 'scope', 'section_path'))]
-            if len(matches) != 1:
-                delivered_provenance_errors.append({'owner': owner, 'index': index, 'reason': 'DELIVERED_LOCATOR_MISMATCH'})
+        delivered_provenance_errors.extend({'owner': owner, **error} for error in
+            audit_delivered_provenance(blocks, note, parsed, source_id=source['source_id']))
     return {'symbol': case['symbol'], 'name': case['name'], 'file_sha256': digest,
             'source_url': source_url, 'html_sha256': parsed['source_sha256'],
             'html_characters': len(html), 'html_utf8_bytes': len(html.encode()),
