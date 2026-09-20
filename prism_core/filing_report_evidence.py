@@ -297,7 +297,7 @@ def _record_blocks(records, *, material_notes, representation, digest, md_hash,
         provenance = {key: record[key] for key in (
             'section_path', 'scope', 'kind', 'source_path', 'source_paths', 'source_spans', 'context_before',
             'footnotes', 'footnote_paths', 'projected', 'projection_kind', 'selected_data_rows',
-            'original_data_rows') if key in record}
+            'original_data_rows', 'scope_context') if key in record}
         provenance.update(parser_version=MATERIAL_VERSION if material_notes is True else VERSION, representation=representation,
                           representation_sha256=digest, markdown_sha256=md_hash)
         if representation in {'FIRECRAWL_CLEANED_HTML', 'DART_VIEWER_HTML'}:

@@ -28,6 +28,14 @@
 
 기본 JSON 예시만 분리하면 원래 hash는 그대로이며, 손절·재진입 구간과 SELL 함수/authority helper/생성된 SELL 지시문도 같았습니다. 후속 유지보수는 기본 JSON과 append 계약의 경계를 분리하고 실제 조립 순서/중복을 별도로 검증해야 합니다. prefix를 단순 서식 변경이라고 부르거나 실패를 숨기려고 기대 hash만 바꾸지 않습니다. 현재 보유·손절·재진입·주문 정책은 수정하지 않았습니다.
 
+## S2c-3: 외부 부모 문맥 검증 API
+
+설계의 범위/문서 연결 공백을 REJECT 피드백으로 보완하고, 구현의 빈 query 우회도 실패 회귀로 고정해 수정했습니다. 기존 parser 기본 동작과 기존 admission은 유지합니다. 새 fragment API만 strict main graph·문서 chain·제목 이벤트·plain 금융 제목을 검사한 뒤 scope_context를 붙입니다.
+
+독립 코드 리뷰 APPROVE 후 같은 두 원문에서 unknown75/6개를 consolidated75/6개로 검증했고, scope/context 외 필드 불변과 DOM11,201개 위치 오류0건을 확인했습니다. 격리 packet의 전달4개는 news3/status1이며 overview는0개입니다. 최종6,000바이트는 유지했고 HTTP/모델 호출은0회입니다.
+
+최종 연구 입력 회귀1,836개와 provider shape46개가 통과했습니다. 기존 고정 대형 HTML3개도 원문/전달 위치 오류0건입니다. 상세는 `PR752_S2C3_FRAGMENT_CONTEXT_RESULTS_20260920_ko.md`입니다. 운영 collector 연결과 금융 내용 품질은 미완료이며 다음 설계에서 별도로 처리합니다.
+
 ## 현재 단계
 
 - 기준선: 1747a59b. 전체 PR 완료·머지·배포 상태가 아닙니다.

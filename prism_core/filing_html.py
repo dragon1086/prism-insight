@@ -157,6 +157,14 @@ class _Reducer:
                 financial_title = bool(_FINANCIAL_TITLE.fullmatch(text))
                 self.scope = ('consolidated' if '연결' in text else 'standalone') if financial_title else 'unknown'
                 self.notes = financial_title and '주석' in text
+            if 'heading_events' in self.out:
+                if len(self.out['heading_events']) >= 2000:
+                    raise _ParseLimit('HTML_HEADING_LIMIT')
+                self.out['heading_events'].append({
+                    'text': text, 'source_path': source_path, 'source_paths': list(source_paths),
+                    'level': level, 'section_path': [self.path[k] for k in sorted(self.path)],
+                    'scope': self.scope,
+                })
             return
         records = self.out['records']
         if len(records) >= 2000:
@@ -369,7 +377,7 @@ class _Stream:
             self.stack[-1]['pending'] = (node, frame['streamed'])
 
 
-def parse_filing_html(html, *, _feed_size=8192):
+def parse_filing_html(html, *, _feed_size=8192, _capture_headings=False):
     """Return source-text records; COMPLETE means traversal only, not coverage.
 
     Repeated unmarked major headings are ambiguous (TOC or multiple documents),
@@ -386,6 +394,8 @@ def parse_filing_html(html, *, _feed_size=8192):
                'accepted_grid_slots': 0, 'accepted_origin_cells': 0,
                'constructed_locator_bytes': 0,
                'feed_size': _feed_size}}
+    if _capture_headings is True:
+        out['heading_events'] = []
     if not isinstance(html, str) or not html.strip():
         out['errors'].append('HTML_EMPTY_OR_INVALID')
         return out
@@ -417,21 +427,31 @@ def parse_filing_html(html, *, _feed_size=8192):
             stream.event(kind, node)
     except _ParseLimit as error:
         out.update(status='LIMIT_EXCEEDED', errors=[str(error)], records=[])
+        if 'heading_events' in out:
+            out['heading_events'] = []
         return out
     except _ParseStructure as error:
         out.update(status='UNSUPPORTED', errors=[str(error)], records=[])
+        if 'heading_events' in out:
+            out['heading_events'] = []
         return out
     except (ValueError, etree.ParserError, etree.XMLSyntaxError):
         out['records'] = []
+        if 'heading_events' in out:
+            out['heading_events'] = []
         out['errors'].append('HTML_PARSE_FAILED')
         return out
     if any(error.level_name == 'FATAL' or 'depth' in error.message.lower() for error in parser.feed_error_log):
         out.update(status='LIMIT_EXCEEDED', errors=['HTML_PARSE_LIMIT'], records=[])
+        if 'heading_events' in out:
+            out['heading_events'] = []
         return out
     if any(error.level_name == 'ERROR' for error in parser.feed_error_log):
         out['errors'].insert(0, 'HTML_RECOVERED_WITH_ERRORS')
     if any(n > 1 for n in stream.reducer.major_counts.values()):
         out['records'] = []
+        if 'heading_events' in out:
+            out['heading_events'] = []
         out['errors'].append('AMBIGUOUS_MAJOR_HEADINGS')
         return out
     out['errors'] = list(dict.fromkeys(out['errors']))
