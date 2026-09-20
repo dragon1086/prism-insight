@@ -15,7 +15,7 @@ from prism_core.filing_structure import parse_filing
 VERSION = 'structured_v1'
 MATERIAL_VERSION = 'material_v2'
 _STATEMENT_TITLE = re.compile(
-    r'^(?:\d+(?:-\d+)*[.)])?(?:연결|별도|개별)?'
+    r'^(?:연결|별도|개별)?'
     r'(?:재무상태표|(?:포괄)?손익계산서|현금흐름표|자본변동표)(?:\((?:연결|별도|개별)\))?$')
 _ROUTES = {
     'customer_revenue': 'financial_quality_valuation', 'cashflow': 'financial_quality_valuation',
@@ -24,6 +24,16 @@ _ROUTES = {
     'related_party': 'ownership_governance', 'liquidity_collateral': 'catalysts_risks_counterevidence',
     'contingency': 'catalysts_risks_counterevidence', 'subsequent_events': 'catalysts_risks_counterevidence',
 }
+
+
+def _is_statement_title(title):
+    label = ''.join(title.split())
+    for separator in ('.', ')'):
+        prefix, found, rest = label.partition(separator)
+        if found and all(part.isdecimal() for part in prefix.split('-')):
+            label = rest
+            break
+    return bool(_STATEMENT_TITLE.fullmatch(label))
 
 
 def compact_html_provenance(provenance):
@@ -288,7 +298,7 @@ def _record_blocks(records, *, material_notes, representation, digest, md_hash,
         statement = (material_notes is True and record['kind'] == 'table'
                      and representation in {'DART_VIEWER_HTML', 'FIRECRAWL_CLEANED_HTML'}
                      and record.get('section_path')
-                     and _STATEMENT_TITLE.fullmatch(re.sub(r'\s+', '', record['section_path'][-1])))
+                     and _is_statement_title(record['section_path'][-1]))
         tags = ()
         if material_notes is True:
             from prism_core.filing_materiality import TOPICS, material_topics

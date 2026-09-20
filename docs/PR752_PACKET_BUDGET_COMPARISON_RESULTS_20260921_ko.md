@@ -60,7 +60,8 @@ POSCO PF 표447은 각주 선정 개선으로 index28→4가 되어24개 후보 
 
 - 첫 고정 비교, 공통 guard 적용, 각주 선정 변경, 문맥 dedup 변경을 별도 artifact로 보존했습니다. 각 예산 arm 안에서는 candidate/order hash가 같고6,000 반복 실행도 byte-exact였습니다. 공통 guard만 바꾼 단계에서는 모든 packet hash가 이전 단계와 같았습니다.
 - 일반/연간 대체2개와 LG·카카오·HMM·POSCO4개 component, 합계6개 시나리오×4개 예산을 비교했습니다. 다른4개 업종은 원문·조건·출처 감사/스트레스 검증이며 새로운 독립 gold나 금융 품질 합격군이 아닙니다.
-- 최종 연구 입력 회귀 **2,259개 통과**, 기존 경고4개입니다. 재무제표 routing은 RED8건을 먼저 재현했습니다. 별도 provider 호환 통합 **46개 통과**. 새 미국 수집/실행을 의미하지 않습니다.
+- 최종 연구 입력 회귀 **2,262개 통과**, 기존 경고4개입니다. 재무제표 routing은 RED8건을 먼저 재현했습니다. 별도 provider 호환 통합 **46개 통과**. 새 미국 수집/실행을 의미하지 않습니다.
 - 변경 Python12개 Ruff·AST/구문·diff 검사 통과. 독립 source-boundary 검토103개, 코드 리뷰71개 및 routing 증분55개는 전체 회귀와 중복되므로 합산하지 않습니다. 최종 코드 리뷰 APPROVE입니다. Python 전용 타입 검사 통과는 주장하지 않습니다.
+- ccffeb74의 첫 원격 정적 분석에서 숫자 prefix 정규식의 중첩 반복1건이 지적됐습니다. 검사를 무시하지 않고 prefix를 선형 문자열 분리/decimal 검증으로 바꿨습니다. 정식 제목·profile·원문 보존 계약은 그대로이며 정확한 최종 HEAD의 CI는 handoff에 기록합니다.
 - 공시/모델 호출0회이며 테스트는 네트워크·broker·운영 채널 실행 없이 수행했습니다. packet note 바이트, agent instruction의 envelope/기존 지침 바이트, 모델 토큰은 서로 다릅니다. 토큰이나 실제 생성 지연은 측정하지 않았습니다.
-- Git 밖 `workspace/lmg90x0p/`의 `packet_budget_before_guard_20260921.json`, `packet_budget_shared_guard_20260921.json`, `packet_budget_footnote_treatment_20260921.json`, `packet_budget_verified_20260921.json`, `packet_budget_statement_routing_20260921.json`에 단계별 결과와 코드 hash를 보존했습니다. 현행 최종 실험은 `packet_budget_comparison.py --corpus`로 재현할 수 있습니다. `--full-traces`는 raw excerpt 없이 전체 admission/source-path trace를 출력합니다.
+- Git 밖 `workspace/lmg90x0p/`의 `packet_budget_before_guard_20260921.json`, `packet_budget_shared_guard_20260921.json`, `packet_budget_footnote_treatment_20260921.json`, `packet_budget_verified_20260921.json`, `packet_budget_statement_routing_20260921.json`, `packet_budget_final_verified_20260921.json`에 단계별 결과와 코드 hash를 보존했습니다. 정규식 수정 후 최종 재검증에서도 24개 packet hash가 모두 동일했습니다. 현행 최종 실험은 `packet_budget_comparison.py --corpus`로 재현할 수 있습니다. `--full-traces`는 raw excerpt 없이 전체 admission/source-path trace를 출력합니다.

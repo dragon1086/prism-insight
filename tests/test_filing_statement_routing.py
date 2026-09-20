@@ -17,6 +17,7 @@ def blocks(title, *, parent='2. 연결재무제표', material=True, body=None):
     '2-1. 연결 재무상태표', '2-2. 연결포괄손익계산서', '2-3. 연결 자본변동표',
     '2-4. 연결 현금흐름표', '재무상태표', '별도 손익계산서', '개별포괄손익계산서',
     '4) 자본변동표 (별도)',
+    '2-1-3-4-5. 연결 재무상태표',
 ])
 def test_explicit_statement_title_owns_its_entire_table(title):
     result = blocks(title)
@@ -24,7 +25,8 @@ def test_explicit_statement_title_owns_its_entire_table(title):
     assert all(not b['provenance'].get('projected') for b in result)
 
 
-@pytest.mark.parametrize('title', ['28. 충당부채', '28-1. 우발채무 및 약정사항', '재무상태표 관련 주석'])
+@pytest.mark.parametrize('title', ['28. 충당부채', '28-1. 우발채무 및 약정사항', '재무상태표 관련 주석',
+                                  '2--1. 연결 재무상태표', '-1. 연결 재무상태표'])
 def test_risk_note_below_statement_ancestor_keeps_risk_owner(title):
     result = blocks(title, parent='2. 연결 재무상태표')
     assert result and result[0]['topic'] == 'catalysts_risks_counterevidence'
