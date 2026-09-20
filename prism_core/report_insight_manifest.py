@@ -9,6 +9,12 @@ import math
 import re
 from datetime import date
 
+from prism_core.report_source_budget import (
+    SOURCE_NOTE_BYTES,
+    source_note_rejection,
+    validate_source_budget,
+)
+
 _CATEGORIES = {
     "business_segments": ("company_overview", ("company_profile", "company_research_profile", "segment_revenue"), ("segment_scope", "revenue_mix")),
     "financial_quality_valuation": ("company_status", ("stock_info", "financial_statements"), ("period", "accounting_scope", "valuation_basis")),
@@ -86,7 +92,7 @@ def _target_price_observation(market, symbol, reference_date, macro_context):
     return result if len(_encode(result).encode()) <= 1300 else None
 
 
-def _sources(prefetched):
+def _sources(prefetched, *, source_budget_bytes=SOURCE_NOTE_BYTES):
     """Only actual injected JSON excerpts count; receipts alone never count."""
     packet = prefetched.get("insight_prefetch", prefetched.get("report_research"))
     notes = packet.get("section_notes") if isinstance(packet, dict) else None
@@ -95,7 +101,7 @@ def _sources(prefetched):
         return result
     for section in ("news_analysis", "company_overview", "company_status"):
         note = notes.get(section)
-        if not isinstance(note, str) or len(note.encode("utf-8")) > 6000:
+        if source_note_rejection(note, source_budget_bytes):
             continue
         try:
             body = json.loads(note)
@@ -111,8 +117,14 @@ def _sources(prefetched):
             if (isinstance(topic, str) and topic in result
                     and isinstance(sid, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", sid)
                     and isinstance(excerpt, str) and excerpt.strip()):
+                try:
+                    excerpt_hash = hashlib.sha256(excerpt.encode('utf-8')).hexdigest()[:16]
+                except UnicodeEncodeError:
+                    # ASCII JSON may decode to an invalid lone surrogate.
+                    # Keep valid siblings; this record supplies no usable ref.
+                    continue
                 result[topic].append({"source_id": sid, "source_section": section,
-                                      "sha256_16": hashlib.sha256(excerpt.encode()).hexdigest()[:16]})
+                                      "sha256_16": excerpt_hash})
     return result
 
 
@@ -133,19 +145,21 @@ def _bounded(manifest, max_bytes):
     return manifest
 
 
-def build_insight_manifest(market, symbol, reference_date, prefetched, macro_context, *, max_bytes=6000):
+def build_insight_manifest(market, symbol, reference_date, prefetched, macro_context, *, max_bytes=6000,
+                           source_budget_bytes=SOURCE_NOTE_BYTES):
     """Track nine coverage dimensions without claiming source verification.
 
     Even a supplied ranking/verified flag is not accepted: this module has no
     provenance validator. Rankings need named constituents, period, metric,
     source and coverage validation upstream; absent that, insight stays UNKNOWN.
     """
+    budget = validate_source_budget(source_budget_bytes)
     prefetched = prefetched if isinstance(prefetched, dict) else {}
     macro_context = macro_context if isinstance(macro_context, dict) else {}
     safe = lambda v: v if isinstance(v, str) and len(v) <= 32 else "UNKNOWN"
     manifest = {"version": "insight_manifest_v1", "market": safe(market), "symbol": safe(symbol),
                 "reference_date": safe(reference_date), "categories": {}, "omitted_categories": 0}
-    sources = _sources(prefetched)
+    sources = _sources(prefetched, source_budget_bytes=budget)
     for name, (section, keys, dimensions) in _CATEGORIES.items():
         refs = []
         for key in keys:

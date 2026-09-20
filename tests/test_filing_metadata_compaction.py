@@ -5,6 +5,57 @@ import pytest
 from prism_core.report_insight_prefetch import expand_filing_record, packet
 
 
+@pytest.mark.parametrize('field,value', [
+    ('context_before', '전반기 (단위: 천원)'),
+    ('footnotes', '조건이 충족되지 않으면 반환해야 합니다.'),
+    ('source_path', '/html/body/table[2]'),
+])
+def test_identical_cells_with_distinct_source_context_are_not_deduplicated(field, value):
+    first = {'topic': 'catalysts_risks_counterevidence', 'excerpt': '{"cells":["100"]}',
+             'status': 'SOURCE_TEXT_NOT_FACT_VALIDATED',
+             'provenance': {'context_before': '당반기 (단위: 백만원)', 'footnotes': '반환 의무가 없습니다.',
+                            'source_path': '/html/body/table[1]'}}
+    second = {**first, 'provenance': {**first['provenance'], field: value}}
+    state = {'sources': [{'source_id': 'same', 'filing': {'role': 'primary'}, 'blocks': [first, second]}],
+             'gaps': [], 'calls': 0}
+    result = json.loads(packet('KR', 'TEST', '2026-09-20', state)['section_notes']['news_analysis'])
+    assert len(result['sources']) == 2
+    assert result['sources'][0]['provenance'][field] != result['sources'][1]['provenance'][field]
+
+
+def test_exact_context_duplicates_ignore_dictionary_key_insertion_order():
+    first = {'topic': 'catalysts_risks_counterevidence', 'excerpt': '원문과 모든 조건이 같습니다.',
+             'status': 'SOURCE_TEXT_NOT_FACT_VALIDATED',
+             'provenance': {'context_before': '당반기', 'footnotes': '확정되지 않았습니다.', 'scope': 'consolidated'}}
+    second = {**first, 'provenance': dict(reversed(list(first['provenance'].items())))}
+    state = {'sources': [{'source_id': 'same', 'filing': {'role': 'primary'}, 'blocks': [first, second]}],
+             'gaps': [], 'calls': 0}
+    result = json.loads(packet('KR', 'TEST', '2026-09-20', state)['section_notes']['news_analysis'])
+    assert len(result['sources']) == 1
+
+
+@pytest.mark.parametrize('second_metadata', [{'period': '2025'}, {'period': '2026', 'verified': 0}])
+def test_same_excerpt_cannot_hide_conflicting_filing_metadata(second_metadata):
+    block = {'topic': 'catalysts_risks_counterevidence', 'excerpt': '동일한 원문입니다.',
+             'status': 'SOURCE_TEXT_NOT_FACT_VALIDATED'}
+    state = {'sources': [
+        {'source_id': 'same', 'filing': {'period': '2026', 'verified': False}, 'blocks': [block]},
+        {'source_id': 'same', 'filing': second_metadata, 'blocks': [block]},
+    ], 'gaps': [], 'calls': 0}
+    result = json.loads(packet('KR', 'TEST', '2026-09-20', state)['section_notes']['news_analysis'])
+    assert 'SOURCE_FILING_CONFLICT' in result['gaps']
+    assert result['source_filings']['same'] == {'period': '2026', 'verified': False}
+    assert len(result['sources']) == 1
+
+
+def test_identical_excerpt_in_different_sources_retains_both_source_identities():
+    block = {'topic': 'catalysts_risks_counterevidence', 'excerpt': '동일하게 기재된 별개 공시입니다.',
+             'status': 'SOURCE_TEXT_NOT_FACT_VALIDATED'}
+    state = {'sources': [{'source_id': sid, 'filing': {'period': '2026'}, 'blocks': [block]}
+                         for sid in ('primary', 'supplement')], 'gaps': [], 'calls': 0}
+    result = json.loads(packet('KR', 'TEST', '2026-09-20', state)['section_notes']['news_analysis'])
+    assert {r['source_id'] for r in result['sources']} == {'primary', 'supplement'}
+
 def source(key, role, year):
     filing = {'receipt_id': key, 'role': role, 'entity_id': 'DART:12345678',
               'period_start': f'{year}-01-01', 'period_end': f'{year}-06-30', 'scope': 'consolidated',

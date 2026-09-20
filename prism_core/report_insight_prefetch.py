@@ -10,10 +10,12 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 
+from prism_core.report_source_budget import SOURCE_NOTE_BYTES, validate_source_budget
+
 PROFILE = 'insight_prefetch_v5'
-FILING_PARSER_REVISION = 'bounded-html-v10-material-detail'
+FILING_PARSER_REVISION = 'bounded-html-v11-context-integrity'
 MAX_CALLS = 8
-SECTION_BYTES = 6000
+SECTION_BYTES = SOURCE_NOTE_BYTES
 TOPICS = {
     'direct_peers_competitive_position': ('competitor', 'competes with', 'compete with', 'competition', '경쟁업체', '경쟁사', '경쟁현황', '시장점유율'),
     'business_segments': ('business segment', 'principal products', '주요 제품', '주요제품', '사업부문', '사업의 개요'),
@@ -48,6 +50,12 @@ def _dump(value):
 
 def _size(value):
     return len(_dump(value).encode('utf-8'))
+
+
+def _source_identity(value):
+    """Canonical metadata identity; bool/int and missing/null remain distinct."""
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                    separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
 def expand_filing_record(record, payload):
@@ -403,8 +411,9 @@ async def collect(market, symbol, day, company, transport, *, context, progress,
     return sources, gaps, progress['calls']
 
 
-def packet(market, symbol, day, progress):
+def packet(market, symbol, day, progress, *, source_budget_bytes=SOURCE_NOTE_BYTES):
     """Whole-record section packets and small manifest, no raw body escape hatch."""
+    budget = validate_source_budget(source_budget_bytes)
     sources = progress['sources']
     if 'dart_metrics' in progress:
         progress['dart_calls'] = sum(m.get('calls', 0) for m in progress['dart_metrics'].values())
@@ -451,7 +460,8 @@ def packet(market, symbol, day, progress):
                     source, block = queues[topic][position]
                     digest = hashlib.sha256(block['excerpt'].encode()).hexdigest()
                     if 'filing' in source:
-                        digest = (source['source_id'], digest)
+                        digest = (source['source_id'], digest,
+                                  _source_identity([source['filing'], block.get('provenance', {})]))
                     if digest in seen:
                         continue
                     record = {key: source.get(key, 'UNKNOWN') for key in ('source_id', 'url', 'published', 'publication_basis')}
@@ -464,7 +474,7 @@ def packet(market, symbol, day, progress):
                     if 'filing' in record:
                         refs = payload.get('source_filings', {})
                         source_id = record['source_id']
-                        if source_id in refs and refs[source_id] != record['filing']:
+                        if source_id in refs and _source_identity(refs[source_id]) != _source_identity(record['filing']):
                             omissions += 1
                             if 'SOURCE_FILING_CONFLICT' not in payload['gaps']:
                                 payload['gaps'].append('SOURCE_FILING_CONFLICT')
@@ -494,7 +504,7 @@ def packet(market, symbol, day, progress):
 
                             record['provenance'] = compact_html_provenance(record['provenance'])
                         trial['source_provenance'] = {**references, source_id: common}
-                    if _size(trial) <= SECTION_BYTES - 80:
+                    if _size(trial) <= budget - 80:
                         payload = trial
                         seen.add(digest)
                     else:
@@ -504,7 +514,7 @@ def packet(market, symbol, day, progress):
         payload['topic_gaps'] = {topic: ('BUDGET_OR_DUPLICATE' if queues[topic] else 'NO_ELIGIBLE_SOURCE_BLOCK')
                                 for topic in topics if topic not in present_topics}
         # Reserve metadata budget without ever slicing source text.
-        while _size(payload) > SECTION_BYTES and payload['sources']:
+        while _size(payload) > budget and payload['sources']:
             removed = payload['sources'].pop()
             retained = {row['source_id'] for row in payload['sources']}
             for reference_table in ('source_filings', 'source_provenance'):

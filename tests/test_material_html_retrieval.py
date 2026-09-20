@@ -96,3 +96,31 @@ def test_amount_length_cannot_change_source_detail_priority():
     small = selection.html_retrieval_class({**common, 'text': 'The outcome is uncertain: liability $1.'})
     large = selection.html_retrieval_class({**common, 'text': 'The outcome is uncertain: liability $1000000.'})
     assert small == large
+
+
+@pytest.mark.parametrize('footnote', [
+    '조건의 이행 여부에 따라 금액이 변동될 수 있습니다.',
+    '조건의 이행 여부에 따라 금액이 변동될 수 있습니다. (타 지분 포함: 100)',
+    '반환 의무는 소멸되었습니다.(단위: 원)',
+    '반환 의무는 남아 있습니다. (단위: 원) (범위: 연결)',
+    'The covenant has been waived. (USD 1)',
+    'The covenant remains uncertain.（USD 1000000）',
+])
+def test_intact_footnote_narrative_participates_in_retrieval(footnote):
+    record = {'kind': 'table', 'scope': 'consolidated', 'section_path': ['28. 약정사항'],
+              'context_before': '당반기 (단위: 원)', 'footnotes': footnote,
+              'table': {'cells': [{'tag': 'td', 'text': '100'}]}}
+    before = copy.deepcopy(record)
+    assert selection.html_retrieval_class(record)['qualified_claim'] is True
+    assert record == before
+
+
+@pytest.mark.parametrize('footnote', [
+    '한도 1.5 (원)', '1. 약정 조건', '약정조건은 충족했습니다. 다만 승인 조건은',
+    '약정조건은 충족했습니다. (다만 승인 조건은',
+    '조건입니다. (닫힘 오류）', '조건입니다. (외부 (내부) 부연)',
+])
+def test_unfinished_or_numeric_footnotes_do_not_get_narrative_class(footnote):
+    record = {'kind': 'table', 'scope': 'consolidated', 'section_path': [],
+              'footnotes': footnote, 'table': {'cells': [{'tag': 'td', 'text': '100'}]}}
+    assert selection.html_retrieval_class(record)['qualified_claim'] is False

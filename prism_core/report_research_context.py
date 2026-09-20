@@ -2,6 +2,12 @@
 import json
 from dataclasses import is_dataclass, replace
 
+from prism_core.report_source_budget import (
+    SOURCE_NOTE_BYTES,
+    source_note_rejection,
+    validate_source_budget,
+)
+
 
 def _replace_agent(agent, **updates):
     if is_dataclass(agent):
@@ -33,7 +39,8 @@ def apply_insight_manifest(agent, section, prefetched):
                           'Do not reread full documents to satisfy these pointers; large results belong in prefetch.\n' + note)
 
 
-def apply_section_research(agent, section, prefetched, reference_date, language):
+def apply_section_research(agent, section, prefetched, reference_date, language, *, source_budget_bytes=SOURCE_NOTE_BYTES):
+    budget = validate_source_budget(source_budget_bytes)
     packet = prefetched.get('report_research') if isinstance(prefetched, dict) else None
     if not isinstance(packet, dict) or not isinstance(packet.get('section_notes'), dict):
         return agent
@@ -45,12 +52,15 @@ def apply_section_research(agent, section, prefetched, reference_date, language)
     if (section == 'news_analysis' and packet.get('news_usable') is not True
             and not (isinstance(usable_sources, int) and usable_sources > 0)):
         return agent
-    if len(note) > 6000:
+    rejection = source_note_rejection(note, budget)
+    if rejection:
         # Whole omission, never a sliced JSON/table/excerpt that can alter a claim.
         # In particular, omitted news must not waive the original discovery tools.
+        reason = ('oversized_source_material_omitted' if rejection == 'SOURCE_NOTE_BYTE_LIMIT'
+                  else 'invalid_source_material_omitted')
         return _replace_agent(agent, instruction=agent.instruction +
                               '\n\nOptional research status: UNKNOWN; '
-                              'oversized_source_material_omitted. Preserve the original '
+                              f'{reason}. Preserve the original '
                               'research workflow; do not infer a source claim from this omission.')
     evidence = json.dumps({'evidence_id': packet.get('evidence_id'),
                            'reference_date': reference_date, 'source_material': note},

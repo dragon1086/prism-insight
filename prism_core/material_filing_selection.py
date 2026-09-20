@@ -15,6 +15,7 @@ from prism_core.filing_table_projection import project_table
 _POLICY = re.compile(r'중요한\s*회계정책|재무제표\s*작성기준|재무제표\s*작성의\s*기초|significant accounting policies', re.IGNORECASE)
 _CONDITIONAL = re.compile(r'다만|그러나|조건|불확실|위반|면제|상환|반환|한도|확정|가정|민감도|허가|임상|취소|해지|승인|provided that|subject to|uncertain|covenant', re.IGNORECASE)
 _LIMIT = 2 * 1024 * 1024
+_FOOTNOTE_SENTENCE_TAIL = re.compile(r'[.。!?]\s*(?:(?:\([^()（）]*\)|（[^()（）]*）)\s*)+$')
 
 
 def html_retrieval_class(record):
@@ -24,11 +25,20 @@ def html_retrieval_class(record):
                         headings, re.IGNORECASE)
     cells = record.get('table', {}).get('cells', []) if record.get('kind') == 'table' else []
     pieces = (cell['text'] for cell in cells if cell.get('tag') != 'th') if cells else (record.get('text', ''),)
-    qualified = any(text.rstrip().endswith(('.', '。', '!', '?')) and (_CONDITIONAL.search(text)
+    def detail(text, *, footnote=False):
+        complete = (text.rstrip().endswith(('.', '。', '!', '?'))
+                    or (footnote and _FOOTNOTE_SENTENCE_TAIL.search(text)))
+        return bool(complete and (_CONDITIONAL.search(text)
                     or re.search(r'소송|법적|판결|결과|의무|해소|소멸|환입|종결|'
                                  r'\b(?:litigation|lawsuit|proceedings|outcome|obligation|'
-                                 r'resolved|reversed|settled|breach)\b', text, re.IGNORECASE))
-                    for text in pieces)
+                                 r'resolved|reversed|settled|breach)\b', text, re.IGNORECASE)))
+
+    qualified = any(detail(text) for text in pieces)
+    footnotes = record.get('footnotes', '')
+    if isinstance(footnotes, str):
+        # Recognize a complete sentence followed by flat parenthetical detail;
+        # neither the sentence nor its qualifying suffix is edited or removed.
+        qualified = qualified or detail(footnotes, footnote=True)
     return {'specific_note': not bool(generic or _POLICY.search(headings)),
             'qualified_claim': qualified,
             'context_complete': record.get('scope') in {'consolidated', 'standalone'}
