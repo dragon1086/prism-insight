@@ -7,6 +7,42 @@ import pytest
 from prism_core.filing_html import parse_filing_html
 
 
+@pytest.mark.parametrize('parent,policy,scope', [
+    ('3. 연결재무제표 주석', '2. 연결재무제표 작성기준 및 중요한 회계정책 (연결)', 'consolidated'),
+    ('5. 재무제표 주석', '2. 별도재무제표 작성기준 및 중요한 회계정책 (별도)', 'standalone'),
+    ('3. 연결재무제표 주석', '2. 연결 재무제표 작성의 기초', 'consolidated'),
+    ('5. 재무제표 주석', '2. 별도 재무제표 작성 기준', 'standalone'),
+])
+def test_explicit_accounting_prefix_matches_parent_without_reset(parent, policy, scope):
+    raw = (f'<p>{parent}</p><p>{policy}</p><p>제 20 기 반기말 (단위: 백만원)</p>'
+           '<table><tr><th>항목</th><th>금액</th></tr><tr><td>차입금</td><td>100</td></tr></table>'
+           '<p>주1) 약정 위반은 없으나 조건 변경 시 상환 의무가 있습니다.</p>'
+           '<p>3. 재무위험관리</p><p>추가 조건은 다음 보고기간에 확인합니다.</p>')
+    parsed = parse_filing_html(raw)
+    assert {row['scope'] for row in parsed['records']} == {scope}
+    table = next(row for row in parsed['records'] if row['kind'] == 'table')
+    assert table['section_path'] == [parent, policy]
+    assert '백만원' in table['context_before'] and '반기말' in table['context_before']
+    assert '약정 위반은 없으나' in table['footnotes']
+    assert parsed['source_sha256'] == hashlib.sha256(raw.encode()).hexdigest()
+
+
+@pytest.mark.parametrize('parent,policy', [
+    ('3. 연결재무제표 주석', '2. 별도재무제표 작성기준'),
+    ('5. 재무제표 주석', '2. 연결재무제표 작성기준'),
+    ('3. 연결재무제표 주석', '2. 별도재무제표 작성기준 (연결)'),
+    ('5. 재무제표 주석', '2. 연결재무제표 작성기준 (별도)'),
+    ('3. 연결재무제표 주석', '2. 연결재무제표 작성기준 (별도)'),
+    ('5. 재무제표 주석', '2. 별도재무제표 작성기준 (연결)'),
+    ('', '2. 연결재무제표 작성기준'),
+    ('', '2. 별도재무제표 작성기준'),
+])
+def test_accounting_prefix_never_overrides_missing_or_conflicting_parent(parent, policy):
+    rows = parse_filing_html(f'<p>{parent}</p><p>{policy}</p><p>차입금 조건입니다.</p>'
+                             '<p>3. 재무위험관리</p><p>다음 주석입니다.</p>')['records']
+    assert rows and {row['scope'] for row in rows} == {'unknown'}
+
+
 @pytest.mark.parametrize('title,scope', [('3. 연결재무제표 주석', 'consolidated'),
                                        ('5. 재무제표 주석', 'standalone')])
 @pytest.mark.parametrize('policy', ['2. 재무제표 작성 기준 및 중요한 회계정책 (연결)',

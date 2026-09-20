@@ -16,7 +16,7 @@ _MAJOR = re.compile(r'^(?:I|II|III|IV|V|VI|VII|VIII|IX|X|XI|XII)[.)]\s*\S.{0,110
 _NUMBER = re.compile(r'^\d{1,3}(?:-\d{1,3})*[.)]\s*\S.{0,100}$')
 _FINANCIAL_TITLE = re.compile(r'^(?:\d{1,3}[.)]\s*)?(?:연결\s*)?재무제표(?:\s*주석)?$')
 _ACCOUNTING_NOTE = re.compile(
-    r'^\d{1,3}[.)]\s*재무제표\s*작성(?:\s*기준|\s*의\s*기초)'
+    r'^\d{1,3}[.)]\s*(?:(?P<prefix_scope>연결|별도)\s*)?재무제표\s*작성(?:\s*기준|\s*의\s*기초)'
     r'(?:\s*및\s*중요한\s*회계정책)?(?:\s*\((?:연결|별도)\))?$')
 _SUB = re.compile(r'^(?:\(\d{1,3}\)|[가-힣][.)])\s*\S.{0,100}$')
 _CONTEXT = re.compile(r'단\s*위\s*[:：]|제\s*\d+\s*기|(?:당|전)(?:반기|분기|기)(?:말)?|재무상태표|손익계산서|현금흐름표')
@@ -144,7 +144,10 @@ class _Reducer:
         level = None if _FOOT.match(text) else _heading(node, text, self.notes)
         if self.notes and level is not None:
             qualifier = re.search(r'\((연결|별도)\)$', text)
-            if qualifier and self.scope != ('consolidated' if qualifier[1] == '연결' else 'standalone'):
+            accounting = _ACCOUNTING_NOTE.fullmatch(text)
+            labels = [qualifier[1] if qualifier else None,
+                      accounting['prefix_scope'] if accounting else None]
+            if any(label and self.scope != ('consolidated' if label == '연결' else 'standalone') for label in labels):
                 level = 3  # Contradictory explicit scope must not inherit its parent.
         if level is not None:
             self.footnote_target, self.context_records = None, []

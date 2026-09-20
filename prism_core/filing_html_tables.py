@@ -36,17 +36,18 @@ def _visible_text(element):
     return ' '.join(''.join(pieces).split())
 
 
-def parse_html_table(table_element, *, max_rows=300, max_columns=80, max_cells=12000,
+def parse_html_table(table_element, *, max_rows=300, max_columns=300, max_cells=12000,
                      path_resolver=None):
     """Return source cells and their merged-cell grid, or an explicit failure.
 
     ``max_cells`` bounds the rectangular output grid as well as origin cells.
+    At least one axis must be at most 80; source coordinates are never transposed.
     Limits may be lowered, not raised above the defaults. Text is whitespace
     normalized only: empty strings, dashes, units and period labels stay text.
     A streaming caller may inject original-document paths captured before
     pruning siblings; standalone calls retain the existing lxml path behavior.
     """
-    for value, ceiling in ((max_rows, 300), (max_columns, 80), (max_cells, 12000)):
+    for value, ceiling in ((max_rows, 300), (max_columns, 300), (max_cells, 12000)):
         if type(value) is not int or not 0 < value <= ceiling:
             raise ValueError('table limits must be positive integers within hard bounds')
     result = {'status': 'UNSUPPORTED', 'errors': [], 'cells': [], 'grid': [],
@@ -124,7 +125,8 @@ def parse_html_table(table_element, *, max_rows=300, max_columns=80, max_cells=1
                 return fail('ROWSPAN_BEYOND_ROWS')
             end_column = column + colspan
             width = max(width, end_column)
-            if width > max_columns or width * len(rows) > max_cells or len(cells) >= max_cells:
+            if (width > max_columns or min(width, len(rows)) > 80
+                    or width * len(rows) > max_cells or len(cells) >= max_cells):
                 return fail('GRID_LIMIT', 'LIMIT_EXCEEDED')
             for target_row in range(row_index, row_index + rowspan):
                 if len(grid[target_row]) < end_column:

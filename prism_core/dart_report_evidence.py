@@ -54,7 +54,7 @@ def section_blocks(row, section):
     return blocks, gaps
 
 
-async def collect_latest(symbol, company, decision_at, scope, progress):
+async def collect_latest(symbol, company, decision_at, scope, progress, *, client_factory=None):
     """Separate bounded DART budget; no raw HTML is retained in report receipts."""
     from prism_core.dart_identity import resolve_dart_identity
     from prism_core.dart_public_filings import collect_dart_periodic_filings
@@ -62,7 +62,9 @@ async def collect_latest(symbol, company, decision_at, scope, progress):
     start = decision_at.astimezone(ZoneInfo('Asia/Seoul')).date() - timedelta(days=550)
     metrics = {'identity': {}, 'filings': {}}
     progress['dart_metrics'] = metrics
-    identity = await resolve_dart_identity(company, symbol, start, decision_at, _metrics=metrics['identity'])
+    client_options = {'client_factory': client_factory} if client_factory is not None else {}
+    identity = await resolve_dart_identity(company, symbol, start, decision_at,
+        _metrics=metrics['identity'], **client_options)
     progress['dart_calls'] = identity.get('metrics', {}).get('calls', 0)
     progress['dart_response_bytes'] = identity.get('metrics', {}).get('response_bytes', 0)
     progress['filing_selection'] = {'version': VERSION, 'decision_at': decision_at.isoformat(),
@@ -72,7 +74,7 @@ async def collect_latest(symbol, company, decision_at, scope, progress):
         return
     result = await collect_dart_periodic_filings(corp_code=identity['corp_code'],
         decision_at=decision_at, start_date=start, scope=scope, include_section_bodies=True,
-        max_filings=8, max_calls=28, timeout_seconds=55, _metrics=metrics['filings'])
+        max_filings=8, max_calls=28, timeout_seconds=55, _metrics=metrics['filings'], **client_options)
     progress['dart_calls'] += result['metrics']['calls']
     progress['dart_response_bytes'] += result['metrics']['response_bytes']
     selection = result['selection']

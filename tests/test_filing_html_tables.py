@@ -105,3 +105,67 @@ def test_invalid_limit_rejected(value):
 def test_empty_or_wrong_element_not_reported_complete():
     assert parse('<table/>')['status'] == 'UNSUPPORTED'
     assert parse('<div/>')['status'] == 'UNSUPPORTED'
+
+
+def rectangle(rows, columns):
+    return '<table>' + ''.join('<tr>' + ''.join(
+        f'<td>{r}:{c}</td>' for c in range(columns)) + '</tr>' for r in range(rows)) + '</table>'
+
+
+@pytest.mark.parametrize('rows,columns', [(15, 99), (15, 85), (99, 15), (85, 15)])
+def test_wide_and_tall_coordinates_remain_in_original_order(rows, columns):
+    element = html.fromstring(rectangle(rows, columns))
+    result = parse_html_table(element)
+    assert result['status'] == 'COMPLETE'
+    assert result['grid'] == [[r * columns + c for c in range(columns)] for r in range(rows)]
+    for i, cell in enumerate(result['cells']):
+        r, c = divmod(i, columns)
+        assert (cell['row'], cell['col'], cell['rowspan'], cell['colspan']) == (r, c, 1, 1)
+        assert cell['text'] == f'{r}:{c}'
+        assert element.getroottree().xpath(cell['source_path'])[0].text == f'{r}:{c}'
+
+
+@pytest.mark.parametrize('rows,columns,accepted', [
+    (80, 81, True), (81, 80, True), (81, 81, False),
+    (1, 300, True), (300, 1, True), (1, 301, False), (301, 1, False),
+    (40, 300, True), (41, 300, False),
+])
+def test_shape_axis_and_area_boundaries(rows, columns, accepted):
+    result = parse(rectangle(rows, columns))
+    assert result['status'] == ('COMPLETE' if accepted else 'LIMIT_EXCEEDED')
+    if accepted:
+        assert (result['row_count'], result['column_count']) == (rows, columns)
+    else:
+        assert result['grid'] == result['cells'] == []
+
+
+@pytest.mark.parametrize('span', [98, 84])
+def test_wide_colspan_with_rowspan_preserves_exact_occupancy(span):
+    result = parse(f'<table><tr><th rowspan="2">A</th><th colspan="{span}">B</th></tr>'
+                   f'<tr><td colspan="{span}">C</td></tr></table>')
+    assert result['status'] == 'COMPLETE'
+    assert result['grid'] == [[0] + [1] * span, [0] + [2] * span]
+    assert [(cell['row'], cell['col'], cell['rowspan'], cell['colspan']) for cell in result['cells']] == [
+        (0, 0, 2, 1), (0, 1, 1, span), (1, 1, 1, span)]
+
+
+def test_cumulative_end_column_includes_rowspan_occupancy():
+    result = parse('<table><tr><td rowspan="2" colspan="200">A</td></tr>'
+                   '<tr><td colspan="101">B</td></tr></table>')
+    assert result['status'] == 'LIMIT_EXCEEDED' and result['errors'] == ['GRID_LIMIT']
+    assert result['grid'] == result['cells'] == []
+
+
+@pytest.mark.parametrize('kwargs', [{'max_columns': 98}, {'max_rows': 14}, {'max_cells': 1484}])
+def test_lowered_limits_cannot_be_bypassed_by_wide_shape(kwargs):
+    result = parse(rectangle(15, 99), **kwargs)
+    assert result['status'] == 'LIMIT_EXCEEDED'
+    assert result['grid'] == result['cells'] == []
+
+
+def test_wide_span_overlap_is_not_shifted_or_truncated():
+    result = parse('<table><tr><td>A</td><td rowspan="2" colspan="98">B</td></tr>'
+                   '<tr><td colspan="99">C</td></tr></table>')
+    assert result['status'] == 'UNSUPPORTED'
+    assert result['errors'] == ['OVERLAPPING_SPAN']
+    assert result['grid'] == result['cells'] == []

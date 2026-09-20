@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 
 PROFILE = 'insight_prefetch_v5'
-FILING_PARSER_REVISION = 'bounded-html-v3-note-scope'
+FILING_PARSER_REVISION = 'bounded-html-v5-wide-geometry'
 MAX_CALLS = 8
 SECTION_BYTES = 6000
 TOPICS = {

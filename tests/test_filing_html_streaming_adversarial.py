@@ -132,3 +132,30 @@ def test_oversized_table_is_not_converted_into_unconditional_prose():
 def test_feed_size_rejects_invalid_values(feed_size):
     with pytest.raises(ValueError):
         parse_filing_html('<p>매출입니다.</p>', _feed_size=feed_size)
+
+
+@pytest.mark.parametrize('count,exceeded', [(10, False), (11, True)])
+def test_wide_tables_preserve_document_grid_aggregate_limit(count, exceeded):
+    # Each 40 x 300 table occupies 12,000 slots but only 40 source cells.
+    table = '<table>' + '<tr><td colspan="300">조건부</td></tr>' * 40 + '</table>'
+    actual = parse_filing_html('<h2>II. 사업의 내용</h2>' + table * count)
+    assert actual['streaming']['accepted_grid_slots'] == 120000
+    if exceeded:
+        assert 'HTML_DOCUMENT_GRID_LIMIT' in actual['errors']
+        assert actual['records'] == []
+    else:
+        assert actual['status'] == 'COMPLETE'
+        assert len(actual['records']) == count
+
+
+@pytest.mark.parametrize('count,exceeded', [(5, False), (6, True)])
+def test_wide_tables_preserve_document_origin_cell_aggregate_limit(count, exceeded):
+    table = '<table>' + ('<tr>' + '<td>1</td>' * 300 + '</tr>') * 40 + '</table>'
+    actual = parse_filing_html('<h2>II. 사업의 내용</h2>' + table * count)
+    assert actual['streaming']['accepted_origin_cells'] == 60000
+    if exceeded:
+        assert 'HTML_DOCUMENT_CELL_LIMIT' in actual['errors']
+        assert actual['records'] == []
+    else:
+        assert actual['status'] == 'COMPLETE'
+        assert len(actual['records']) == count
