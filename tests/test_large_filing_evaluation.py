@@ -88,7 +88,8 @@ def _codec_delivery():
                          ensure_ascii=False, separators=(',', ':'))
     shared = {'parser_version': 'material_v2', 'representation': 'DART_VIEWER_HTML',
               'representation_sha256': parsed['source_sha256']}
-    local = {k: record[k] for k in ('kind', 'source_path', 'source_paths', 'scope', 'section_path')}
+    local = {k: record[k] for k in ('kind', 'source_path', 'source_paths', 'scope', 'section_path',
+                                    'context_before', 'footnotes', 'context_paths', 'footnote_paths') if k in record}
     local['excerpt_encoding'] = 'html_cell_tuples_v1'
     block = {'excerpt': excerpt, 'provenance': {**shared, **local}}
     note = {'sources': [{'source_id': 's', 'excerpt': excerpt, 'provenance': local}],
@@ -103,12 +104,16 @@ def test_delivered_table_codec_is_bound_to_original_hash_and_cells():
 
 
 @pytest.mark.parametrize('mutation', ['missing_marker', 'unknown_marker', 'hash', 'path', 'cell', 'source', 'conflict',
-                                    'kind', 'representation', 'parser_version', 'both_markers', 'shape'])
+                                    'kind', 'representation', 'parser_version', 'both_markers', 'shape', 'both_conditions'])
 def test_delivered_codec_tampering_fails_even_if_block_and_packet_agree(mutation):
     from tools.evaluate_large_filing_html import audit_delivered_provenance
     parsed, block, note = _codec_delivery()
     row = note['sources'][0]
-    if mutation == 'missing_marker':
+    if mutation == 'both_conditions':
+        for target in (row['provenance'], block['provenance']):
+            target.pop('footnotes', None)
+            target.pop('footnote_paths', None)
+    elif mutation == 'missing_marker':
         row['provenance'].pop('excerpt_encoding')
     elif mutation == 'both_markers':
         row['provenance'].pop('excerpt_encoding')

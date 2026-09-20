@@ -7,6 +7,7 @@ import hashlib
 import json
 import os.path
 import re
+from time import monotonic
 
 from prism_core.filing_selection import _classify, select_filing_evidence
 from prism_core.filing_structure import parse_filing
@@ -27,21 +28,27 @@ def compact_html_provenance(provenance):
     if not isinstance(provenance, dict):
         raise TypeError('INVALID_COMPACT_DOM_PROVENANCE')
     if 'dom_paths' in provenance:
-        if any(key in provenance for key in ('source_path', 'source_paths', 'footnote_paths')):
+        if (any(key in provenance for key in ('source_path', 'source_paths', 'footnote_paths'))
+                or (isinstance(provenance['dom_paths'], dict)
+                    and 'context' in provenance['dom_paths'] and 'context_paths' in provenance)):
             raise ValueError('CONFLICTING_DOM_PROVENANCE')
         return dict(provenance)
     primary, parts = provenance.get('source_path'), provenance.get('source_paths')
     notes = provenance.get('footnote_paths', [])
+    context = provenance.get('context_paths', [])
     if (not isinstance(primary, str) or not isinstance(parts, list) or not isinstance(notes, list)
-            or not parts or not all(isinstance(p, str) and p.startswith('/') for p in [primary, *parts, *notes])):
+            or not isinstance(context, list) or not parts
+            or not all(isinstance(p, str) and p.startswith('/') for p in [primary, *parts, *notes, *context])):
         return dict(provenance)
-    prefix = os.path.commonprefix([primary, *parts, *notes]).rsplit('/', 1)[0] + '/'
+    prefix = os.path.commonprefix([primary, *parts, *notes, *context]).rsplit('/', 1)[0] + '/'
     locators = {'base': prefix, 'source': primary[len(prefix):],
                 'parts': [p[len(prefix):] for p in parts]}
     if 'footnote_paths' in provenance:
         locators['notes'] = [p[len(prefix):] for p in notes]
+    if 'context_paths' in provenance:
+        locators['context'] = [p[len(prefix):] for p in context]
     compact = {key: value for key, value in provenance.items()
-               if key not in {'source_path', 'source_paths', 'footnote_paths'}}
+               if key not in {'source_path', 'source_paths', 'footnote_paths', 'context_paths'}}
     compact['dom_paths'] = locators
     size = lambda value: len(json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode())
     return compact if size(compact) < size(provenance) else dict(provenance)
@@ -56,14 +63,18 @@ def expand_html_provenance(provenance):
     if any(key in provenance for key in ('source_path', 'source_paths', 'footnote_paths')):
         raise ValueError('CONFLICTING_DOM_PROVENANCE')
     locators = provenance['dom_paths']
+    if isinstance(locators, dict) and 'context_paths' in provenance and 'context' in locators:
+        raise ValueError('CONFLICTING_DOM_PROVENANCE')
     if (not isinstance(locators, dict) or not isinstance(locators.get('base'), str)
             or not locators['base'].startswith('/') or not locators['base'].endswith('/')
             or not isinstance(locators.get('source'), str) or not isinstance(locators.get('parts'), list)
             or not isinstance(locators.get('notes', []), list)
-            or not all(isinstance(p, str) for p in [locators['source'], *locators['parts'], *locators.get('notes', [])])):
+            or not isinstance(locators.get('context', []), list)
+            or not all(isinstance(p, str) for p in [locators['source'], *locators['parts'],
+                                                   *locators.get('notes', []), *locators.get('context', [])])):
         raise ValueError('INVALID_COMPACT_DOM_PROVENANCE')
     try:
-        relatives = [locators['source'], *locators['parts'], *locators.get('notes', [])]
+        relatives = [locators['source'], *locators['parts'], *locators.get('notes', []), *locators.get('context', [])]
         restored_bytes = len(locators['base'].encode()) * len(relatives) + sum(len(p.encode()) for p in relatives)
     except UnicodeEncodeError:
         raise ValueError('INVALID_COMPACT_DOM_PROVENANCE') from None
@@ -74,6 +85,8 @@ def expand_html_provenance(provenance):
                     source_paths=[locators['base'] + p for p in locators['parts']])
     if 'notes' in locators:
         restored['footnote_paths'] = [locators['base'] + p for p in locators['notes']]
+    if 'context' in locators:
+        restored['context_paths'] = [locators['base'] + p for p in locators['context']]
     return restored
 
 
@@ -192,6 +205,7 @@ def filing_blocks(data, url, *, material_notes=False):
     HTML present but unusable never falls back to flattened Markdown tables.
     Final per-owner budget enforcement remains in the existing packet builder.
     """
+    deadline = monotonic() + 10.0
     markdown = data.get('markdown') if isinstance(data, dict) else None
     if type(markdown) is not str:
         return [], ['FILING_MARKDOWN_INVALID']
@@ -212,7 +226,7 @@ def filing_blocks(data, url, *, material_notes=False):
             return [], ['FILING_HTML_PROVENANCE_UNVERIFIED']
         from prism_core.filing_html import parse_filing_html
 
-        parsed = parse_filing_html(data['html'])
+        parsed = parse_filing_html(data['html'], _deadline=deadline)
         gaps.extend('FILING_HTML_' + error for error in parsed['errors'])
         if parsed['status'] not in {'COMPLETE', 'PARTIAL'}:
             return [], gaps or ['FILING_HTML_UNSUPPORTED']
@@ -255,14 +269,16 @@ def filing_blocks(data, url, *, material_notes=False):
                           digest=digest, md_hash=md_hash, gaps=gaps,
                           parsed=parsed if 'html' in data else None,
                           markdown_units=markdown_units if 'html' in data else None,
-                          markdown=markdown)
+                          markdown=markdown, deadline=deadline if 'html' in data else None)
 
 
 def _record_blocks(records, *, material_notes, representation, digest, md_hash,
-                   gaps, parsed=None, markdown_units=None, markdown=None):
+                   gaps, parsed=None, markdown_units=None, markdown=None, deadline=None):
     """Shared semantic routing; representation admission stays with the caller."""
     blocks = []
     for record in records:
+        if deadline is not None and monotonic() >= deadline:
+            return [], list(dict.fromkeys([*gaps, 'FILING_EVIDENCE_TIME_LIMIT']))
         if record.get('layout_role') or record.get('context_incomplete'):
             continue
         source_text = '\n'.join((record.get('context_before', ''), record['text'], record.get('footnotes', '')))
@@ -309,6 +325,10 @@ def _record_blocks(records, *, material_notes, representation, digest, md_hash,
             provenance['material_topics'] = tags
         block = {'topic': route, 'excerpt': text, 'status': 'SOURCE_TEXT_NOT_FACT_VALIDATED',
                  'provenance': provenance}
+        if material_notes is True and representation in {'DART_VIEWER_HTML', 'FIRECRAWL_CLEANED_HTML'}:
+            from prism_core.material_filing_selection import html_retrieval_class
+
+            block['_retrieval'] = html_retrieval_class(record)
         if (material_notes is True and record['kind'] == 'table'
                 and representation in {'DART_VIEWER_HTML', 'FIRECRAWL_CLEANED_HTML'}):
             from prism_core.filing_html_codec import compact_html_table_excerpt
@@ -320,5 +340,33 @@ def _record_blocks(records, *, material_notes, representation, digest, md_hash,
                 size = lambda item: len(json.dumps(item, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
                 if size(candidate) < size(block):
                     block = candidate
+            if route == 'catalysts_risks_counterevidence' and len(block['excerpt'].encode('utf-8')) > 2400:
+                from prism_core.filing_html_projection import (
+                    encode_html_column_view,
+                    project_html_columns,
+                )
+
+                projected, diagnostics = project_html_columns(record, deadline=deadline)
+                if diagnostics['code'] == 'PROJECTION_DEADLINE':
+                    return [], list(dict.fromkeys([*gaps, 'FILING_EVIDENCE_TIME_LIMIT']))
+                block['_projection'] = diagnostics
+                if projected is not None:
+                    partial = {key: projected[key] for key in (
+                        'projected', 'projection_kind', 'selected_columns', 'row_label_columns', 'original_columns')}
+                    candidate = {**block, 'excerpt': encode_html_column_view(projected),
+                        'provenance': {**block['provenance'], **partial, 'excerpt_encoding': 'html_column_view_v1'},
+                        '_retrieval': html_retrieval_class(projected)}
+                    # Compare only the model-visible block, not private audit counters.
+                    def cost(value):
+                        return len(json.dumps({k: v for k, v in value.items() if not k.startswith('_')},
+                                              ensure_ascii=False, separators=(',', ':')).encode())
+                    if cost(candidate) < cost(block):
+                        block = candidate
         blocks.append(block)
+    if material_notes is True and representation in {'DART_VIEWER_HTML', 'FIRECRAWL_CLEANED_HTML'}:
+        from prism_core.material_filing_selection import order_material_html_blocks
+
+        blocks = order_material_html_blocks(blocks)
+    if deadline is not None and monotonic() >= deadline:
+        return [], list(dict.fromkeys([*gaps, 'FILING_EVIDENCE_TIME_LIMIT']))
     return blocks, list(dict.fromkeys(gaps))

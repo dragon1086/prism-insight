@@ -60,6 +60,8 @@ def validate_body(body, allowed_tools):
             if not isinstance(item, dict):
                 raise ProxyRejected("input_item_not_permitted")
             kind = item.get("type", "message")
+            if not allowed_tools and kind != "message":
+                raise ProxyRejected("tool_free_input_required")
             if kind == "message":
                 if (set(item) - {"type", "role", "content"} or not isinstance(item.get("role"), str)
                         or item["role"] not in {"developer", "user", "assistant", "system"}
@@ -85,6 +87,8 @@ def validate_body(body, allowed_tools):
                 or set(tool) - {"type", "name", "description", "parameters", "strict"}):
             raise ProxyRejected("tools_not_permitted")
     if not isinstance(body.get("tool_choice", "auto"), str) or body.get("tool_choice", "auto") not in {"auto", "none", "required"}:
+        raise ProxyRejected("tool_choice_not_permitted")
+    if not allowed_tools and body.get("tool_choice") == "required":
         raise ProxyRejected("tool_choice_not_permitted")
     return body
 
@@ -237,11 +241,15 @@ class _BoundedSession:
 
 
 def create_dedicated_app(manager, *, allowed_tools, max_requests=16):
-    """For one supervised helper process only. Cleanup restores native globals."""
+    """For one supervised helper only; an explicit empty set disables all tools.
+
+    Cleanup restores native globals. This bounds accepted bytes/time/requests,
+    not upstream tokens: the native translator strips max_output_tokens.
+    """
     global _ACTIVE
     if (_ACTIVE or not isinstance(manager, FrozenTokenManager) or type(max_requests) is not int
             or not 1 <= max_requests <= 32 or not isinstance(allowed_tools, (set, frozenset))
-            or not allowed_tools or len(allowed_tools) > 64
+            or len(allowed_tools) > 64
             or any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", name) for name in allowed_tools)):
         raise ProxyRejected("invalid_dedicated_service")
     from tools.probe_codex_trading_runtime import READ_TOOLS
@@ -249,6 +257,7 @@ def create_dedicated_app(manager, *, allowed_tools, max_requests=16):
                   for name in (tool, f"{server}-{tool}", f"{server}_{tool}", f"{server}__{tool}")}
     if not allowed_tools <= read_names:
         raise ProxyRejected("non_read_tool_manifest")
+    allowed_tools = frozenset(allowed_tools)
     from cores.chatgpt_proxy import proxy_server as native
     if native._token_manager is not None:
         raise ProxyRejected("native_proxy_already_active")
@@ -287,6 +296,12 @@ def create_dedicated_app(manager, *, allowed_tools, max_requests=16):
             # hide a private value from the raw-byte check upstream.
             if not isinstance(payload, dict) or payload.get("error") or _contains_private(payload, manager.private_values):
                 raise ProxyRejected("invalid_success_payload")
+            if not allowed_tools:
+                output = payload.get("output")
+                if (not isinstance(output, list) or any(
+                        not isinstance(item, dict) or item.get("type") not in {"message", "reasoning"}
+                        for item in output)):
+                    raise ProxyRejected("tool_free_output_required")
             return response
         except Exception:
             return web.json_response({"error": {"message": "isolated_fallback_failed"}}, status=502)
@@ -349,7 +364,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--socket", required=True, type=Path)
     parser.add_argument("--auth-snapshot", required=True, type=Path)
-    parser.add_argument("--read-tool", required=True, action="append")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--read-tool", action="append")
+    mode.add_argument("--tool-free", action="store_true")
     parser.add_argument("--run-seconds", type=float, default=600)
     parser.add_argument("--max-requests", type=int, default=16)
     args = parser.parse_args(argv)
@@ -359,7 +376,7 @@ def main(argv=None):
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, stop.set)
-        await serve(args.socket, args.auth_snapshot, allowed_tools=set(args.read_tool),
+        await serve(args.socket, args.auth_snapshot, allowed_tools=frozenset(args.read_tool or ()),
                     run_seconds=args.run_seconds, max_requests=args.max_requests, stop_event=stop)
     # This CLI must run in its own supervised process: native log paths include
     # payload excerpts. No logging configuration is changed in production.

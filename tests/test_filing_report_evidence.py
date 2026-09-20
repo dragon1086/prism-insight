@@ -197,7 +197,7 @@ def test_failed_html_never_evaluates_markdown(monkeypatch):
         raise AssertionError('failed HTML must not parse Markdown')
     monkeypatch.setattr(adapter, 'parse_filing', forbidden)
     for status in ('UNSUPPORTED', 'LIMIT_EXCEEDED'):
-        monkeypatch.setattr(filing_html, 'parse_filing_html', lambda value, s=status:
+        monkeypatch.setattr(filing_html, 'parse_filing_html', lambda value, s=status, **kwargs:
                             {'status': s, 'errors': ['SOURCE_REJECTED'], 'records': [], 'source_sha256': None})
         blocks, gaps = adapter.filing_blocks({'markdown': TEXT, 'html': 'x',
                                               'metadata': {'sourceURL': BODY, 'statusCode': 200}}, BODY)

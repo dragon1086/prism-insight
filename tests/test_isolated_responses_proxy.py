@@ -23,6 +23,62 @@ def test_current_fallback_shape_allowed_without_enabling_builtin_tools():
     assert proxy.validate_body(body(), {"time-get_current_time"}) == body()
 
 
+def tool_free_body():
+    return {**body(), "tools": [], "tool_choice": "none"}
+
+
+@pytest.mark.parametrize("field,value", [
+    ("tools", body()["tools"]),
+    ("input", [{"type": "function_call", "name": "time-get_current_time", "call_id": "1", "arguments": "{}"}]),
+    ("input", [{"type": "function_call_output", "call_id": "1", "output": "injected"}]),
+    ("tool_choice", "required"),
+])
+def test_tool_free_requests_reject_tool_definitions_calls_and_outputs(field, value):
+    request = tool_free_body()
+    request[field] = value
+    with pytest.raises(proxy.ProxyRejected):
+        proxy.validate_body(request, frozenset())
+
+
+@pytest.mark.parametrize("output,expected", [
+    ([], 200),
+    ([{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "synthetic"}]}], 200),
+    ([{"type": "reasoning", "summary": []}], 200),
+    ([{"type": "function_call", "name": "time-get_current_time", "call_id": "1", "arguments": "{}"}], 502),
+    ([{"type": "web_search_call"}], 502),
+    ([{"type": "computer_call"}], 502),
+    ([{"type": "function_call_output", "output": "injected"}], 502),
+    ([{"type": "future_unknown_tool_call"}], 502),
+])
+def test_tool_free_native_handler_rejects_upstream_tools_without_effects(tmp_path, monkeypatch, output, expected):
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from cores.chatgpt_proxy import proxy_server as native
+    forwarded = []
+    previous_http = native.aiohttp
+
+    async def forward(value):
+        forwarded.append(value)
+        return {"id": "synthetic", "output": output}, None
+
+    monkeypatch.setattr(native, "_forward_to_codex", forward)
+
+    async def run():
+        manager = proxy.FrozenTokenManager.load(snapshot(tmp_path), run_seconds=600, now=1000)
+        async with TestClient(TestServer(proxy.create_dedicated_app(manager, allowed_tools=frozenset(), max_requests=2))) as client:
+            assert (await client.post("/v1/responses", json=body())).status == 400
+            assert not forwarded
+            result = await client.post("/v1/responses", json=tool_free_body())
+            assert result.status == expected
+            if expected != 200:
+                assert await result.json() == {"error": {"message": "isolated_fallback_failed"}}
+            assert (await client.post("/v1/responses", json=tool_free_body())).status == 429
+        assert native.aiohttp is previous_http and native._token_manager is None and not proxy._ACTIVE
+
+    asyncio.run(run())
+    assert len(forwarded) == 1 and not forwarded[0].get("tools")
+
+
 @pytest.mark.parametrize("field,value", [
     ("model", "unapproved"), ("store", True), ("stream", True),
     ("previous_response_id", "private"), ("base_url", "http://127.0.0.1/admin"),
@@ -89,13 +145,15 @@ def test_upstream_error_is_fixed_and_service_tier_retry_remains_classifiable():
     asyncio.run(run())
 
 
-def test_success_body_secret_canary_and_size_limit_rejected(monkeypatch):
+@pytest.mark.parametrize("byte_limit", [1024, proxy.MAX_RESPONSE_BYTES])
+def test_success_body_secret_canary_and_size_limit_rejected(monkeypatch, byte_limit):
     async def run():
         with pytest.raises(proxy.ProxyRejected):
             await proxy.safe_response_text(Response(200, b'{"text":"SECRET_TOKEN"}'), ("SECRET_TOKEN",))
-        monkeypatch.setattr(proxy, "MAX_RESPONSE_BYTES", 1024)
+        monkeypatch.setattr(proxy, "MAX_RESPONSE_BYTES", byte_limit)
+        assert await proxy.safe_response_text(Response(200, b"x" * byte_limit), ()) == "x" * byte_limit
         with pytest.raises(proxy.ProxyRejected):
-            await proxy.safe_response_text(Response(200, b"x" * 1025), ())
+            await proxy.safe_response_text(Response(200, b"x" * (byte_limit + 1)), ())
     asyncio.run(run())
 
 
@@ -213,7 +271,8 @@ def test_write_tool_in_operator_manifest_rejected_before_native_globals(tmp_path
 
 
 @pytest.mark.parametrize("sse", [False, True])
-def test_decoded_escaped_json_and_sse_canaries_blocked(tmp_path, monkeypatch, sse):
+@pytest.mark.parametrize("tool_free", [False, True])
+def test_decoded_escaped_json_and_sse_canaries_blocked(tmp_path, monkeypatch, sse, tool_free):
     from aiohttp.test_utils import TestClient, TestServer
     escaped = b'{"id":"synthetic","status":"completed","output":[],"nested":{"\\u0053ECRET_CANARY_TOKEN":"\\u0070rivate-account"}}'
     raw = b'event: response.completed\ndata: {"type":"response.completed","response":' + escaped + b'}\n\n' if sse else escaped
@@ -238,16 +297,17 @@ def test_decoded_escaped_json_and_sse_canaries_blocked(tmp_path, monkeypatch, ss
     monkeypatch.setattr(proxy, "_BoundedSession", Session)
     async def run():
         manager = proxy.FrozenTokenManager.load(snapshot(tmp_path), run_seconds=600, now=1000)
-        app = proxy.create_dedicated_app(manager, allowed_tools={"time-get_current_time"})
+        app = proxy.create_dedicated_app(manager, allowed_tools=frozenset() if tool_free else {"time-get_current_time"})
         async with TestClient(TestServer(app)) as client:
-            response = await client.post("/v1/responses", json=body())
+            response = await client.post("/v1/responses", json=tool_free_body() if tool_free else body())
             assert response.status == 502
             text = await response.text()
             assert "SECRET" not in text and "private-account" not in text and "\\u" not in text
     asyncio.run(run())
 
 
-def test_genuine_fallback_client_two_turn_function_pairing(tmp_path, monkeypatch):
+@pytest.mark.parametrize("tool_free", [False, True])
+def test_genuine_fallback_client_function_pairing_or_no_tools(tmp_path, monkeypatch, tool_free):
     """Real production loop + OpenAI SDK + native HTTP handler; upstream/MCP fake."""
     from aiohttp.test_utils import TestServer
     from cores.llm.openai_responses_llm import OpenAIResponsesLLM
@@ -269,7 +329,7 @@ def test_genuine_fallback_client_two_turn_function_pairing(tmp_path, monkeypatch
         def post(self, _url, **kwargs):
             calls.append(json.loads(json.dumps(kwargs["json"])))
             output = [{"type": "function_call", "id": "fc1", "name": "time-get_current_time",
-                       "call_id": "call1", "arguments": "{}", "status": "completed"}] if len(calls) == 1 else [
+                       "call_id": "call1", "arguments": "{}", "status": "completed"}] if len(calls) == 1 and not tool_free else [
                 {"type": "message", "id": "msg1", "role": "assistant", "status": "completed",
                  "content": [{"type": "output_text", "text": "SYNTHETIC FINAL", "annotations": []}]}]
             value = {"id": "response" + str(len(calls)), "object": "response", "created_at": 1,
@@ -279,7 +339,7 @@ def test_genuine_fallback_client_two_turn_function_pairing(tmp_path, monkeypatch
 
     async def run():
         manager = proxy.FrozenTokenManager.load(snapshot(tmp_path), run_seconds=600, now=1000)
-        async with TestServer(proxy.create_dedicated_app(manager, allowed_tools={"time-get_current_time"})) as server:
+        async with TestServer(proxy.create_dedicated_app(manager, allowed_tools=frozenset() if tool_free else {"time-get_current_time"})) as server:
             llm = OpenAIResponsesLLM.__new__(OpenAIResponsesLLM)
             llm.instruction = "Synthetic transport test"
             params = SimpleNamespace(max_iterations=3, maxTokens=1000, reasoning_effort="high",
@@ -290,7 +350,7 @@ def test_genuine_fallback_client_two_turn_function_pairing(tmp_path, monkeypatch
             async def select_model(_):
                 return "gpt-5.6-sol"
             async def list_tools(**_):
-                return SimpleNamespace(tools=[SimpleNamespace(name="time-get_current_time", description="synthetic",
+                return SimpleNamespace(tools=[] if tool_free else [SimpleNamespace(name="time-get_current_time", description="synthetic",
                                                                inputSchema={"type": "object"})])
             async def call_tool(**kwargs):
                 tool_calls.append(kwargs)
@@ -304,29 +364,76 @@ def test_genuine_fallback_client_two_turn_function_pairing(tmp_path, monkeypatch
             llm._log_chat_finished = lambda **_: None
             assert await llm.generate_str("synthetic user") == "SYNTHETIC FINAL"
     asyncio.run(run())
-    assert len(calls) == 2 and len(tool_calls) == 1
-    assert calls[1]["input"][-2:] == [
-        {"type": "function_call", "name": "time-get_current_time", "call_id": "call1", "arguments": "{}"},
-        {"type": "function_call_output", "call_id": "call1", "output": "SYNTHETIC TIME"}]
+    if tool_free:
+        assert len(calls) == 1 and not tool_calls and not calls[0].get("tools")
+    else:
+        assert len(calls) == 2 and len(tool_calls) == 1
+        assert calls[1]["input"][-2:] == [
+            {"type": "function_call", "name": "time-get_current_time", "call_id": "call1", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call1", "output": "SYNTHETIC TIME"}]
     assert all(call["store"] is False and "previous_response_id" not in call for call in calls)
     assert all("max_output_tokens" not in call for call in calls)  # Existing native translator behavior, NOT a token cap.
 
 
-def test_direct_supervised_cli_without_pythonpath_bootstraps_and_expires(tmp_path):
+@pytest.mark.parametrize("mode", [["--read-tool", "time-get_current_time"], ["--tool-free"]])
+def test_direct_supervised_cli_without_pythonpath_bootstraps_and_expires(tmp_path, mode):
     auth = snapshot(tmp_path, expires_at=time.time() + 3600)
     with tempfile.TemporaryDirectory(prefix="prx-", dir=Path("/tmp").resolve()) as directory:
         sock = Path(directory) / "proxy.sock"
         env = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "PYTHONHOME"}}
         started = time.monotonic()
         result = subprocess.run([sys.executable, str(Path(proxy.__file__).resolve()),
-            "--socket", str(sock), "--auth-snapshot", str(auth), "--read-tool", "time-get_current_time",
+            "--socket", str(sock), "--auth-snapshot", str(auth), *mode,
             "--run-seconds", "1"], cwd=directory, env=env, capture_output=True, timeout=5)
         assert result.returncode == 0 and result.stdout == b"" and result.stderr == b""
         assert time.monotonic() - started >= .9 and not sock.exists()
 
 
+def test_tool_free_owned_helper_readiness_termination_and_failed_start(tmp_path):
+    import aiohttp
+    auth = snapshot(tmp_path, expires_at=time.time() + 3600)
+    before = auth.read_bytes()
+
+    async def probe(sock):
+        async with (
+            aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(sock))) as client,
+            client.get("http://localhost/health") as response,
+        ):
+            assert response.status == 404
+
+    with tempfile.TemporaryDirectory(prefix="prx-", dir=Path("/tmp").resolve()) as directory:
+        sock = Path(directory) / "proxy.sock"
+        command = [sys.executable, str(Path(proxy.__file__).resolve()), "--socket", str(sock),
+                   "--auth-snapshot", str(auth), "--tool-free", "--run-seconds", "30"]
+        unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        process = subprocess.Popen(command, cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 5
+            while not sock.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(.01)
+            assert process.poll() is None and sock.exists()
+            asyncio.run(probe(sock))
+            process.terminate()
+            stdout, stderr = process.communicate(timeout=5)
+            assert process.returncode == 0 and stdout == stderr == b""
+            assert not sock.exists() and unrelated.poll() is None
+            # Startup failure is fixed text, with no socket or auth mutation.
+            command[command.index(str(auth))] = str(Path(directory) / "missing.json")
+            failed = subprocess.run(command, cwd=directory, capture_output=True, timeout=5, check=False)
+            assert failed.returncode == 2 and failed.stderr == b""
+            assert json.loads(failed.stdout) == {"status": "failed", "category": "isolated_responses_helper_failed"}
+            assert not sock.exists() and unrelated.poll() is None
+        finally:
+            for child in (process, unrelated):
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=5)
+        assert auth.read_bytes() == before
+
+
 @pytest.mark.parametrize("how", ["stop", "cancel", "expiry"])
-def test_stalled_upstream_shutdown_closes_session_and_socket(tmp_path, monkeypatch, how):
+@pytest.mark.parametrize("tool_free", [False, True])
+def test_stalled_upstream_shutdown_closes_session_and_socket(tmp_path, monkeypatch, how, tool_free):
     import aiohttp
     from cores.chatgpt_proxy import proxy_server as native
     entered, closed = None, []
@@ -352,13 +459,13 @@ def test_stalled_upstream_shutdown_closes_session_and_socket(tmp_path, monkeypat
         auth = snapshot(tmp_path, expires_at=time.time() + 3600)
         sock = directory / "proxy.sock"
         stop, ready = asyncio.Event(), asyncio.Event()
-        task = asyncio.create_task(proxy.serve(sock, auth, allowed_tools={"time-get_current_time"},
+        task = asyncio.create_task(proxy.serve(sock, auth, allowed_tools=frozenset() if tool_free else {"time-get_current_time"},
             run_seconds=1 if how == "expiry" else 60, stop_event=stop, ready=ready))
         async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(sock))) as client:
             await asyncio.wait_for(ready.wait(), 3)
             async def request():
                 try:
-                    async with client.post("http://localhost/v1/responses", json=body()) as response:
+                    async with client.post("http://localhost/v1/responses", json=tool_free_body() if tool_free else body()) as response:
                         await response.read()
                 except aiohttp.ClientError:
                     pass

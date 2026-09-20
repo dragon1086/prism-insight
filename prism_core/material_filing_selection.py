@@ -17,6 +17,49 @@ _CONDITIONAL = re.compile(r'다만|그러나|조건|불확실|위반|면제|상�
 _LIMIT = 2 * 1024 * 1024
 
 
+def html_retrieval_class(record):
+    """Boolean source-detail classes, never polarity, amounts or risk scores."""
+    headings = ' '.join(record.get('section_path', ()))
+    generic = re.search(r'일반사항|회계정책|회계추정|금융위험\s*관리|accounting polic|financial risk management',
+                        headings, re.IGNORECASE)
+    cells = record.get('table', {}).get('cells', []) if record.get('kind') == 'table' else []
+    pieces = (cell['text'] for cell in cells if cell.get('tag') != 'th') if cells else (record.get('text', ''),)
+    qualified = any(text.rstrip().endswith(('.', '。', '!', '?')) and (_CONDITIONAL.search(text)
+                    or re.search(r'소송|법적|판결|결과|의무|해소|소멸|환입|종결|'
+                                 r'\b(?:litigation|lawsuit|proceedings|outcome|obligation|'
+                                 r'resolved|reversed|settled|breach)\b', text, re.IGNORECASE))
+                    for text in pieces)
+    return {'specific_note': not bool(generic or _POLICY.search(headings)),
+            'qualified_claim': qualified,
+            'context_complete': record.get('scope') in {'consolidated', 'standalone'}
+                                and bool(record.get('context_before'))}
+
+
+def order_material_html_blocks(blocks):
+    """Offer complete distinct note families before repeats, then apply cap."""
+    if not blocks or not all(b.get('provenance', {}).get('parser_version') == 'material_v2'
+            and b['provenance'].get('representation') in {'DART_VIEWER_HTML', 'FIRECRAWL_CLEANED_HTML'}
+            for b in blocks):
+        return list(blocks)
+
+    def key(block):
+        detail = block.get('_retrieval', {})
+        return tuple(-int(detail.get(field) is True) for field in (
+            'specific_note', 'qualified_claim', 'context_complete'))
+
+    families = {}
+    for block in blocks:
+        provenance = block['provenance']
+        # Captions identify distinct subjects within one large numbered note.
+        # Preserve explicit period labels too; never merge different contexts.
+        family = (provenance.get('scope'), _note_key({'section_path': provenance.get('section_path', [])}),
+                  provenance.get('context_before', ''))
+        families.setdefault(family, []).append(block)
+    groups = [sorted(rows, key=key) for rows in families.values()]
+    groups.sort(key=lambda rows: key(rows[0]))
+    return [row for layer in zip_longest(*groups) for row in layer if row is not None]
+
+
 def material_filing_records(text, *, peer_records=()):
     """Return bounded candidate breadth and omission reasons with exact spans.
 

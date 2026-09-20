@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 
 PROFILE = 'insight_prefetch_v5'
-FILING_PARSER_REVISION = 'bounded-html-v9-8mib'
+FILING_PARSER_REVISION = 'bounded-html-v10-material-detail'
 MAX_CALLS = 8
 SECTION_BYTES = 6000
 TOPICS = {
@@ -429,11 +429,22 @@ def packet(market, symbol, day, progress):
         seen = set()
         # Round-robin by topic avoids making risk evidence compete solely on rank
         # against long financial tables. Existing data remains with its owner.
-        queues = {topic: [(source, block) for source in sources
-                          for block in [b for b in source.get('blocks', []) if b['topic'] == topic][
-                              :24 if any(b.get('provenance', {}).get('parser_version') in ('structured_v1', 'material_v2', 'sec_inline_v1')
-                                         for b in source.get('blocks', [])) else 2]]
-                  for topic in topics}
+        queues = {topic: [] for topic in topics}
+        for source in sources:
+            blocks = source.get('blocks', [])
+            structured = any(b.get('provenance', {}).get('parser_version') in (
+                'structured_v1', 'material_v2', 'sec_inline_v1') for b in blocks)
+            for topic in topics:
+                candidates = [b for b in blocks if b['topic'] == topic]
+                from prism_core.material_filing_selection import (
+                    order_material_html_blocks,
+                )
+
+                ordered = order_material_html_blocks(candidates)
+                limit = 24 if structured else 2
+                if any('_retrieval' in b for b in ordered):
+                    omissions += max(0, len(ordered) - limit)
+                queues[topic].extend((source, block) for block in ordered[:limit])
         for position in range(max((len(rows) for rows in queues.values()), default=0)):
             for topic in topics:
                 if position < len(queues[topic]):

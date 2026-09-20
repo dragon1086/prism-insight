@@ -109,8 +109,9 @@ def audit_source_paths(html, parsed):
 def audit_delivered_provenance(blocks, note, parsed, *, source_id=None):
     """Bind packet paths/encoding to admitted blocks and the original table hash."""
     errors = []
-    keys = ('source_path', 'source_paths', 'footnote_paths', 'context_paths', 'scope',
-            'section_path', 'kind', 'parser_version', 'representation', 'representation_sha256', 'excerpt_encoding')
+    def canonical(value):
+        # JSON preserves bool-versus-int while normalizing tuple/list transport.
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     for index, row in enumerate(note['sources']):
         reason = 'DELIVERED_LOCATOR_MISMATCH'
         try:
@@ -123,9 +124,8 @@ def audit_delivered_provenance(blocks, note, parsed, *, source_id=None):
             if any(local[key] != shared[key] for key in local.keys() & shared.keys()):
                 raise ValueError
             provenance = expand_html_provenance({**shared, **local})
-            matches = [block for block in blocks if block['excerpt'] == row['excerpt'] and all(
-                (key in block['provenance']) == (key in provenance)
-                and block['provenance'].get(key) == provenance.get(key) for key in keys)]
+            matches = [block for block in blocks if block['excerpt'] == row['excerpt']
+                       and canonical(block['provenance']) == canonical(provenance)]
             if len(matches) != 1:
                 raise ValueError
             originals = [r for r in parsed['records'] if r['kind'] == 'table'
@@ -137,9 +137,13 @@ def audit_delivered_provenance(blocks, note, parsed, *, source_id=None):
                     raise ValueError
                 if 'excerpt_encoding' not in provenance and row['excerpt'] != originals[0]['text']:
                     raise ValueError
+                for key in ('context_before', 'footnotes', 'context_paths', 'footnote_paths'):
+                    empty = [] if key.endswith('_paths') else ''
+                    if canonical(provenance.get(key, empty)) != canonical(originals[0].get(key, empty)):
+                        raise ValueError
             if 'excerpt_encoding' in provenance:
                 reason = 'DELIVERED_TABLE_CODEC_INVALID'
-                if (provenance['excerpt_encoding'] != 'html_cell_tuples_v1'
+                if (provenance['excerpt_encoding'] not in {'html_cell_tuples_v1', 'html_column_view_v1'}
                         or provenance.get('kind') != 'table'
                         or provenance.get('parser_version') != 'material_v2'
                         or provenance.get('representation') not in {'DART_VIEWER_HTML', 'FIRECRAWL_CLEANED_HTML'}):
@@ -148,12 +152,46 @@ def audit_delivered_provenance(blocks, note, parsed, *, source_id=None):
 
                 if provenance.get('representation_sha256') != parsed['source_sha256']:
                     raise ValueError
-                if len(originals) != 1 or expand_html_table_excerpt(row['excerpt']) != originals[0]['text']:
+                if len(originals) != 1:
                     raise ValueError
                 # Decoder validates the bounded schema first; legacy text omits
                 # shape, so compare it separately to the original geometry.
                 table = originals[0]['table']
-                if json.loads(row['excerpt'])['shape'] != [table['row_count'], table['column_count']]:
+                encoded = json.loads(row['excerpt'])
+                if encoded['shape'] != [table['row_count'], table['column_count']]:
+                    raise ValueError
+                if provenance['excerpt_encoding'] == 'html_column_view_v1':
+                    from prism_core.filing_html_projection import (
+                        expand_html_column_excerpt,
+                    )
+
+                    restored = json.loads(expand_html_column_excerpt(row['excerpt']))['cells']
+                    columns = encoded['selected_columns']
+                    if (provenance.get('projected') is not True
+                            or provenance.get('projection_kind') != 'html_column_view_v1'
+                            or type(provenance.get('selected_columns')) is not list
+                            or any(type(c) is not int for c in provenance['selected_columns'])
+                            or type(provenance.get('row_label_columns')) is not int
+                            or type(provenance.get('original_columns')) is not int
+                            or provenance.get('selected_columns') != columns
+                            or provenance.get('row_label_columns') != encoded['row_label_columns']
+                            or provenance.get('original_columns') != table['column_count']):
+                        raise ValueError
+                    # Independently bind every delivered cell, including qualifiers,
+                    # to the original source mask, not to a selector-generated claim.
+                    expected = [{k: c[k] for k in ('row', 'col', 'rowspan', 'colspan', 'text')}
+                                for c in table['cells']
+                                if all(col in columns for col in range(c['col'], c['col'] + c['colspan']))]
+                    first_header = [c for c in table['cells'] if c['row'] == 0]
+                    label_width = 0
+                    for cell in first_header:
+                        if cell['tag'] != 'th' or cell['text'].strip():
+                            break
+                        label_width += cell['colspan']
+                    if restored != expected or label_width != encoded['row_label_columns']:
+                        raise ValueError
+                elif (provenance.get('projected') or provenance.get('projection_kind') == 'html_column_view_v1'
+                      or expand_html_table_excerpt(row['excerpt']) != originals[0]['text']):
                     raise ValueError
         except (ValueError, KeyError, TypeError):
             errors.append({'index': index, 'reason': reason})
@@ -218,6 +256,7 @@ def main():
               'manifest_sha256': hashlib.sha256(args.manifest.read_bytes()).hexdigest(),
               'implementation_sha256': {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in (
                   'prism_core/filing_html.py', 'prism_core/filing_html_policy.py',
+                  'prism_core/filing_html_projection.py',
                   'prism_core/filing_html_tables.py',
                   'prism_core/filing_report_evidence.py', 'prism_core/material_filing_selection.py',
                   'prism_core/report_insight_prefetch.py', 'tools/evaluate_large_filing_html.py')},

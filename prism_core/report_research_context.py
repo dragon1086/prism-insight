@@ -68,6 +68,8 @@ def apply_section_research(agent, section, prefetched, reference_date, language)
             'This collector does not confirm that the supplied filing is the latest periodic filing. '
             'Older supplementary disclosures do not establish current conditions; retain the dated primary financial inputs. '
             'Shared source_provenance applies by source_id; hashes identify source content, not truth. '
+            'html_column_view_v1 is a partial column view with original coordinates; omitted columns are not zero or absent. '
+            'Do not generalize a selected entity or case to the whole group or table. '
             'Do not turn a missing topic into evidence of no risk, or repeat the same evidence as multiple penalties. '
             'Preserve source URL, period, scope, units and uncertainty in the report; keep parser diagnostics out of public prose.\n'
         )

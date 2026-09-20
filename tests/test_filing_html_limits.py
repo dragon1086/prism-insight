@@ -101,3 +101,15 @@ def test_large_html_preserves_locator_budget(monkeypatch):
     result = filing_html.parse_filing_html(raw)
     assert result['errors'] == ['HTML_DOCUMENT_LOCATOR_LIMIT']
     assert not result['records']
+
+
+def test_parent_admission_deadline_is_not_reset(monkeypatch):
+    monkeypatch.setattr(filing_html, 'monotonic', lambda: 20.0)
+    result = filing_html.parse_filing_html('<p>이전 단계에서 기한이 소진됐습니다.</p>', _deadline=19.0)
+    assert result['errors'] == ['HTML_TIME_LIMIT'] and not result['records']
+
+
+@pytest.mark.parametrize('value', [True, '10', float('inf'), float('nan')])
+def test_parent_deadline_rejects_non_finite_or_non_numeric_values(value):
+    with pytest.raises(ValueError):
+        filing_html.parse_filing_html('<p>본문</p>', _deadline=value)

@@ -38,4 +38,29 @@ def test_compact_expansion_has_a_finite_work_budget():
     with pytest.raises(ValueError, match='COMPACT_DOM_PROVENANCE_LIMIT'):
         expand_html_provenance({'dom_paths': {'base': '/' + 'a' * 10000 + '/',
                                             'source': 'body', 'parts': ['x'] * 2000}})
+
+
+def test_caption_context_paths_share_prefix_without_losing_original_positions():
+    primary = '/html[1]/body[1]/table[42]'
+    context = [f'/html[1]/body[1]/table[41]/tbody[1]/tr[{i}]/td[1]' for i in range(1, 4)]
+    source = {'source_path': primary, 'source_paths': [primary], 'context_paths': context,
+              'footnote_paths': ['/html[1]/body[1]/p[43]'], 'context_before': '당반기 (단위: 원)'}
+    compact = compact_html_provenance(source)
+    assert 'context_paths' not in compact
+    assert compact['dom_paths']['context']
+    assert expand_html_provenance(compact) == source
+
+
+def test_context_paths_cannot_exist_in_both_forms():
+    invalid = {'context_paths': ['/other'], 'dom_paths': {
+        'base': '/html/', 'source': 'table[2]', 'parts': ['table[2]'], 'context': ['table[1]']}}
+    for operation in (compact_html_provenance, expand_html_provenance):
+        with pytest.raises(ValueError, match='CONFLICTING_DOM_PROVENANCE'):
+            operation(invalid)
+
+
+def test_context_path_expansion_counts_toward_restored_budget():
+    with pytest.raises(ValueError, match='COMPACT_DOM_PROVENANCE_LIMIT'):
+        expand_html_provenance({'dom_paths': {'base': '/' + 'a' * 10000 + '/',
+            'source': 'table[2]', 'parts': ['table[2]'], 'context': ['x'] * 2000}})
 import pytest

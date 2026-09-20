@@ -2,6 +2,7 @@
 import hashlib
 import re
 from datetime import timedelta
+from time import monotonic
 from urllib.parse import parse_qsl, urlsplit
 from zoneinfo import ZoneInfo
 
@@ -46,10 +47,11 @@ def _admit_section(row, section):
 
 def section_blocks(row, section):
     """Admit only exact hashed viewer representations with explicit local scope."""
+    deadline = monotonic() + 10.0
     body = _admit_section(row, section)
     if body is None:
         return [], ['DART_SECTION_PROVENANCE_INVALID']
-    parsed = parse_filing_html(body)
+    parsed = parse_filing_html(body, _deadline=deadline)
     if parsed['status'] not in {'COMPLETE', 'PARTIAL'}:
         return [], ['DART_SECTION_PARSE_UNAVAILABLE']
     # Do not synthesize parent headings/units or assign a guessed scope to a
@@ -58,14 +60,14 @@ def section_blocks(row, section):
     gaps = ['DART_SECTION_SCOPE_UNRESOLVED'] if len(records) != len(parsed['records']) else []
     if not records:
         return [], gaps or ['DART_SECTION_NO_RECORDS']
-    return _section_record_blocks(records, parsed, section, gaps)
+    return _section_record_blocks(records, parsed, section, gaps, deadline=deadline)
 
 
-def _section_record_blocks(records, parsed, section, gaps):
+def _section_record_blocks(records, parsed, section, gaps, *, deadline=None):
     records, grouping_gaps = material_html_records(records)
     blocks, gaps = _record_blocks(records, material_notes=True, representation='DART_VIEWER_HTML',
         digest=section['sha256'], md_hash=None, gaps=[*gaps, *grouping_gaps,
-            *('DART_SECTION_' + e for e in parsed['errors'])], parsed=parsed)
+            *('DART_SECTION_' + e for e in parsed['errors'])], parsed=parsed, deadline=deadline)
     for block in blocks:
         block['provenance'].pop('markdown_sha256', None)
     return blocks, gaps
@@ -152,6 +154,7 @@ def _fragment_scope_confirmed(parsed, context, scope):
 
 def note_fragment_blocks(row, section, *, main_html, corp_code, parent_key):
     """Admit explicit external parent scope, never claim full note coverage."""
+    deadline = monotonic() + 10.0
     if not isinstance(section, dict) or not isinstance(section.get('url'), str):
         return [], ['DART_SECTION_PROVENANCE_INVALID']
     body = _admit_section(row, section)
@@ -161,14 +164,14 @@ def note_fragment_blocks(row, section, *, main_html, corp_code, parent_key):
         context = _fragment_context(row, section, main_html, corp_code, parent_key)
     except (KeyError, TypeError, ValueError, UnicodeError):
         return [], ['DART_NOTE_CONTEXT_UNVERIFIED']
-    parsed = parse_filing_html(body, _capture_headings=True)
+    parsed = parse_filing_html(body, _capture_headings=True, _deadline=deadline)
     if parsed['status'] not in {'COMPLETE', 'PARTIAL'}:
         return [], ['DART_SECTION_PARSE_UNAVAILABLE']
     if not _fragment_scope_confirmed(parsed, context, row['scope']):
         return [], ['DART_NOTE_FRAGMENT_SCOPE_UNRESOLVED']
     context['child_heading_paths'] = list(parsed['heading_events'][0]['source_paths'])
     records = [{**record, 'scope': row['scope'], 'scope_context': dict(context)} for record in parsed['records']]
-    return _section_record_blocks(records, parsed, section, ['DART_NOTE_FRAGMENT_PARTIAL_COVERAGE'])
+    return _section_record_blocks(records, parsed, section, ['DART_NOTE_FRAGMENT_PARTIAL_COVERAGE'], deadline=deadline)
 
 
 def _fragment_selection_receipt(state):

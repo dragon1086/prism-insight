@@ -5,6 +5,7 @@ HTML hash is not an original-response hash. Callers retain that distinction.
 """
 import hashlib
 import json
+import math
 import re
 from collections import Counter
 from time import monotonic
@@ -492,7 +493,7 @@ class _Stream:
             self.stack[-1]['pending'] = (node, frame['streamed'])
 
 
-def parse_filing_html(html, *, _feed_size=8192, _capture_headings=False):
+def parse_filing_html(html, *, _feed_size=8192, _capture_headings=False, _deadline=None):
     """Return source-text records; COMPLETE means traversal only, not coverage.
 
     Repeated unmarked major headings are ambiguous (TOC or multiple documents),
@@ -503,6 +504,10 @@ def parse_filing_html(html, *, _feed_size=8192, _capture_headings=False):
     if type(_feed_size) is not int or not 0 < _feed_size <= 65536:
         raise ValueError('feed size must be an integer from 1 to 65536')
     deadline = monotonic() + _MAX_PARSE_SECONDS
+    if _deadline is not None:
+        if type(_deadline) not in (int, float) or not math.isfinite(_deadline):
+            raise ValueError('deadline must be a finite monotonic time')
+        deadline = min(deadline, _deadline)
 
     def check_time():
         # Cooperative, including reducer work; not preemption of libxml calls.
