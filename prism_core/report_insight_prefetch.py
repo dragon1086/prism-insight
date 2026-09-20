@@ -13,7 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 from prism_core.report_source_budget import SOURCE_NOTE_BYTES, validate_source_budget
 
 PROFILE = 'insight_prefetch_v5'
-FILING_PARSER_REVISION = 'bounded-html-v11-context-integrity'
+FILING_PARSER_REVISION = 'bounded-html-v12-statement-routing'
 MAX_CALLS = 8
 SECTION_BYTES = SOURCE_NOTE_BYTES
 TOPICS = {

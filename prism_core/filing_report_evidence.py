@@ -14,6 +14,9 @@ from prism_core.filing_structure import parse_filing
 
 VERSION = 'structured_v1'
 MATERIAL_VERSION = 'material_v2'
+_STATEMENT_TITLE = re.compile(
+    r'^(?:\d+(?:-\d+)*[.)])?(?:연결|별도|개별)?'
+    r'(?:재무상태표|(?:포괄)?손익계산서|현금흐름표|자본변동표)(?:\((?:연결|별도|개별)\))?$')
 _ROUTES = {
     'customer_revenue': 'financial_quality_valuation', 'cashflow': 'financial_quality_valuation',
     'financial_quality': 'financial_quality_valuation', 'tax': 'financial_quality_valuation',
@@ -282,13 +285,17 @@ def _record_blocks(records, *, material_notes, representation, digest, md_hash,
         if record.get('layout_role') or record.get('context_incomplete'):
             continue
         source_text = '\n'.join((record.get('context_before', ''), record['text'], record.get('footnotes', '')))
+        statement = (material_notes is True and record['kind'] == 'table'
+                     and representation in {'DART_VIEWER_HTML', 'FIRECRAWL_CLEANED_HTML'}
+                     and record.get('section_path')
+                     and _STATEMENT_TITLE.fullmatch(re.sub(r'\s+', '', record['section_path'][-1])))
         tags = ()
         if material_notes is True:
             from prism_core.filing_materiality import TOPICS, material_topics
 
             tags = material_topics(source_text, record['section_path'])
         topic, score = _classify({**record, 'text': source_text})
-        if score <= 0 and not tags:
+        if score <= 0 and not tags and not statement:
             continue
         if representation == 'FIRECRAWL_CLEANED_HTML' and not _same_markdown_unit(record, markdown_units, markdown):
             gaps.append('FILING_HTML_MARKDOWN_MISMATCH')
@@ -310,6 +317,11 @@ def _record_blocks(records, *, material_notes, representation, digest, md_hash,
                 route = {'news_analysis': 'catalysts_risks_counterevidence',
                          'company_status': 'financial_quality_valuation',
                          'company_overview': 'business_segments'}[TOPICS[primary]['owner_section']]
+        # A canonical statement title owns the whole statement. Account labels
+        # such as provisions or share capital do not turn it into event news.
+        # Match only the nearest complete title, never a financial ancestor.
+        if statement:
+            route = 'financial_quality_valuation'
         if not route:
             continue
         provenance = {key: record[key] for key in (
