@@ -85,15 +85,15 @@ def _script_contract(scripts):
             scan = uncommented
         offsets, tokens = [], []
         for match in _TOKEN.finditer(scan):
-            token = match[0]
-            if token.isspace():
+            lexeme = match[0]
+            if lexeme.isspace():
                 continue
             token_count += 1
-            statement_count += token == ';'
+            statement_count += lexeme == ';'
             if token_count > 250_000 or statement_count > 50_000:
                 _fail('LIMIT')
             offsets.append(match.start())
-            tokens.append(token)
+            tokens.append(lexeme)
         bounded_scripts.append((offsets, tokens, slashes))
     # No structural arrays are allocated until the cumulative budgets pass.
     flash_template = _tokens(_FLASH_SHIM)
@@ -101,32 +101,32 @@ def _script_contract(scripts):
         depths, parents, matches = _structure(tokens)
         parsed.append((offsets, tokens, depths, parents, matches, slashes))
         flash_shim = tokens == flash_template
-        for index, token in enumerate(tokens):
+        for index, lexeme in enumerate(tokens):
             literal = None
-            if token.startswith('"'):
+            if lexeme.startswith('"'):
                 try:
-                    literal = json.loads(token)
+                    literal = json.loads(lexeme)
                 except ValueError:
                     _fail('LEXICAL')
-            elif token.startswith("'"):
-                literal = token[1:-1]
-            if literal is not None and '\\' in token and index and tokens[index - 1] == '[':
+            elif lexeme.startswith("'"):
+                literal = lexeme[1:-1]
+            if literal is not None and '\\' in lexeme and index and tokens[index - 1] == '[':
                 _fail('LEXICAL')
-            name = literal if literal is not None else token
+            name = literal if literal is not None else lexeme
             if name in {'eval', 'Function', 'execScript'}:
                 _fail('DYNAMIC_EXECUTION')
             if literal == 'makeToc':
                 _fail('FUNCTION_REFERENCE')
             if name in {'setTimeout', 'setInterval'} and not flash_shim:
                 _timer(tokens, index, matches)
-            if token in {'makeToc', 'initPage'} and index and tokens[index - 1] == 'function':
+            if lexeme in {'makeToc', 'initPage'} and index and tokens[index - 1] == 'function':
                 start = index - 1
                 if depths[start] or start and tokens[start - 1] not in {';', '}'} or tokens[index + 1:index + 4] != ['(', ')', '{']:
                     _fail('FUNCTION')
-                if token in declarations:
+                if lexeme in declarations:
                     _fail('FUNCTION')
-                declarations[token] = (script_index, index, index + 3, matches[index + 3])
-            if token == 'makeToc':
+                declarations[lexeme] = (script_index, index, index + 3, matches[index + 3])
+            if lexeme == 'makeToc':
                 references.append((script_index, index))
     if set(declarations) != {'makeToc', 'initPage'} or len(references) != 2:
         _fail('FUNCTION')
