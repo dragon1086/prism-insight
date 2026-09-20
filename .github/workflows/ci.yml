@@ -76,6 +76,7 @@ jobs:
             tests/test_dart_identity.py tests/test_dart_section_collection.py \
             tests/test_dart_report_evidence.py tests/test_latest_filing_report_wiring.py \
             tests/test_dart_fixture_transport.py tests/test_capture_dart_fixture.py \
+            tests/test_capture_dart_large_section.py \
             tests/test_general_filing_report_evaluation.py tests/test_filing_metadata_compaction.py \
             tests/test_sec_inline_evidence.py tests/test_sec_public_filings.py \
             tests/test_sec_report_evidence.py tests/test_us_inline_cohort.py \
