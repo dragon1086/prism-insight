@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 
 PROFILE = 'insight_prefetch_v5'
+FILING_PARSER_REVISION = 'bounded-html-v2'
 MAX_CALLS = 8
 SECTION_BYTES = 6000
 TOPICS = {
@@ -397,6 +398,7 @@ def packet(market, symbol, day, progress):
                     shared_keys = ('parser_version', 'representation', 'representation_sha256', 'markdown_sha256')
                     if (provenance.get('parser_version') == 'material_v2'
                             and all(key in provenance for key in shared_keys)):
+                        shared_keys += tuple(key for key in ('html_parser_version', 'locator_model') if key in provenance)
                         common = {key: provenance[key] for key in shared_keys}
                         references = payload.get('source_provenance', {})
                         source_id = record['source_id']
@@ -406,6 +408,12 @@ def packet(market, symbol, day, progress):
                                 payload['gaps'].append('SOURCE_PROVENANCE_CONFLICT')
                             continue
                         record['provenance'] = {key: value for key, value in provenance.items() if key not in shared_keys}
+                        if provenance.get('representation') == 'FIRECRAWL_CLEANED_HTML':
+                            from prism_core.filing_report_evidence import (
+                                compact_html_provenance,
+                            )
+
+                            record['provenance'] = compact_html_provenance(record['provenance'])
                         trial['source_provenance'] = {**references, source_id: common}
                     if _size(trial) <= SECTION_BYTES - 80:
                         payload = trial
@@ -437,4 +445,5 @@ def packet(market, symbol, day, progress):
                         'section_utf8_bytes': {k: len(v.encode('utf-8')) for k, v in notes.items()},
                         'competitive_complete': False, 'collection_complete': False, 'usage': 'UNKNOWN',
                         'events': progress.get('events', []), 'tradingview': 'RIGHTS_UNCONFIRMED',
-                        **({'filing_parser': progress['filing_parser']} if 'filing_parser' in progress else {})}}
+                        **({'filing_parser': progress['filing_parser'], 'filing_parser_revision': FILING_PARSER_REVISION}
+                           if 'filing_parser' in progress else {})}}

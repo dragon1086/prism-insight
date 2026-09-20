@@ -51,6 +51,9 @@ jobs:
             tests/test_filing_structure.py tests/test_filing_selection.py \
             tests/test_filing_table_projection.py tests/test_filing_extraction_evaluation.py \
             tests/test_filing_html.py tests/test_filing_html_tables.py \
+            tests/test_filing_html_streaming.py tests/test_filing_html_streaming_adversarial.py \
+            tests/test_large_filing_evaluation.py \
+            tests/test_filing_provenance_compaction.py \
             tests/test_filing_report_evidence.py tests/test_filing_report_quality.py \
             tests/test_filing_materiality.py tests/test_material_filing_selection.py \
             tests/test_material_filing_wiring.py tests/test_material_report_consumers.py \

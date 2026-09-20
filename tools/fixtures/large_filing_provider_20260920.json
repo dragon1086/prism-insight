@@ -1,0 +1,8 @@
+{
+  "scope": "Three previously used provider responses, not an unseen holdout",
+  "cases": [
+    {"symbol": "327260", "name": "RF", "file": "/Users/rocky/.cokacdir/workspace/xbmgh6rb/material_provider_20260920/327260_representations.json", "sha256": "d1673991d8549a1a17acf53063c6628844131c86dc012a8e950ab3e48f7e1b0e"},
+    {"symbol": "039200", "name": "Oscotec", "file": "/Users/rocky/.cokacdir/workspace/xbmgh6rb/material_provider_20260920/039200_representations.json", "sha256": "a1bfc1be3350f491e3c9a6cb35929eeeb3516dc8c23cb84725db7f4f84ebd84f"},
+    {"symbol": "090430", "name": "Amorepacific", "file": "/Users/rocky/.cokacdir/workspace/xbmgh6rb/material_provider_20260920/090430_representations.json", "sha256": "f25d17c646340e4f9ffd7c332b3ee856ffd8676e1e5b8347a5157a101cca5fb2"}
+  ]
+}

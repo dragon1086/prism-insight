@@ -106,3 +106,24 @@ def test_tax_table_dilution_word_does_not_turn_it_into_an_issuance_event():
             '(단위: 원)\n| 구분 | 당기 |\n|---|---|\n| 주식선택권 | 100 |\n')
     blocks, _ = filing_blocks({'markdown': text}, URL, material_notes=True)
     assert blocks and all(b['topic'] == 'financial_quality_valuation' for b in blocks)
+
+
+def test_parser_revision_invalidates_old_cached_failure(tmp_path):
+    calls = []
+    async def transport(server, tool, args):
+        calls.append(tool)
+        return {'results': [{'url': URL}]} if tool == 'perplexity_search' else {'markdown': TEXT}
+    config = {'enabled': True, 'version': research.VERSION, 'research_profile': insight.PROFILE,
+              'filing_parser': 'material_v2'}
+    def run():
+        return asyncio.run(research.prefetch_report_research('KR', '327260', '20260918', 'Example Corp',
+            _config=config, _cache_dir=tmp_path, _transport=transport))
+    first = run()
+    assert first['receipt']['filing_parser_revision'] == insight.FILING_PARSER_REVISION
+    count = len(calls)
+    file = next(tmp_path.glob('*.json'))
+    saved = json.loads(file.read_text())
+    saved['receipt'].pop('filing_parser_revision')
+    file.write_text(json.dumps(saved))
+    refreshed = run()
+    assert len(calls) == count * 2 and not refreshed['receipt']['cache_hit']

@@ -36,12 +36,15 @@ def _visible_text(element):
     return ' '.join(''.join(pieces).split())
 
 
-def parse_html_table(table_element, *, max_rows=300, max_columns=80, max_cells=12000):
+def parse_html_table(table_element, *, max_rows=300, max_columns=80, max_cells=12000,
+                     path_resolver=None):
     """Return source cells and their merged-cell grid, or an explicit failure.
 
     ``max_cells`` bounds the rectangular output grid as well as origin cells.
     Limits may be lowered, not raised above the defaults. Text is whitespace
     normalized only: empty strings, dashes, units and period labels stay text.
+    A streaming caller may inject original-document paths captured before
+    pruning siblings; standalone calls retain the existing lxml path behavior.
     """
     for value, ceiling in ((max_rows, 300), (max_columns, 80), (max_cells, 12000)):
         if type(value) is not int or not 0 < value <= ceiling:
@@ -56,8 +59,8 @@ def parse_html_table(table_element, *, max_rows=300, max_columns=80, max_cells=1
 
     if not isinstance(table_element, etree._Element) or table_element.tag != 'table':
         return fail('NOT_A_TABLE')
-    tree = table_element.getroottree()
-    result['source_path'] = tree.getpath(table_element)
+    resolve_path = path_resolver or table_element.getroottree().getpath
+    result['source_path'] = resolve_path(table_element)
     rows = []
     text_size = 0
     for index, node in enumerate(table_element.iter()):
@@ -130,7 +133,7 @@ def parse_html_table(table_element, *, max_rows=300, max_columns=80, max_cells=1
                     return fail('OVERLAPPING_SPAN')
                 grid[target_row][column:end_column] = [len(cells)] * colspan
             cells.append({'row': row_index, 'col': column, 'rowspan': rowspan, 'colspan': colspan,
-                          'text': _visible_text(cell), 'tag': cell.tag, 'source_path': tree.getpath(cell)})
+                          'text': _visible_text(cell), 'tag': cell.tag, 'source_path': resolve_path(cell)})
             column = end_column
     if not cells:
         return fail('NO_CELLS')

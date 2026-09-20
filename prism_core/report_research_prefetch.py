@@ -550,7 +550,7 @@ async def prefetch_report_research(market, symbol, reference_date, company_name=
         cache_identity = [VERSION, collector_version, market, symbol, day, company_name, company_context,
                           config.get("namespace", "default")]
         if filing_parser:
-            cache_identity.append('filing_parser:' + filing_parser)
+            cache_identity.append('filing_parser:' + filing_parser + ':' + insights.FILING_PARSER_REVISION)
         key = hashlib.sha256(json.dumps(cache_identity).encode()).hexdigest()
         cache.mkdir(parents=True, exist_ok=True, mode=0o700)
         path = cache / (key + ".json")
@@ -574,6 +574,7 @@ async def prefetch_report_research(market, symbol, reference_date, company_name=
                 notes = saved.get('section_notes') if isinstance(saved, dict) else None
                 if (not isinstance(receipt, dict) or not isinstance(notes, dict)
                         or (filing_parser and receipt.get('filing_parser') != filing_parser)
+                        or (filing_parser and receipt.get('filing_parser_revision') != insights.FILING_PARSER_REVISION)
                         or not isinstance(saved.get('evidence_id'), str)
                         or saved.get('news_usable') is not False
                         or any(receipt.get(key) != value for key, value in {

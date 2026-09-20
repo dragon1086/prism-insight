@@ -4,6 +4,8 @@ Firecrawl HTML is a cleaned representation, not the original HTTP response.
 Neither representation establishes publication, issuer identity or fact validity.
 """
 import hashlib
+import json
+import os.path
 import re
 
 from prism_core.filing_selection import _classify, select_filing_evidence
@@ -18,6 +20,61 @@ _ROUTES = {
     'related_party': 'ownership_governance', 'liquidity_collateral': 'catalysts_risks_counterevidence',
     'contingency': 'catalysts_risks_counterevidence', 'subsequent_events': 'catalysts_risks_counterevidence',
 }
+
+
+def compact_html_provenance(provenance):
+    """Lossless DOM-prefix factoring; financial text/context is never shortened."""
+    if not isinstance(provenance, dict):
+        raise TypeError('INVALID_COMPACT_DOM_PROVENANCE')
+    if 'dom_paths' in provenance:
+        if any(key in provenance for key in ('source_path', 'source_paths', 'footnote_paths')):
+            raise ValueError('CONFLICTING_DOM_PROVENANCE')
+        return dict(provenance)
+    primary, parts = provenance.get('source_path'), provenance.get('source_paths')
+    notes = provenance.get('footnote_paths', [])
+    if (not isinstance(primary, str) or not isinstance(parts, list) or not isinstance(notes, list)
+            or not parts or not all(isinstance(p, str) and p.startswith('/') for p in [primary, *parts, *notes])):
+        return dict(provenance)
+    prefix = os.path.commonprefix([primary, *parts, *notes]).rsplit('/', 1)[0] + '/'
+    locators = {'base': prefix, 'source': primary[len(prefix):],
+                'parts': [p[len(prefix):] for p in parts]}
+    if 'footnote_paths' in provenance:
+        locators['notes'] = [p[len(prefix):] for p in notes]
+    compact = {key: value for key, value in provenance.items()
+               if key not in {'source_path', 'source_paths', 'footnote_paths'}}
+    compact['dom_paths'] = locators
+    size = lambda value: len(json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode())
+    return compact if size(compact) < size(provenance) else dict(provenance)
+
+
+def expand_html_provenance(provenance):
+    """Restore the original locator metadata for audit/replay, never run XPath."""
+    if not isinstance(provenance, dict):
+        raise TypeError('INVALID_COMPACT_DOM_PROVENANCE')
+    if 'dom_paths' not in provenance:
+        return dict(provenance)
+    if any(key in provenance for key in ('source_path', 'source_paths', 'footnote_paths')):
+        raise ValueError('CONFLICTING_DOM_PROVENANCE')
+    locators = provenance['dom_paths']
+    if (not isinstance(locators, dict) or not isinstance(locators.get('base'), str)
+            or not locators['base'].startswith('/') or not locators['base'].endswith('/')
+            or not isinstance(locators.get('source'), str) or not isinstance(locators.get('parts'), list)
+            or not isinstance(locators.get('notes', []), list)
+            or not all(isinstance(p, str) for p in [locators['source'], *locators['parts'], *locators.get('notes', [])])):
+        raise ValueError('INVALID_COMPACT_DOM_PROVENANCE')
+    try:
+        relatives = [locators['source'], *locators['parts'], *locators.get('notes', [])]
+        restored_bytes = len(locators['base'].encode()) * len(relatives) + sum(len(p.encode()) for p in relatives)
+    except UnicodeEncodeError:
+        raise ValueError('INVALID_COMPACT_DOM_PROVENANCE') from None
+    if restored_bytes > 16 * 1024 * 1024:
+        raise ValueError('COMPACT_DOM_PROVENANCE_LIMIT')
+    restored = {key: value for key, value in provenance.items() if key != 'dom_paths'}
+    restored.update(source_path=locators['base'] + locators['source'],
+                    source_paths=[locators['base'] + p for p in locators['parts']])
+    if 'notes' in locators:
+        restored['footnote_paths'] = [locators['base'] + p for p in locators['notes']]
+    return restored
 
 
 def _normalized(text):
@@ -233,6 +290,9 @@ def filing_blocks(data, url, *, material_notes=False):
             'original_data_rows') if key in record}
         provenance.update(parser_version=MATERIAL_VERSION if material_notes is True else VERSION, representation=representation,
                           representation_sha256=digest, markdown_sha256=md_hash)
+        if representation == 'FIRECRAWL_CLEANED_HTML':
+            provenance.update(html_parser_version=parsed['parser_version'],
+                              locator_model='HTML_DOCUMENT' if parsed['parser_version'] == 'filing_html_v2' else 'LEGACY_HTML_FRAGMENT')
         if tags:
             provenance['material_topics'] = tags
         blocks.append({'topic': route, 'excerpt': text, 'status': 'SOURCE_TEXT_NOT_FACT_VALIDATED',
