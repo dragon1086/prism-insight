@@ -37,6 +37,9 @@ PYTHONPATH=/app/prism-insight
 # KR Afternoon batch at 15:40 KST (Mon-Fri)
 40 15 * * 1-5 cd /app/prism-insight && python3 stock_analysis_orchestrator.py --mode afternoon >> /app/prism-insight/logs/kr_afternoon_$(date +\%Y\%m\%d).log 2>&1
 
+# KR Luna buy-intensity recommendation at 17:15 KST (Mon-Fri). Telegram only; never writes .env.
+15 17 * * 1-5 cd /app/prism-insight && python3 tools/buy_intensity_luna_recommend.py --once >> /app/prism-insight/logs/buy_intensity_luna_$(date +\%Y\%m\%d).log 2>&1
+
 # Dashboard refresh at 11:05 KST (Mon-Fri)
 5 11 * * 1-5 cd /app/prism-insight && python3 examples/generate_dashboard_json.py >> /app/prism-insight/logs/dashboard.log 2>&1
 
