@@ -21,7 +21,7 @@ if __package__ in (None, ''):
 from prism_core.filing_html import _text, parse_filing_html
 from prism_core.filing_html_tables import _visible_text, parse_html_table
 from prism_core.filing_report_evidence import expand_html_provenance, filing_blocks
-from prism_core.report_insight_prefetch import packet
+from prism_core.report_insight_prefetch import _packing_original_block, packet
 
 
 def _normalized(value):
@@ -124,8 +124,10 @@ def audit_delivered_provenance(blocks, note, parsed, *, source_id=None):
             if any(local[key] != shared[key] for key in local.keys() & shared.keys()):
                 raise ValueError
             provenance = expand_html_provenance({**shared, **local})
-            matches = [block for block in blocks if block['excerpt'] == row['excerpt']
-                       and canonical(block['provenance']) == canonical(provenance)]
+            matches = [block for block in blocks if any(
+                candidate['excerpt'] == row['excerpt']
+                and canonical(candidate['provenance']) == canonical(provenance)
+                for candidate in (block, _packing_original_block(block)))]
             if len(matches) != 1:
                 raise ValueError
             originals = [r for r in parsed['records'] if r['kind'] == 'table'
@@ -143,7 +145,7 @@ def audit_delivered_provenance(blocks, note, parsed, *, source_id=None):
                         raise ValueError
             if 'excerpt_encoding' in provenance:
                 reason = 'DELIVERED_TABLE_CODEC_INVALID'
-                if (provenance['excerpt_encoding'] not in {'html_cell_tuples_v1', 'html_column_view_v1'}
+                if (provenance['excerpt_encoding'] not in {'html_cell_tuples_v1', 'html_cell_grid_v1', 'html_column_view_v1'}
                         or provenance.get('kind') != 'table'
                         or provenance.get('parser_version') != 'material_v2'
                         or provenance.get('representation') not in {'DART_VIEWER_HTML', 'FIRECRAWL_CLEANED_HTML'}):
@@ -158,6 +160,8 @@ def audit_delivered_provenance(blocks, note, parsed, *, source_id=None):
                 # shape, so compare it separately to the original geometry.
                 table = originals[0]['table']
                 encoded = json.loads(row['excerpt'])
+                if type(encoded) is not dict or encoded.get('schema') != provenance['excerpt_encoding']:
+                    raise ValueError
                 if encoded['shape'] != [table['row_count'], table['column_count']]:
                     raise ValueError
                 if provenance['excerpt_encoding'] == 'html_column_view_v1':

@@ -2,6 +2,7 @@
 import json
 
 _SCHEMA = 'html_cell_tuples_v1'
+_GRID_SCHEMA = 'html_cell_grid_v1'
 _FIELDS = ['row', 'col', 'rowspan', 'colspan', 'text']
 _BYTES = 8 * 1024 * 1024
 _TEXT_BYTES = 2 * 1024 * 1024
@@ -78,11 +79,16 @@ def _string_bytes(text):
         1 if char in '"\\\b\f\n\r\t' else 5 if ord(char) < 32 else 0 for char in text)
 
 
-def _validate(shape, cells):
+def _validate_shape(shape):
     if (type(shape) is not list or len(shape) != 2
             or any(type(n) is not int or not 1 <= n <= 300 for n in shape)
-            or min(shape) > 80 or shape[0] * shape[1] > 12000
-            or type(cells) is not list or not 1 <= len(cells) <= 12000):
+            or min(shape) > 80 or shape[0] * shape[1] > 12000):
+        _fail()
+
+
+def _validate(shape, cells):
+    _validate_shape(shape)
+    if type(cells) is not list or not 1 <= len(cells) <= 12000:
         _fail()
     occupied, previous = set(), (-1, -1)
     text_bytes = 0
@@ -123,16 +129,54 @@ def _legacy(cells):
     return text
 
 
+def _grid_cells(value):
+    if set(value) != {'schema', 'shape', 'rows', 'spans'}:
+        _fail()
+    shape, rows, spans = value['shape'], value['rows'], value['spans']
+    # Validate dimensions before allocating the reconstructed cell list/map.
+    _validate_shape(shape)
+    if (type(rows) is not list or len(rows) != shape[0]
+            or any(type(row) is not list or len(row) != shape[1] for row in rows)
+            or type(spans) is not list or len(spans) > shape[0] * shape[1]):
+        _fail()
+    by_anchor, previous = {}, (-1, -1)
+    for span in spans:
+        if type(span) is not list or len(span) != 4 or any(type(n) is not int for n in span):
+            _fail()
+        r, c, rs, cs = span
+        if (r < 0 or c < 0 or rs < 1 or cs < 1 or r + rs > shape[0] or c + cs > shape[1]
+                or (rs, cs) == (1, 1) or (r, c) <= previous or type(rows[r][c]) is not str):
+            _fail()
+        previous = r, c
+        by_anchor[(r, c)] = (rs, cs)
+    cells = []
+    for r, row in enumerate(rows):
+        for c, text in enumerate(row):
+            if text is None:
+                continue
+            if type(text) is not str:
+                _fail()
+            rs, cs = by_anchor.get((r, c), (1, 1))
+            cells.append([r, c, rs, cs, text])
+    return cells
+
+
 def expand_html_table_excerpt(text):
     """Decode only the explicit schema; all failures contain a static code."""
     try:
         _preflight(text)
         value = json.loads(text, object_pairs_hook=_object, parse_constant=_constant)
-        if (type(value) is not dict or set(value) != {'schema', 'cell_fields', 'shape', 'cells'}
-                or value['schema'] != _SCHEMA or value['cell_fields'] != _FIELDS):
+        if type(value) is not dict:
             _fail()
-        _validate(value['shape'], value['cells'])
-        return _legacy(value['cells'])
+        if value.get('schema') == _GRID_SCHEMA:
+            cells = _grid_cells(value)
+        elif (set(value) == {'schema', 'cell_fields', 'shape', 'cells'}
+                and value['schema'] == _SCHEMA and value['cell_fields'] == _FIELDS):
+            cells = value['cells']
+        else:
+            _fail()
+        _validate(value['shape'], cells)
+        return _legacy(cells)
     except (ValueError, TypeError, UnicodeError, RecursionError, OverflowError):
         raise ValueError(_ERROR) from None
 
@@ -159,6 +203,45 @@ def compact_html_table_excerpt(record):
         if encoded_bytes > _BYTES:
             return original
         value['cells'] = cells
+        encoded = _dump(value)
+        if len(encoded.encode('utf-8')) <= _BYTES and len(_dump(encoded).encode('utf-8')) < len(_dump(original).encode('utf-8')):
+            return encoded
+    except (KeyError, ValueError, TypeError, UnicodeError, RecursionError, OverflowError):
+        pass
+    return original
+
+
+def compact_html_grid_excerpt(record):
+    """Encode all anchors; null means absent/covered, never an empty text cell."""
+    original = record.get('text', '')
+    try:
+        table = record.get('table')
+        if (record.get('kind') != 'table' or 'layout_role' in record or 'context_incomplete' in record
+                or type(table) is not dict or table.get('status') != 'COMPLETE'
+                or not isinstance(original, str) or len(original) > _BYTES
+                or len(original.encode('utf-8')) > _BYTES
+                or type(table.get('cells')) is not list or not 1 <= len(table['cells']) <= 12000):
+            return original
+        cells = [[cell[field] for field in _FIELDS] for cell in table['cells']]
+        shape = [table.get('row_count'), table.get('column_count')]
+        _validate(shape, cells)
+        if _legacy(cells) != original:
+            return original
+        rows = [[None] * shape[1] for _ in range(shape[0])]
+        spans = []
+        for r, c, rs, cs, text in cells:
+            rows[r][c] = text
+            if (rs, cs) != (1, 1):
+                spans.append([r, c, rs, cs])
+        value = {'schema': _GRID_SCHEMA, 'shape': shape, 'rows': [], 'spans': []}
+        encoded_bytes = len(_dump(value).encode('utf-8')) + len(rows) - 1 + sum(
+            2 + len(row) - 1 + sum(4 if text is None else _string_bytes(text) for text in row)
+            for row in rows)
+        if spans:
+            encoded_bytes += len(spans) - 1 + sum(len(_dump(span)) for span in spans)
+        if encoded_bytes > _BYTES:
+            return original
+        value.update(rows=rows, spans=spans)
         encoded = _dump(value)
         if len(encoded.encode('utf-8')) <= _BYTES and len(_dump(encoded).encode('utf-8')) < len(_dump(original).encode('utf-8')):
             return encoded

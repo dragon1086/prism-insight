@@ -356,10 +356,10 @@ def _record_blocks(records, *, material_notes, representation, digest, md_hash,
             from prism_core.filing_html_codec import compact_html_table_excerpt
 
             compact = compact_html_table_excerpt(record)
+            size = lambda item: len(json.dumps(item, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
             if compact != text:
                 candidate = {**block, 'excerpt': compact,
                              'provenance': {**provenance, 'excerpt_encoding': 'html_cell_tuples_v1'}}
-                size = lambda item: len(json.dumps(item, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
                 if size(candidate) < size(block):
                     block = candidate
             if route == 'catalysts_risks_counterevidence' and len(block['excerpt'].encode('utf-8')) > 2400:
@@ -383,6 +383,21 @@ def _record_blocks(records, *, material_notes, representation, digest, md_hash,
                         return len(json.dumps({k: v for k, v in value.items() if not k.startswith('_')},
                                               ensure_ascii=False, separators=(',', ':')).encode())
                     if cost(candidate) < cost(block):
+                        block = candidate
+            # Preserve the existing projection decision and retrieval order.
+            # Only complete large tables can replace repeated tuple coordinates.
+            if (not block['provenance'].get('projected')
+                    and len(block['excerpt'].encode('utf-8')) > 2400):
+                from prism_core.filing_html_codec import compact_html_grid_excerpt
+
+                grid = compact_html_grid_excerpt(record)
+                if grid != text:
+                    candidate = {**block, 'excerpt': grid,
+                        'provenance': {**block['provenance'], 'excerpt_encoding': 'html_cell_grid_v1'}}
+                    if size(candidate) < size(block):
+                        candidate['_packing_original'] = {
+                            'excerpt': block['excerpt'],
+                            'excerpt_encoding': block['provenance'].get('excerpt_encoding')}
                         block = candidate
         blocks.append(block)
     if material_notes is True and representation in {'DART_VIEWER_HTML', 'FIRECRAWL_CLEANED_HTML'}:

@@ -13,7 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 from prism_core.report_source_budget import SOURCE_NOTE_BYTES, validate_source_budget
 
 PROFILE = 'insight_prefetch_v5'
-FILING_PARSER_REVISION = 'bounded-html-v12-statement-routing'
+FILING_PARSER_REVISION = 'bounded-html-v13-full-grid'
 MAX_CALLS = 8
 SECTION_BYTES = SOURCE_NOTE_BYTES
 TOPICS = {
@@ -411,7 +411,47 @@ async def collect(market, symbol, day, company, transport, *, context, progress,
     return sources, gaps, progress['calls']
 
 
+def _packing_original_block(block):
+    """Restore the previous complete representation without changing its source."""
+    original = block.get('_packing_original')
+    if original is None:
+        return block
+    provenance = dict(block.get('provenance', {}))
+    if original['excerpt_encoding'] is None:
+        provenance.pop('excerpt_encoding', None)
+    else:
+        provenance['excerpt_encoding'] = original['excerpt_encoding']
+    return {**{key: value for key, value in block.items() if key != '_packing_original'},
+            'excerpt': original['excerpt'], 'provenance': provenance}
+
+
+def _packing_identity(source, block):
+    block = _packing_original_block(block)
+    return _source_identity([source['source_id'], {'filing': source['filing']} if 'filing' in source else {},
+                             block['excerpt'], block.get('provenance', {}), block['topic'], block['status'],
+                             {key: source.get(key, 'UNKNOWN') for key in ('url', 'published', 'publication_basis')}])
+
+
 def packet(market, symbol, day, progress, *, source_budget_bytes=SOURCE_NOTE_BYTES):
+    """Keep baseline final whole records before spending compression savings."""
+    if not any('_packing_original' in block for source in progress['sources'] for block in source.get('blocks', [])):
+        return _packet(market, symbol, day, progress, source_budget_bytes=source_budget_bytes)
+    baseline_sources = [{**source, 'blocks': [_packing_original_block(block) for block in source.get('blocks', [])]}
+                        for source in progress['sources']]
+    baseline_retained, compact_retained = {}, {}
+    baseline = _packet(market, symbol, day, {**progress, 'sources': baseline_sources},
+                       source_budget_bytes=source_budget_bytes, retained=baseline_retained)
+    compact = _packet(market, symbol, day, progress, source_budget_bytes=source_budget_bytes,
+                      preferred=baseline_retained, retained=compact_retained)
+    # Final metadata pruning/conflicts can still defeat admission. Never union
+    # sections or source references: conservatively return the complete baseline.
+    if any(not set(keys) <= set(compact_retained[section]) for section, keys in baseline_retained.items()):
+        return baseline
+    return compact
+
+
+def _packet(market, symbol, day, progress, *, source_budget_bytes=SOURCE_NOTE_BYTES,
+            preferred=None, retained=None):
     """Whole-record section packets and small manifest, no raw body escape hatch."""
     budget = validate_source_budget(source_budget_bytes)
     sources = progress['sources']
@@ -436,6 +476,7 @@ def packet(market, symbol, day, progress, *, source_budget_bytes=SOURCE_NOTE_BYT
                 'Resolve each filing_ref using source_filings; never transfer metadata between sources.')
         omissions = 0
         seen = set()
+        record_keys = {}
         # Round-robin by topic avoids making risk evidence compete solely on rank
         # against long financial tables. Existing data remains with its owner.
         queues = {topic: [] for topic in topics}
@@ -454,61 +495,66 @@ def packet(market, symbol, day, progress, *, source_budget_bytes=SOURCE_NOTE_BYT
                 if any('_retrieval' in b for b in ordered):
                     omissions += max(0, len(ordered) - limit)
                 queues[topic].extend((source, block) for block in ordered[:limit])
-        for position in range(max((len(rows) for rows in queues.values()), default=0)):
-            for topic in topics:
-                if position < len(queues[topic]):
-                    source, block = queues[topic][position]
-                    digest = hashlib.sha256(block['excerpt'].encode()).hexdigest()
-                    if 'filing' in source:
-                        digest = (source['source_id'], digest,
-                                  _source_identity([source['filing'], block.get('provenance', {})]))
-                    if digest in seen:
-                        continue
-                    record = {key: source.get(key, 'UNKNOWN') for key in ('source_id', 'url', 'published', 'publication_basis')}
-                    record.update(topic=topic, excerpt=block['excerpt'], status=block['status'])
-                    if 'filing' in source:
-                        record['filing'] = source['filing']
-                    if 'provenance' in block:
-                        record['provenance'] = block['provenance']
-                    trial = {**payload, 'sources': [*payload['sources'], record], 'omitted_blocks': omissions}
-                    if 'filing' in record:
-                        refs = payload.get('source_filings', {})
-                        source_id = record['source_id']
-                        if source_id in refs and _source_identity(refs[source_id]) != _source_identity(record['filing']):
-                            omissions += 1
-                            if 'SOURCE_FILING_CONFLICT' not in payload['gaps']:
-                                payload['gaps'].append('SOURCE_FILING_CONFLICT')
-                            continue
-                        trial['source_filings'] = {**refs, source_id: record.pop('filing')}
-                        record['filing_ref'] = source_id
-                    provenance = record.get('provenance', {})
-                    shared_keys = ('parser_version', 'representation', 'representation_sha256')
-                    if provenance.get('representation') not in {'DART_VIEWER_HTML', 'SEC_INLINE_XBRL'}:
-                        shared_keys += ('markdown_sha256',)
-                    if (provenance.get('parser_version') in {'material_v2', 'sec_inline_v1'}
-                            and all(key in provenance for key in shared_keys)):
-                        shared_keys += tuple(key for key in ('html_parser_version', 'locator_model') if key in provenance)
-                        common = {key: provenance[key] for key in shared_keys}
-                        references = payload.get('source_provenance', {})
-                        source_id = record['source_id']
-                        if source_id in references and references[source_id] != common:
-                            omissions += 1
-                            if 'SOURCE_PROVENANCE_CONFLICT' not in payload['gaps']:
-                                payload['gaps'].append('SOURCE_PROVENANCE_CONFLICT')
-                            continue
-                        record['provenance'] = {key: value for key, value in provenance.items() if key not in shared_keys}
-                        if provenance.get('representation') in {'FIRECRAWL_CLEANED_HTML', 'DART_VIEWER_HTML'}:
-                            from prism_core.filing_report_evidence import (
-                                compact_html_provenance,
-                            )
+        frontier = [(queues[topic][position][0], queues[topic][position][1], topic)
+                    for position in range(max((len(rows) for rows in queues.values()), default=0))
+                    for topic in topics if position < len(queues[topic])]
+        if preferred is not None:
+            ranks = {key: i for i, key in enumerate(preferred.get(section, []))}
+            frontier.sort(key=lambda item: ranks.get(_packing_identity(item[0], item[1]), len(ranks)))
+        for source, block, topic in frontier:
+            digest = hashlib.sha256(block['excerpt'].encode()).hexdigest()
+            if 'filing' in source:
+                digest = (source['source_id'], digest,
+                          _source_identity([source['filing'], block.get('provenance', {})]))
+            if digest in seen:
+                continue
+            record = {key: source.get(key, 'UNKNOWN') for key in ('source_id', 'url', 'published', 'publication_basis')}
+            record.update(topic=topic, excerpt=block['excerpt'], status=block['status'])
+            if 'filing' in source:
+                record['filing'] = source['filing']
+            if 'provenance' in block:
+                record['provenance'] = block['provenance']
+            trial = {**payload, 'sources': [*payload['sources'], record], 'omitted_blocks': omissions}
+            if 'filing' in record:
+                refs = payload.get('source_filings', {})
+                source_id = record['source_id']
+                if source_id in refs and _source_identity(refs[source_id]) != _source_identity(record['filing']):
+                    omissions += 1
+                    if 'SOURCE_FILING_CONFLICT' not in payload['gaps']:
+                        payload['gaps'].append('SOURCE_FILING_CONFLICT')
+                    continue
+                trial['source_filings'] = {**refs, source_id: record.pop('filing')}
+                record['filing_ref'] = source_id
+            provenance = record.get('provenance', {})
+            shared_keys = ('parser_version', 'representation', 'representation_sha256')
+            if provenance.get('representation') not in {'DART_VIEWER_HTML', 'SEC_INLINE_XBRL'}:
+                shared_keys += ('markdown_sha256',)
+            if (provenance.get('parser_version') in {'material_v2', 'sec_inline_v1'}
+                    and all(key in provenance for key in shared_keys)):
+                shared_keys += tuple(key for key in ('html_parser_version', 'locator_model') if key in provenance)
+                common = {key: provenance[key] for key in shared_keys}
+                references = payload.get('source_provenance', {})
+                source_id = record['source_id']
+                if source_id in references and references[source_id] != common:
+                    omissions += 1
+                    if 'SOURCE_PROVENANCE_CONFLICT' not in payload['gaps']:
+                        payload['gaps'].append('SOURCE_PROVENANCE_CONFLICT')
+                    continue
+                record['provenance'] = {key: value for key, value in provenance.items() if key not in shared_keys}
+                if provenance.get('representation') in {'FIRECRAWL_CLEANED_HTML', 'DART_VIEWER_HTML'}:
+                    from prism_core.filing_report_evidence import (
+                        compact_html_provenance,
+                    )
 
-                            record['provenance'] = compact_html_provenance(record['provenance'])
-                        trial['source_provenance'] = {**references, source_id: common}
-                    if _size(trial) <= budget - 80:
-                        payload = trial
-                        seen.add(digest)
-                    else:
-                        omissions += 1
+                    record['provenance'] = compact_html_provenance(record['provenance'])
+                trial['source_provenance'] = {**references, source_id: common}
+            if _size(trial) <= budget - 80:
+                payload = trial
+                seen.add(digest)
+                if retained is not None:
+                    record_keys[id(record)] = _packing_identity(source, block)
+            else:
+                omissions += 1
         payload['omitted_blocks'] = omissions
         present_topics = {row['topic'] for row in payload['sources']}
         payload['topic_gaps'] = {topic: ('BUDGET_OR_DUPLICATE' if queues[topic] else 'NO_ELIGIBLE_SOURCE_BLOCK')
@@ -516,14 +562,16 @@ def packet(market, symbol, day, progress, *, source_budget_bytes=SOURCE_NOTE_BYT
         # Reserve metadata budget without ever slicing source text.
         while _size(payload) > budget and payload['sources']:
             removed = payload['sources'].pop()
-            retained = {row['source_id'] for row in payload['sources']}
+            retained_source_ids = {row['source_id'] for row in payload['sources']}
             for reference_table in ('source_filings', 'source_provenance'):
                 if reference_table in payload:
-                    payload[reference_table] = {k: v for k, v in payload[reference_table].items() if k in retained}
+                    payload[reference_table] = {k: v for k, v in payload[reference_table].items() if k in retained_source_ids}
             payload['omitted_blocks'] += 1
             if not any(row['topic'] == removed['topic'] for row in payload['sources']):
                 payload['topic_gaps'][removed['topic']] = 'BYTE_BUDGET'
         notes[section] = _dump(payload)
+        if retained is not None:
+            retained[section] = [record_keys[id(row)] for row in payload['sources']]
         injected.update(row['source_id'] for row in payload['sources'])
         section_omissions[section] = payload['omitted_blocks']
     metadata = [{k: v for k, v in source.items() if k not in {'excerpt', 'blocks'}} for source in sources]
