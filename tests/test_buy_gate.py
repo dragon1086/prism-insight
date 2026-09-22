@@ -80,7 +80,8 @@ def test_optional_new_fields_are_checked_when_present():
     assert {"fundamental_gate_failed", "momentum_count_below_floor", "confirmation_count_below_floor"} <= codes
 
 
-def test_stop_volatility_noise_floor_is_shadow_only():
+def test_stop_volatility_noise_floor_is_shadow_only(monkeypatch):
+    monkeypatch.setattr("cores.shadow_lifecycle.feature_mode", lambda feature: "shadow")
     result = evaluate_production_buy_gate(
         _scenario(target_price=110.0, stop_loss=98.0, risk_reward_ratio=5.0),
         current_price=100.0,
