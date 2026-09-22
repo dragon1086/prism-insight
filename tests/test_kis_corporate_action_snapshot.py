@@ -45,7 +45,7 @@ def test_observed_bonus_normalizes_comparison_not_raw_cache_or_cap(case):
     assert result.prev_snapshot.attrs["corporate_action_adjusted_codes"] == ["475460"]
 
 
-@pytest.mark.parametrize("flags", [("00", "00", "00"), ("01", "01", "02"), ("01", "00", "01")])
+@pytest.mark.parametrize("flags", [("00", "00", "00"), ("01", "01", "02"), ("02", "00", "01")])
 def test_mismatch_without_explicit_bonus_allowlist_fails(case, flags):
     master, _, options = case
     options["master_fetcher"] = lambda: replace(master, action_flags={"475460": flags})
@@ -53,18 +53,47 @@ def test_mismatch_without_explicit_bonus_allowlist_fails(case, flags):
         m.build_kis_snapshot_bundle("20260916", **options)
 
 
+def test_observed_paid_rights_uses_same_strict_reconciliation(case):
+    master, _, options = case
+    raw = {"Open": 5780, "High": 6090, "Low": 5700, "Close": 5900,
+           "Volume": 54737, "Amount": 321782045}
+    adjusted = {"Open": 5564, "High": 5862, "Low": 5487, "Close": 5680,
+                "Volume": 56857, "Amount": 321782045}
+    options["master_fetcher"] = lambda: replace(
+        master, previous_volumes={"475460": 52695}, base_prices={"475460": "5680"},
+        action_flags={"475460": ("01", "00", "01")})
+    history = pd.DataFrame([raw], index=["475460"])
+    options["history_fetcher"] = lambda codes, date: history
+    options["corporate_action_fetcher"] = lambda code, date: (
+        dated(raw), dated(adjusted), "5680")
+    result = m.build_kis_snapshot_bundle("20260916", **options)
+    assert history.loc["475460"].to_dict() == raw
+    assert result.prev_snapshot.loc["475460"].to_dict() == adjusted
+    assert result.cap_df.attrs["master_paid_rights_compatibility"] == ["475460"]
+    assert result.cap_df.attrs["master_bonus_rights_compatibility"] == []
+    assert result.prev_snapshot.attrs["corporate_action_adjusted_codes"] == ["475460"]
+
+
 @pytest.mark.parametrize("fault", ["base", "date", "raw", "volume", "amount", "ohlc", "missing", "nan"])
 def test_action_evidence_faults_fail_closed(case, fault):
     _, _, options = case
     raw, adj, base = dated(RAW), dated(ADJUSTED), "2765"
-    if fault == "base": base = "2764"
-    if fault == "date": adj.index = [pd.Timestamp("20260914")]
-    if fault == "raw": raw.loc[:, "Open"] = 8699
-    if fault == "volume": adj.loc[:, "Volume"] = 286056
-    if fault == "amount": adj.loc[:, "Amount"] = 801599044
-    if fault == "ohlc": adj.loc[:, "Low"] = 3000
-    if fault == "missing": adj = adj.drop(columns=["Amount"])
-    if fault == "nan": adj.loc[:, "Close"] = float("nan")
+    if fault == "base":
+        base = "2764"
+    if fault == "date":
+        adj.index = [pd.Timestamp("20260914")]
+    if fault == "raw":
+        raw.loc[:, "Open"] = 8699
+    if fault == "volume":
+        adj.loc[:, "Volume"] = 286056
+    if fault == "amount":
+        adj.loc[:, "Amount"] = 801599044
+    if fault == "ohlc":
+        adj.loc[:, "Low"] = 3000
+    if fault == "missing":
+        adj = adj.drop(columns=["Amount"])
+    if fault == "nan":
+        adj.loc[:, "Close"] = float("nan")
     options["corporate_action_fetcher"] = lambda code, date: (raw, adj, base)
     with pytest.raises(m.KisSnapshotError, match="corporate-action validation failed"):
         m.build_kis_snapshot_bundle("20260916", **options)
