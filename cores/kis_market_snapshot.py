@@ -418,8 +418,8 @@ def fetch_kis_corporate_action_views(code: str, previous_date: str, *, source=No
     return raw, adjusted, output.get("stck_sdpr")
 
 
-def _bonus_action_row(code, previous_date, cached, master, fetcher):
-    """Narrow observed bonus-rights compatibility, not a general split model.
+def _rights_action_row(code, previous_date, cached, master, fetcher):
+    """Narrow observed paid/bonus-rights compatibility, not a general split model.
 
     Keep the dated raw cache immutable. Only the comparison view uses official
     adjusted OHLCV. Integer volume identities are exact, never a tolerance.
@@ -514,7 +514,13 @@ def build_kis_snapshot_bundle(
         code: _master_volume_match_kind(master.previous_volumes.get(code), previous.at[code, "Volume"])
         for code in codes
     }
-    action_codes = [code for code in codes if master.action_flags.get(code) == ("01", "00", "02")]
+    action_types = {
+        code: ("paid_rights" if master.action_flags.get(code) == ("01", "00", "01")
+               else "bonus_rights")
+        for code in codes
+        if master.action_flags.get(code) in {("01", "00", "01"), ("01", "00", "02")}
+    }
+    action_codes = sorted(action_types)
     if len(action_codes) > 10:
         raise KisSnapshotError("KIS corporate-action validation count limit")
     # Do not mutate the raw history object returned by a cache-aware fetcher.
@@ -524,11 +530,11 @@ def build_kis_snapshot_bundle(
     for code in action_codes:
         if time.monotonic() - started > 60:
             raise KisSnapshotError("KIS corporate-action validation deadline")
-        row = _bonus_action_row(code, prev_date, previous.loc[code], master, corporate_action_fetcher)
+        row = _rights_action_row(code, prev_date, previous.loc[code], master, corporate_action_fetcher)
         if time.monotonic() - started > 60:
             raise KisSnapshotError("KIS corporate-action validation deadline after response")
         previous.loc[code, list(_COLUMNS.values())] = [row[column] for column in _COLUMNS.values()]
-        volume_matches[code] = "bonus_rights_official_adjusted_observed"
+        volume_matches[code] = f"{action_types[code]}_official_adjusted_observed"
     if any(kind is None for kind in volume_matches.values()):
         raise KisSnapshotError("KIS master previous-volume/session mismatch; cap date unverified")
     rounded_volume_codes = sorted(code for code, kind in volume_matches.items()
@@ -548,9 +554,13 @@ def build_kis_snapshot_bundle(
     cap.attrs.update(source="kis_master", trade_date=prev_date, unit="KRW", precision_krw=100_000_000)
     cap.attrs.update(master_volume_validation="exact_or_observed_binary32_rendering",
                      master_volume_binary32_compatibility=rounded_volume_codes)
-    cap.attrs["master_bonus_rights_compatibility"] = action_codes
+    cap.attrs["master_rights_compatibility"] = action_codes
+    cap.attrs["master_paid_rights_compatibility"] = sorted(
+        code for code in action_codes if action_types[code] == "paid_rights")
+    cap.attrs["master_bonus_rights_compatibility"] = sorted(
+        code for code in action_codes if action_types[code] == "bonus_rights")
     if action_codes:
-        cap.attrs["master_volume_validation"] = "exact_or_observed_binary32_or_verified_bonus_rights"
+        cap.attrs["master_volume_validation"] = "exact_or_observed_binary32_or_verified_rights"
     previous.attrs.update(
         corporate_action_adjusted_codes=action_codes,
         corporate_action_basis="official_adjusted_OHLCV_with_fresh_raw_quote_and_exact_volume_reconciliation",
