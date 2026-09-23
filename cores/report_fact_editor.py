@@ -25,7 +25,10 @@ _DECISION = re.compile(
     r'\b(?:buy|sell|stop|entry|exit|position|allocation|target price|risk limit)\b', re.IGNORECASE)
 _INTERNAL = re.compile(r'\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b|<!--|```')
 _FLOW_OBSERVATION = re.compile(
-    r'(?:기관|외국인|개인)의?\s*순?(?:매수|매도)(?=\s*(?:지속\s*여부|추이|동향|규모|금액|여부))')
+    r'(?:기관|외국인|개인)의?\s*순?(?:매수|매도)(?=\s*지속\s*여부)')
+_SESSION_ACTION = re.compile(
+    r'늘리|줄이|줄여|제한|축소|확대|증액|감액|증가시|감소시|배분|배정|집행|주문|'
+    r'\b(?:increase|decrease|reduce|expand|limit|allocate|execute|order)\b', re.IGNORECASE)
 
 
 def _calendar_context(reference_date):
@@ -51,6 +54,11 @@ def _calendar_context(reference_date):
 
 def _decision_text(text, session_timing=False):
     return _FLOW_OBSERVATION.sub('수급 관측', text) if session_timing else text
+
+
+def _has_decision(text, session_timing=False):
+    return (bool(_DECISION.search(_decision_text(text, session_timing)))
+            or (session_timing and bool(_SESSION_ACTION.search(text))))
 
 
 def _numbers(text):
@@ -92,7 +100,7 @@ def _paragraph(text, original, *, session_timing=False):
         raise ReportFactEditorError('Cannot edit fenced content')
     if (re.search(r'(?m)^\s*(?:#{1,6}\s|\||>|```|~~~)', paragraph)
             or re.search(r'<!--|CE-|evidence|근거점검|점검 항목|peer_universe', paragraph, re.IGNORECASE)
-            or _DECISION.search(_decision_text(paragraph, session_timing))):
+            or _has_decision(paragraph, session_timing)):
         raise ReportFactEditorError('Cannot edit structural, evidence or decision paragraphs')
     return start, end
 
@@ -136,7 +144,8 @@ def _validate_and_apply(reports, payload, calendar_context=None):
                 or _numbers(original) != _numbers(replacement)
                 or Counter(_URL.findall(original)) != Counter(_URL.findall(replacement))
                 or _INTERNAL.search(replacement)
-                or _DECISION.search(_decision_text(replacement, session_timing))
+                or _has_decision(original, session_timing)
+                or _has_decision(replacement, session_timing)
                 or re.search(r'(?m)^\s*(?:#{1,6}\s|\||>|~~~)', replacement)):
             raise ReportFactEditorError('Edit changes protected numbers, URLs or structure')
         start, end = _paragraph(text, original, session_timing=session_timing)

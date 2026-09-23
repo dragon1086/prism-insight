@@ -242,3 +242,36 @@ def test_calendar_failure_is_unknown_not_closed(monkeypatch):
 
     monkeypatch.setattr(mcal, 'get_calendar', unavailable)
     assert editor._calendar_context('20260924')['is_session'] is None
+
+
+def test_session_correction_rejects_position_amount_instruction_bypass():
+    reports, payload = session_fixture()
+    original = '9월 24일 개인 매수 금액을 100만원으로 제한하세요.'
+    replacement = '9월 24일은 휴장이므로 다음 거래일 개인 매수 금액을 100만원 이상으로 늘리세요.'
+    reports['news_analysis'] = original
+    payload['edits'][0].update(original=original, replacement=replacement)
+    with pytest.raises(editor.ReportFactEditorError):
+        editor._validate_and_apply(reports, payload, {'calendar': 'XKRX', 'is_session': False})
+
+
+@pytest.mark.parametrize('side', ['original', 'replacement', 'paragraph'])
+@pytest.mark.parametrize('instruction', [' 금액을 늘리세요.', ' 금액을 제한하세요.',
+                                        ' 규모를 축소해야 합니다.', ' 규모를 확대하세요.'])
+def test_flow_observation_never_unprotects_adjacent_action(side, instruction):
+    reports, payload = session_fixture()
+    if side == 'paragraph':
+        reports['news_analysis'] += instruction
+    else:
+        payload['edits'][0][side] += instruction
+        if side == 'original':
+            reports['news_analysis'] += instruction
+    before = copy.deepcopy(reports)
+    with pytest.raises(editor.ReportFactEditorError):
+        editor._validate_and_apply(reports, payload, {'calendar': 'XKRX', 'is_session': False})
+    assert reports == before
+
+
+@pytest.mark.parametrize('suffix', ['금액', '규모', '추이', '동향', '여부'])
+def test_only_exact_continuation_observation_is_masked(suffix):
+    assert editor._has_decision('개인 매수 ' + suffix, session_timing=True)
+    assert not editor._has_decision('기관 매도 지속 여부를 확인해야 합니다.', session_timing=True)
