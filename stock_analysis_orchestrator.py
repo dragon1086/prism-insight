@@ -636,21 +636,22 @@ class StockAnalysisOrchestrator:
         message_paths = []
         for report_pdf_path in report_pdf_paths:
             try:
-                # Generate telegram message
-                await generator.process_report(str(report_pdf_path), str(TELEGRAM_MSGS_DIR), to_lang=language)
-
-                # Estimate generated message file path
+                # The generator can fail silently. An unchanged previous
+                # batch's same-company summary is not this report's result.
                 report_file = Path(report_pdf_path)
                 ticker = report_file.stem.split('_')[0]
                 company_name = report_file.stem.split('_')[1]
-
                 message_path = TELEGRAM_MSGS_DIR / f"{ticker}_{company_name}_telegram.txt"
+                previous_message = result_fingerprint(message_path)
 
-                if message_path.exists():
+                await generator.process_report(str(report_pdf_path), str(TELEGRAM_MSGS_DIR), to_lang=language)
+                current_message = result_fingerprint(message_path)
+
+                if current_message is not None and current_message != previous_message:
                     logger.info(f"Telegram message generation complete: {message_path}")
                     message_paths.append(message_path)
                 else:
-                    logger.warning(f"Telegram message file not found at expected path: {message_path}")
+                    logger.warning(f"No fresh Telegram message generated at expected path: {message_path}")
 
             except Exception as e:
                 logger.error(f"Error during telegram message generation for {report_pdf_path}: {str(e)}")

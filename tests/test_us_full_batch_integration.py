@@ -106,6 +106,8 @@ with ExitStack() as stack:
         symbol, name = Path(pdf).stem.split("_")[:2]
         events.append(["summary", symbol])
         assert Path(pdf).read_text().endswith("END_OF_REPORT_" + symbol)
+        if scenario == "stale_same_summary":
+            return  # Real summary generator can catch its own failure silently.
         Path(destination, f"{symbol}_{name}_telegram.txt").write_text("summary " + symbol)
 
     async def send_message(self, chat, message, **kwargs):
@@ -169,6 +171,9 @@ with ExitStack() as stack:
         stack.enter_context(patch.object(orchestration.USStockAnalysisOrchestrator,
                                         "_send_translated_trigger_alert", no_translation))
     (orchestration.US_TELEGRAM_MSGS_DIR / "OLD_OLD_telegram.txt").write_text("old unrelated summary")
+    if scenario == "stale_same_summary":
+        for symbol in ["DGX", "AAPL"]:
+            (orchestration.US_TELEGRAM_MSGS_DIR / f"{symbol}_{symbol}_telegram.txt").write_text("old same-ticker summary")
     if scenario == "stale_results":
         (orchestration.PRISM_US_DIR / f"trigger_results_us_{mode}_20260923.json").write_text(
             json.dumps({"metadata": {"trade_date": "20260922"}, "Closing Strength Top": []}))
@@ -176,6 +181,9 @@ with ExitStack() as stack:
     asyncio.run(orchestrator.run_full_pipeline(mode, override_date="20260923"))
     assert not network_attempts, network_attempts
     assert not any(event[0] == "unexpected_translation" for event in events)
+    if scenario == "stale_same_summary":
+        for symbol in ["DGX", "AAPL"]:
+            assert (orchestration.US_TELEGRAM_MSGS_DIR / f"{symbol}_{symbol}_telegram.txt").read_text() == "old same-ticker summary"
     (output / "receipt.json").write_text(json.dumps({"events": events, "provenance": provenance}))
 '''
 
@@ -251,6 +259,14 @@ def test_tracking_failure_does_not_mark_us_shadow_batch_complete(tmp_path):
     assert ["tracking", ["DGX", "AAPL"]] in events
     assert not any(event[0] == "complete" for event in events)
     assert events.count(["end", "fixture"]) == 1
+
+
+@pytest.mark.parametrize("mode", ["morning", "afternoon"])
+def test_silent_us_summary_failure_never_reuses_same_ticker_previous_message(tmp_path, mode):
+    events = _run(tmp_path, mode, "stale_same_summary")
+    assert ["telegram_summaries", []] in events
+    assert ["tracking", ["DGX", "AAPL"]] in events
+    assert [event[1] for event in events if event[0] == "telegram_pdf"] == ["DGX", "AAPL"]
 
 
 RUN_TRIGGER_EDGES = r'''

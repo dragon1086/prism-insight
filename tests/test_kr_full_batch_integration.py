@@ -25,6 +25,7 @@ def pipeline(monkeypatch, tmp_path):
     events = []
     state = SimpleNamespace(
         candidates=["005930", "000660"], failed_reports=set(), failed_pdfs=set(),
+        silent_summary_failures=set(),
         tracking_calls=[], completed=[], forbidden_calls=[], status_messages=[],
         sent_message_paths=[], metadata={"market_participation": {"status": "fixture"}},
     )
@@ -85,6 +86,8 @@ def pipeline(monkeypatch, tmp_path):
             ticker, company = Path(report).stem.split("_")[:2]
             events.append("summary:" + ticker)
             assert Path(report).read_bytes() == b"%PDF-fixture"
+            if ticker in state.silent_summary_failures:
+                return
             (Path(output) / f"{ticker}_{company}_telegram.txt").write_text("분석 요약")
 
     install("telegram_summary_agent", TelegramSummaryGenerator=Summary)
@@ -94,7 +97,7 @@ def pipeline(monkeypatch, tmp_path):
             events.append("telegram:summary")
             assert Path(directory).is_dir()
             paths = kwargs["message_paths"]
-            assert paths and all(Path(path).exists() for path in paths)
+            assert all(Path(path).exists() for path in paths)
             state.sent_message_paths.extend(paths)
 
         async def send_message(self, chat_id, message, **kwargs):
@@ -137,6 +140,7 @@ def pipeline(monkeypatch, tmp_path):
     async def publish_reports(**kwargs):
         events.append("campaign:reports")
         state.published_pdfs = list(kwargs["pdf_paths"])
+        state.published_message_paths = list(kwargs["message_paths"])
 
     async def publish_tracking(**kwargs):
         events.append("campaign:tracking")
@@ -260,3 +264,27 @@ def test_kr_disabled_telegram_keeps_kakao_artifacts_and_tracking(pipeline):
     assert len(state.tracking_calls) == 1
     assert state.tracking_calls[0][1][0] is None
     assert not state.forbidden_calls
+
+
+@pytest.mark.parametrize("failed", [True, False])
+def test_kr_same_company_old_summary_requires_fresh_generation(pipeline, failed):
+    orchestrator, state, _ = pipeline
+    module = importlib.import_module("stock_analysis_orchestrator")
+    state.candidates = ["005930"]
+    old_summary = module.TELEGRAM_MSGS_DIR / "005930_회사005930_telegram.txt"
+    old_summary.write_text("이전 배치 요약은 재전송하지 않습니다")
+    previous = module.result_fingerprint(old_summary)
+    if failed:
+        state.silent_summary_failures.add("005930")
+    asyncio.run(orchestrator.run_full_pipeline("afternoon"))
+    assert len(state.tracking_calls) == 1
+    assert not state.forbidden_calls
+    if failed:
+        assert old_summary.read_text() == "이전 배치 요약은 재전송하지 않습니다"
+        assert module.result_fingerprint(old_summary) == previous
+        assert state.sent_message_paths == []
+        assert state.published_message_paths == []
+    else:
+        assert old_summary.read_text() == "분석 요약"
+        assert state.sent_message_paths == [old_summary]
+        assert state.published_message_paths == [old_summary]
