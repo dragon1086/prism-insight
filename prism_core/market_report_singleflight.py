@@ -5,11 +5,11 @@ from collections.abc import Awaitable, Callable
 
 class MarketReportCache:
     def __init__(self):
-        self._tasks: dict[tuple[str, str], asyncio.Task[str]] = {}
+        self._tasks: dict[tuple[str, str, str], asyncio.Task[str]] = {}
 
     async def get(self, reference_date: str, language: str,
-                  generate: Callable[[], Awaitable[str]]) -> str:
-        key = (reference_date, language)
+                  generate: Callable[[], Awaitable[str]], *, evidence_key: str = '') -> str:
+        key = (reference_date, language, evidence_key)
         task = self._tasks.get(key)
         if task is None:
             async def validated():

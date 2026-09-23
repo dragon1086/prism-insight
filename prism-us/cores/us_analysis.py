@@ -11,6 +11,7 @@ from pathlib import Path
 from prism_core.competitive_evidence import attach_competitive_evidence
 from prism_core.report_technical_facts import extract_report_technical_facts
 from prism_core.us_report_consistency import add_shared_context, reference_context, evidence_appendix
+from prism_core.us_report_public_inputs import collect_us_public_report_inputs, has_macro_evidence, public_macro_identity, render_public_source_receipt
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -261,11 +262,17 @@ async def analyze_us_stock(
             _prefetch_spec = importlib.util.spec_from_file_location("us_data_prefetch", _prefetch_path)
             _prefetch_module = importlib.util.module_from_spec(_prefetch_spec)
             _prefetch_spec.loader.exec_module(_prefetch_module)
-            prefetched = _prefetch_module.prefetch_us_analysis_data(ticker)
+            prefetched = await asyncio.to_thread(_prefetch_module.prefetch_us_analysis_data, ticker)
             logger.info(f"Prefetched US data for {ticker}: {list(prefetched.keys()) if prefetched else 'none'}")
         except Exception as e:
             logger.warning(f"US data prefetch failed, falling back to MCP: {e}")
             prefetched = {}
+
+        public_inputs = await collect_us_public_report_inputs(
+            ticker, reference_date, prefetched.pop('_sec_filings', []),
+            _project_root / 'runtime' / 'us_official_macro',
+            company_website=prefetched.pop('_company_website', None))
+        prefetched.update(public_inputs)
 
         try:
             from prism_core.report_research_prefetch import prefetch_report_research
@@ -293,7 +300,7 @@ async def analyze_us_stock(
                 logger.warning(f"US social sentiment prefetch failed, continuing without it: {e}")
 
         # 5. Get US-specific agents (with prefetched data)
-        prefetched["shared_macro_available"] = bool(macro_context)
+        prefetched["shared_macro_available"] = bool(macro_context) or has_macro_evidence(prefetched.get('official_macro'))
         agents = get_us_agent_directory(company_name, ticker, reference_date, base_sections, language, prefetched_data=prefetched)
         prefetched['report_technical_reference'] = extract_report_technical_facts(prefetched.get('stock_ohlcv', ''))
         shared_reference = reference_context(prefetched, language)
@@ -329,7 +336,9 @@ async def analyze_us_stock(
                                 return await generate_market_report(
                                     agent, section, reference_date, logger, language
                                 )
-                            report = await market_report_cache.get(reference_date, language, generate_market)
+                            report = await market_report_cache.get(
+                                reference_date, language, generate_market,
+                                evidence_key=public_macro_identity(prefetched.get('official_macro')))
                         else:
                             report = await generate_report(
                                 agent, section, company_name, ticker, reference_date, logger, language
@@ -385,6 +394,8 @@ async def analyze_us_stock(
         )
         section_reports['company_status'] = section_reports.get('company_status', '') + '\n\n' + render_us_analyst_receipt(
             prefetched.get('analysis_estimates_status'), language)
+        section_reports['company_status'] += '\n\n' + render_public_source_receipt(
+            prefetched.get('official_company'), 'company', language)
         if prefetched['report_technical_reference']:
             section_reports['price_volume_analysis'] = section_reports.get('price_volume_analysis', '') + '\n\n' + prefetched['report_technical_reference']
         section_reports['shared_reference'] = shared_reference
@@ -401,6 +412,8 @@ async def analyze_us_stock(
         shared_market = market_report_context(macro_context, language)
         if shared_market:
             section_reports["market_index_analysis"] = section_reports.get("market_index_analysis", "") + shared_market
+        section_reports['market_index_analysis'] = section_reports.get('market_index_analysis', '') + '\n\n' + render_public_source_receipt(
+            prefetched.get('official_macro'), 'macro', language)
 
         # 6. Integrate content from other reports
         combined_reports = shared_reference
@@ -466,14 +479,16 @@ async def analyze_us_stock(
         try:
             import yfinance as yf
 
-            # Get stock data for charts
+            # Use the same raw-price snapshot as report facts; do not silently
+            # switch back to auto-adjusted prices or fetch a newer stock history.
             stock = yf.Ticker(ticker)
-            hist = stock.history(period="1y")
+            report_frame = prefetched.get('_report_ohlcv_frame')
+            hist = report_frame.copy(deep=True) if report_frame is not None else stock.history(period="1y", auto_adjust=False)
 
             if not hist.empty:
                 # 1. Price Chart (Candlestick with MA and Volume)
                 price_chart_html = get_us_price_chart_html(
-                    ticker, company_name, hist, width=900, dpi=80
+                    ticker, company_name, hist.copy(deep=True), width=900, dpi=80
                 )
                 if price_chart_html:
                     logger.info(f"Generated price chart for {ticker}")
@@ -493,7 +508,7 @@ async def analyze_us_stock(
 
                 # 3. Technical Indicators Chart (RSI + MACD)
                 technical_chart_html = get_us_technical_chart_html(
-                    ticker, company_name, hist, width=900, dpi=80
+                    ticker, company_name, hist.copy(deep=True), width=900, dpi=80
                 )
                 if technical_chart_html:
                     logger.info(f"Generated technical indicators chart for {ticker}")

@@ -38,6 +38,8 @@ def build_report_technical_facts(frame):
         "latest_observed_close": None, "last_valid_close": None,
         "last_valid_close_date": None, "indicator_asof_date": None,
         "finality": "BAR_FINALITY_UNKNOWN",
+        "price_basis": frame.attrs.get("price_basis", "provider_close_basis_unspecified") if frame is not None else "unknown",
+        "crosses": {}, "split_boundary_date": None,
         "indicators": dict.fromkeys(INDICATORS), "reason": "no_usable_close_data",
     }
     if frame is None or frame.empty or isinstance(frame.columns, pd.MultiIndex):
@@ -71,6 +73,14 @@ def build_report_technical_facts(frame):
     # Stateful indicators restart after a gap instead of carrying stale state.
     missing = close.isna().to_numpy().nonzero()[0]
     tail = close.iloc[missing[-1] + 1:] if len(missing) else close
+    # On report-only raw prices do not compare averages across known splits.
+    split_columns = [c for c in frame.columns if str(c).lower().replace(" ", "_") == "stock_splits"]
+    if len(split_columns) == 1 and facts["price_basis"] == "provider_unadjusted_close":
+        splits = pd.to_numeric(frame[split_columns[0]].sort_index(), errors="coerce").loc[:close.index[-1]]
+        events = splits[splits.notna() & splits.ne(0)]
+        if not events.empty:
+            facts["split_boundary_date"] = events.index[-1].isoformat()
+            tail = tail.loc[events.index[-1]:]
     values = facts["indicators"]
     for period in (10, 20, 50, 200):
         if len(tail) >= period:
@@ -95,6 +105,15 @@ def build_report_technical_facts(frame):
         mean = values["SMA20"]
         sd = float(tail.iloc[-20:].std(ddof=1))
         values.update(BB20_MIDDLE=mean, BB20_UPPER=mean + 2 * sd, BB20_LOWER=mean - 2 * sd)
+    for fast, slow in ((20, 50), (50, 200)):
+        difference = tail.rolling(fast).mean() - tail.rolling(slow).mean()
+        previous = difference.shift(1)
+        for direction, events in (
+            ("golden", (difference > 0) & (previous <= 0)),
+            ("dead", (difference < 0) & (previous >= 0)),
+        ):
+            matches = difference.index[events]
+            facts["crosses"][f"SMA{fast}_{slow}_{direction}"] = matches[-1].isoformat() if len(matches) else None
     facts["status"] = "complete" if not latest_missing and all(v is not None for v in values.values()) else "partial"
     facts["reason"] = (
         "latest_close_missing_or_invalid_historical_indicators_only" if latest_missing
@@ -104,7 +123,7 @@ def build_report_technical_facts(frame):
     return facts
 
 
-def render_report_technical_facts(frame):
+def render_report_technical_facts(frame, *, unit="USD"):
     """Human-readable authoritative facts for price, strategy and summary agents."""
     facts = build_report_technical_facts(frame)
 
@@ -114,9 +133,10 @@ def render_report_technical_facts(frame):
     lines = [
         "### AUTHORITATIVE TECHNICAL FACTS / 사전 계산 기술 지표",
         f"Source: {facts['source']}; status={facts['status']}; reason={facts['reason']}",
+        f"Price basis: {facts['price_basis']}; known split boundary: {facts['split_boundary_date'] or 'none supplied'}",
         f"Latest row date: {facts['latest_row_date'] or 'N/A'}; finality={facts['finality']}",
-        f"Latest observed Close (USD): {number(facts['latest_observed_close'])}",
-        f"Last valid Close (USD): {number(facts['last_valid_close'])}; date={facts['last_valid_close_date'] or 'N/A'}",
+        f"Latest observed Close ({unit}): {number(facts['latest_observed_close'])}",
+        f"Last valid Close ({unit}): {number(facts['last_valid_close'])}; date={facts['last_valid_close_date'] or 'N/A'}",
         f"계산 기준일 / Indicator as-of: {facts['indicator_asof_date'] or 'N/A'}",
         ("과거 지표 / Historical indicators only: latest Close unavailable; not current-session values."
          if facts['latest_observed_close'] is None and facts['indicator_asof_date']
@@ -130,6 +150,8 @@ def render_report_technical_facts(frame):
         "| Indicator | Value |", "| --- | --- |",
     ]
     lines.extend(f"| {name} | {number(value)} |" for name, value in facts["indicators"].items())
+    lines.append("Cross dates in the contiguous observed window (not estimated): golden = previous fast-minus-slow <= 0 then > 0; dead = previous >= 0 then < 0. N/A means no confirmed crossing in this window, not proof it never occurred.")
+    lines.extend(f"{name}: {value or 'N/A'}" for name, value in facts["crosses"].items())
     lines.append("Use these exact values (rounding permitted) in all report sections. "
                  "N/A means unavailable: do not invent, approximate or recalculate it from a partial table. "
                  "Indicator calculations do not certify a final session close.\n")

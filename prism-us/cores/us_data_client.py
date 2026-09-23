@@ -22,6 +22,7 @@ Usage:
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -55,7 +56,8 @@ class USDataClient:
         period: str = "1mo",
         interval: str = "1d",
         start: Optional[str] = None,
-        end: Optional[str] = None
+        end: Optional[str] = None,
+        *, auto_adjust: Optional[bool] = None,
     ) -> pd.DataFrame:
         """
         Get OHLCV (Open, High, Low, Close, Volume) data.
@@ -66,17 +68,20 @@ class USDataClient:
             interval: Data interval (1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h, 1d, 5d, 1wk, 1mo, 3mo)
             start: Start date (YYYY-MM-DD), overrides period
             end: End date (YYYY-MM-DD), overrides period
+            auto_adjust: Report-only explicit adjustment override. None preserves
+                the existing provider default for screening/trading callers.
 
         Returns:
             DataFrame with OHLCV data
         """
         try:
             stock = yf.Ticker(ticker)
+            adjustment = {} if auto_adjust is None else {"auto_adjust": auto_adjust}
 
             if start and end:
-                df = stock.history(start=start, end=end, interval=interval)
+                df = stock.history(start=start, end=end, interval=interval, **adjustment)
             else:
-                df = stock.history(period=period, interval=interval)
+                df = stock.history(period=period, interval=interval, **adjustment)
 
             if df.empty:
                 logger.warning(f"No OHLCV data found for {ticker}")
@@ -84,6 +89,8 @@ class USDataClient:
 
             # Standardize column names
             df.columns = [col.lower().replace(" ", "_") for col in df.columns]
+            if auto_adjust is not None:
+                df.attrs["price_basis"] = "provider_auto_adjusted" if auto_adjust else "provider_unadjusted_close"
 
             logger.info(f"Retrieved {len(df)} OHLCV records for {ticker}")
             return df
@@ -149,6 +156,14 @@ class USDataClient:
                 "market_cap": info.get("marketCap", 0),
                 "enterprise_value": info.get("enterpriseValue"),
                 "price": info.get("currentPrice") or info.get("regularMarketPrice", 0),
+                "price_field_source": "currentPrice" if info.get("currentPrice") else "regularMarketPrice",
+                # regularMarketTime belongs to regularMarketPrice, not currentPrice.
+                "price_market_time": None if info.get("currentPrice") else info.get("regularMarketTime"),
+                "regular_market_time": info.get("regularMarketTime"),
+                "regular_market_price": info.get("regularMarketPrice"),
+                "market_state": info.get("marketState"),
+                "exchange_timezone": info.get("exchangeTimezoneName"),
+                "captured_at_utc": datetime.now(timezone.utc).isoformat(),
                 "previous_close": info.get("previousClose", 0),
                 "open": info.get("open", 0),
                 "day_high": info.get("dayHigh", 0),

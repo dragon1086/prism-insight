@@ -17,7 +17,10 @@ def reference_context(prefetched, language="ko"):
             "회사 가이던스와 애널리스트 컨센서스는 별개입니다. 다른 절에서 확보한 출처가 있으면 "
             "자기 절의 미확보를 회사 전체 자료 부재로 표현하지 마세요. 서로 충돌하면 차이를 명시하고 "
             "추정으로 일치시키지 마세요. 기존 매매 점수·위험 한도·손절 규칙을 바꾸지 마세요.\n"
-            "아래 주가는 yfinance info의 조회값이며 시세 시각은 미확인입니다. 확정 종가가 아닙니다.\n"
+            "보고서 기준 가격이 따로 있으면 그 필드·시각을 사용하세요. Current Price와 정규장 관측값의 시각을 섞지 마세요. "
+            "시각이 없는 값만 시각 미확인으로 표시하고, 시각이 있다고 확정 종가로 승격하지 마세요. "
+            "Total Debt는 총차입금이며 Total Liabilities(총부채)와 다릅니다. 연간 주당 배당금은 USD/주/년이지 배당률이 아닙니다. "
+            "표시된 배당수익률 계산식·분모를 유지하고 단위 미확인 원자료에 %를 붙이지 마세요. 상근 직원과 전체 직원을 구분하세요.\n"
         )
     else:
         rules = (
@@ -28,10 +31,16 @@ def reference_context(prefetched, language="ko"):
             "Keep company guidance separate from analyst consensus. An unavailable input in one section "
             "is not issuer-wide absence if another section has a cited source. Disclose conflicts, never "
             "guess a reconciliation. Preserve existing scores, risk limits and stop rules.\n"
-            "The following yfinance info observed quote has unverified market time; it is not a confirmed close.\n"
+            "Prefer the explicit report reference price and its own timestamp. An observed quote without time is unverified; "
+            "do not transfer timestamps between currentPrice and regularMarketPrice. A timestamp is not a confirmed close. "
+            "Total Debt is borrowing, not Total Liabilities. Annual dividend per share is USD/share/year, not a percent yield. "
+            "Preserve the stated dividend-yield formula/denominator; do not add percent units to unverified raw values. "
+            "Full-time employees are not total headcount.\n"
         )
     quotes = '\n'.join(line for line in prefetched.get('stock_info', '').splitlines()
-                       if line.startswith(('| Current Price |', '| Previous Close |')))
+                       if line.startswith(('| Current Price |', '| Previous Close |', '| Report reference',
+                                           '| Capture time UTC', '| Market state / exchange timezone',
+                                           '| regularMarketPrice', '| regularMarketTime', '| Selected price market timestamp')))
     return rules + quotes + '\n' + prefetched.get('report_technical_reference', '')
 
 

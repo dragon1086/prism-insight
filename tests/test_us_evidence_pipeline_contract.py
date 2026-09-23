@@ -101,6 +101,7 @@ def analysis(monkeypatch):
         return {}
 
     monkeypatch.setattr(research, 'prefetch_report_research', no_research)
+    monkeypatch.setattr(module, 'collect_us_public_report_inputs', no_research)
     return module
 
 
@@ -250,6 +251,68 @@ def test_shared_market_cache_never_receives_ticker_specific_reference(analysis, 
 
     asyncio.run(run())
     assert len(market_calls) == 1
+
+
+def test_official_inputs_reach_real_factories_synthesis_and_public_report(analysis, monkeypatch):
+    from test_us_report_public_inputs import company_packet, macro_packet
+    original = analysis.importlib.util.spec_from_file_location
+
+    class Loader:
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            module.prefetch_us_analysis_data = lambda ticker: {
+                'stock_info': '| Current Price | $234.76 |', 'company_profile': 'PROFILE',
+                'financial_statements': 'FINANCIALS', 'analysis_estimates': 'ESTIMATES',
+                'stock_ohlcv': 'OHLCV', 'market_indices': {'SPY': 'INDEX_ONLY'}}
+
+    def spec_for(name, path, *args, **kwargs):
+        if name == 'us_data_prefetch':
+            return importlib.util.spec_from_loader(name, Loader())
+        return original(name, path, *args, **kwargs)
+
+    async def public_inputs(*args, **kwargs):
+        return {'official_company': company_packet(), 'official_macro': macro_packet()}
+
+    monkeypatch.setattr(analysis.importlib.util, 'spec_from_file_location', spec_for)
+    monkeypatch.setattr(analysis, 'collect_us_public_report_inputs', public_inputs)
+    monkeypatch.setattr(analysis, 'get_us_agent_directory', analysis._us_agents_module.get_us_agent_directory)
+    calls = []
+
+    async def section(agent, name, *args, **kwargs):
+        calls.append(name)
+        if name in ('company_status', 'news_analysis'):
+            assert 'GUIDANCE_SOURCE' in agent.instruction
+        if name == 'company_overview':
+            assert 'SEGMENT_SOURCE' in agent.instruction
+        if name == 'market_index_analysis':
+            assert 'CPI_SOURCE_SENTINEL' in agent.instruction
+            assert agent.server_names == []
+            assert 'GUIDANCE_SOURCE' not in agent.instruction
+        return 'REPORT SECTION'
+
+    async def strategy(sections, combined, *args, **kwargs):
+        calls.append('strategy')
+        assert '2026-07-23' in sections['company_status']
+        assert '2026-09-30' in sections['market_index_analysis']
+        assert '4.76%' in combined and '+0.20%p' in combined
+        return 'STRATEGY'
+
+    async def summary(sections, *args, **kwargs):
+        calls.append('summary')
+        assert '2026-07-23' in sections['company_status']
+        return 'SUMMARY'
+
+    monkeypatch.setattr(analysis, 'generate_report', section)
+    monkeypatch.setattr(analysis, 'generate_market_report', section)
+    monkeypatch.setattr(analysis, 'generate_investment_strategy', strategy)
+    monkeypatch.setattr(analysis, 'generate_summary', summary)
+    report = asyncio.run(analysis.analyze_us_stock('TEST', 'Example', '20260923', 'en'))
+    assert len(calls) == 8 and len(set(calls)) == 8
+    assert 'Official company source coverage' in report and 'Official macro source coverage' in report
+    assert 'GUIDANCE_SOURCE' not in report and 'CPI_SOURCE_SENTINEL' not in report
+    assert '2026-09-30' in report and '4.76%' in report
 
 
 @pytest.mark.parametrize('language', ['ko', 'en'])

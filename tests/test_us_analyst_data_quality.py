@@ -152,7 +152,7 @@ def test_nonpositive_or_current_only_target_is_not_consensus(modules, monkeypatc
     assert status['components']['analyst_price_targets'] == 'missing'
 
 
-def test_real_prefetch_to_agent_preserves_status_without_extra_provider_calls(modules, monkeypatch):
+def test_real_prefetch_to_agent_preserves_status_without_duplicate_estimate_calls(modules, monkeypatch):
     prefetch, _, agents = modules
     calls = provider(monkeypatch, {'earnings_estimate': pd.DataFrame({'avg': [-3.0]}, index=['+1y'])})
     for name in ('prefetch_us_stock_ohlcv', 'prefetch_us_holder_info', 'prefetch_us_market_indices',
@@ -167,7 +167,7 @@ def test_real_prefetch_to_agent_preserves_status_without_extra_provider_calls(mo
     urls = {k: 'https://example.test/' + k for k in ('key_statistics', 'financials', 'analysis')}
     agent = agents.create_us_company_status_agent('Example', 'TEST', '20260923', urls, 'en', data)
     assert '| +1y | -3.0 |' in agent.instruction and agent.server_names == []
-    assert calls == list(PROPERTIES)
+    assert calls == list(PROPERTIES) + ['sec_filings']
 
 
 def test_client_cli_missing_pe_prints_na_without_crashing(monkeypatch, capsys):

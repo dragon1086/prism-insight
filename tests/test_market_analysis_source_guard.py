@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from prism_core.market_report_context import public_market_analysis
+from prism_core.us_report_public_inputs import render_public_source_receipt
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,7 +24,8 @@ def test_actual_downstream_assembly_excludes_dangling_claim_before_strategy():
     namespace = {"section_reports": {"market_index_analysis": "연준 25bp 인하[1][10]"},
                  "macro_context": {"market_intelligence": {}, "market_regime": "sideways"},
                  "language": "ko", "base_sections": ["market_index_analysis"],
-                 "shared_reference": "REFERENCE_SENTINEL\n"}
+                 "shared_reference": "REFERENCE_SENTINEL\n", "prefetched": {},
+                 "render_public_source_receipt": render_public_source_receipt}
     exec(compile(ast.Module(body=block[start:end], type_ignores=[]), "assembly", "exec"), namespace)  # noqa: S102 - trusted checked-in AST only
     combined = namespace["combined_reports"]
     assert "25bp" not in combined and "[10]" not in combined
