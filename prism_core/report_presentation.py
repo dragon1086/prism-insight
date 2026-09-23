@@ -87,6 +87,13 @@ def _public_evidence_records(text, language):
         # Code spans and URLs are retained even when they contain instructions.
         chunks = re.split(r"(`+[^`]*`+|https?://[^\s<>]+)", line)
         for position in range(0, len(chunks), 2):
+            if re.match(r"^ {0,3}\|", line):
+                # Exact missing-value cells in ordinary financial tables are
+                # reader labels too. Never rewrite URLs, code or numeric facts.
+                label = '확인되지 않음' if language == 'ko' else 'Not available'
+                chunks[position] = re.sub(
+                    r"(?<=\|)([ \t]*)(?:UNKNOWN|MISSING|N/A)([ \t]*)(?=\|)",
+                    lambda match, label=label: match[1] + label + match[2], chunks[position])
             if language == "ko":
                 chunks[position] = re.sub(r"(?<![\w])price_leadership는", "주가 상대강도는", chunks[position])
             if active_level:

@@ -155,3 +155,18 @@ def test_known_narrative_alias_leaves_other_identifiers_code_urls_unchanged():
     assert '**주가 상대강도는 잠정적인 중기 강세 정황만 있습니다.** 12.3%' in result
     assert '`price_leadership는` https://example.com/price_leadership는' in result
     assert 'custom_price_leadership는 UNKNOWN' in result
+
+
+def test_plain_financial_table_missing_cells_are_public_labels_not_variable_names():
+    source = ('| 배당성향 | 86.55% | 52.36% | UNKNOWN |\n'
+              '| 다른 값 | MISSING | N/A | 0 |\n'
+              '| 출처 | https://example.com/UNKNOWN | `UNKNOWN` | 2026 |\n'
+              '```text\n| UNKNOWN | MISSING |\n```\n'
+              '    | UNKNOWN | MISSING |\n')
+    result = humanize_report_status(source)
+    assert '| 86.55% | 52.36% | 확인되지 않음 |' in result
+    assert '| 확인되지 않음 | 확인되지 않음 | 0 |' in result
+    assert 'https://example.com/UNKNOWN | `UNKNOWN` | 2026' in result
+    assert '```text\n| UNKNOWN | MISSING |\n```' in result
+    assert '    | UNKNOWN | MISSING |' in result
+    assert '| 86.55% | 52.36% | Not available |' in humanize_report_status(source, 'en')

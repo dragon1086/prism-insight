@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -65,6 +66,8 @@ def main():
     parser.add_argument('--run-model', action='store_true')
     parser.add_argument('--peer-source-report', type=Path,
                         help='Read-only peer smoke from an existing report, without model calls')
+    parser.add_argument('--render-source-report', type=Path,
+                        help='Reapply publication formatting and PDF rendering, without model calls')
     parser.add_argument('--replay-inputs', type=Path,
                         help='Reuse a saved chapter packet; run only the three DART writers')
     parser.add_argument('--peer-receipt', type=Path,
@@ -72,8 +75,8 @@ def main():
     parser.add_argument('--reuse-reviewed-chapter', type=Path,
                         help='Full integration only: reuse an explicitly reviewed same-source chapter')
     args = parser.parse_args()
-    if bool(args.run_model) == bool(args.peer_source_report):
-        parser.error('Choose --run-model or --peer-source-report; never both')
+    if sum(map(bool, (args.run_model, args.peer_source_report, args.render_source_report))) != 1:
+        parser.error('Choose one of --run-model, --peer-source-report or --render-source-report')
     operational = args.operational_root.resolve()
     output = args.output.resolve()
     if not output.is_relative_to(operational / 'runtime' / 'report_validation'):
@@ -90,6 +93,9 @@ def main():
     if args.reuse_reviewed_chapter and (not args.run_model or args.replay_inputs
             or not args.reuse_reviewed_chapter.resolve().is_relative_to(operational / 'runtime' / 'report_validation')):
         parser.error('Reviewed chapter reuse requires a full isolated integration run')
+    if args.render_source_report and (args.replay_inputs or args.peer_receipt
+            or not args.render_source_report.resolve().is_relative_to(operational / 'runtime' / 'report_validation')):
+        parser.error('Render source must be an isolated validation report without model replay inputs')
     output.mkdir(parents=True, exist_ok=False)
 
     from dotenv import load_dotenv
@@ -176,6 +182,23 @@ def main():
             return chapter, receipt
         dart_deep_analysis.generate_dart_chapter = reuse
     started = time.monotonic()
+    if args.render_source_report:
+        from prism_core.report_presentation import humanize_report_status
+        from report_generator import _render_pdf_atomically
+        original = args.render_source_report.read_text(encoding='utf-8')
+        body = humanize_report_status(original, 'ko')
+        if re.findall(r'\d+(?:[.,]\d+)*', original) != re.findall(r'\d+(?:[.,]\d+)*', body):
+            raise RuntimeError('Publication formatting changed numeric tokens')
+        md = output / f'{args.ticker}_{args.date}_analysis.md'
+        pdf = md.with_suffix('.pdf')
+        md.write_text(body, encoding='utf-8')
+        _render_pdf_atomically(md, pdf)
+        receipt = {'status': 'rendered_existing_report_without_model_calls', 'model_calls': 0,
+                   'source_report': str(args.render_source_report), 'md': str(md), 'pdf': str(pdf),
+                   'numeric_tokens_preserved': True, 'elapsed_seconds': round(time.monotonic() - started, 2)}
+        save_json('generation_receipt.json', receipt)
+        print(json.dumps(receipt, ensure_ascii=False))
+        return
     if args.peer_source_report:
         from cores.analysis import _report_stock_names
         candidates = kr_peer_comparison.select_report_peer_candidates(
