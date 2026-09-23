@@ -6,6 +6,7 @@ from cores.llm.config_loader import load_report_mcp_registry
 from cores.llm.ports import AgentSpec, LLMParams
 from report_model_config import REPORT_EFFORT, REPORT_MODEL
 from cores.openai_error_logging import log_openai_error
+from prism_core.report_presentation import report_narrative_contract
 
 # Report LLM model/effort are shared with macro, summaries and artifact names.
 # Long-form reports keep medium reasoning for cross-source reconciliation and
@@ -332,7 +333,7 @@ Comprehensive Analysis Report:
 
         summary_agent = ReportAgent(
             name="summary_agent",
-            instruction=instruction
+            instruction=instruction + report_narrative_contract(language)
         )
 
         executive_summary = await _generate_agent_text(
@@ -560,7 +561,7 @@ Please present a consistent and executable investment strategy that investors ca
 
         investment_strategy_agent = ReportAgent(
             name="investment_strategy_agent",
-            instruction=instruction
+            instruction=instruction + report_narrative_contract(language)
         )
 
         investment_strategy = await _generate_agent_text(

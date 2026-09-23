@@ -617,6 +617,11 @@ async def analyze_us_stock(
             section_reports, language, prefetched['report_technical_reference'],
             financial_reference=extract_report_financial_math(
                 prefetched.get('stock_info', ''), prefetched.get('financial_statements', '')))
+        if prefetched.get('_report_ohlcv_frame') is not None and prefetched['report_technical_reference']:
+            from prism_core.report_technical_facts import render_public_technical_facts
+            source_appendix = source_appendix.replace(
+                prefetched['report_technical_reference'],
+                render_public_technical_facts(prefetched['_report_ohlcv_frame'], language=language), 1)
         final_report = f"""{headers["title"]}
 
 **{headers["pub_date"]}:** {formatted_date}
@@ -667,6 +672,8 @@ async def analyze_us_stock(
 
         # 11. Clean up markdown formatting
         final_report = clean_markdown(final_report) + source_appendix
+        from prism_core.report_presentation import humanize_report_status
+        final_report = humanize_report_status(final_report, language)
 
         logger.info(f"Final report generated: {company_name}({ticker}) - {len(final_report)} characters")
 

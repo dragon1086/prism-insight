@@ -38,6 +38,8 @@ from cores.stock_chart import (
 )
 from cores.utils import clean_markdown
 from prism_core.competitive_evidence import attach_competitive_evidence
+from prism_core.kr_report_context import reference_context, market_cache_key
+from prism_core.report_presentation import humanize_report_status
 
 
 # Market analysis cache storage (global variable)
@@ -97,7 +99,8 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             ref_date_obj = datetime.strptime(reference_date, "%Y%m%d")
             max_years_calc = 1
             max_years_ago_calc = (ref_date_obj - timedelta(days=365*max_years_calc)).strftime("%Y%m%d")
-            prefetched = prefetch_kr_analysis_data(company_code, reference_date, max_years_ago_calc)
+            prefetched = await asyncio.to_thread(
+                prefetch_kr_analysis_data, company_code, reference_date, max_years_ago_calc)
         except Exception as e:
             logger.warning(f"Data prefetch failed, falling back to MCP: {e}")
             prefetched = {}
@@ -111,6 +114,16 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         except Exception:
             logger.warning("Optional report research unavailable; retaining existing sources")
 
+        # Model-free official filing inputs are on the shared bot/batch path.
+        try:
+            from prism_core.kr_official_report_inputs import collect_kr_official_report_inputs
+            prefetched['official_dart'] = await collect_kr_official_report_inputs(
+                company_code, company_name, reference_date)
+        except Exception:
+            logger.warning('Official filing inputs unavailable; retaining existing report sources')
+
+        shared_reference = reference_context(prefetched, language)
+        cache_key = market_cache_key(prefetched, reference_date, language)
         # 5. Get agents (with prefetched data)
         agents = get_agent_directory(company_name, company_code, reference_date, base_sections, language, prefetched_data=prefetched)
 
@@ -144,13 +157,14 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                     try:
                         agent = agents[section]
                         if section == "market_index_analysis":
-                            if "report" in _market_analysis_cache:
+                            if cache_key in _market_analysis_cache:
                                 section_logger.info("Using cached market analysis")
-                                return section, _market_analysis_cache["report"]
+                                return section, _market_analysis_cache[cache_key]
                             else:
                                 section_logger.info("Generating new market analysis")
                                 report = await generate_market_report(agent, section, reference_date, section_logger, language)
-                                _market_analysis_cache["report"] = report
+                                _market_analysis_cache.clear()
+                                _market_analysis_cache[cache_key] = report
                                 return section, report
                         else:
                             report = await generate_report(agent, section, company_name, company_code, reference_date, section_logger, language)
@@ -179,14 +193,15 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                         agent = agents[section]
                         if section == "market_index_analysis":
                             # Check if data exists in cache
-                            if "report" in _market_analysis_cache:
+                            if cache_key in _market_analysis_cache:
                                 logger.info("Using cached market analysis")
-                                report = _market_analysis_cache["report"]
+                                report = _market_analysis_cache[cache_key]
                             else:
                                 logger.info("Generating new market analysis")
                                 report = await generate_market_report(agent, section, reference_date, logger, language)
                                 # Save to cache
-                                _market_analysis_cache["report"] = report
+                                _market_analysis_cache.clear()
+                                _market_analysis_cache[cache_key] = report
                         else:
                             report = await generate_report(agent, section, company_name, company_code, reference_date, logger, language)
                         section_reports[section] = report
@@ -210,7 +225,8 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             section_reports["market_index_analysis"] = section_reports.get("market_index_analysis", "") + shared_market
 
         # 6. Integrate content from other reports
-        combined_reports = ""
+        section_reports['shared_reference'] = shared_reference
+        combined_reports = shared_reference
         for section in base_sections:
             if section in section_reports:
                 combined_reports += f"\n\n--- {section.upper()} ---\n\n"
@@ -548,11 +564,19 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         # Preserve deterministic quantities even if the narrative omits them.
         # The existing PDF-to-BUY path carries this same block without a refetch.
         if prefetched.get("flow_evidence"):
-            final_report += prefetched["flow_evidence"] + "\n"
+            final_report += prefetched.get('flow_evidence_public', prefetched["flow_evidence"]) + "\n"
+        references = [prefetched.get('report_calculation_reference', ''),
+                      prefetched.get('market_calculation_reference', '')]
+        dart = prefetched.get('official_dart', {})
+        if isinstance(dart, dict):
+            references.append(dart.get('public_receipt', ''))
+        if any(references):
+            title = '## 자료 기준과 주요 계산값' if language == 'ko' else '## Sources and calculated reference values'
+            final_report += '\n\n' + title + '\n\n' + '\n\n'.join(x for x in references if x)
         final_report += "---\n\n" + disclaimer + "\n"
 
         # 12. Final markdown cleanup
-        final_report = clean_markdown(final_report)
+        final_report = humanize_report_status(clean_markdown(final_report), language)
 
         logger.info(f"Finalized report for {company_name} - {len(final_report)} characters")
         logger.info(f"Analysis completed for {company_name}.")

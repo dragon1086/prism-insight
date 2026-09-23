@@ -758,18 +758,31 @@ def prefetch_kr_analysis_data(company_code: str, reference_date: str, max_years_
         result["kosdaq_index"] = kosdaq_index
 
     if captured:
+        from cores.report_calculations import (
+            compute_prefetched_report_metrics,
+            render_report_metrics,
+        )
         from prism_core.kr_flow_evidence import (
             compute_kr_flow_evidence,
             render_kr_flow_evidence,
         )
 
+        calculation_time = pd.Timestamp.now(tz="UTC") if asof_utc is None else asof_utc
         evidence = compute_kr_flow_evidence(
             captured.get("trading_volume"), captured.get("stock_ohlcv"),
             captured.get("index_1001"),
-            asof_utc=pd.Timestamp.now(tz="UTC") if asof_utc is None else asof_utc)
+            asof_utc=calculation_time)
         result["flow_evidence"] = render_kr_flow_evidence(evidence)
+        from prism_core.kr_report_context import render_flow_reference
+        result['flow_evidence_public'] = render_flow_reference(evidence)
         if trading_volume:
             result["trading_volume"] += result["flow_evidence"]
+        calculations = compute_prefetched_report_metrics(
+            captured, ticker=company_code, reference_date=reference_date,
+            asof_utc=calculation_time)
+        result["report_calculations"] = calculations
+        result["report_calculation_reference"] = render_report_metrics(calculations, scope="stock")
+        result["market_calculation_reference"] = render_report_metrics(calculations, scope="market")
 
     if result:
         logger.info(f"Prefetched KR data for {company_code}: {list(result.keys())}")

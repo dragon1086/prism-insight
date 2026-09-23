@@ -146,6 +146,9 @@ def get_us_agent_directory(
                 agent = apply_section_research(agent, section, pf, reference_date, language)
             from prism_core.us_report_public_inputs import apply_public_report_inputs
             agent = apply_public_report_inputs(agent, section, pf, language)
+            from prism_core.report_presentation import report_narrative_contract
+            from prism_core.report_research_context import _replace_agent
+            agent = _replace_agent(agent, instruction=agent.instruction + report_narrative_contract(language))
             agents[section] = agent
 
     return agents
