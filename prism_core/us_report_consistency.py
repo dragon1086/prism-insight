@@ -49,10 +49,16 @@ def add_shared_context(agent, reference, news, language="ko"):
                           (boundary + '<shared_news>\n' + news + '\n</shared_news>' if news else ''))
 
 
-def evidence_appendix(section_reports, language="ko"):
+def evidence_appendix(section_reports, language="ko", technical_reference=""):
     """Move complete evidence blocks after the prose, without deleting or rewriting them."""
     public = dict(section_reports)
     blocks = []
+    price = public.get('price_volume_analysis', '')
+    if technical_reference and price.endswith(technical_reference):
+        # Keep the model's prose in the body; retain the exact calculation record
+        # for PDF consumers without printing model-facing directions in the prose.
+        public['price_volume_analysis'] = price[:-len(technical_reference)].rstrip()
+        blocks.append(technical_reference)
     heading = re.compile(r'^(#{3,4})[ \t]+Competitive Evidence(?: Handoff)?[ \t]*$', re.MULTILINE)
     for section in ('company_overview', 'news_analysis'):
         if section not in public:
