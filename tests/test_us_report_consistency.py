@@ -43,6 +43,14 @@ def test_fenced_pseudo_record_stays_untouched():
     assert public == original and not appendix
 
 
+def test_canonical_calculation_record_moves_without_losing_values():
+    reference = '### AUTHORITATIVE TECHNICAL FACTS\n| SMA50 | 233.3818 |\nUse exact values.'
+    original = {'price_volume_analysis': 'READABLE PRICE PROSE\n\n' + reference}
+    public, appendix = evidence_appendix(original, 'ko', reference)
+    assert public['price_volume_analysis'] == 'READABLE PRICE PROSE'
+    assert reference in appendix and original['price_volume_analysis'].endswith(reference)
+
+
 def test_nested_record_headings_never_delete_following_conclusion():
     original = {'news_analysis': 'INTRO\n### Competitive Evidence\nOUTER\n'
                 '#### Competitive Evidence Handoff\nINNER\n### Conclusion\nIMPORTANT CONCLUSION MUST STAY\n'}

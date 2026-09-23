@@ -596,7 +596,8 @@ async def analyze_us_stock(
                 "strategy": "## 5. Investment Strategy and Opinion",
             }
 
-        section_reports, source_appendix = evidence_appendix(section_reports, language)
+        section_reports, source_appendix = evidence_appendix(
+            section_reports, language, prefetched['report_technical_reference'])
         final_report = f"""{headers["title"]}
 
 **{headers["pub_date"]}:** {formatted_date}
