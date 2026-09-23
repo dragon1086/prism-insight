@@ -68,7 +68,7 @@ def _render(progress, company):
         role = '주요 공시' if filing['role'] == 'primary' else '과거 연차 공시 보충자료'
         header = (f"회사: {company}; {role}; 공시일: {source['published']}; "
                   f"대상 기간: {filing['period_start']}~{filing['period_end']}; {scope} 기준\n"
-                  f"출처: {source['url']}")
+                  f"\n출처: {source['url']}")
         for block in source.get('blocks', []):
             owner = _ROUTES.get(block.get('topic'))
             if owner is None:

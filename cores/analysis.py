@@ -571,7 +571,7 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         if isinstance(dart, dict):
             references.append(dart.get('public_receipt', ''))
         if any(references):
-            title = '## 자료 기준과 주요 계산값' if language == 'ko' else '## Sources and calculated reference values'
+            title = '## 자료 기준과 주요 계산 지표' if language == 'ko' else '## Sources and calculated reference values'
             final_report += '\n\n' + title + '\n\n' + '\n\n'.join(x for x in references if x)
         final_report += "---\n\n" + disclaimer + "\n"
 
