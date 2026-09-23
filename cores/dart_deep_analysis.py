@@ -35,6 +35,16 @@ PLAIN_NUMERIC_RULE = (
     '현금 잔액 증감은 다릅니다. 사업부 총수익과 내부거래 제거 후 연결매출을 같은 수치로 취급하지 마세요. '
     '이미 완료된 이행과 남은 약정 한도, 조건부 의무와 확정 채무, 면제·예외·부정적 사실의 반대 근거를 구분하세요. '
     '담당 자료의 미확인을 회사 공시 전체의 부재로 일반화하지 마세요.'
+    '\n집필 전 확인 규칙: 각 수치의 출처 보고기간을 먼저 확인하고, 당기·전기는 그 출처 안에서만 '
+    '해석하세요. 과거 연차 자료를 인용하는 문단에는 해당 연말 또는 연도를 명시하세요. '
+    '손익계산서에서 영업이익 아래에 있는 관계기업 투자손익 등을 영업이익 증감 원인으로 설명하지 마세요. '
+    '차입 표의 과거 비교잔액과 당기 말 잔액을 구분하고, 상환 완료 각주가 있으면 미래 상환 부담에 '
+    '중복 포함하지 마세요. 명목금액·할인 전 금액·장부금액은 같은 기준끼리 비교하고, 변동표의 '
+    '기타 증감을 명목금액과 장부금액 차이의 원인으로 전용하지 마세요. '
+    '약정 총액은 실제 지급액이나 현재 부채와 다릅니다. 지급 내역이나 사용량별 집행 조건이 '
+    '없으면 지급 완료 여부·최소 사용량·집행 방식은 추정하지 마세요. '
+    '표의 행 이름과 숫자를 순서만으로 짝짓지 말고 같은 행·열 좌표에서 읽으세요. '
+    '최종 본문을 내기 전에 모든 인용 수치의 행 이름·열·기간을 다시 대조하세요.'
 )
 
 
@@ -120,6 +130,7 @@ async def generate_dart_chapter(packet, *, company_name, company_code, reference
             or max(sizes) > WRITER_MAX_BYTES or sum(sizes) > TOTAL_MAX_BYTES):
         raise ValueError('DART source conservation or capacity check failed')
     limit = max(1, min(3, int(concurrency)))
+    from report_model_config import REPORT_EFFORT, REPORT_MODEL
     semaphore = asyncio.Semaphore(limit)
     receipts = {}
     logger = logging.getLogger(__name__)
@@ -139,6 +150,7 @@ async def generate_dart_chapter(packet, *, company_name, company_code, reference
             text, usage = await _write(agent, message)
             text = _checked_prose(text, source_urls[role])
             receipts[role] = {'input_bytes': len((agent.instruction + message).encode()),
+                              'model': REPORT_MODEL, 'reasoning_effort': REPORT_EFFORT,
                               'output_chars': len(text), 'elapsed_seconds': round(time.monotonic() - started, 3),
                               'usage': {key: usage.get(key) for key in ('input_tokens', 'output_tokens', 'total_tokens')}
                               if isinstance(usage, dict) else None}

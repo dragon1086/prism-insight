@@ -3,7 +3,11 @@ import json
 
 import pytest
 
-from prism_core.dart_chapter_sources import build_dart_chapter_inputs
+from prism_core.dart_chapter_sources import (
+    build_dart_chapter_inputs,
+    enrich_dart_chapter_inputs,
+)
+from prism_core.dart_source_table_evidence import pack_readable_units
 from prism_core.dart_specialist_roles import _role
 
 
@@ -108,3 +112,75 @@ def test_hybrid_capital_and_trs_terms_route_intact_with_shared_inventory():
 ])
 def test_final_seven_role_classification_preserved(owner, title, label, role):
     assert _role(owner, title, label) == role
+
+
+def _saved_packet(units, *, annual=False):
+    group = {'source': {'source_id': 'fixture', 'filing': {
+        'role': 'annual_supplement' if annual else 'primary',
+        'period_end': '2025-12-31' if annual else '2026-06-30'}},
+        'catalog': pack_readable_units(units)}
+    return {'ready': True, 'receipt': {}, 'contexts': {'risks': json.dumps({'sources': [group]})}}
+
+
+def test_actual_skt_573_wide_grid_values_remain_attached_to_original_labels():
+    # Frozen source table573 geometry, not a financial interpretation fixture.
+    payload = [5, 20, ['\t자산과 부채',
+        '\t매각예정으로 분류된 비유동 자산이나 처분자산집단\t항공기 등 유형자산',
+        '\t현금및현금성자산\t매출채권 및 기타채권\t선급금\t선급비용\t재고자산\t유형자산\t영업권 이외의 무형자산\t사용권자산\t금융상품\t이연법인세자산\t확정급여자산\t미지급금및기타채무\t예수금\t리스 부채\t계약부채\t충당부채\t기타부채\t당기법인세부채',
+        '매각예정으로 분류된 비유동 자산이나 처분자산집단\t37,346\t25,810\t105\t1,694\t4,579\t10,584\t19,811\t3,132\t35,003\t4,921\t935\t\t\t\t\t\t\t\t11,970',
+        '매각예정으로 분류된 처분자산집단에 포함된 부채\t\t\t\t\t\t\t\t\t\t\t\t34,609\t11,406\t2,281\t227\t305\t3,656\t1,533\t'],
+        [[1, 1, 19], [3, 1, 18], [4, 2, 1]], ['groups', [['/thead/tr', 3], ['/tbody/tr', 2]]], 24]
+    original = _saved_packet([{'path': '/html/body/table[573]', 'kind': 'table',
+                               'payload': payload, 'context': []}])
+    saved = json.dumps(original)
+    p = enrich_dart_chapter_inputs(original)
+    group = json.loads(p['contexts']['risks'])['sources'][0]
+    rows = group['reading_aids']['wide_cells'][0][1]
+    assert [3, 8, '사용권자산', '3,132'] in rows
+    assert [3, 9, '금융상품', '35,003'] in rows
+    assert [3, 10, '이연법인세자산', '4,921'] in rows
+    assert [4, 12, '미지급금및기타채무', '34,609'] in rows
+    assert not any(r[:2] == [3, 12] for r in rows)  # Genuine blank, not shifted liability.
+    assert json.dumps(original) == saved
+    assert enrich_dart_chapter_inputs(p) == p
+    assert group['catalog'] == json.loads(original['contexts']['risks'])['sources'][0]['catalog']
+
+
+def test_actual_annual_35_stamp_is_source_period_not_guessed_cell_period():
+    payload = [3, 4, ['\t단기금융상품\t장기금융상품\t금융상품 합계',
+        '사용이 제한된 금융자산\t90,163\t370\t90,533',
+        '사용이 제한된 금융자산에 대한 설명\t\t\t공익신탁기금 등'], [],
+        ['groups', [['/thead/tr', 1], ['/tbody/tr', 2]]], 4]
+    p = enrich_dart_chapter_inputs(_saved_packet([{'path': '/html/body/table[35]',
+        'kind': 'table', 'payload': payload, 'context': []}], annual=True))
+    ctx = json.loads(p['contexts']['risks'])
+    aids = ctx['sources'][0]['reading_aids']
+    assert aids['annual_table_period'] == [[0, '2025-12-31']]
+    assert aids['wide_cells'] == [] and aids['excluded']['narrow_tables'] == 1
+    assert '각 셀의 회계기간을 확정하지 않습니다' in ctx['reading_aid_guide']
+
+
+def test_reading_aids_repeat_headers_and_spanning_value_are_not_guessed():
+    from prism_core.dart_source_tree_catalog import build_catalog
+    html = ('<table><tr>' + ''.join(f'<th>{"같은명칭" if i < 2 else i}</th>' for i in range(16))
+            + '</tr><tr><td colspan="2">50</td>' + '<td>7</td>' * 14 + '</tr></table>')
+    p = enrich_dart_chapter_inputs(_saved_packet(build_catalog(html)['units']))
+    rows = json.loads(p['contexts']['risks'])['sources'][0]['reading_aids']['wide_cells'][0][1]
+    assert [1, 0, ['같은명칭', '같은명칭'], '50'] in rows
+    assert [1, 2, '2', '7'] in rows
+
+
+def test_reading_aid_capacity_failure_is_atomic():
+    original = _saved_packet([])
+    p = enrich_dart_chapter_inputs(original, writer_max_bytes=100)
+    assert not p['ready'] and p['contexts'] == {}
+    assert not p['receipt']['capacity_ok'] and original['ready']
+
+
+def test_wide_td_only_labels_are_not_promoted_to_verified_headers():
+    from prism_core.dart_source_tree_catalog import build_catalog
+    html = '<table><tr>' + '<td>당기</td>' * 16 + '</tr><tr>' + '<td>1</td>' * 16 + '</tr></table>'
+    p = enrich_dart_chapter_inputs(_saved_packet(build_catalog(html)['units']))
+    aids = json.loads(p['contexts']['risks'])['sources'][0]['reading_aids']
+    assert aids['wide_cells'] == []
+    assert aids['excluded']['ambiguous_tables'] == [[0, 'NO_EXPLICIT_HEADER_BAND']]

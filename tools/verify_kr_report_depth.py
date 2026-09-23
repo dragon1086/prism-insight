@@ -24,6 +24,10 @@ def main():
     parser.add_argument('--company', required=True)
     parser.add_argument('--date', default=datetime.now(ZoneInfo('Asia/Seoul')).strftime('%Y%m%d'))
     parser.add_argument('--run-model', action='store_true')
+    parser.add_argument('--replay-inputs', type=Path,
+                        help='Reuse a saved chapter packet; run only the three DART writers')
+    parser.add_argument('--peer-receipt', type=Path,
+                        help='Optional same-day peer receipt for chapter-only replay')
     args = parser.parse_args()
     if not args.run_model:
         parser.error('Explicit --run-model is required; no implicit model run')
@@ -31,6 +35,12 @@ def main():
     output = args.output.resolve()
     if not output.is_relative_to(operational / 'runtime' / 'report_validation'):
         parser.error('Output must be isolated under the host report_validation directory')
+    if args.replay_inputs and not args.replay_inputs.resolve().is_relative_to(
+            operational / 'runtime' / 'report_validation'):
+        parser.error('Replay inputs must come from the isolated validation directory')
+    if args.peer_receipt and (not args.replay_inputs or not args.peer_receipt.resolve().is_relative_to(
+            operational / 'runtime' / 'report_validation')):
+        parser.error('Peer receipt is only supported inside an isolated chapter replay')
     output.mkdir(parents=True, exist_ok=False)
 
     from dotenv import load_dotenv
@@ -96,6 +106,31 @@ def main():
     dart_deep_analysis._write = write
     kr_peer_comparison.collect_peer_comparison = peers
     started = time.monotonic()
+    if args.replay_inputs:
+        from prism_core.dart_chapter_sources import enrich_dart_chapter_inputs
+        packet = enrich_dart_chapter_inputs(json.loads(args.replay_inputs.read_text(encoding='utf-8')))
+        save_json('dart_inputs.json', packet)
+        peer_context = ''
+        if args.peer_receipt:
+            peers = json.loads(args.peer_receipt.read_text(encoding='utf-8'))
+            if (peers.get('status') != 'available'
+                    or peers.get('probe', {}).get('reference_date', '').replace('-', '') != args.date):
+                raise RuntimeError('Peer replay must use a successful same-day probe')
+            peer_context = kr_peer_comparison.render_peer_comparison(peers['snapshots'])
+            (output / 'peer_comparison.md').write_text(peer_context, encoding='utf-8')
+        chapter, receipt = asyncio.run(dart_deep_analysis.generate_dart_chapter(
+            packet, company_name=args.company, company_code=args.ticker,
+            reference_date=args.date, peer_context=peer_context))
+        if not chapter:
+            raise RuntimeError('Replay sources are not ready; no completed chapter')
+        (output / 'dart_chapter.md').write_text(chapter, encoding='utf-8')
+        save_json('generation_receipt.json', {
+            'status': 'chapter_only_content_review_required',
+            'elapsed_seconds': round(time.monotonic() - started, 2),
+            'source_packet': str(args.replay_inputs.resolve()), 'receipt': receipt})
+        print(json.dumps({'status': 'chapter_only_content_review_required',
+                          'calls': receipt['calls'], 'output': str(output)}))
+        return
     body = asyncio.run(analyze_stock(args.ticker, args.company, args.date, require_dart_depth=True))
     from report_generator import _is_cacheable_report, _render_pdf_atomically
     if not _is_cacheable_report(body) or dart_deep_analysis.CHAPTER_START not in body:

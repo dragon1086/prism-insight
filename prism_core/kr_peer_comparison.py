@@ -17,6 +17,26 @@ _BASE = "https://comp.wisereport.co.kr/company/c1010001.aspx?cmp_cd="
 _UNITS = {"PER": "배", "PBR": "배", "EV/EBITDA": "배", "EPS": "원",
           "BPS": "원", "현금DPS": "원", "현금배당수익률": "%"}
 _MAX_BYTES = 1_500_000
+_PEER_TABLE_HEADERS = (
+    ("field", "type", "entity / peer_universe", "metric·value·period", "source", "publication_date", "status"),
+    ("field", "type", "entity", "peer_universe", "metric", "value", "period", "geography", "unit",
+     "source", "publication_date", "status", "excerpt"),
+)
+
+
+def _table_cells(line):
+    # Never guess shifted cells or interpret escaped pipes as column separators.
+    line = line.strip()
+    if not (line.startswith("|") and line.endswith("|")) or "\\|" in line:
+        return None
+    return [cell.strip() for cell in line[1:-1].split("|")]
+
+
+def _source_url(source):
+    link = re.fullmatch(r"\[[^\[\]\n]+\]\((https://[^\s<>]+)\)", source)
+    if link:
+        source = link[1]
+    return source if re.fullmatch(r"https://[^\s<>]+", source) and _public_https(source) else ""
 
 
 def select_report_peer_candidates(reports, target, code_to_name):
@@ -33,19 +53,44 @@ def select_report_peer_candidates(reports, target, code_to_name):
         text, unclosed = _mask_fences(text)
         if unclosed:
             continue
-        active = None
+        active, table_header, table_ready = None, None, False
         for line in text.splitlines():
             heading = re.match(r"^(#{1,6})\s+(.+)$", line)
             if heading:
+                table_header, table_ready = None, False
                 if active and len(heading[1]) <= active:
                     active = None
-                if _HEADING.fullmatch(line):
+                if (_HEADING.fullmatch(line) or re.fullmatch(
+                        r"#{3,4}\s+(?:경쟁력 비교 근거|\*\*경쟁력 비교 근거\*\*)\s*", line)):
                     active = len(heading[1])
             if not active:
                 continue
-            fields = dict(re.findall(r"\*\*([a-z_]+):\*\*\s*(.*?)(?=\s+/\s+|$)", line))
-            source = fields.get("source", "").strip()
-            if not re.fullmatch(r"https://[^\s<>]+", source) or not _public_https(source):
+            cells = _table_cells(line)
+            if cells is not None:
+                if tuple(cells) in _PEER_TABLE_HEADERS:
+                    table_header, table_ready = cells, False
+                    continue
+                if table_header and not table_ready:
+                    table_ready = len(cells) == len(table_header) and all(
+                        re.fullmatch(r":?-{3,}:?", cell) for cell in cells)
+                    if not table_ready:
+                        table_header = None
+                    continue
+                if not table_ready or len(cells) != len(table_header):
+                    continue
+                fields = dict(zip(table_header, cells))
+                if "entity / peer_universe" in fields:
+                    parts = fields["entity / peer_universe"].split(" / ", 1)
+                    fields["peer_universe"] = parts[1] if len(parts) == 2 else ""
+            else:
+                table_header, table_ready = None, False
+                fields = {}
+                for match in re.finditer(
+                    r"\*\*([a-z_]+)(?::\*\*|\*\*:)\s*(.*?)(?=\s+/\s+|$)", line
+                ):
+                    fields[match[1]] = match[2]
+            source = _source_url(fields.get("source", "").strip())
+            if not source:
                 continue
             for token in re.split(r"[,·;/]|\s+및\s+", fields.get("peer_universe", "")):
                 token = token.strip().strip("[]\"'")
@@ -214,7 +259,7 @@ def render_peer_comparison(snapshots):
                             f"{_display_value(fact)} | {_display_value(other)} | {fact['unit']} |")
         if rows:
             comparable += len(rows)
-            lines += ["", f"**{target['name']}와 {peer['name']}** · 시세 기준 {target['price_date']}",
+            lines += ["", f"**{target['name']} · {peer['name']} 비교** · 시세 기준 {target['price_date']}",
                       f"| 지표 | 실적·예상 기간 / 회계기준 | {target['name']} | {peer['name']} | 단위 |",
                       "|---|---|---:|---:|---|", *rows]
         else:

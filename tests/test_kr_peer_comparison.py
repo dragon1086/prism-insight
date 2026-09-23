@@ -196,3 +196,40 @@ def test_render_retains_large_integer_and_decimal_provider_precision():
     assert "1,234,567원" in standalone
     assert "9.23456789배" in standalone
     assert "e+06" not in comparison + standalone
+
+
+def peer_table(heading="Competitive Evidence"):
+    return (f"#### {heading}\n"
+            "| field | type | entity / peer_universe | metric·value·period | source | publication_date | status |\n"
+            "|---|---|---|---|---|---|---|\n"
+            "| AI 사업 | business_competitive_position | SK텔레콤 / KT·LG유플러스 | 매출 성장 | "
+            "[공식 자료](https://example.com/release) | 2026-08-05 | SOURCE_CHECKED |")
+
+
+@pytest.mark.parametrize("heading", ["Competitive Evidence", "**Competitive Evidence**", "경쟁력 비교 근거"])
+def test_real_shape_peer_table(heading):
+    result = select_report_peer_candidates([peer_table(heading)], "017670",
+        {"017670": "SK텔레콤", "030200": "KT", "032640": "LG유플러스"})
+    assert [r["ticker"] for r in result] == ["030200", "032640"]
+    assert result[0]["source"] == "https://example.com/release"
+
+
+@pytest.mark.parametrize("transform", [
+    lambda s: "```\n" + s + "\n```",
+    lambda s: s.replace("Competitive Evidence", "Other section"),
+    lambda s: s.replace("| 매출 성장 |", "| extra | 매출 성장 |"),
+    lambda s: s.replace("entity / peer_universe", "any_company"),
+    lambda s: s.replace("|---|---|---|---|---|---|---|", "|---|---|"),
+    lambda s: s.replace("SK텔레콤 / KT·LG유플러스", "KT·LG유플러스"),
+    lambda s: s.replace("https://example.com/release", "https://secret@host.internal/a"),
+])
+def test_malformed_or_unscoped_peer_table_not_guessed(transform):
+    assert select_report_peer_candidates([transform(peer_table())], "017670",
+        {"030200": "KT", "032640": "LG유플러스"}) == []
+
+
+def test_bold_label_colon_outside_with_source_link():
+    report = ("#### Competitive Evidence\n**peer_universe**: KT / "
+              "**source**: [자료](https://example.com/a)")
+    result = select_report_peer_candidates([report], "017670", {"030200": "KT"})
+    assert result[0]["ticker"] == "030200"

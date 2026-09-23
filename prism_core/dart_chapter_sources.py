@@ -1,9 +1,11 @@
 """Source-conserving, model-free inputs for three DART chapter writers."""
+import copy
 import hashlib
 import json
 
 from prism_core.dart_source_table_evidence import (
     GRID_GUIDE,
+    expand_table_evidence,
     pack_readable_units,
     unpack_readable_units,
 )
@@ -33,6 +35,91 @@ def _json(value):
 
 def _hash(value):
     return hashlib.sha256(_json(value).encode()).hexdigest()
+
+
+_READING_AID_GUIDE = (
+    '보조표는 원문 catalog를 대체하지 않습니다. wide_cells의 각 항목은 '
+    '[catalog 행번호, [[표 행, 표 열, 최하단 원문 열머리글, 셀 원문], ...]]입니다. '
+    '하나의 셀이 여러 열머리글에 걸치면 머리글을 목록으로 표시합니다. '
+    '번호는 모두 0부터 시작합니다. 16열 이상이며 연속된 명시적 머리글을 확인한 표만 '
+    '투영합니다. 빈 셀과 머리글 자체는 보조표에서 생략하되 원문 catalog에는 그대로 '
+    '보존합니다. 같은 이름의 머리글도 행·열 좌표를 구분하고, 병합된 상위 머리글과 '
+    '행 제목·단위·각주는 원문과 함께 읽으십시오. 열 위치는 회계 의미를 보증하지 않습니다. '
+    'annual_table_period의 [catalog 행번호, 공시 대상기간 종료일]은 연차 보충자료의 '
+    '출처 기간 표시이며 각 셀의 회계기간을 확정하지 않습니다. 비교열·당기·전기의 '
+    '실제 기간은 표 머리글로 확인하고, 연차자료를 최신 반기 수치로 바꾸지 마십시오. '
+    'excluded는 보조 투영만 제외된 사유이며 원문 누락을 뜻하지 않습니다.'
+)
+
+
+def enrich_dart_chapter_inputs(packet, *, writer_max_bytes=WRITER_MAX_BYTES,
+                               total_max_bytes=TOTAL_MAX_BYTES):
+    """Add structural reading aids to saved JSON contexts without changing catalogs.
+
+    Pure and idempotent; no collection/model call. Returns the same packet API.
+    Capacity failure returns no contexts, never selectively drops source or aids.
+    """
+    result = copy.deepcopy(packet)
+    if not result.get('ready'):
+        return result
+    contexts = {}
+    catalog_digests = {}
+    for writer, text in result.get('contexts', {}).items():
+        if writer not in WRITERS:
+            raise ValueError('unknown DART chapter writer')
+        context = json.loads(text)
+        before = _hash([group['catalog'] for group in context['sources']])
+        for group in context['sources']:
+            filing = group['source']['filing']
+            aids = {'wide_cells': [], 'annual_table_period': [],
+                    'excluded': {'narrow_tables': 0, 'ambiguous_tables': []}}
+            for ordinal, unit in enumerate(unpack_readable_units(group['catalog'])):
+                if unit['kind'] != 'table':
+                    continue
+                if filing['role'] == 'annual_supplement':
+                    aids['annual_table_period'].append([ordinal, filing['period_end']])
+                evidence = expand_table_evidence(unit)
+                if evidence['columns'] < 16:
+                    aids['excluded']['narrow_tables'] += 1
+                    continue
+                if evidence['status'] != 'STRUCTURAL_ONLY':
+                    aids['excluded']['ambiguous_tables'].append([ordinal, evidence['reason']])
+                    continue
+                rows = []
+                for cell in evidence['cells']:
+                    candidates = cell['column_header_candidates']
+                    if not candidates or not cell['text']:
+                        continue
+                    headers = [evidence['cells'][i] for i in candidates]
+                    # Lowest header per covered column, not one guessed label
+                    # for a value spanning several differently named columns.
+                    leaves = []
+                    for column in range(cell['column'], cell['column'] + cell['colspan']):
+                        covering = [h for h in headers if h['column'] <= column < h['column'] + h['colspan']]
+                        if covering:
+                            leaf = max(covering, key=lambda h: h['row'])
+                            if leaf['path'] not in [h['path'] for h in leaves]:
+                                leaves.append(leaf)
+                    labels = [h['text'] for h in leaves]
+                    label = labels[0] if len(labels) == 1 else labels
+                    rows.append([cell['row'], cell['column'], label, cell['text']])
+                aids['wide_cells'].append([ordinal, rows])
+            group['reading_aids'] = aids
+        after = _hash([group['catalog'] for group in context['sources']])
+        if before != after:
+            raise ValueError('reading aids changed original catalogs')
+        catalog_digests[writer] = before
+        context['reading_aid_guide'] = _READING_AID_GUIDE
+        contexts[writer] = _json(context)
+    sizes = {writer: len(contexts.get(writer, '').encode()) for writer in WRITERS}
+    capacity_ok = max(sizes.values(), default=0) <= writer_max_bytes and sum(sizes.values()) <= total_max_bytes
+    result['receipt'].update(writer_bytes=sizes, total_bytes=sum(sizes.values()),
+                             writer_max_bytes=writer_max_bytes, total_max_bytes=total_max_bytes,
+                             capacity_ok=capacity_ok, reading_aid_version='wide16-explicit-header-v1',
+                             reading_aid_catalog_sha256=catalog_digests)
+    result['ready'] = bool(contexts) and capacity_ok
+    result['contexts'] = contexts if result['ready'] else {}
+    return result
 
 
 def build_dart_chapter_inputs(sources, *, collection_gaps=(), writer_max_bytes=WRITER_MAX_BYTES,
@@ -160,5 +247,7 @@ def build_dart_chapter_inputs(sources, *, collection_gaps=(), writer_max_bytes=W
                'role_inventory': shared_inventory,
                'full_filing_coverage': False}
     ready = bool(expected) and not unsupported and capacity_ok
-    return {'ready': ready, 'contexts': contexts if ready else {}, 'receipt': receipt,
-            'limitations': ['선택한 공시 범위이며 공시 전체 분석이 아닙니다.']}
+    packet = {'ready': ready, 'contexts': contexts if ready else {}, 'receipt': receipt,
+              'limitations': ['선택한 공시 범위이며 공시 전체 분석이 아닙니다.']}
+    return enrich_dart_chapter_inputs(packet, writer_max_bytes=writer_max_bytes,
+                                      total_max_bytes=total_max_bytes)

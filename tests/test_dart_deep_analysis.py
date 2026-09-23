@@ -9,6 +9,15 @@ from cores import dart_deep_analysis as depth
 SOURCE_URL = 'https://dart.fss.or.kr/report/viewer.do?rcpNo=20260813001728'
 
 
+def test_writer_contract_covers_observed_period_and_accounting_failure_classes():
+    for role in depth.ROLES:
+        instruction = depth.writer_agent(role, '예시', '123456', '20260924').instruction
+        for boundary in ('당기·전기는 그 출처 안에서만', '영업이익 아래', '상환 완료 각주',
+                         '같은 기준끼리 비교', '지급 완료 여부·최소 사용량·집행 방식',
+                         '같은 행·열 좌표'):
+            assert boundary in instruction
+
+
 def packet():
     return {'ready': True, 'contexts': {key: json.dumps({'sources': [{'source': {'url': SOURCE_URL},
                                          'catalog': 'SOURCE_' + key}]}) for key in depth.ROLES},
