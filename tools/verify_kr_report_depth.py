@@ -132,7 +132,12 @@ def main():
         if value and not os.environ.get(key):
             os.environ[key] = value
 
-    from cores import analysis, dart_deep_analysis
+    from cores import (
+        analysis,
+        dart_deep_analysis,
+        report_fact_editor,
+        report_generation,
+    )
     from cores.analysis import analyze_stock
     from cores.market_data import default_chain
     from prism_core import kr_official_report_inputs, kr_peer_comparison
@@ -141,9 +146,32 @@ def main():
     original_collect = kr_official_report_inputs.collect_kr_official_report_inputs
     original_write = dart_deep_analysis._write
     original_peers = kr_peer_comparison.collect_peer_comparison
+    original_editor = report_fact_editor.edit_and_summarize
 
     def save_json(name, value):
         (output / name).write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
+
+    if args.run_model:
+        backend = report_generation._get_report_backend()
+        original_run = backend.run
+
+        async def capture_editor_reply(spec, message):
+            result = await original_run(spec, message)
+            if spec.name == 'report_final_fact_editor':
+                (output / 'final_editor_reply.json').write_text(result.text, encoding='utf-8')
+            return result
+
+        backend.run = capture_editor_reply
+
+    async def capture_editor(*a, **kw):
+        edited, summary, receipt = await original_editor(*a, **kw)
+        save_json('final_editor_receipt.json', receipt)
+        for section in ('company_status', 'company_overview'):
+            (output / f'edited_{section}.md').write_text(edited.get(section, ''), encoding='utf-8')
+        (output / 'edited_summary.md').write_text(summary, encoding='utf-8')
+        return edited, summary, receipt
+
+    report_fact_editor.edit_and_summarize = capture_editor
 
     resumed = {}
     source_checked = False

@@ -66,6 +66,7 @@ jobs:
             tests/test_material_filing_selection.py tests/test_kr_official_report_inputs.py \
             tests/test_report_calculations.py tests/test_kr_report_calculation_prefetch.py \
             tests/test_kr_production_report_quality.py tests/test_report_presentation.py \
+            tests/test_report_fact_editor.py \
             tests/test_us_public_technical_presentation.py -q
           python -m pytest tests/test_dart_chapter*.py tests/test_dart_port*.py \
             tests/test_dart_deep_analysis.py tests/test_dart_depth_cache_contract.py \

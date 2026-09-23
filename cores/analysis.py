@@ -341,6 +341,8 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             executive_summary = executive_summary.lstrip('\n')
         except Exception as e:
             logger.error(f"Error generating executive summary: {e}")
+            if dart_chapter:
+                raise  # Never publish a deep report with unresolved final factual edits.
             executive_summary = "## 핵심 요약\n\n요약 생성 중 오류가 발생했습니다." if language == "ko" else "## Executive Summary\n\nProblem occurred while generating analysis summary."
 
         # 10. Generate charts

@@ -93,7 +93,8 @@ def test_required_depth_stops_before_models_when_sources_are_unready(monkeypatch
         asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923', require_dart_depth=True))
 
 
-def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(monkeypatch, tmp_path):
+@pytest.mark.parametrize('summary_fails', [False, True])
+def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(monkeypatch, tmp_path, summary_fails):
     import cores.data_prefetch as prefetch
     import prism_core.kr_official_report_inputs as official
     import prism_core.kr_peer_comparison as peers
@@ -158,6 +159,8 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
         return '### 5-1. 투자 전략\n조건부 의무를 고려한 전략'
     async def summary(reports, *args):
         model_calls.append('summary')
+        if summary_fails:
+            raise ValueError('unresolved_fact_conflict')
         assert all(text in reports['dart_deep_analysis'] for text in authored.values())
         assert reports['peer_comparison'].endswith('9.23배')
         return '## 핵심 요약\n심층 분석의 조건을 유지합니다.'
@@ -165,6 +168,10 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
     monkeypatch.setattr(analysis, 'generate_market_report', base)
     monkeypatch.setattr(analysis, 'generate_investment_strategy', strategy)
     monkeypatch.setattr(analysis, 'generate_summary', summary)
+    if summary_fails:
+        with pytest.raises(ValueError, match='unresolved_fact_conflict'):
+            asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923', require_dart_depth=True))
+        return
     report = asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923', require_dart_depth=True))
     assert len(model_calls) == 11 and len(peer_calls) == 1
     assert all(text in report for text in authored.values())
