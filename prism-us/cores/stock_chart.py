@@ -95,7 +95,7 @@ _NASDAQ_TICKERS = {
 
 
 def create_mpf_style(base_mpl_style: str = "seaborn-v0_8-whitegrid"):
-    """Generate an mplfinance style for US charts (TradingView-like colors).
+    """Generate an mplfinance style for US charts.
 
     Mirrors the KR ``create_mpf_style`` color scheme but without the Korean-font
     rc tweaks (US charts use the default Latin font). Never raises.

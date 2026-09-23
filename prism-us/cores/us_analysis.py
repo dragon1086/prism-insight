@@ -6,7 +6,7 @@ Uses yfinance MCP server for market data and US-specific agents.
 """
 import os
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from prism_core.competitive_evidence import attach_competitive_evidence
 
@@ -138,6 +138,58 @@ _social_client_module = _import_from_project_root(
     _prism_us_dir / "cores" / "us_social_sentiment_client.py"
 )
 USSocialSentimentClient = _social_client_module.USSocialSentimentClient
+
+
+def render_us_analyst_receipt(status, language="ko"):
+    """Public, allowlisted collection metadata; never issuer or forecast evidence."""
+    data = status if isinstance(status, dict) else {}
+    ko = language == 'ko'
+    unknown = '미확인' if ko else 'unverified'
+    labels = ({'complete': '전체 항목 일부 확보', 'partial': '일부 항목 확보',
+               'missing': '사용 가능한 값 미확보', 'error': '수집 오류'} if ko else
+              {'complete': 'some values in all components', 'partial': 'partial collection',
+               'missing': 'no usable values collected', 'error': 'collection error'})
+    state = data.get('status')
+    state_text = labels.get(state, unknown) if isinstance(state, str) else unknown
+    source = 'Yahoo Finance / yfinance' if data.get('source') == 'Yahoo Finance / yfinance' else unknown
+    captured = unknown
+    raw = data.get('captured_at')
+    if isinstance(raw, str) and len(raw) <= 64:
+        try:
+            parsed = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+            if parsed.tzinfo is not None:
+                captured = parsed.astimezone(timezone.utc).isoformat()
+        except (ValueError, OverflowError):
+            pass
+    names = (
+        ('earnings_estimate', 'EPS 추정', 'EPS estimates'),
+        ('revenue_estimate', '매출 추정', 'revenue estimates'),
+        ('eps_trend', 'EPS 추이', 'EPS trend'), ('eps_revisions', 'EPS 수정', 'EPS revisions'),
+        ('growth_estimates', '성장 추정', 'growth estimates'),
+        ('analyst_price_targets', '목표가', 'price targets'),
+        ('recommendations_summary', '추천 분포', 'recommendations'),
+    )
+    states = {'available': '확보', 'missing': '미확보', 'error': '오류'} if ko else {
+        'available': 'available', 'missing': 'not collected', 'error': 'error'}
+    components = data.get('components')
+    components = components if isinstance(components, dict) else {}
+    details = []
+    for key, korean, english in names:
+        value = components.get(key)
+        if isinstance(value, str) and value in states:
+            details.append(f'{korean if ko else english}: {states[value]}')
+    detail = '; '.join(details) or unknown
+    if ko:
+        return (f'### 애널리스트 자료 수집 현황\n\n수집 상태: {state_text}. 출처: {source}. '
+                f'수집 시각(UTC): {captured}. 전망 발표 시각: 미확인.\n항목별 수집: {detail}.\n'
+                '전체 항목 확보는 항목마다 일부 값이 있다는 뜻이며 모든 필드·기간 검증을 뜻하지 않습니다. '
+                '미확보·오류는 발행사의 자료 부재나 전망의 긍정·부정을 뜻하지 않습니다. '
+                '선택적 자료 누락만으로 별도 매수·매도 조건을 만들지 않습니다.')
+    return (f'### Analyst Data Collection Status\n\nCollection status: {state_text}. Source: {source}. '
+            f'Capture time (UTC): {captured}. Estimate publication time: unverified.\nComponents: {detail}.\n'
+            'Complete means some usable values per component, not every field or period verified. '
+            'Missing/error is not issuer-wide absence or positive/negative forecast evidence. '
+            'Missing optional data alone is not a separate buy/sell gate.')
 
 
 async def analyze_us_stock(
@@ -317,6 +369,8 @@ async def analyze_us_stock(
         section_reports, evidence_receipt = attach_competitive_evidence(
             section_reports, "US", ticker, reference_date, language
         )
+        section_reports['company_status'] = section_reports.get('company_status', '') + '\n\n' + render_us_analyst_receipt(
+            prefetched.get('analysis_estimates_status'), language)
         logger.info(
             f"[COMPETITIVE_EVIDENCE] market=US symbol={ticker} date={reference_date} "
             f"status={evidence_receipt['status']} evidence_id={evidence_receipt['evidence_id']} "

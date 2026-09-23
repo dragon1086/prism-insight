@@ -147,7 +147,7 @@ class USDataClient:
 
                 # Market data
                 "market_cap": info.get("marketCap", 0),
-                "enterprise_value": info.get("enterpriseValue", 0),
+                "enterprise_value": info.get("enterpriseValue"),
                 "price": info.get("currentPrice") or info.get("regularMarketPrice", 0),
                 "previous_close": info.get("previousClose", 0),
                 "open": info.get("open", 0),
@@ -164,47 +164,47 @@ class USDataClient:
                 "two_hundred_day_avg": info.get("twoHundredDayAverage", 0),
 
                 # Valuation
-                "pe_ratio": info.get("trailingPE", 0),
-                "forward_pe": info.get("forwardPE", 0),
-                "peg_ratio": info.get("pegRatio", 0),
-                "price_to_book": info.get("priceToBook", 0),
-                "price_to_sales": info.get("priceToSalesTrailing12Months", 0),
+                "pe_ratio": info.get("trailingPE"),
+                "forward_pe": info.get("forwardPE"),
+                "peg_ratio": info.get("pegRatio"),
+                "price_to_book": info.get("priceToBook"),
+                "price_to_sales": info.get("priceToSalesTrailing12Months"),
 
                 # Profitability
-                "profit_margin": info.get("profitMargins", 0),
-                "operating_margin": info.get("operatingMargins", 0),
-                "return_on_assets": info.get("returnOnAssets", 0),
-                "return_on_equity": info.get("returnOnEquity", 0),
+                "profit_margin": info.get("profitMargins"),
+                "operating_margin": info.get("operatingMargins"),
+                "return_on_assets": info.get("returnOnAssets"),
+                "return_on_equity": info.get("returnOnEquity"),
 
                 # Financials
-                "revenue": info.get("totalRevenue", 0),
-                "revenue_per_share": info.get("revenuePerShare", 0),
-                "gross_profit": info.get("grossProfits", 0),
-                "ebitda": info.get("ebitda", 0),
-                "net_income": info.get("netIncomeToCommon", 0),
-                "earnings_per_share": info.get("trailingEps", 0),
+                "revenue": info.get("totalRevenue"),
+                "revenue_per_share": info.get("revenuePerShare"),
+                "gross_profit": info.get("grossProfits"),
+                "ebitda": info.get("ebitda"),
+                "net_income": info.get("netIncomeToCommon"),
+                "earnings_per_share": info.get("trailingEps"),
 
                 # Dividend
-                "dividend_rate": info.get("dividendRate", 0),
-                "dividend_yield": info.get("dividendYield", 0),
-                "payout_ratio": info.get("payoutRatio", 0),
+                "dividend_rate": info.get("dividendRate"),
+                "dividend_yield": info.get("dividendYield"),
+                "payout_ratio": info.get("payoutRatio"),
 
                 # Shares
                 "shares_outstanding": info.get("sharesOutstanding", 0),
                 "float_shares": info.get("floatShares", 0),
                 "shares_short": info.get("sharesShort", 0),
-                "short_ratio": info.get("shortRatio", 0),
+                "short_ratio": info.get("shortRatio"),
 
                 # Beta
-                "beta": info.get("beta", 0),
+                "beta": info.get("beta"),
 
                 # Target price (analysts)
-                "target_high": info.get("targetHighPrice", 0),
-                "target_low": info.get("targetLowPrice", 0),
-                "target_mean": info.get("targetMeanPrice", 0),
-                "target_median": info.get("targetMedianPrice", 0),
+                "target_high": info.get("targetHighPrice"),
+                "target_low": info.get("targetLowPrice"),
+                "target_mean": info.get("targetMeanPrice"),
+                "target_median": info.get("targetMedianPrice"),
                 "recommendation": info.get("recommendationKey", ""),
-                "num_analysts": info.get("numberOfAnalystOpinions", 0),
+                "num_analysts": info.get("numberOfAnalystOpinions"),
             }
 
             logger.info(f"Retrieved company info for {ticker}: {result.get('name')}")
@@ -445,7 +445,9 @@ if __name__ == "__main__":
     print(f"  Sector: {info.get('sector')}")
     print(f"  Market Cap: ${info.get('market_cap', 0):,.0f}")
     print(f"  Price: ${info.get('price', 0):.2f}")
-    print(f"  P/E Ratio: {info.get('pe_ratio', 0):.2f}")
+    pe_ratio = info.get('pe_ratio')
+    pe_display = f'{pe_ratio:.2f}' if pe_ratio is not None else 'N/A'
+    print(f"  P/E Ratio: {pe_display}")
 
     # Test institutional holders
     print("\n3. Institutional Holders (AAPL):")

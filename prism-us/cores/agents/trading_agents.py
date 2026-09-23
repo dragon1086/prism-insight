@@ -21,6 +21,35 @@ GICS_SECTORS = [
 ]
 
 
+def _analyst_interpretation_contract(language):
+    if language == 'ko':
+        return '''
+## 애널리스트 자료의 해석 경계
+- 보고서의 자료 확인 범위는 수집 상태입니다. 선택적 컨센서스의 미확보·오류·발표 시각 미확인을
+  긍정·부정 근거, 자동 가감점 또는 별도 매수·매도 게이트로 사용하지 마세요.
+- 예상 EPS(forecast EPS)는 실제 실적이 아니며 F1의 최근 분기 실제 영업이익 근거를 대신하지 않습니다.
+- 선택적 컨센서스 누락과 필수 재무 근거 부족은 다릅니다. 미충족·미검증 F1–F4를 통과로 꾸미지 마세요.
+- 매수 당시 보고서·저장 시나리오의 전망은 과거 전망입니다. 현재 SELL 전망으로 승격하지 마세요.
+- 수집 시각은 전망 발표 시각이 아닙니다. 기간·단위·실적/전망을 구분하고 없는 peer 평균을 만들지 마세요.
+- 회사 가이던스와 애널리스트 컨센서스, 전체 성장과 유기적 성장·인수 효과를 구분하세요.
+  원문에 없는 성장 구성을 계산하거나 같은 것으로 간주하지 마세요.
+- 기존 F1–F4, 점수, 손익비, 포지션 한도, 손절 규칙을 유지하세요.
+'''
+    return '''
+## Analyst Evidence Interpretation
+- The report's collection scope describes collection only. Missing/error/unverified publication time
+  for optional consensus is neither positive nor negative evidence, an automatic score adjustment,
+  nor a separate buy/sell gate.
+- Expected forecast EPS is not actual earnings and cannot replace F1's recent actual operating-profit evidence.
+- This applies only to optional consensus; do not fabricate a pass for unmet or unverified required F1–F4 fundamentals.
+- Forecasts in the historical purchase report or stored scenario are historical, not current SELL forecasts.
+- Capture time is not forecast publication time. Preserve periods, units and actual/forecast distinctions;
+  do not invent peer averages. Preserve existing F1–F4, scores, R/R, position limits and stop rules.
+- Company guidance is not analyst consensus. Distinguish total, organic and acquisition-driven growth
+  when disclosed; do not fabricate a growth decomposition missing from the source.
+'''
+
+
 def create_us_trading_scenario_agent(language: str = "ko", sector_names: list = None):
     """
     Create US trading scenario generation agent.
@@ -305,8 +334,10 @@ risk_reward_ratio  = expected_return_pct / expected_loss_pct
 
 - 미국 정규장은 ET 기준 09:30~16:00이며, KST로는 23:30~06:00 (EST) 또는 22:30~05:00 (EDT)입니다.
 - **장 초반 (개장 후 첫 1시간)**: 당일 거래량/캔들은 미완성. "오늘 거래량이 약하다" 같은 확정 판단은 금지하십시오. 전일 종가/거래량 기준으로 분석하십시오.
-- **장 후반 (마감 1시간 전 이후)**: 당일 데이터가 사실상 확정. 모든 기술적 지표를 사용해도 됩니다.
-- 분석이 미국 시장 마감 후(아침 KST)에 실행되는 경우 직전 거래일 종가 기준으로 판단하십시오.
+- **장 후반도 실제 마감 전에는 미완성 관측값**입니다. 현재 호가는 기존 진입·수량 산정에
+  사용할 수 있으며 장중 트리거를 일괄 거절하지 마세요. 확정 종가·완성 일봉과 구분하세요.
+- 정규장·조기폐장의 실제 세션 종료와 자료 수집 시각·완결성을 함께 확인하세요. 마감 전 수집한
+  캐시를 마감 후에 읽었다고 확정봉으로 승격하지 마세요. 확정봉 판단은 실제 완료 관측에만 근거하세요.
 
 ## 매매일지·직관 활용 (주입된 경우)
 프롬프트에 "Same Stock Past Trading History" 또는 "Accumulated Trading Intuitions"가 주어지면 신중히 가중하십시오:
@@ -666,8 +697,10 @@ If the resulting R/R is below the matrix floor for the current regime → No Ent
 - US regular session is 09:30~16:00 ET, which maps to KST 23:30~06:00 (EST) or 22:30~05:00 (EDT).
 - **Opening hour**: today's volume/candle is in-progress. Do NOT make assertions like "today's volume is weak".
   Use prior-day confirmed data; today is reference only.
-- **Closing hour onward**: today's data is settled. All technical indicators are usable.
-- When the analysis runs after US market close (KST morning), use the most recent settled session.
+- **The closing hour is still in-progress before actual close.** Current quotes may support existing
+  entry/sizing rules; do not blanket-reject intraday triggers. They are not confirmed closes or completed daily bars.
+- Check the actual regular/early close plus capture time and data finality. A cache captured before close
+  does not become final when read after close. Completed-bar judgments require actually completed observations.
 
 ## Using the Trading Journal & Intuitions (when injected)
 When the prompt includes "Same Stock Past Trading History" or "Accumulated Trading Intuitions", weigh them carefully:
@@ -745,6 +778,7 @@ Prohibited: `"$170"`, `"about $170"`, `"minimum 170"`.
     instruction += buy_scenario_prompt_contract(language)
     from prism_core.flow_evidence import us_flow_interpretation_contract
     instruction += us_flow_interpretation_contract(language)
+    instruction += _analyst_interpretation_contract(language)
 
     return Agent(
         name="us_trading_scenario_agent",
@@ -814,7 +848,9 @@ def create_us_sell_decision_agent(language: str = "ko"):
 - 모든 손절가·trailing stop 판단은 **종가(closing price)** 기준입니다.
 - 장중 저가가 stop_loss를 일시적으로 터치(intraday wick)한 것만으로는 절대 매도하지 마십시오.
 - 종가가 stop_loss 아래로 마감했을 때만 손절 발동합니다.
-- 미국 정규장 기준 장 초반(개장 후 1시간) 분석 시 직전 거래일 확정 종가로 판단하고, 마감 1시간 전 이후 또는 장 마감 후 분석 시에만 당일 종가를 사용하십시오.
+- 실제 정규장·조기폐장 종료와 수집 자료의 완결성이 확인된 확정 종가만 사용하세요.
+  마감 전 수집한 캐시와 마지막 1시간의 관측가격은 마감 후에도 당일 확정 종가가 아닙니다.
+  당일 확정 관측이 없으면 최근 확인된 완료 세션을 사용하고 기준일을 명시하세요.
 
 **핵심-2) 매수 시나리오의 익절 조건은 마일스톤으로 해석:**
 - 보유 종목의 us_stock_holdings.scenario.trading_scenarios.sell_triggers 중 "목표가 도달 시 매도", "익절 조건 1: 목표가/저항선 도달" 등의 문구는 **자동 매도 명령이 아니라 1차 마일스톤**입니다.
@@ -897,11 +933,12 @@ Trailing Stop %: 강세장 고점 × 0.92 (-8%), 약세장 고점 × 0.95 (-5%)
 - ✅ 권장: 전일 또는 최근 수일간의 확정 데이터로 추세 파악
 
 **장 후반 또는 마감 후:**
-- 당일 거래량/캔들/가격 변화 모두 **확정**
-- 당일 데이터를 적극 활용한 기술적 분석 가능
+- 실제 세션 종료 전에는 거래량·캔들·가격 변화가 관측 중입니다. 마지막 1시간도 예외가 아닙니다.
+- 정규장·조기폐장 종료와 수집 시각·완결성 확인 없이 당일 확정 종가를 주장하지 마세요.
 
 **핵심 원칙:**
-장 초반 = 전일 확정 데이터 / 장 후반 이후 = 당일 포함 모든 데이터
+현재 시간과 수집 시각은 별개입니다. 마감 전 수집 캐시는 시간이 지났다고 확정되지 않습니다.
+현재 호가는 보유 현황에 사용할 수 있지만 이 SELL 에이전트의 종가 조건을 충족하는 근거는 아닙니다.
 
 ### 분석 요소
 
@@ -1029,7 +1066,10 @@ You are a professional analyst specializing in sell timing decisions for US stoc
 - All stop_loss and trailing-stop judgements are based on the **closing price**.
 - An intraday low that briefly touches stop_loss (intraday wick) is NEVER a sell reason on its own.
 - Stop loss fires only when the closing price closes below stop_loss.
-- During the opening hour, use the previous trading day's confirmed close. Within the last hour or after market close, today's close is usable.
+- Use a confirmed close only after the actual regular/early close AND captured-data finality are verified.
+  A price observed in the last hour or a cache captured before close is not today's confirmed close even when
+  read after close. Otherwise use the latest verified completed session and state its date.
+  Current quotes may describe holdings but cannot satisfy this SELL agent's closing-price condition.
 
 **Core-2) Interpret buy-scenario take-profit conditions as milestones:**
 - In us_stock_holdings.scenario.trading_scenarios.sell_triggers, phrases like "sell when target reached" or "take profit 1: target/resistance reached" are **milestones, not automatic sell orders**.
@@ -1140,7 +1180,7 @@ Trailing Stop %: Bull peak × 0.92 (-8%), Bear/Sideways peak × 0.95 (-5%)
 
     return Agent(
         name="us_sell_decision_agent",
-        instruction=instruction + sell_scenario_authority_contract(language),
+        instruction=instruction + sell_scenario_authority_contract(language) + _analyst_interpretation_contract(language),
         # perplexity: 핵심-0 법인 이벤트(상폐/공개매수/파산 등) 뉴스 자율 점검에 필요
         server_names=["yahoo_finance", "sqlite", "time", "perplexity"]
     )
