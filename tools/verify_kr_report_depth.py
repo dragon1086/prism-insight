@@ -5,6 +5,7 @@ Candidate code may live in a Git worktree; credentials stay on the same host.
 """
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -14,6 +15,39 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def reviewed_chapter(directory, packet, *, company_code, reference_date, peer_context='', **_kwargs):
+    """Validation-only reuse after human review; never a normal report cache.
+
+    Reuses just source-only DART prose, not prior market/technical/synthesis
+    stages. Fail instead of silently regenerating when the source basis changes.
+    """
+    from cores.dart_deep_analysis import CHAPTER_END, CHAPTER_START, _checked_prose, _source_urls
+    from report_model_config import DART_REPORT_EFFORT, DART_REPORT_MODEL
+
+    receipt = json.loads((directory / 'generation_receipt.json').read_text(encoding='utf-8'))['receipt']
+    source_hash = packet.get('receipt', {}).get('core_union_sha256')
+    identity = {'company_code': company_code, 'reference_date': reference_date,
+                'peer_context_sha256': hashlib.sha256(peer_context.encode()).hexdigest()}
+    if (not packet.get('ready') or not isinstance(source_hash, str) or len(source_hash) != 64
+            or receipt.get('input_identity') != identity
+            or source_hash != receipt['source_receipt'].get('core_union_sha256')
+            or not packet['receipt'].get('core_conserved')):
+        raise ValueError('Reviewed chapter source, date, company or peer basis changed')
+    if set(receipt['writers']) != set(packet['contexts']):
+        raise ValueError('Reviewed chapter writer coverage changed')
+    for role, writer in receipt['writers'].items():
+        if writer.get('model') != DART_REPORT_MODEL or writer.get('reasoning_effort') != DART_REPORT_EFFORT:
+            raise ValueError('Reviewed chapter writer configuration changed')
+        _checked_prose((directory / f'dart_depth_{role}.md').read_text(encoding='utf-8'),
+                      _source_urls(packet['contexts'][role]))
+    chapter = (directory / 'dart_chapter.md').read_text(encoding='utf-8')
+    if (not chapter.startswith(CHAPTER_START) or not chapter.rstrip().endswith(CHAPTER_END)
+            or hashlib.sha256(chapter.encode()).hexdigest() != receipt.get('chapter_sha256')):
+        raise ValueError('Reviewed chapter content changed')
+    return chapter, {**receipt, 'status': 'reused_reviewed_source_chapter', 'calls': 0,
+                      'original_calls': receipt['calls'], 'reused_from': str(directory)}
 
 
 def main():
@@ -30,6 +64,8 @@ def main():
                         help='Reuse a saved chapter packet; run only the three DART writers')
     parser.add_argument('--peer-receipt', type=Path,
                         help='Optional same-day peer receipt for chapter-only replay')
+    parser.add_argument('--reuse-reviewed-chapter', type=Path,
+                        help='Full integration only: reuse an explicitly reviewed same-source chapter')
     args = parser.parse_args()
     if bool(args.run_model) == bool(args.peer_source_report):
         parser.error('Choose --run-model or --peer-source-report; never both')
@@ -46,6 +82,9 @@ def main():
     if args.peer_source_report and (args.replay_inputs or not args.peer_source_report.resolve().is_relative_to(
             operational / 'runtime' / 'report_validation')):
         parser.error('Peer smoke source must be an isolated validation report')
+    if args.reuse_reviewed_chapter and (not args.run_model or args.replay_inputs
+            or not args.reuse_reviewed_chapter.resolve().is_relative_to(operational / 'runtime' / 'report_validation')):
+        parser.error('Reviewed chapter reuse requires a full isolated integration run')
     output.mkdir(parents=True, exist_ok=False)
 
     from dotenv import load_dotenv
@@ -110,13 +149,23 @@ def main():
     kr_official_report_inputs.collect_kr_official_report_inputs = collect
     dart_deep_analysis._write = write
     kr_peer_comparison.collect_peer_comparison = peers
+    if args.reuse_reviewed_chapter:
+        async def reuse(packet, **kwargs):
+            chapter, receipt = reviewed_chapter(args.reuse_reviewed_chapter, packet, **kwargs)
+            save_json('reviewed_chapter_reuse.json', receipt)
+            return chapter, receipt
+        dart_deep_analysis.generate_dart_chapter = reuse
     started = time.monotonic()
     if args.peer_source_report:
         from cores.analysis import _report_stock_names
         candidates = kr_peer_comparison.select_report_peer_candidates(
             [args.peer_source_report.read_text(encoding='utf-8')], args.ticker, _report_stock_names())
         packet = asyncio.run(original_peers(args.ticker, args.company, candidates, args.date))
-        save_json('peer_receipt.json', packet['private_receipt'])
+        save_json('peer_receipt.json', {**packet['private_receipt'], 'probe': {
+            'reference_date': datetime.strptime(args.date, '%Y%m%d').date().isoformat(),
+            'observed_at': datetime.now(ZoneInfo('Asia/Seoul')).isoformat(),
+            'provider': 'native Firecrawl MCP', 'source_report': str(args.peer_source_report),
+            'candidates': candidates}})
         (output / 'peer_comparison.md').write_text(packet['public_markdown'], encoding='utf-8')
         print(json.dumps({'status': packet['private_receipt']['status'], 'candidates': len(candidates),
                           'requested': packet['private_receipt'].get('requested', 0),

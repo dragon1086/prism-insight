@@ -5,6 +5,8 @@ import json
 import pytest
 
 from cores import dart_deep_analysis as depth
+from prism_core.dart_source_table_evidence import pack_readable_units
+from prism_core.dart_source_tree_catalog import build_catalog
 
 SOURCE_URL = 'https://dart.fss.or.kr/report/viewer.do?rcpNo=20260813001728'
 
@@ -44,8 +46,12 @@ def test_dart_writer_uses_specialized_model_without_changing_general_report(monk
 
 
 def packet():
-    return {'ready': True, 'contexts': {key: json.dumps({'sources': [{'source': {'url': SOURCE_URL},
-                                         'catalog': 'SOURCE_' + key}]}) for key in depth.ROLES},
+    return {'ready': True, 'contexts': {key: json.dumps({'sources': [{'source': {
+                                         'url': SOURCE_URL, 'source_id': 'fixture-' + key,
+                                         'filing': {'role': 'primary', 'scope': 'consolidated',
+                                                    'period_start': '2026-01-01', 'period_end': '2026-06-30'}},
+                                         'catalog': pack_readable_units(build_catalog('<p>SOURCE_' + key + '</p>')['units'])}]})
+                                         for key in depth.ROLES},
             'receipt': {'core_conserved': True, 'capacity_ok': True,
                         'present_material_topics': {'risks': ['commitments']}}}
 
@@ -80,6 +86,16 @@ def test_unready_inputs_make_no_calls(monkeypatch):
     result = asyncio.run(depth.generate_dart_chapter({'ready': False}, company_name='예시',
         company_code='123456', reference_date='20260923'))
     assert result[0] == '' and result[1]['calls'] == 0
+
+
+def test_actual_readable_message_limit_checked_before_any_model_call(monkeypatch):
+    async def forbidden(*args):
+        raise AssertionError('Model called before actual message-size validation')
+    monkeypatch.setattr(depth, '_write', forbidden)
+    monkeypatch.setattr(depth, 'WRITER_MESSAGE_MAX_BYTES', 100)
+    with pytest.raises(ValueError, match='readable model-message capacity'):
+        asyncio.run(depth.generate_dart_chapter(packet(), company_name='예시',
+            company_code='123456', reference_date='20260924'))
 
 
 @pytest.mark.parametrize('change', ['conservation', 'capacity', 'oversize', 'empty', 'unknown_role'])

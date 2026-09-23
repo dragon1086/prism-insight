@@ -34,7 +34,7 @@ async def main():
     normalized = " ".join(extracted.split())
     assert len(extracted) > 40000 and normalized.index(late_fact) > 40000
     agent = cls(**kwargs)
-    assert await agent.initialize(language="en")
+    assert await agent.initialize(language=sys.argv[4] if len(sys.argv) > 4 else "en")
     agent._get_trend_facts = lambda ticker: "SYNTHETIC_TREND_NO_PROVIDER"
     agent._pipeline_market_regime = "moderate_bull"
     captured = []
@@ -76,7 +76,8 @@ asyncio.run(main())
 
 
 @pytest.mark.parametrize("transport", ["codex", "fallback"])
-def test_full_kr_pdf_disclosure_reaches_buy_transports(tmp_path, transport):
+@pytest.mark.parametrize("language", ["ko", "en"])
+def test_full_kr_pdf_disclosure_reaches_buy_transports(tmp_path, transport, language):
     env = {key: value for key, value in os.environ.items()
            if not any(secret in key.upper() for secret in ("KIS", "TOKEN", "SECRET", "API_KEY", "APP_KEY"))}
     env.update(HOME=str(tmp_path), KIS_CONFIG_ROOT=str(tmp_path / "absent-kis"),
@@ -84,7 +85,7 @@ def test_full_kr_pdf_disclosure_reaches_buy_transports(tmp_path, transport):
                PYTHON_DOTENV_DISABLED="1", PYTHONDONTWRITEBYTECODE="1", TZ="Asia/Seoul",
                PRISM_KR_CODEX_FAST_TRADING="1", PRISM_BUY_CODEX_MODEL="gpt-6-astra",
                PRISM_BUY_CODEX_EFFORT="low", PRISM_BUY_CODEX_TIMEOUT="90")
-    result = subprocess.run([sys.executable, "-I", "-c", SCRIPT, str(ROOT), "KR", transport],
+    result = subprocess.run([sys.executable, "-I", "-c", SCRIPT, str(ROOT), "KR", transport, language],
                             cwd=tmp_path, env=env, text=True, capture_output=True, timeout=90, check=False)
     assert result.returncode == 0, result.stderr[-8000:]
     assert json.loads(result.stdout.strip().splitlines()[-1]) == {

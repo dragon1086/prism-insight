@@ -4,6 +4,7 @@ This augments, rather than replaces, the existing market/news/company path.
 Source conservation is checked upstream; prose still requires content review.
 """
 import asyncio
+import hashlib
 import html
 import json
 import logging
@@ -17,6 +18,10 @@ from prism_core.report_presentation import report_narrative_contract
 CHAPTER_START = '<!-- DART_DEEP_ANALYSIS_START -->'
 CHAPTER_END = '<!-- DART_DEEP_ANALYSIS_END -->'
 CHAPTER_INCOMPLETE = '<!-- DART_DEPTH_INCOMPLETE -->'
+# Presentation expands merged/header labels without collecting extra sources.
+# Both source-packet limits and these actual model-message limits are enforced.
+WRITER_MESSAGE_MAX_BYTES = 360000
+TOTAL_MESSAGE_MAX_BYTES = 960000
 ROLES = {
     'finance': ('실적·현금흐름·차입과 회계 판단',
                 '실적과 현금흐름, 차입 만기와 유동성, 사채·리스, 손상·충당·회계 추정을 분석합니다.'),
@@ -129,6 +134,25 @@ async def generate_dart_chapter(packet, *, company_name, company_code, reference
     if (receipt.get('core_conserved') is not True or receipt.get('capacity_ok') is not True
             or max(sizes) > WRITER_MAX_BYTES or sum(sizes) > TOTAL_MAX_BYTES):
         raise ValueError('DART source conservation or capacity check failed')
+    from prism_core.dart_writer_context import render_dart_writer_context
+    messages, render_receipts, agents = {}, {}, {}
+    for role, context in contexts.items():
+        source_text, rendered = render_dart_writer_context(context)
+        if not rendered['cell_text_conserved'] or rendered['truncated']:
+            raise ValueError('DART reader presentation lost source content')
+        agent = writer_agent(role, company_name, company_code, reference_date, language)
+        message = (shared_reference + '\n\n<filing_source_data>\n' + source_text
+                   + '\n</filing_source_data>')
+        topics = receipt.get('present_material_topics', {}).get(role, [])
+        if topics:
+            message = ('원문에서 분류된 주제: ' + ', '.join(topics)
+                       + '. 분류는 사실 검증이 아니며 실제 원문과 조건을 확인해 설명하세요.\n\n' + message)
+        if role == 'business' and peer_context:
+            message += '\n\n<peer_comparison_data>\n' + peer_context + '\n</peer_comparison_data>'
+        messages[role], agents[role], render_receipts[role] = message, agent, rendered
+    message_sizes = [len((agents[role].instruction + message).encode()) for role, message in messages.items()]
+    if max(message_sizes) > WRITER_MESSAGE_MAX_BYTES or sum(message_sizes) > TOTAL_MESSAGE_MAX_BYTES:
+        raise ValueError('DART readable model-message capacity exceeded; no sources clipped')
     limit = max(1, min(3, int(concurrency)))
     from report_model_config import DART_REPORT_EFFORT, DART_REPORT_MODEL
     semaphore = asyncio.Semaphore(limit)
@@ -137,20 +161,13 @@ async def generate_dart_chapter(packet, *, company_name, company_code, reference
 
     async def run(role):
         async with semaphore:
-            agent = writer_agent(role, company_name, company_code, reference_date, language)
-            message = (shared_reference + '\n\n<filing_source_data>\n' + contexts[role]
-                       + '\n</filing_source_data>')
-            topics = receipt.get('present_material_topics', {}).get(role, [])
-            if topics:
-                message = ('원문에서 분류된 주제: ' + ', '.join(topics)
-                           + '. 분류는 사실 검증이 아니며 실제 원문과 조건을 확인해 설명하세요.\n\n' + message)
-            if role == 'business' and peer_context:
-                message += '\n\n<peer_comparison_data>\n' + peer_context + '\n</peer_comparison_data>'
+            agent, message = agents[role], messages[role]
             started = time.monotonic()
             text, usage = await _write(agent, message)
             text = _checked_prose(text, source_urls[role])
             receipts[role] = {'input_bytes': len((agent.instruction + message).encode()),
                               'model': DART_REPORT_MODEL, 'reasoning_effort': DART_REPORT_EFFORT,
+                              'source_presentation': render_receipts[role],
                               'output_chars': len(text), 'elapsed_seconds': round(time.monotonic() - started, 3),
                               'usage': {key: usage.get(key) for key in ('input_tokens', 'output_tokens', 'total_tokens')}
                               if isinstance(usage, dict) else None}
@@ -169,4 +186,7 @@ async def generate_dart_chapter(packet, *, company_name, company_code, reference
     title = '## 5. DART 주요 재무·사업 위험 분석' if language == 'ko' else '## 5. In-depth filing analysis'
     chapter = CHAPTER_START + '\n\n' + title + '\n\n' + '\n\n'.join(results[role] for role in ROLES if role in results) + '\n\n' + CHAPTER_END
     return chapter, {'status': 'generated_not_independently_verified', 'calls': len(receipts),
+                     'input_identity': {'company_code': company_code, 'reference_date': reference_date,
+                                        'peer_context_sha256': hashlib.sha256(peer_context.encode()).hexdigest()},
+                     'chapter_sha256': hashlib.sha256(chapter.encode()).hexdigest(),
                      'writers': receipts, 'source_receipt': packet.get('receipt', {})}
