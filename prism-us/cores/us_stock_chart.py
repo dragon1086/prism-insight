@@ -16,6 +16,7 @@ import base64
 from typing import Optional, Tuple
 
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
@@ -200,12 +201,35 @@ def create_us_price_chart(
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index)
         df = df.sort_index()
+        source_latest_date = df.index[-1]
+        df[required_cols] = df[required_cols].apply(pd.to_numeric, errors='coerce')
+        df[required_cols] = df[required_cols].where(np.isfinite(df[required_cols]))
+        df.loc[df['Close'] <= 0, 'Close'] = np.nan
 
         # Calculate moving averages (US O'Neil standard: 10/20/50/200)
-        df['MA10'] = df['Close'].rolling(window=10).mean()
-        df['MA20'] = df['Close'].rolling(window=20).mean()
-        df['MA50'] = df['Close'].rolling(window=50).mean()
-        df['MA200'] = df['Close'].rolling(window=200).mean()
+        ma_close = df['Close'].copy()
+        split_boundary = None
+        split_columns = [c for c in hist_df.columns if str(c).lower().replace(' ', '_') == 'stock_splits']
+        if hist_df.attrs.get('price_basis') == 'provider_unadjusted_close' and len(split_columns) == 1 and ma_close.notna().any():
+            splits = pd.to_numeric(hist_df[split_columns[0]].sort_index(), errors='coerce').loc[:ma_close.last_valid_index()]
+            events = splits[splits.notna() & splits.ne(0)]
+            if not events.empty:
+                split_boundary = events.index[-1]
+                ma_close.loc[ma_close.index < split_boundary] = np.nan
+        df['MA10'] = ma_close.rolling(window=10).mean()
+        df['MA20'] = ma_close.rolling(window=20).mean()
+        df['MA50'] = ma_close.rolling(window=50).mean()
+        df['MA200'] = ma_close.rolling(window=200).mean()
+
+        # mplfinance requires matching missing positions in all OHLC columns.
+        # Filter only the rendering frame AFTER rolling calculations, so an
+        # interior missing Close never turns into a bridged moving-average window.
+        complete = df[required_cols].notna().all(axis=1)
+        complete &= (df[['Open', 'High', 'Low', 'Close']] > 0).all(axis=1) & (df['Volume'] >= 0)
+        excluded_rows = int((~complete).sum())
+        df = df.loc[complete].copy()
+        if df.empty:
+            return None
 
         # Create OHLCV DataFrame
         ohlc_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
@@ -254,10 +278,16 @@ def create_us_price_chart(
             volume=True,
             figsize=(12, 8),
             tight_layout=True,
-            addplot=additional_plots if additional_plots else None,
             panel_ratios=(4, 1),
-            returnfig=True
+            returnfig=True,
+            **({'addplot': additional_plots} if additional_plots else {})
         )
+        if excluded_rows or split_boundary is not None:
+            fig.text(0.5, 0.01,
+                     f"Plotted through {df.index[-1]:%Y-%m-%d}; source latest {source_latest_date:%Y-%m-%d}; "
+                     f"{excluded_rows} incomplete bar(s) omitted, not filled. Finality not attested."
+                     + (f"\nMAs restart at known split {split_boundary:%Y-%m-%d}; no split adjustment invented." if split_boundary is not None else ''),
+                     ha='center', fontsize=8)
 
         # Add price annotations
         max_idx = df['Close'].idxmax()
@@ -270,7 +300,7 @@ def create_us_price_chart(
         # High point
         ax1.annotate(
             f"High: ${df.loc[max_idx, 'Close']:,.2f}",
-            xy=(max_idx, df.loc[max_idx, 'Close']),
+            xy=(df.index.get_loc(max_idx), df.loc[max_idx, 'Close']),
             xytext=(0, 15),
             textcoords='offset points',
             ha='center',
@@ -282,7 +312,7 @@ def create_us_price_chart(
         # Low point
         ax1.annotate(
             f"Low: ${df.loc[min_idx, 'Close']:,.2f}",
-            xy=(min_idx, df.loc[min_idx, 'Close']),
+            xy=(df.index.get_loc(min_idx), df.loc[min_idx, 'Close']),
             xytext=(0, -15),
             textcoords='offset points',
             ha='center',
@@ -293,8 +323,8 @@ def create_us_price_chart(
 
         # Current price
         ax1.annotate(
-            f"Current: ${df.loc[last_idx, 'Close']:,.2f}",
-            xy=(last_idx, df.loc[last_idx, 'Close']),
+            f"Last plotted ({last_idx:%Y-%m-%d}): ${df.loc[last_idx, 'Close']:,.2f}",
+            xy=(df.index.get_loc(last_idx), df.loc[last_idx, 'Close']),
             xytext=(15, 0),
             textcoords='offset points',
             ha='left',

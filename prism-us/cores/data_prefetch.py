@@ -390,6 +390,13 @@ def prefetch_stock_info(ticker: str, metadata: dict | None = None) -> str:
         result += f"| Number of Analysts | {_fmt(info.get('num_analysts'), 'number')} |\n"
         result += "\n"
 
+        from prism_core.report_financial_math import render_target_upside_calculations
+
+        result = render_target_upside_calculations(
+            info, reference_price, reference_source or 'unknown',
+            reference_datetime.isoformat() if reference_datetime else None,
+            'dated_recent_within_7_calendar_days' if dated_regular else 'UNKNOWN_or_unavailable',
+        ) + result
         return result
     except Exception as e:
         logger.error(f"Error prefetching stock info for {ticker}: {e}")
@@ -582,6 +589,7 @@ def prefetch_financial_statements(ticker: str) -> str:
         stock = yf.Ticker(ticker)
 
         result = ""
+        income, balance = None, None
 
         # Annual income statement
         try:
@@ -641,7 +649,9 @@ def prefetch_financial_statements(ticker: str) -> str:
             logger.warning(f"No financial statements for {ticker}")
             return ""
 
-        return result
+        from prism_core.report_financial_math import render_annual_leverage_calculations
+
+        return render_annual_leverage_calculations(income, balance) + result
     except Exception as e:
         logger.error(f"Error prefetching financial statements for {ticker}: {e}")
         return ""

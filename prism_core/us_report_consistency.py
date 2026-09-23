@@ -2,6 +2,7 @@
 import re
 
 from prism_core.competitive_evidence import _NEXT_SECTION, _mask_fences
+from prism_core.report_financial_math import extract_report_financial_math
 from prism_core.report_research_context import _replace_agent
 
 
@@ -21,6 +22,11 @@ def reference_context(prefetched, language="ko"):
             "시각이 없는 값만 시각 미확인으로 표시하고, 시각이 있다고 확정 종가로 승격하지 마세요. "
             "Total Debt는 총차입금이며 Total Liabilities(총부채)와 다릅니다. 연간 주당 배당금은 USD/주/년이지 배당률이 아닙니다. "
             "표시된 배당수익률 계산식·분모를 유지하고 단위 미확인 원자료에 %를 붙이지 마세요. 상근 직원과 전체 직원을 구분하세요.\n"
+            "아래 재무 계산표의 코드 계산값·입력값·회계기간을 그대로 사용하세요. "
+            "목표가 상승여력은 stock_info의 해당 목표가와 보고서 기준 가격으로 계산한 값입니다. "
+            "다른 analyst_price_targets 스냅샷의 목표가에 이 비율을 옮겨 붙이지 마세요. "
+            "출처 간 목표가가 다르면 각각 표시하거나 계산되지 않은 상승여력은 생략하고, 근사값을 만들지 마세요. "
+            "부채/자본과 부채/(부채+자본)은 서로 다른 비율이며 연간 EBITDA에 분기 값을 섞지 마세요.\n"
         )
     else:
         rules = (
@@ -36,12 +42,19 @@ def reference_context(prefetched, language="ko"):
             "Total Debt is borrowing, not Total Liabilities. Annual dividend per share is USD/share/year, not a percent yield. "
             "Preserve the stated dividend-yield formula/denominator; do not add percent units to unverified raw values. "
             "Full-time employees are not total headcount.\n"
+            "Reuse exact code-calculated financial ratios, operands and fiscal periods below. "
+            "Target upside uses the matching stock_info target and report reference price; never transfer that percentage "
+            "to a different target snapshot from analyst_price_targets. Disclose conflicting targets separately or omit "
+            "an uncomputed percentage rather than approximating it. Debt/Equity and Debt/(Debt+Equity) are different "
+            "ratios; do not substitute quarterly EBITDA for the annual denominator.\n"
         )
     quotes = '\n'.join(line for line in prefetched.get('stock_info', '').splitlines()
                        if line.startswith(('| Current Price |', '| Previous Close |', '| Report reference',
                                            '| Capture time UTC', '| Market state / exchange timezone',
                                            '| regularMarketPrice', '| regularMarketTime', '| Selected price market timestamp')))
-    return rules + quotes + '\n' + prefetched.get('report_technical_reference', '')
+    financial = extract_report_financial_math(prefetched.get('stock_info', ''),
+                                              prefetched.get('financial_statements', ''))
+    return rules + quotes + '\n' + prefetched.get('report_technical_reference', '') + '\n' + financial
 
 
 def add_shared_context(agent, reference, news, language="ko"):
@@ -58,10 +71,12 @@ def add_shared_context(agent, reference, news, language="ko"):
                           (boundary + '<shared_news>\n' + news + '\n</shared_news>' if news else ''))
 
 
-def evidence_appendix(section_reports, language="ko", technical_reference=""):
+def evidence_appendix(section_reports, language="ko", technical_reference="", financial_reference=""):
     """Move complete evidence blocks after the prose, without deleting or rewriting them."""
     public = dict(section_reports)
     blocks = []
+    if financial_reference:
+        blocks.append(financial_reference)
     price = public.get('price_volume_analysis', '')
     if technical_reference and price.endswith(technical_reference):
         # Keep the model's prose in the body; retain the exact calculation record

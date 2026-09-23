@@ -99,6 +99,11 @@ def get_us_agent_directory(
     market_indices = pf.get("market_indices", {})
     # Combine all index data into one string for the market agent
     combined_indices = "\n\n".join(market_indices.values()) if market_indices else None
+    from prism_core.us_report_public_inputs import has_macro_evidence
+    official_macro_data = None
+    if has_macro_evidence(pf.get('official_macro')):
+        from prism_core.us_official_macro_sources import render_us_official_macro_sources
+        official_macro_data = render_us_official_macro_sources(pf['official_macro'], language)
 
     agent_creators = {
         "price_volume_analysis": lambda: create_us_price_volume_analysis_agent(
@@ -128,6 +133,7 @@ def get_us_agent_directory(
             reference_date, max_years_ago, max_years, language,
             prefetched_indices=combined_indices,
             shared_macro_available=pf.get("shared_macro_available") is True,
+            official_macro_data=official_macro_data,
         )
     }
 

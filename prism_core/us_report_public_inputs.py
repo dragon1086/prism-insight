@@ -7,6 +7,8 @@ import math
 from prism_core.market_report_context import _public_https
 from prism_core.report_research_context import _replace_agent
 
+OFFICIAL_MACRO_MARKER = '<official_macro_evidence>'
+
 
 async def collect_us_public_report_inputs(ticker, reference_date, filings, cache_dir, company_website=None):
     from prism_core.us_official_company_sources import collect_official_company_sources
@@ -50,6 +52,8 @@ def public_macro_identity(packet):
 
 def apply_public_report_inputs(agent, section, prefetched, language='ko'):
     """Original excerpts go only to their existing specialist; no extra model call."""
+    if section == 'market_index_analysis' and OFFICIAL_MACRO_MARKER in agent.instruction:
+        return agent
     company = prefetched.get('official_company', {})
     company = company if isinstance(company, dict) else {}
     macro = prefetched.get('official_macro', {})

@@ -611,8 +611,12 @@ async def analyze_us_stock(
                 "strategy": "## 5. Investment Strategy and Opinion",
             }
 
+        from prism_core.report_financial_math import extract_report_financial_math
+
         section_reports, source_appendix = evidence_appendix(
-            section_reports, language, prefetched['report_technical_reference'])
+            section_reports, language, prefetched['report_technical_reference'],
+            financial_reference=extract_report_financial_math(
+                prefetched.get('stock_info', ''), prefetched.get('financial_statements', '')))
         final_report = f"""{headers["title"]}
 
 **{headers["pub_date"]}:** {formatted_date}
