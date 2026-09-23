@@ -9,6 +9,8 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from prism_core.competitive_evidence import attach_competitive_evidence
+from prism_core.report_technical_facts import extract_report_technical_facts
+from prism_core.us_report_consistency import add_shared_context, reference_context, evidence_appendix
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -293,6 +295,11 @@ async def analyze_us_stock(
         # 5. Get US-specific agents (with prefetched data)
         prefetched["shared_macro_available"] = bool(macro_context)
         agents = get_us_agent_directory(company_name, ticker, reference_date, base_sections, language, prefetched_data=prefetched)
+        prefetched['report_technical_reference'] = extract_report_technical_facts(prefetched.get('stock_ohlcv', ''))
+        shared_reference = reference_context(prefetched, language)
+        agents = {key: (agent if key == 'market_index_analysis' else
+                        add_shared_context(agent, shared_reference, '', language))
+                  for key, agent in agents.items()}
 
         # 6. Execute base analysis using HYBRID mode
         # - yfinance sections: sequential with 2 sec delay (rate limit friendly)
@@ -309,6 +316,13 @@ async def analyze_us_stock(
                     logger.info(f"Processing {section} for {company_name}...")
                     try:
                         agent = agents[section]
+                        if section in ('company_status', 'company_overview'):
+                            # Reuse the existing news call; do not regenerate sections or add a model call.
+                            news_task = parallel_tasks.get('news_analysis')
+                            news_draft = (await news_task)[1] if news_task is not None else ''
+                            if section == 'company_overview':
+                                news_draft = (news_draft or '') + '\n\n' + results.get('company_status', '')
+                            agent = add_shared_context(agent, '', news_draft or '', language)
                         if section == "market_index_analysis":
                             async def generate_market():
                                 logger.info("Generating new US market analysis")
@@ -349,11 +363,11 @@ async def analyze_us_stock(
                     return section, f"Analysis failed: {section}"
 
         # Execute hybrid: yfinance sequential + parallel sections concurrently
-        parallel_tasks = [process_parallel_section(s) for s in parallel_sections]
+        parallel_tasks = {s: asyncio.create_task(process_parallel_section(s)) for s in parallel_sections}
         yfinance_task = process_yfinance_sections()
 
         # Run both concurrently
-        all_results = await asyncio.gather(yfinance_task, *parallel_tasks)
+        all_results = await asyncio.gather(yfinance_task, *parallel_tasks.values())
 
         # Collect results
         # First result is yfinance sections dict
@@ -371,6 +385,9 @@ async def analyze_us_stock(
         )
         section_reports['company_status'] = section_reports.get('company_status', '') + '\n\n' + render_us_analyst_receipt(
             prefetched.get('analysis_estimates_status'), language)
+        if prefetched['report_technical_reference']:
+            section_reports['price_volume_analysis'] = section_reports.get('price_volume_analysis', '') + '\n\n' + prefetched['report_technical_reference']
+        section_reports['shared_reference'] = shared_reference
         logger.info(
             f"[COMPETITIVE_EVIDENCE] market=US symbol={ticker} date={reference_date} "
             f"status={evidence_receipt['status']} evidence_id={evidence_receipt['evidence_id']} "
@@ -386,7 +403,7 @@ async def analyze_us_stock(
             section_reports["market_index_analysis"] = section_reports.get("market_index_analysis", "") + shared_market
 
         # 6. Integrate content from other reports
-        combined_reports = ""
+        combined_reports = shared_reference
         for section in base_sections:
             if section in section_reports:
                 combined_reports += f"\n\n--- {section.upper()} ---\n\n"
@@ -579,6 +596,7 @@ async def analyze_us_stock(
                 "strategy": "## 5. Investment Strategy and Opinion",
             }
 
+        section_reports, source_appendix = evidence_appendix(section_reports, language)
         final_report = f"""{headers["title"]}
 
 **{headers["pub_date"]}:** {formatted_date}
@@ -628,7 +646,7 @@ async def analyze_us_stock(
 """
 
         # 11. Clean up markdown formatting
-        final_report = clean_markdown(final_report)
+        final_report = clean_markdown(final_report) + source_appendix
 
         logger.info(f"Final report generated: {company_name}({ticker}) - {len(final_report)} characters")
 

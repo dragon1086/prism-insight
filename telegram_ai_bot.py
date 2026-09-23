@@ -24,6 +24,10 @@ from dotenv import load_dotenv
 # Select the DB server's market data before importing analysis dependencies.
 # Child report processes and MCP servers inherit this environment.
 load_dotenv()
+# Optional deployment-only OAuth route, loaded before any SDK or worker imports.
+# The committed example contains no credential; an unavailable proxy never falls
+# back to another endpoint because OPENAI_BASE_URL remains explicitly configured.
+load_dotenv(Path(__file__).with_name('.env.report-oauth'), override=True)
 if os.environ.get("ARCHIVE_API_URL"):
     os.environ.setdefault("PRISM_MARKET_DATA_REMOTE_URL", os.environ["ARCHIVE_API_URL"])
 

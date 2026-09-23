@@ -55,7 +55,9 @@ jobs:
           python -m pytest tests/test_screening_price_evidence.py tests/test_screening_orchestrator_rr_contract.py tests/test_agent_fit_score_constant_tripwire.py -q
           python -m pytest tests/test_agent_lazy_broker_imports.py -q
           python -m pytest tests/test_us_evidence_pipeline_contract.py \
-            tests/test_us_pdf_buy_handoff.py tests/test_us_flow_evidence.py -q
+            tests/test_us_pdf_buy_handoff.py tests/test_us_flow_evidence.py \
+            tests/test_us_sec_segment_units.py tests/test_us_report_technical_facts.py \
+            tests/test_us_report_consistency.py tests/test_telegram_oauth_bootstrap.py -q
           python -m pytest tests/test_agent_virtual_initialization.py \
             tests/test_agent_instance_mcp_fallback.py tests/test_isolated_agent_runtime.py -q
           python -m pytest tests/test_codex_full_stage.py tests/test_codex_probe_stage.py \

@@ -45,10 +45,11 @@ def create_us_price_volume_analysis_agent(
    - 20일, 50일, 200일 이동평균선 (미국 시장 표준)
 3. 주요 지지선과 저항선 식별 및 설명
 4. 거래량 분석 (거래량 변화 패턴과 가격 움직임의 관계)
-5. **기술적 지표 - OHLCV 데이터에서 반드시 계산:**
-   - RSI (14일): 종가를 사용하여 계산. RS = 평균 상승폭 / 평균 하락폭, RSI = 100 - (100 / (1 + RS)). 정확한 값 보고 (예: RSI = 72.5)
-   - MACD: 12일 EMA - 26일 EMA, 시그널선 = MACD의 9일 EMA. MACD 값과 시그널선 값 보고
-   - 볼린저 밴드 (20일): 중간선 = 20일 SMA, 상단/하단 = 중간선 ± 2×표준편차. 현재 가격의 밴드 내 위치 보고
+5. **기술적 지표 - AUTHORITATIVE TECHNICAL FACTS의 사전 계산값만 사용:**
+   - SMA10/20/50/200, RSI14, MACD·시그널, 볼린저 밴드는 제공된 값을 그대로 인용합니다(표시 반올림만 허용).
+   - N/A 또는 계산표 미제공 시 확인 불가로 표시합니다. 원시 OHLCV 표를 눈대중으로 계산하거나 근사 범위를 만들지 않습니다.
+   - 계산 방식·기준일·최신 행의 확정 여부를 유지합니다. 과거 마지막 유효 가격을 최신 가격으로 대체하지 않습니다.
+   - 모든 후속 전략·요약에서 동일한 계산값을 사용할 수 있도록 지표 요약표와 기준일을 본문에 포함합니다.
 6. 단기/중기 기술적 전망
 
 ## 보고서 구조 (반드시 마크다운 제목 형식 사용)
@@ -113,10 +114,11 @@ def create_us_price_volume_analysis_agent(
    - 10-day, 20-day, 50-day, 200-day moving averages (US O'Neil standard)
 3. Identification and explanation of major support and resistance levels
 4. Trading Volume Analysis (relationship between volume change patterns and price movements)
-5. **Technical Indicators - MUST CALCULATE from OHLCV data:**
-   - RSI (14-day): Calculate using closing prices. RS = Avg Gain / Avg Loss, RSI = 100 - (100 / (1 + RS)). Report exact value (e.g., RSI = 72.5)
-   - MACD: 12-day EMA - 26-day EMA, Signal line = 9-day EMA of MACD. Report MACD value and signal line value
-   - Bollinger Bands (20-day): Middle = 20-day SMA, Upper/Lower = Middle ± 2×Standard Deviation. Report current price position relative to bands
+5. **Technical Indicators - use only AUTHORITATIVE TECHNICAL FACTS:**
+   - Quote supplied SMA10/20/50/200, RSI14, MACD/signal and Bollinger values exactly (display rounding only).
+   - Mark N/A or absent calculations unavailable. Do not visually calculate or invent approximate ranges from the raw OHLCV table.
+   - Preserve definitions, as-of date and latest-row finality. Never replace a missing latest price with the last valid historical price.
+   - Include the numeric indicator table and as-of date in the section so downstream strategy and summary use the same facts.
 6. Short/medium-term technical outlook
 
 ## Report Structure (MUST use markdown heading format)

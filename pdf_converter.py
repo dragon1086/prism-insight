@@ -507,7 +507,7 @@ def _extract_report_info(md_content: str) -> dict:
         if any(skip in h1_clean for skip in skip_titles):
             continue
         # Try to extract company name and code from title
-        title_match = re.match(r'(.+?)[\s]*[\(\（]([A-Z0-9]{4,6}|\d{6})[\)\）]', h1_clean)
+        title_match = re.match(r'(.+?)[\s]*[\(\（]([A-Z0-9]{4,6}|[A-Z][A-Z0-9.-]{0,9})[\)\）]', h1_clean)
         if title_match:
             info["company_name"] = title_match.group(1).strip()
             info["company_code"] = title_match.group(2)

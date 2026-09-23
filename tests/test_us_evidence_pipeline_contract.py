@@ -82,7 +82,8 @@ def analysis(monkeypatch):
 
     monkeypatch.setattr(module, 'MCPApp', App)
     monkeypatch.setattr(module, 'get_us_agent_directory', lambda *a, **k: {
-        name: object() for name in ('company_status', 'price_volume_analysis', 'market_index_analysis')})
+        name: module._report_gen_module.ReportAgent(name, 'BASE')
+        for name in ('company_status', 'price_volume_analysis', 'market_index_analysis')})
 
     async def model(*args, **kwargs):
         return 'MODEL BODY WITHOUT COLLECTION METADATA'
@@ -150,6 +151,105 @@ def test_invalid_receipt_is_safe_and_cannot_inject_text(analysis, invalid):
 def test_invalid_capture_time_stays_unverified(analysis, captured):
     text = analysis.render_us_analyst_receipt({'captured_at': captured}, 'en')
     assert 'Capture time (UTC): unverified' in text
+
+
+def test_news_is_reused_before_financials_and_canonical_facts_reach_pdf_body(analysis, monkeypatch):
+    from prism_core.report_technical_facts import TECHNICAL_FACTS_START, TECHNICAL_FACTS_END
+    original = analysis.importlib.util.spec_from_file_location
+    canonical = 'CANONICAL SMA50 233.3818 ASOF 2026-09-21'
+
+    class PrefetchLoader:
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            module.prefetch_us_analysis_data = lambda ticker: {
+                'stock_ohlcv': TECHNICAL_FACTS_START + canonical + TECHNICAL_FACTS_END,
+                'stock_info': '| Current Price | $234.76 |'}
+
+    def spec_for(name, path, *args, **kwargs):
+        if name == 'us_data_prefetch':
+            return importlib.util.spec_from_loader(name, PrefetchLoader())
+        return original(name, path, *args, **kwargs)
+
+    monkeypatch.setattr(analysis.importlib.util, 'spec_from_file_location', spec_for)
+    names = ('price_volume_analysis', 'company_status', 'company_overview', 'news_analysis')
+    monkeypatch.setattr(analysis, 'get_us_agent_directory', lambda *a, **k: {
+        name: analysis._report_gen_module.ReportAgent(name, 'BASE') for name in names})
+    calls = []
+
+    raw_record = '#### Competitive Evidence\n```json\n{"name":"fact","arguments":{"value":100}}\n```\n'
+
+    async def generate(agent, section, *args, **kwargs):
+        calls.append(section)
+        assert canonical in agent.instruction
+        if section == 'news_analysis':
+            return 'GUIDANCE_SOURCE_SENTINEL https://example.test/official\n' + raw_record
+        if section in ('company_status', 'company_overview'):
+            assert 'GUIDANCE_SOURCE_SENTINEL' in agent.instruction
+        if section == 'company_overview':
+            assert 'FINANCIAL_PERIOD_SENTINEL' in agent.instruction
+        return 'FINANCIAL_PERIOD_SENTINEL'
+
+    seen = []
+
+    async def synthesis(sections, *args, **kwargs):
+        assert canonical in sections['price_volume_analysis']
+        assert '$234.76' in sections['shared_reference']
+        seen.append(True)
+        return 'SHORT SYNTHESIS'
+
+    monkeypatch.setattr(analysis, 'generate_report', generate)
+    monkeypatch.setattr(analysis, 'generate_investment_strategy', synthesis)
+    monkeypatch.setattr(analysis, 'generate_summary', synthesis)
+    report = asyncio.run(analysis.analyze_us_stock('TEST', 'Example', '20260923', 'en'))
+    assert calls.count('news_analysis') == 1 and len(calls) == 4
+    assert len(seen) == 2 and canonical in report
+    assert '```json\n{"name":"fact","arguments":{"value":100}}\n```' in report.split('## Appendix:')[1]
+
+
+def test_shared_market_cache_never_receives_ticker_specific_reference(analysis, monkeypatch):
+    from prism_core.market_report_singleflight import MarketReportCache
+    from prism_core.report_technical_facts import TECHNICAL_FACTS_START, TECHNICAL_FACTS_END
+    original = analysis.importlib.util.spec_from_file_location
+
+    class Loader:
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            module.prefetch_us_analysis_data = lambda ticker: {
+                'stock_ohlcv': TECHNICAL_FACTS_START + 'PRIVATE_STOCK_' + ticker + TECHNICAL_FACTS_END,
+                'stock_info': '| Current Price | $234.76 |'}
+
+    def spec_for(name, path, *args, **kwargs):
+        if name == 'us_data_prefetch':
+            return importlib.util.spec_from_loader(name, Loader())
+        return original(name, path, *args, **kwargs)
+
+    monkeypatch.setattr(analysis.importlib.util, 'spec_from_file_location', spec_for)
+    market_calls = []
+
+    async def market(agent, *args, **kwargs):
+        market_calls.append(agent.instruction)
+        assert 'PRIVATE_STOCK' not in agent.instruction and '$234.76' not in agent.instruction
+        return 'SHARED MARKET ONLY'
+
+    async def synthesis(*args, **kwargs):
+        return 'SYNTHESIS'
+
+    monkeypatch.setattr(analysis, 'generate_market_report', market)
+    monkeypatch.setattr(analysis, 'generate_investment_strategy', synthesis)
+    monkeypatch.setattr(analysis, 'generate_summary', synthesis)
+
+    async def run():
+        cache = MarketReportCache()
+        for ticker in ('FIRST', 'SECOND'):
+            await analysis.analyze_us_stock(ticker, ticker, '20260923', 'en',
+                                           include_news=False, market_report_cache=cache)
+
+    asyncio.run(run())
+    assert len(market_calls) == 1
 
 
 @pytest.mark.parametrize('language', ['ko', 'en'])

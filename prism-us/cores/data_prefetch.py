@@ -25,6 +25,7 @@ from prism_core.flow_evidence import (
     render_flow_evidence,
     us_flow_interpretation_contract,
 )
+from prism_core.report_technical_facts import render_report_technical_facts
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,9 @@ def prefetch_us_stock_ohlcv(ticker: str, period: str = "1y") -> str:
             logger.warning(f"No OHLCV data for {ticker}")
             return ""
 
+        # Calculate before display formatting, from this exact provider snapshot.
+        technical_facts = render_report_technical_facts(df)
+        df = df.sort_index().copy()
         # Reuse this exact fetch; no extra network/LLM call for flow context.
         try:
             flow_facts = render_flow_evidence(compute_us_flow_evidence(
@@ -111,7 +115,7 @@ def prefetch_us_stock_ohlcv(ticker: str, period: str = "1y") -> str:
             "Describe the latest row as an observed price/volume unless separate explicit "
             "finality evidence exists; this does not invalidate confirmed historical bars.\n"
         )
-        return observation_note + _df_to_markdown(df, f"OHLCV: {ticker} ({period})") + flow_facts
+        return technical_facts + observation_note + _df_to_markdown(df, f"OHLCV: {ticker} ({period})") + flow_facts
     except Exception as e:
         logger.error(f"Error prefetching OHLCV for {ticker}: {e}")
         return ""
@@ -601,174 +605,135 @@ def _clean_xbrl_label(raw: str) -> str:
 
 
 def _parse_10k_segment_revenue(html_content: str) -> str:
-    """Parse segment revenue data from 10-K XBRL inline HTML.
-
-    Extracts Products/Services split, product line breakdown,
-    geographic segment revenue, and country-level revenue from
-    XBRL inline tags embedded in SEC 10-K filings.
-
-    Args:
-        html_content: Raw HTML content of 10-K filing
-
-    Returns:
-        Markdown formatted segment revenue data, or empty string
-    """
+    """Read only proven USD revenue facts; unsupported XBRL is omitted, not guessed."""
     import re
+    from datetime import date
+    from decimal import Decimal, InvalidOperation
+    from lxml import etree
 
-    # 1. Parse all XBRL contexts (dimension definitions)
-    context_pattern = r'<xbrli:context[^>]*id="([^"]+)"[^>]*>(.*?)</xbrli:context>'
+    try:
+        root = etree.fromstring(html_content.encode(), etree.HTMLParser(no_network=True))
+    except (etree.ParserError, ValueError):
+        return ""
+    if root is None:
+        return ""
+
+    def local(tag):
+        return str(tag).rsplit("}", 1)[-1].rsplit(":", 1)[-1].lower()
+
+    def children(node, name):
+        return [child for child in node.iter() if local(child.tag) == name]
+
+    def content(node):
+        return "".join(node.itertext()).strip()
+
     contexts = {}
-    for m in re.finditer(context_pattern, html_content, re.DOTALL):
-        ctx_id = m.group(1)
-        ctx_body = m.group(2)
-        dims = re.findall(
-            r'<xbrldi:explicitMember[^>]*dimension="([^"]+)"[^>]*>([^<]+)', ctx_body
-        )
-        periods = re.findall(r'<xbrli:(?:startDate|endDate)>([^<]+)', ctx_body)
-        period = f"{periods[0]}~{periods[1]}" if len(periods) >= 2 else ""
-        contexts[ctx_id] = {"dims": dict(dims), "period": period}
+    units = set()
+    seen_ids = set()
+    ambiguous_ids = set()
+    for node in root.iter():
+        if local(node.tag) in ("context", "unit"):
+            identifier = node.get("id")
+            if identifier in seen_ids:
+                ambiguous_ids.add(identifier)
+            seen_ids.add(identifier)
+    for node in root.iter():
+        kind = local(node.tag)
+        if kind in ("context", "unit") and (
+                not node.get("id") or node.get("id") in ambiguous_ids):
+            continue
+        if kind == "unit":
+            measures = children(node, "measure")
+            if (len(measures) == 1 and content(measures[0]) == "iso4217:USD"
+                    and not children(node, "divide")):
+                units.add(node.get("id"))
+        elif kind == "context":
+            starts, ends = children(node, "startdate"), children(node, "enddate")
+            if len(starts) != 1 or len(ends) != 1:
+                continue
+            try:
+                start, end = date.fromisoformat(content(starts[0])), date.fromisoformat(content(ends[0]))
+            except ValueError:
+                continue
+            days = (end - start).days + 1
+            if days <= 0 or days > 380 or children(node, "typedmember"):
+                continue
+            dims = tuple(sorted((item.get("dimension", ""), content(item))
+                                for item in children(node, "explicitmember")))
+            identifiers = children(node, "identifier")
+            if dims and identifiers:
+                dims += tuple(("Entity", content(item)) for item in identifiers)
+            contexts[node.get("id")] = (start.isoformat(), end.isoformat(), days, dims)
 
-    # 2. Parse all revenue XBRL tags
-    rev_pattern = (
-        r'<ix:nonFraction[^>]*contextRef="([^"]+)"[^>]*'
-        r'name="[^"]*Revenue[^"]*"[^>]*>([^<]+)</ix:nonFraction>'
-    )
-    revenues = []
-    for m in re.finditer(rev_pattern, html_content):
-        ctx_id = m.group(1)
-        value_str = m.group(2).strip().replace(',', '')
+    # Exact concepts avoid treating revenue-related liabilities/growth ratios as sales.
+    revenue_concepts = {
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "RevenueFromContractWithCustomerIncludingAssessedTax",
+        "Revenues", "SalesRevenueNet", "SalesRevenueGoodsNet", "SalesRevenueServicesNet",
+    }
+    values = {}
+    conflicts = set()
+    for node in root.iter():
+        if local(node.tag) != "nonfraction":
+            continue
+        attrs = {local(key): val for key, val in node.attrib.items()}
+        # Nested/continued inline facts require transformation rules not supported here.
+        # Never concatenate excluded footnotes or continuation fragments into a number.
+        if (attrs.get("continuedat")
+                or any(local(child.tag) in ("exclude", "continuation", "nonfraction", "fraction", "nonnumeric")
+                       for child in node.iterdescendants())
+                or any(local(parent.tag) in ("nonfraction", "fraction", "continuation", "exclude")
+                       for parent in node.iterancestors())):
+            continue
+        concept = attrs.get("name", "")
+        if concept not in {"us-gaap:" + item for item in revenue_concepts}:
+            continue
+        ctx = contexts.get(attrs.get("contextref"))
+        if not ctx or not ctx[3] or attrs.get("unitref") not in units or attrs.get("nil") in ("true", "1"):
+            continue
+        transform = attrs.get("format", "").split(":")[-1].lower()
+        if transform not in ("", "num-dot-decimal", "numdotdecimal"):
+            continue
+        raw = content(node).replace("\u00a0", " ").strip()
+        # No locale inference, parentheses/sign guessing, or malformed comma stripping.
+        if not re.fullmatch(r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?", raw):
+            continue
         try:
-            value = int(value_str)
-        except ValueError:
+            scale = int(attrs.get("scale", "0"))
+            if not -12 <= scale <= 12 or attrs.get("sign", "") not in ("", "-"):
+                continue
+            value = Decimal(raw.replace(",", "")) * (Decimal(10) ** scale)
+            if attrs.get("sign") == "-":
+                if value < 0:
+                    continue
+                value = -value
+        except (ValueError, InvalidOperation):
             continue
-        ctx = contexts.get(ctx_id, {"dims": {}, "period": ""})
-        revenues.append({"value": value, "dims": ctx["dims"], "period": ctx["period"]})
+        key = (concept, ctx)
+        if key in values and values[key] != value:
+            conflicts.add(key)
+        values[key] = value
 
-    if not revenues:
-        return ""
-
-    # 3. Categorize revenues by dimension type
-    product_service = {}  # {(category, period): value}
-    product_lines = {}    # {(product, period): value}
-    geographic = {}       # {(region, period): value}
-    geo_country = {}      # {(country, period): value}
-    totals = {}           # {period: value}
-
-    for r in revenues:
-        dims = r["dims"]
-        period = r["period"]
-        value = r["value"]
-
-        if not period or value < 5:
+    rows = []
+    for (concept, ctx), value in sorted(values.items(), key=lambda item: (item[0][1][1], item[0]), reverse=True):
+        if (concept, ctx) in conflicts:
             continue
-
-        seg_axis = dims.get("us-gaap:StatementBusinessSegmentsAxis", "")
-        product_axis = dims.get("srt:ProductOrServiceAxis", "")
-        consol_axis = dims.get("srt:ConsolidationItemsAxis", "")
-        geo_axis = dims.get("srt:StatementGeographicalAxis", "")
-
-        if seg_axis and consol_axis:
-            region = seg_axis.split(":")[-1].replace("SegmentMember", "").replace("Member", "")
-            geographic[(region, period)] = value
-        elif product_axis:
-            product = product_axis.split(":")[-1].replace("Member", "")
-            if product in ("Product", "Service"):
-                product_service[(product, period)] = value
-            else:
-                product_lines[(product, period)] = value
-        elif geo_axis:
-            country = geo_axis.split(":")[-1].replace("Member", "")
-            geo_country[(country, period)] = value
-        elif not dims:
-            if period not in totals or value > totals.get(period, 0):
-                totals[period] = value
-
-    # 4. Format as markdown
-    result = "### Segment Revenue Data (from 10-K filing, in millions USD)\n\n"
-
-    all_periods = sorted(set(
-        p for _, p in list(product_service.keys()) + list(product_lines.keys()) +
-        list(geographic.keys()) + list(geo_country.keys())
-    ), reverse=True)
-
-    if not all_periods:
+        start, end, days, dims = ctx
+        # Include every dimension: dropping a consolidation/channel axis conflates facts.
+        label = "; ".join(f"{axis.split(':')[-1]}: {_clean_xbrl_label(member.split(':')[-1])}"
+                          for axis, member in dims)
+        number = format(abs(value), ",f")
+        if "." in number:
+            number = number.rstrip("0").rstrip(".")
+        money = ("-$" if value < 0 else "$") + number
+        rows.append(f"| {label} | {concept.split(':')[-1]} | {start} ~ {end} ({days} days) | {money} |")
+    if not rows:
         return ""
-
-    def _period_label(p):
-        parts = p.split("~")
-        return f"FY{parts[1][:4]}" if len(parts) == 2 else p
-
-    def _fmt_value(v):
-        if v >= 1000:
-            return f"${v / 1000:.1f}B"
-        return f"${v:,}M"
-
-    # Products vs Services (skip if Services is zero)
-    has_services = any(v > 0 for (k, _), v in product_service.items() if k == "Service")
-    if product_service and has_services:
-        periods = sorted(set(p for _, p in product_service.keys()), reverse=True)
-        cols = [_period_label(p) for p in periods]
-        result += "#### Revenue by Category\n\n"
-        result += "| Category | " + " | ".join(cols) + " |\n"
-        result += "|----------|" + "|".join(["--------"] * len(cols)) + "|\n"
-        for seg_type in ["Product", "Service"]:
-            vals = [_fmt_value(product_service.get((seg_type, p), 0)) for p in periods]
-            result += f"| {seg_type}s | " + " | ".join(vals) + " |\n"
-        total_vals = [_fmt_value(totals.get(p, 0)) for p in periods]
-        result += "| **Total** | " + " | ".join(total_vals) + " |\n\n"
-
-    # Product lines
-    if product_lines:
-        periods = sorted(set(p for _, p in product_lines.keys()), reverse=True)
-        cols = [_period_label(p) for p in periods]
-        result += "#### Revenue by Product Line\n\n"
-        result += "| Product | " + " | ".join(cols) + " |\n"
-        result += "|---------|" + "|".join(["--------"] * len(cols)) + "|\n"
-        products = list(set(prod for prod, _ in product_lines.keys()))
-        latest = periods[0] if periods else ""
-        products.sort(key=lambda x: product_lines.get((x, latest), 0), reverse=True)
-        products = products[:8]  # Limit to top 8 to control token usage
-        for prod in products:
-            label = _clean_xbrl_label(prod)
-            vals = [_fmt_value(product_lines.get((prod, p), 0)) for p in periods]
-            result += f"| {label} | " + " | ".join(vals) + " |\n"
-        result += "\n"
-
-    # Geographic segments
-    if geographic:
-        periods = sorted(set(p for _, p in geographic.keys()), reverse=True)
-        cols = [_period_label(p) for p in periods]
-        result += "#### Revenue by Geographic Segment\n\n"
-        result += "| Region | " + " | ".join(cols) + " |\n"
-        result += "|--------|" + "|".join(["--------"] * len(cols)) + "|\n"
-        regions = list(set(r for r, _ in geographic.keys()))
-        latest = periods[0] if periods else ""
-        regions.sort(key=lambda x: geographic.get((x, latest), 0), reverse=True)
-        for region in regions:
-            label = _clean_xbrl_label(region)
-            vals = [_fmt_value(geographic.get((region, p), 0)) for p in periods]
-            result += f"| {label} | " + " | ".join(vals) + " |\n"
-        total_vals = [_fmt_value(totals.get(p, 0)) for p in periods]
-        result += "| **Total** | " + " | ".join(total_vals) + " |\n\n"
-
-    # Country-level (skip if geographic segments already provide regional breakdown)
-    if geo_country and not geographic:
-        periods = sorted(set(p for _, p in geo_country.keys()), reverse=True)
-        cols = [_period_label(p) for p in periods]
-        result += "#### Revenue by Country\n\n"
-        result += "| Country | " + " | ".join(cols) + " |\n"
-        result += "|---------|" + "|".join(["--------"] * len(cols)) + "|\n"
-        countries = list(set(c for c, _ in geo_country.keys()))
-        latest = periods[0] if periods else ""
-        countries.sort(key=lambda x: geo_country.get((x, latest), 0), reverse=True)
-        for country in countries:
-            label = _clean_xbrl_label(country)
-            vals = [_fmt_value(geo_country.get((country, p), 0)) for p in periods]
-            result += f"| {label} | " + " | ".join(vals) + " |\n"
-        result += "\n"
-
-    return result
-
+    return ("### Segment Revenue Data (from SEC filing, USD; scale applied)\n\n"
+            "Only verified monetary revenue facts are shown. Percentages and unsupported facts are omitted; "
+            "absence does not mean zero. Periods are actual XBRL durations, not inferred fiscal years.\n\n"
+            "| Dimensions | Revenue concept | Actual period | Revenue (USD) |\n"
+            "|---|---|---|---|\n" + "\n".join(rows[:80]) + "\n")
 
 def prefetch_segment_revenue(ticker: str) -> str:
     """Prefetch segment revenue data from latest 10-K filing via Yahoo Finance CDN.
@@ -785,6 +750,7 @@ def prefetch_segment_revenue(ticker: str) -> str:
     try:
         import yfinance as yf
         import urllib.request
+        from urllib.parse import urlsplit
 
         stock = yf.Ticker(ticker)
         filings = stock.sec_filings
@@ -793,29 +759,41 @@ def prefetch_segment_revenue(ticker: str) -> str:
             logger.warning(f"No SEC filings for {ticker}")
             return ""
 
-        # Find latest 10-K or 10-Q (whichever is most recent)
-        # sec_filings are returned in date-descending order
-        filing = None
+        # Provider ordering is not a freshness guarantee. Reject undated entries.
+        candidates = []
         for f in filings:
             ftype = f.get('type', '')
-            if ftype in ('10-K', '10-Q'):
-                filing = f
-                break
+            if ftype not in ('10-K', '10-Q'):
+                continue
+            try:
+                filed = datetime.fromisoformat(str(f.get('date', ''))[:10]).date()
+            except ValueError:
+                continue
+            url = f.get('exhibits', {}).get(ftype, '')
+            if url.startswith('https://'):
+                candidates.append((filed, f))
 
-        if not filing:
+        if not candidates:
             logger.warning(f"No 10-K/10-Q filing found for {ticker}")
             return ""
 
+        filed, filing = max(candidates, key=lambda item: item[0])
         filing_type = filing.get('type', '10-K')
         url = filing.get('exhibits', {}).get(filing_type, '')
-        if not url:
+        parsed_url = urlsplit(url)
+        if parsed_url.scheme != 'https' or not parsed_url.hostname or parsed_url.username or parsed_url.password:
             logger.warning(f"No {filing_type} exhibit URL for {ticker}")
             return ""
 
         # Download filing HTML from Yahoo Finance CDN
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        resp = urllib.request.urlopen(req, timeout=30)
-        html_content = resp.read().decode('utf-8', errors='replace')
+        max_bytes = 25_000_000
+        with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310 - HTTPS scheme and host validated above
+            payload = resp.read(max_bytes + 1)
+        if len(payload) > max_bytes:
+            logger.warning(f"SEC filing exceeds bounded download limit for {ticker}")
+            return ""
+        html_content = payload.decode('utf-8', errors='replace')
 
         if not html_content:
             logger.warning(f"Empty {filing_type} HTML for {ticker}")
@@ -824,7 +802,8 @@ def prefetch_segment_revenue(ticker: str) -> str:
         result = _parse_10k_segment_revenue(html_content)
         if result:
             # Update title to reflect actual filing type
-            result = result.replace("from 10-K filing", f"from {filing_type} filing")
+            result = result.replace("from SEC filing", f"from {filing_type} filing, filed {filed}")
+            result += f"\nFiling source: {url}\n"
             logger.info(f"Parsed segment revenue for {ticker} from {filing_type} ({len(html_content):,} chars HTML)")
         else:
             logger.warning(f"No segment revenue data found in {filing_type} for {ticker}")
