@@ -100,12 +100,18 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
     import prism_core.report_research_prefetch as research
     from cores import analysis, dart_deep_analysis
     from cores.llm import capabilities
+    from prism_core.dart_source_table_evidence import pack_readable_units
+    from prism_core.dart_source_tree_catalog import build_catalog
 
     data = inputs()
     dart = data.pop('official_dart')
     dart['dart_chapter_inputs'] = {'ready': True,
-        'contexts': {key: json.dumps({'sources': [{'source': {'url': 'https://dart.fss.or.kr/report/viewer.do?rcpNo=20260813001728'},
-                                    'catalog': 'WHOLE_SOURCE_' + key}]}) for key in dart_deep_analysis.ROLES},
+        'contexts': {key: json.dumps({'sources': [{'source': {
+            'url': 'https://dart.fss.or.kr/report/viewer.do?rcpNo=20260813001728', 'source_id': 'fixture-' + key,
+            'filing': {'role': 'primary', 'scope': 'consolidated',
+                       'period_start': '2026-01-01', 'period_end': '2026-06-30'}},
+            'catalog': pack_readable_units(build_catalog('<p>WHOLE_SOURCE_' + key + '</p>')['units'])}]})
+                     for key in dart_deep_analysis.ROLES},
         'receipt': {'core_conserved': True, 'capacity_ok': True}}
     monkeypatch.setattr(prefetch, 'prefetch_kr_analysis_data', lambda *args: data)
     async def collect(*args):
@@ -159,7 +165,7 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
     monkeypatch.setattr(analysis, 'generate_market_report', base)
     monkeypatch.setattr(analysis, 'generate_investment_strategy', strategy)
     monkeypatch.setattr(analysis, 'generate_summary', summary)
-    report = asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923'))
+    report = asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923', require_dart_depth=True))
     assert len(model_calls) == 11 and len(peer_calls) == 1
     assert all(text in report for text in authored.values())
     assert report.index('## 5. DART') < report.index('## 6. 투자 전략')

@@ -31,4 +31,3 @@ def _role(owner, title, label):
                                            'inventory', 'tax'}
             or re.search(r'사업결합|매각|처분|구조조정|사업재편|분할|합병', text)
             else 'contingent_risks')
-
