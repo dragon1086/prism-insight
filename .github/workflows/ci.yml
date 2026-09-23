@@ -132,6 +132,7 @@ jobs:
             tests/test_kis_consumer_boundary.py tests/test_kis_source.py \
             tests/test_kis_current_capabilities.py tests/test_kis_market_snapshot.py \
             tests/test_kis_previous_snapshot.py tests/test_market_data_sources.py \
+            tests/test_market_data_preopen_flows.py \
             tests/test_market_data_mcp_server.py tests/test_prefetch_auth_outage.py \
             tests/test_trigger_provider_outage.py -q
 

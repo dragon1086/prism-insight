@@ -149,13 +149,14 @@ def get_market_trading_volume_by_date(
     now = _now_kst()
     today = now.strftime("%Y%m%d")
     wants_today = start_date <= today <= end_date
-    estimate_window = (
+    daily_pending = (
         wants_today
         and now.weekday() < 5
-        and time(9, 30) <= now.time() < time(15, 40)
+        and now.time() < time(15, 40)
     )
+    estimate_window = daily_pending and time(9, 30) <= now.time()
 
-    if not estimate_window:
+    if not daily_pending:
         return _empty_on_exhaustion("investor_flows", ticker, start_date, end_date)
 
     # Keep the historical part on the ordinary source chain, but ask only
@@ -169,6 +170,8 @@ def get_market_trading_volume_by_date(
         if start_date <= history_end
         else pd.DataFrame()
     )
+    if not estimate_window:
+        return history
 
     try:
         estimate = default_chain().fetch(

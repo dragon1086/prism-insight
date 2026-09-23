@@ -54,7 +54,7 @@ def main():
     os.environ.setdefault("PRISM_MARKET_DATA_REMOTE_URL", url)
     os.environ["PRISM_MCP_PYTHON"] = sys.executable
 
-    from cores.market_data import default_chain
+    from cores.market_data import default_chain, get_market_trading_volume_by_date
 
     chain = default_chain()
     if chain.names != ["kis-remote"]:
@@ -64,11 +64,14 @@ def main():
     stock = chain.fetch("price_history", "000660", start, end)
     index = chain.fetch("index_history", "1001", start, end)
     market = chain.fetch("ticker_market", "000660")
-    if stock.empty or index.empty:
+    flow_start = (today - timedelta(days=30)).strftime("%Y%m%d")
+    flows = get_market_trading_volume_by_date(flow_start, end, "000660")
+    if stock.empty or index.empty or flows.empty:
         raise RuntimeError("Remote market data missing")
     if market != "KOSPI":
         raise RuntimeError("Unexpected listing market")
-    result = {"provider": chain.names, "stock_rows": len(stock), "index_rows": len(index), "market": market}
+    result = {"provider": chain.names, "stock_rows": len(stock), "index_rows": len(index), "market": market,
+              "flow_rows": len(flows), "flow_last_date": str(flows.index.max())}
     if args.mcp:
         result["mcp_rows"] = asyncio.run(asyncio.wait_for(check_mcp("000660", start, end), 45))
     if "krx_data_client" in sys.modules or "kis_auth" in sys.modules:

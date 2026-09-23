@@ -121,7 +121,7 @@ def main():
         if value and not os.environ.get(key):
             os.environ[key] = value
 
-    from cores import dart_deep_analysis
+    from cores import analysis, dart_deep_analysis
     from cores.analysis import analyze_stock
     from cores.market_data import default_chain
     from prism_core import kr_official_report_inputs, kr_peer_comparison
@@ -133,6 +133,21 @@ def main():
 
     def save_json(name, value):
         (output / name).write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
+
+    # Preserve each generated section for source/contradiction review. Never
+    # publish these intermediate drafts to the bot's ordinary report cache.
+    def capture_section(original):
+        async def captured(agent, section, *a, **kw):
+            text = await original(agent, section, *a, **kw)
+            if section not in {'price_volume_analysis', 'investor_trading_analysis', 'company_status',
+                               'company_overview', 'news_analysis', 'market_index_analysis'}:
+                raise ValueError('Unknown report section artifact name')
+            (output / f'section_{section}.md').write_text(text, encoding='utf-8')
+            return text
+        return captured
+
+    analysis.generate_report = capture_section(analysis.generate_report)
+    analysis.generate_market_report = capture_section(analysis.generate_market_report)
 
     async def collect(*a, **kw):
         value = await original_collect(*a, **kw)
