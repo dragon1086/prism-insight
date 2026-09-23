@@ -62,6 +62,11 @@ jobs:
             tests/test_us_official_company_sources.py tests/test_us_official_macro_sources.py \
             tests/test_us_report_public_inputs.py tests/test_report_financial_math.py \
             tests/test_us_price_chart_missing_bars.py tests/test_us_market_official_macro_contract.py -q
+          python -m pytest tests/test_dart_*.py tests/test_filing_*.py \
+            tests/test_material_filing_selection.py tests/test_kr_official_report_inputs.py \
+            tests/test_report_calculations.py tests/test_kr_report_calculation_prefetch.py \
+            tests/test_kr_production_report_quality.py tests/test_report_presentation.py \
+            tests/test_us_public_technical_presentation.py -q
           python -m pytest tests/test_agent_virtual_initialization.py \
             tests/test_agent_instance_mcp_fallback.py tests/test_isolated_agent_runtime.py -q
           python -m pytest tests/test_codex_full_stage.py tests/test_codex_probe_stage.py \

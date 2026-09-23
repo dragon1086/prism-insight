@@ -188,7 +188,7 @@ def kr_flow_interpretation_contract(language="ko"):
     if language == "en":
         return """
 ## KR investor-flow evidence contract
-Use KR_FLOW_EVIDENCE_V1 as the numeric reference for 5/20/30 observed completed sessions.
+Use KR_FLOW_EVIDENCE_V1 (public heading: 투자자 순매수 수량 요약) as the numeric reference for 5/20/30 observed completed sessions.
 Foreign, institution and combined figures are separate net SHARE quantities, not KRW or ownership levels.
 Check window dates, coverage, source, as-of and raw-share adjustment limits. Intraday estimates are separate.
 MISSING is unknown, never zero/buying/selling. A positive total does not prove consecutive positive sessions.
@@ -198,7 +198,7 @@ stop/sizing rules; do not introduce a blanket rejection from a negative long win
 """
     return """
 ## 한국 수급 정량 근거 계약
-KR_FLOW_EVIDENCE_V1의5/20/30 확정 관측 세션 계산값을 수급 숫자의 기준으로 사용하십시오.
+KR_FLOW_EVIDENCE_V1(공개 보고서 제목: 투자자 순매수 수량 요약)의5/20/30 확정 관측 세션 계산값을 수급 숫자의 기준으로 사용하십시오.
 외국인·기관·합계는 각각 순매수 수량(주)이며 원화 금액·보유 비율이 아닙니다. 기간·세션 수·출처·기준시각과
 기업행위 미조정 원시 수량이라는 한계를 확인하고 장중 추정은 별도로 읽으십시오.
 MISSING은 미확인이지0·순매수·순매도가 아닙니다. 합계 양수만으로 연속 순매수를 추정하지 마십시오.

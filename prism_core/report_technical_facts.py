@@ -123,6 +123,82 @@ def build_report_technical_facts(frame):
     return facts
 
 
+def render_public_technical_facts(frame, *, unit="USD", language="ko"):
+    """Publish the same deterministic facts without internal packet diagnostics."""
+    facts = build_report_technical_facts(frame)
+    ko = language == "ko"
+    lines = ["### 기술지표 계산 기준" if ko else "### Technical indicator reference"]
+    lines.append("출처: yfinance 일별 시세(이 보고서와 같은 조회 자료)." if ko else
+                 "Source: yfinance daily prices (the same snapshot used in this report).")
+    date = facts["last_valid_close_date"]
+    value = facts["last_valid_close"]
+    if value is None:
+        lines.append("계산에 사용할 종가 자료가 없어 기술지표를 제시하지 않습니다." if ko else
+                     "No usable closing-price observations were available for indicator calculation.")
+        return "\n\n".join(lines)
+    # Full ISO dates retain timezone and prevent a dated historical observation
+    # from silently becoming the current session's quote.
+    lines.append((f"최근 확인된 일별 종가 관측값은 {date} 기준 {value:.4f} {unit}입니다. "
+                  "아래 지표도 이 날짜까지의 자료로 계산했습니다.") if ko else
+                 f"The last available daily closing-price observation is {value:.4f} {unit} as of {date}. "
+                 "The indicators below use observations through this date.")
+    if facts["latest_observed_close"] is None:
+        lines.append((f"{facts['latest_row_date']} 자료에는 종가가 제공되지 않아 이전 자료를 사용했습니다. "
+                      "위 가격은 최신 거래일의 종가를 대신하지 않습니다.") if ko else
+                     f"The {facts['latest_row_date']} observation has no close, so these are historical indicators, "
+                     "not a substitute for the latest session's price.")
+    else:
+        lines.append("관측값은 최종 마감 수치와 차이가 있을 수 있습니다." if ko else
+                     "The observed price may differ from the final closing value.")
+    if facts["price_basis"] == "provider_unadjusted_close":
+        lines.append("가격 기준: 제공기관의 비조정 종가." if ko else "Price basis: provider unadjusted close.")
+    else:
+        lines.append("가격 조정 기준은 제공 자료에 명시되지 않았습니다." if ko else
+                     "The source did not specify the price adjustment basis.")
+    if facts["split_boundary_date"]:
+        lines.append((f"주식분할 이후인 {facts['split_boundary_date']}부터의 연속 자료로 계산했습니다.") if ko else
+                     f"Calculations use contiguous observations since the split on {facts['split_boundary_date']}.")
+    labels = {
+        "SMA10": "10일 단순이동평균", "SMA20": "20일 단순이동평균",
+        "SMA50": "50일 단순이동평균", "SMA200": "200일 단순이동평균",
+        "RSI14": "14일 RSI", "MACD": "MACD", "MACD_SIGNAL": "MACD 신호선",
+        "MACD_HISTOGRAM": "MACD 히스토그램", "BB20_MIDDLE": "볼린저밴드 중심선",
+        "BB20_UPPER": "볼린저밴드 상단", "BB20_LOWER": "볼린저밴드 하단",
+    }
+    english_labels = {"MACD_SIGNAL": "MACD signal", "MACD_HISTOGRAM": "MACD histogram",
+                      "BB20_MIDDLE": "Bollinger middle", "BB20_UPPER": "Bollinger upper",
+                      "BB20_LOWER": "Bollinger lower"}
+    rows = []
+    for name, number in facts["indicators"].items():
+        if number is not None:
+            label = labels[name] if ko else english_labels.get(name, name)
+            suffix = "" if name == "RSI14" else f" {unit}"
+            rows.append(f"| {label} | {number:.4f}{suffix} |")
+    if rows:
+        lines.append(("| 지표 | 값 |\n| --- | --- |\n" if ko else
+                      "| Indicator | Value |\n| --- | --- |\n") + "\n".join(rows))
+    if any(v is None for v in facts["indicators"].values()):
+        lines.append("연속 관측 기간이 부족하거나 계산식이 정의되지 않는 지표는 생략했습니다." if ko else
+                     "Indicators with insufficient contiguous history or undefined formulas are omitted.")
+    for name, crossed in facts["crosses"].items():
+        if crossed:
+            fast, slow, direction = name.removeprefix("SMA").split("_")
+            label = "상향 돌파" if direction == "golden" else "하향 돌파"
+            lines.append(f"{fast}일·{slow}일 이동평균 {label}: {crossed}." if ko else
+                         f"{fast}/{slow}-day moving averages crossed {'up' if direction == 'golden' else 'down'} on {crossed}.")
+    lines.append(("계산 방법: 이동평균은 단순평균입니다. RSI는 최근 14개 가격 변화의 상승·하락폭 단순평균을 "
+                  "사용하며 Wilder 방식이 아닙니다. MACD는 12·26일 지수이동평균 차이, 신호선은 9일 "
+                  "지수이동평균(재귀 방식)입니다. 볼린저밴드는 20일 평균 ± 표본표준편차의 2배입니다. "
+                  "중간 결측값은 채우지 않으며 지수이동평균은 결측 이후 다시 계산합니다. "
+                  "교차일은 연속 관측 구간에서 두 평균의 차이가 0 이하에서 양수 또는 0 이상에서 음수로 바뀐 날입니다.") if ko else
+                 "Definitions: SMA is the arithmetic mean. RSI uses simple averages of 14 price changes, not Wilder smoothing. "
+                 "MACD is EMA12 minus EMA26; its signal is EMA9, using recursive weighting. Bollinger bands are the "
+                 "20-day mean plus/minus two sample standard deviations. Interior gaps are not filled; EMA restarts after a gap. "
+                 "Cross dates mark a change in the fast-minus-slow difference from nonpositive to positive or nonnegative to negative "
+                 "within the contiguous observed window.")
+    return "\n\n".join(lines)
+
+
 def render_report_technical_facts(frame, *, unit="USD"):
     """Human-readable authoritative facts for price, strategy and summary agents."""
     facts = build_report_technical_facts(frame)
