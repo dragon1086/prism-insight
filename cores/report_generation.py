@@ -257,6 +257,18 @@ async def generate_summary(section_reports, company_name, company_code, referenc
         logger: Logger
         language: Report language code (default: "ko")
     """
+    if section_reports.get('dart_deep_analysis'):
+        # Replace this existing final stage, not add another model call. Keep
+        # errors outside the legacy optional-summary fallback: unsafe edits
+        # must not become a successfully published report.
+        from cores.report_fact_editor import edit_and_summarize
+        edited, summary, receipt = await edit_and_summarize(
+            section_reports, company_name, company_code, reference_date, language)
+        section_reports.update(edited)
+        logger.info(f'Report factual-summary stage completed: {receipt}')
+        if not summary.startswith('## '):
+            summary = ('## 핵심 요약\n\n' if language == 'ko' else '## Executive Summary\n\n') + summary
+        return summary
     try:
         language_name = LANGUAGE_NAMES.get(language, language.upper())
 

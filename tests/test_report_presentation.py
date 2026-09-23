@@ -1,3 +1,5 @@
+import re
+
 import pandas as pd
 import pytest
 
@@ -155,3 +157,62 @@ def test_known_narrative_alias_leaves_other_identifiers_code_urls_unchanged():
     assert '**주가 상대강도는 잠정적인 중기 강세 정황만 있습니다.** 12.3%' in result
     assert '`price_leadership는` https://example.com/price_leadership는' in result
     assert 'custom_price_leadership는 UNKNOWN' in result
+
+
+def test_plain_financial_table_missing_cells_are_public_labels_not_variable_names():
+    source = ('| 배당성향 | 86.55% | 52.36% | UNKNOWN |\n'
+              '| 다른 값 | MISSING | N/A | 0 |\n'
+              '| 출처 | https://example.com/UNKNOWN | `UNKNOWN` | 2026 |\n'
+              '```text\n| UNKNOWN | MISSING |\n```\n'
+              '    | UNKNOWN | MISSING |\n')
+    result = humanize_report_status(source)
+    assert '| 86.55% | 52.36% | 확인되지 않음 |' in result
+    assert '| 확인되지 않음 | 확인되지 않음 | 0 |' in result
+    assert 'https://example.com/UNKNOWN | `UNKNOWN` | 2026' in result
+    assert '```text\n| UNKNOWN | MISSING |\n```' in result
+    assert '    | UNKNOWN | MISSING |' in result
+    assert '| 86.55% | 52.36% | Not available |' in humanize_report_status(source, 'en')
+
+
+def test_plain_ce_record_humanized_with_number_url_value_order_preserved():
+    record = ('- field: 통신 경쟁력, type: business_competitive_position, entity: SK텔레콤(017670), '
+              'peer_universe: KT·LG유플러스, metric: 매출, 영업이익, value: 1,362.50, unit: 억원, '
+              'period: 2026년 9월 17~23일, geography: 한국, '
+              'source: https://example.com/UNKNOWN?id=1674, publication_date: 2026-08-05, '
+              'status: INCOMPARABLE, supporting excerpt: 숫자 92.5%와 기간을 유지합니다.\n')
+    source = '#### Competitive Evidence\n' + record
+    result = humanize_report_status(source)
+    assert '**점검 항목:** 통신 경쟁력 / **비교 주제:** 사업 경쟁력' in result
+    assert '**비교 지표:** 매출, 영업이익 / **수치·내용:** 1,362.50' in result
+    assert '**근거 설명:** 숫자 92.5%와 기간을 유지합니다.' in result
+    assert '**근거 확인 범위:** 동일 기준 비교에 필요한 근거가 부족함' in result
+    assert 'https://example.com/UNKNOWN?id=1674' in result
+    assert re.findall(r'\d+(?:[,.]\d+)*', source) == re.findall(r'\d+(?:[,.]\d+)*', result)
+    assert humanize_report_status(result) == result
+
+
+def test_plain_combined_metric_and_missing_status_labels():
+    source = ('#### **Competitive Evidence**\n- field: 수요, type: sector_tailwind, '
+              'peer_universe: KT·LG유플러스, metric/value/unit/period/geography: UNKNOWN, '
+              'source: UNKNOWN, publication_date: UNKNOWN, status: NOT_FOUND, supporting excerpt: 이번 조회 범위\n')
+    result = humanize_report_status(source)
+    assert '**지표·수치·단위·기간·지역:** 확인되지 않음' in result
+    assert '**근거 확인 범위:** 이번 수집에서 근거를 확보하지 못함' in result
+    assert 'UNKNOWN' not in result and 'NOT_FOUND' not in result
+
+
+@pytest.mark.parametrize('record', [
+    '- field: 비교, type: sector_tailwind, peer_universe: KT, future_field: UNKNOWN, status: NOT_FOUND\n',
+    '- field: 비교, type: sector_tailwind, peer_universe: KT, status: UNKNOWN, status: NOT_FOUND\n',
+    '- field: 비교, type: sector_tailwind, peer_universe: KT, source: , status: UNKNOWN\n',
+    '- field: 비교, type: sector_tailwind, peer_universe: KT, source: `UNKNOWN`, status: NOT_FOUND\n',
+])
+def test_plain_ce_unknown_broken_or_inline_code_records_unchanged(record):
+    assert humanize_report_status('#### Competitive Evidence\n' + record).endswith(record)
+
+
+def test_plain_ce_fences_and_outside_sections_unchanged():
+    record = '- field: 비교, type: sector_tailwind, peer_universe: KT, source: UNKNOWN, status: NOT_FOUND\n'
+    source = record + '#### Competitive Evidence\n```text\n' + record + '```\n### Other\n' + record
+    result = humanize_report_status(source)
+    assert result.count(record) == 3

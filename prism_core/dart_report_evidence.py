@@ -187,7 +187,7 @@ def _fragment_selection_receipt(state):
     return receipt
 
 
-async def collect_latest(symbol, company, decision_at, scope, progress, *, client_factory=None):
+async def collect_latest(symbol, company, decision_at, scope, progress, *, client_factory=None, source_sink=None):
     """Separate bounded DART budget; no raw HTML is retained in report receipts."""
     from prism_core.dart_identity import resolve_dart_identity
     from prism_core.dart_public_filings import collect_dart_periodic_filings
@@ -234,6 +234,15 @@ async def collect_latest(symbol, company, decision_at, scope, progress, *, clien
             'published': row['submitted_date'], 'publication_basis': 'OFFICIAL_CATALOG_DATE',
             'status': 'SOURCE_TEXT_NOT_FACT_VALIDATED', 'blocks': blocks, 'filing': filing})
 
+    def retain_source(row, role, name, section, source_id, context=None):
+        if source_sink is None or _admit_section(row, section) is None:
+            return
+        source_sink.append({'source_id': source_id, 'html': section['html'],
+            'sha256': section['sha256'], 'url': section['url'],
+            'published': row['submitted_date'], 'scope_context': context,
+            'filing': {**{k: row[k] for k in ('receipt_id', 'kind', 'period_start', 'period_end', 'scope')},
+                       'entity_id': 'DART:' + identity['corp_code'], 'role': role, 'section': name}})
+
     for role, key in (('primary', selection['primary_id']),
                       ('annual_supplement', selection.get('annual_supplement_id'))):
         if not key:
@@ -252,6 +261,9 @@ async def collect_latest(symbol, company, decision_at, scope, progress, *, clien
                 continue
             blocks, gaps = await asyncio.to_thread(section_blocks, row, section)
             progress['gaps'].extend(gaps)
+            if not any(g in gaps for g in ('DART_SECTION_PROVENANCE_INVALID', 'DART_SECTION_PARSE_UNAVAILABLE',
+                                           'DART_SECTION_SCOPE_UNRESOLVED', 'DART_SECTION_NO_RECORDS')):
+                retain_source(row, role, section_name, section, 'D-' + key + '-' + section_name)
             if not blocks:
                 continue
             append_source(row, role, section_name, section, blocks, 'D-' + key + '-' + section_name)
@@ -264,6 +276,10 @@ async def collect_latest(symbol, company, decision_at, scope, progress, *, clien
             entry.update(context_verified='DART_NOTE_FRAGMENT_PARTIAL_COVERAGE' in gaps,
                          candidate_count=len(blocks), gaps=list(gaps))
             fragment_states[key]['fragments'][fragment['child_key']] = entry
+            if entry['context_verified']:
+                context = _fragment_context(row, fragment, row.get('note_main_html'), identity['corp_code'], fragment['parent_key'])
+                retain_source(row, role, 'financial_notes_fragment', fragment,
+                    'D-' + key + '-financial_notes_fragment-' + fragment['child_key'].replace(':', '-'), context)
             if blocks:
                 source_id = 'D-' + key + '-financial_notes_fragment-' + fragment['child_key'].replace(':', '-')
                 append_source(row, role, 'financial_notes_fragment', fragment, blocks, source_id)

@@ -68,7 +68,7 @@ def test_future_and_naive_reference_rejected():
 
 def test_wrapper_runs_existing_collector_once_and_retains_legacy_fallback(monkeypatch):
     calls = []
-    async def collect(ticker, company, decision, scope, out):
+    async def collect(ticker, company, decision, scope, out, *, source_sink):
         calls.append((ticker, company, decision, scope))
         out.update(progress())
     monkeypatch.setattr(adapter, 'collect_latest', collect)
@@ -84,7 +84,7 @@ def test_wrapper_runs_existing_collector_once_and_retains_legacy_fallback(monkey
 
 
 def test_cancellation_is_not_converted_to_success(monkeypatch):
-    async def cancel(*args):
+    async def cancel(*args, **kwargs):
         raise asyncio.CancelledError
     monkeypatch.setattr(adapter, 'collect_latest', cancel)
     with pytest.raises(asyncio.CancelledError):

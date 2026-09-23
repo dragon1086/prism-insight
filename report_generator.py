@@ -104,6 +104,8 @@ def _is_cacheable_report(content: str | None) -> bool:
     if not isinstance(content, str) or not content.strip():
         return False
     normalized = content.casefold()
+    if '<!-- dart_depth_incomplete -->' in normalized:
+        return False
     if any(marker in normalized for marker in _REPORT_ERROR_MARKERS):
         return False
     # Section failures may contain exception messages, paths or credentials.
@@ -112,6 +114,10 @@ def _is_cacheable_report(content: str | None) -> bool:
         return False
     failure_count = sum(normalized.count(marker) for marker in _FAILED_REPORT_MARKERS)
     return bool(content.strip()) and failure_count <= _MAX_CACHEABLE_FAILURE_MARKERS
+
+
+class EvaluationReportContextError(ValueError):
+    """A protected disclosure chapter cannot safely fit the evaluation budget."""
 
 
 def _evaluation_report_context(report_path: str | os.PathLike[str] | None) -> str:
@@ -124,6 +130,35 @@ def _evaluation_report_context(report_path: str | os.PathLike[str] | None) -> st
         return ""
     content = _BASE64_IMAGE_RE.sub("[차트 이미지 생략]", content)
     limit = max(4000, _EVALUATION_REPORT_MAX_CHARS)
+    start = "<!-- DART_DEEP_ANALYSIS_START -->"
+    end = "<!-- DART_DEEP_ANALYSIS_END -->"
+    if start in content or end in content:
+        if content.count(start) != 1 or content.count(end) != 1 or content.index(end) < content.index(start):
+            raise EvaluationReportContextError("공시 심층분석의 범위를 확인할 수 없어 평가를 중단했습니다.")
+        left, remainder = content.split(start, 1)
+        chapter, right = remainder.split(end, 1)
+        protected = start + chapter + end
+        omission = "[일부 일반 분석 문단 생략: 공시 심층분석은 전체 보존]"
+        if len(protected) > limit:
+            raise EvaluationReportContextError("공시 심층분석이 평가 입력 한도를 초과해, 내용을 누락하지 않도록 평가를 중단했습니다.")
+        if len(content) > limit:
+            # Select whole Markdown paragraphs, preserving tables/numeric rows.
+            # Alternate front/back sections to retain both opening and conclusion.
+            budget = limit - len(protected) - len(omission) - 6
+            selected = [[], []]
+            paragraphs = [re.split(r"\n\s*\n", left), re.split(r"\n\s*\n", right)]
+            candidates = [(side, index, paragraph) for side in (0, 1)
+                          for index, paragraph in enumerate(paragraphs[side]) if paragraph.strip()]
+            candidates.sort(key=lambda item: (item[1] if item[0] == 0 else len(paragraphs[1]) - 1 - item[1], item[0]))
+            for side, index, paragraph in candidates:
+                cost = len(paragraph) + 2
+                if cost <= budget:
+                    selected[side].append((index, paragraph))
+                    budget -= cost
+            before, after = ["\n\n".join(text for _, text in sorted(parts)) for parts in selected]
+            if len(protected) + len(omission) + 6 > limit:
+                return protected
+            return "\n\n".join((before, protected, after, omission))
     if len(content) <= limit:
         return content
     head_size = int(limit * 0.75)
@@ -488,7 +523,7 @@ def save_pdf_report(stock_code: str, company_name: str, md_path: Path) -> Path:
     return pdf_path
 
 
-def get_cached_report(stock_code: str) -> tuple:
+def get_cached_report(stock_code: str, *, require_dart_depth: bool = False) -> tuple:
     """캐시된 보고서 검색
 
     Returns:
@@ -512,6 +547,14 @@ def get_cached_report(stock_code: str) -> tuple:
 
     with open(latest_file, "r", encoding="utf-8") as f:
         content = f.read()
+
+    if require_dart_depth and not (
+        content.count('<!-- DART_DEEP_ANALYSIS_START -->') == 1
+        and content.count('<!-- DART_DEEP_ANALYSIS_END -->') == 1
+        and content.index('<!-- DART_DEEP_ANALYSIS_START -->') < content.index('<!-- DART_DEEP_ANALYSIS_END -->')
+    ):
+        logger.info('Cached KR report predates the filing-depth contract; regeneration required')
+        return False, '', None, None
 
     if not _is_cacheable_report(content):
         logger.warning("Ignoring failed cached report: %s", latest_file)
@@ -670,7 +713,8 @@ async def run():
         result = await analyze_stock(
             company_code=stock_code,
             company_name=company_name,
-            reference_date=reference_date
+            reference_date=reference_date,
+            require_dart_depth=True
         )
         subprocess_logger.info(f"analyze_stock 완료: {len(result) if result else 0} 글자")
         # 구분자를 사용하여 결과 출력의 시작과 끝을 표시
@@ -1098,6 +1142,8 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
 
         return clean_model_response(response)
 
+    except EvaluationReportContextError as error:
+        return str(error)
     except asyncio.TimeoutError:
         logger.warning("평가 생성 타임아웃: ticker=%s", ticker)
         if report_content:
@@ -1311,6 +1357,8 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
 
         return clean_model_response(response)
 
+    except EvaluationReportContextError as error:
+        return str(error)
     except asyncio.TimeoutError:
         logger.warning("US 평가 생성 타임아웃: ticker=%s", ticker)
         if report_content:

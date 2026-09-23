@@ -2,6 +2,8 @@
 
 import re
 
+from prism_core.competitive_evidence import plain_evidence_fields
+
 _EVIDENCE_LABELS = {
     "field": ("점검 항목", "Check"), "type": ("비교 주제", "Topic"),
     "entity": ("대상", "Entity"), "peer_universe": ("비교 대상", "Peers"),
@@ -10,6 +12,9 @@ _EVIDENCE_LABELS = {
     "geography": ("대상 지역", "Geography"), "source": ("출처", "Source"),
     "publication_date": ("자료 발표일", "Publication date"),
     "status": ("근거 확인 범위", "Evidence scope"),
+    "supporting excerpt": ("근거 설명", "Supporting excerpt"),
+    "excerpt": ("근거 설명", "Excerpt"),
+    "metric/value/unit/period/geography": ("지표·수치·단위·기간·지역", "Metric/value/unit/period/geography"),
 }
 _EVIDENCE_VALUES = {
     "UNKNOWN": ("확인되지 않음", "Not established"),
@@ -77,6 +82,8 @@ def _public_evidence_records(text, language):
         heading = re.match(r"^(#{1,6})[ \t]+(.+?)[ \t]*(\r?\n)?$", line)
         if heading:
             title = heading[2]
+            if title.startswith("**") and title.endswith("**"):
+                title = title[2:-2]
             if active_level and len(heading[1]) <= active_level:
                 active_level = None
             if title in _EVIDENCE_HEADINGS:
@@ -84,9 +91,31 @@ def _public_evidence_records(text, language):
                 line = heading[1] + " " + _EVIDENCE_HEADINGS[title][index] + (heading[3] or "")
             result.append(line)
             continue
+        if active_level and re.match(r"^ {0,3}- field:", line) and "`" not in line:
+            fields = plain_evidence_fields(line)
+            # Unknown field labels, duplicate/empty fields and malformed records
+            # remain untouched. Do not repair or discard source text.
+            explicit_keys = re.findall(r"(?:^ {0,3}- |,\s*)([a-z_ /]+):", line)
+            if (fields and "type" in fields and "peer_universe" in fields
+                    and all(key in _EVIDENCE_LABELS for key in explicit_keys)
+                    and all(fields.values())):
+                ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+                rendered = []
+                for key, value in fields.items():
+                    mapped = _EVIDENCE_VALUES.get(value)
+                    rendered.append(f"**{_EVIDENCE_LABELS[key][index]}:** {mapped[index] if mapped else value}")
+                result.append("- " + " / ".join(rendered) + ending)
+                continue
         # Code spans and URLs are retained even when they contain instructions.
         chunks = re.split(r"(`+[^`]*`+|https?://[^\s<>]+)", line)
         for position in range(0, len(chunks), 2):
+            if re.match(r"^ {0,3}\|", line):
+                # Exact missing-value cells in ordinary financial tables are
+                # reader labels too. Never rewrite URLs, code or numeric facts.
+                label = '확인되지 않음' if language == 'ko' else 'Not available'
+                chunks[position] = re.sub(
+                    r"(?<=\|)([ \t]*)(?:UNKNOWN|MISSING|N/A)([ \t]*)(?=\|)",
+                    lambda match, label=label: match[1] + label + match[2], chunks[position])
             if language == "ko":
                 chunks[position] = re.sub(r"(?<![\w])price_leadership는", "주가 상대강도는", chunks[position])
             if active_level:

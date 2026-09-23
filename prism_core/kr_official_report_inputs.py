@@ -11,6 +11,7 @@ import re
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
+from prism_core.dart_chapter_sources import build_dart_chapter_inputs
 from prism_core.dart_report_evidence import collect_latest
 
 _SEOUL = ZoneInfo('Asia/Seoul')
@@ -113,12 +114,23 @@ async def collect_kr_official_report_inputs(ticker, company, reference_date):
     if not isinstance(ticker, str) or not re.fullmatch(r'\d{6}', ticker) or not company:
         return empty
     progress = {'sources': [], 'gaps': []}
+    chapter_sources = []
     try:
         decision = _decision_at(reference_date)
-        await collect_latest(ticker, company, decision, 'consolidated', progress)
+        await collect_latest(ticker, company, decision, 'consolidated', progress, source_sink=chapter_sources)
         # Parsing/rendering is bounded but CPU-bound; leave the async report
         # event loop available to existing bot work.
-        return await asyncio.to_thread(_render, progress, company)
+        packet = await asyncio.to_thread(_render, progress, company)
+        try:
+            packet['dart_chapter_inputs'] = await asyncio.to_thread(
+                build_dart_chapter_inputs, chapter_sources, collection_gaps=progress['gaps'])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - chapter failure must not erase existing evidence
+            packet['dart_chapter_inputs'] = {'ready': False, 'contexts': {},
+                'receipt': {'failure_type': type(exc).__name__, 'full_filing_coverage': False},
+                'limitations': ['심층 장의 공시 입력을 안전하게 구성하지 못했습니다.']}
+        return packet
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - optional enrichment must preserve legacy research

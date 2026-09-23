@@ -9,13 +9,31 @@ import json
 import re
 from collections.abc import Mapping
 
-
 _HEADING = re.compile(
     r"^(#{3,4})[ \t]+(?:Competitive Evidence|\*\*Competitive Evidence\*\*)[ \t]*$",
     re.MULTILINE | re.IGNORECASE,
 )
 _NEXT_SECTION = re.compile(r"^(#{1,4})(?:[ \t]|$)", re.MULTILINE)
 _MAX_RECORD_CHARS = 12000
+_PLAIN_FIELD = re.compile(
+    r"(?:^|,\s*)(field|type|entity|peer_universe|metric/value/unit/period/geography|"
+    r"metric|value|unit|period|geography|source|publication_date|status|supporting excerpt|excerpt)\s*:\s*"
+)
+
+
+def plain_evidence_fields(line):
+    """Parse known comma-delimited field boundaries, not commas inside values."""
+    line = re.sub(r"^\s*[-*]\s+", "", line).strip()
+    if not line.startswith("field:"):
+        return {}
+    matches = list(_PLAIN_FIELD.finditer(line))
+    fields = {}
+    for index, match in enumerate(matches):
+        if match[1] in fields:
+            return {}
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(line)
+        fields[match[1]] = line[match.end():end].strip()
+    return fields
 
 
 def _mask_fences(text: str) -> tuple[str, bool]:

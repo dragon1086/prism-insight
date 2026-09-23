@@ -1,5 +1,7 @@
 import os
 import asyncio
+import json
+import re
 from collections.abc import Mapping
 from datetime import datetime
 from dotenv import load_dotenv
@@ -46,6 +48,19 @@ from prism_core.report_presentation import humanize_report_status
 _market_analysis_cache = {}
 
 
+def _report_stock_names():
+    """Read the existing identity map, never discover peers by substring or score."""
+    from prism_core.runtime_paths import resolve_stock_map_read_path
+    try:
+        path = resolve_stock_map_read_path()
+        if path.stat().st_size > 2_000_000:
+            return {}
+        data = json.loads(path.read_text(encoding='utf-8')).get('code_to_name', {})
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
+
+
 def _report_parallel_limit(
     section_count: int,
     environ: Mapping[str, str] | None = None,
@@ -61,7 +76,7 @@ def _report_parallel_limit(
     except ValueError:
         return section_count
 
-async def analyze_stock(company_code: str = "000660", company_name: str = "SK하이닉스", reference_date: str = None, language: str = "ko", macro_context: dict = None):
+async def analyze_stock(company_code: str = "000660", company_name: str = "SK하이닉스", reference_date: str = None, language: str = "ko", macro_context: dict = None, *, require_dart_depth=False):
     """
     Generate comprehensive stock analysis report
 
@@ -123,6 +138,8 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             logger.warning('Official filing inputs unavailable; retaining existing report sources')
 
         shared_reference = reference_context(prefetched, language)
+        if require_dart_depth and not prefetched.get('official_dart', {}).get('dart_chapter_inputs', {}).get('ready'):
+            raise ValueError('공시 심층분석 입력을 확보하지 못해 완성본 생성을 중단했습니다.')
         cache_key = market_cache_key(prefetched, reference_date, language)
         # 5. Get agents (with prefetched data)
         agents = get_agent_directory(company_name, company_code, reference_date, base_sections, language, prefetched_data=prefetched)
@@ -224,10 +241,53 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         if shared_market:
             section_reports["market_index_analysis"] = section_reports.get("market_index_analysis", "") + shared_market
 
+        # Compare explicitly proposed peers, not every same-sector stock. This is
+        # optional source data, never an industry-rank or score override.
+        peer_context = ''
+        try:
+            from prism_core.kr_peer_comparison import collect_peer_comparison, select_report_peer_candidates
+            stock_names = await asyncio.to_thread(_report_stock_names)
+            candidates = select_report_peer_candidates(section_reports, company_code, stock_names)
+            if candidates:
+                peer_packet = await collect_peer_comparison(company_code, company_name, candidates, reference_date)
+                peer_context = peer_packet.get('model_context', '')
+                if peer_packet.get('public_markdown'):
+                    section_reports['peer_comparison'] = peer_packet['public_markdown']
+        except Exception:
+            logger.warning('Optional peer comparison unavailable; no new trading condition applied')
+
+        # This chapter bypasses the legacy 3,000-character summary contract and
+        # is preserved as written, before strategy and executive synthesis.
+        from cores.dart_deep_analysis import CHAPTER_INCOMPLETE, generate_dart_chapter
+        dart_packet = prefetched.get('official_dart', {})
+        chapter_inputs = dart_packet.get('dart_chapter_inputs', {}) if isinstance(dart_packet, dict) else {}
+        try:
+            dart_chapter, dart_receipt = await generate_dart_chapter(
+                chapter_inputs, company_name=company_name, company_code=company_code,
+                reference_date=reference_date, language=language, shared_reference=shared_reference,
+                peer_context=peer_context,
+                concurrency=min(3, _report_parallel_limit(3)) if parallel_enabled else 1)
+        except Exception:
+            if require_dart_depth:
+                raise
+            logger.warning('DART depth generation incomplete; preserving existing basic analysis without a new BUY gate')
+            dart_chapter, dart_receipt = '', {'status': 'not_generated', 'calls': None}
+        logger.info('DART chapter status=%s calls=%s', dart_receipt['status'], dart_receipt['calls'])
+        if dart_chapter:
+            section_reports['dart_deep_analysis'] = dart_chapter
+        else:
+            section_reports['dart_depth_limit'] = (
+                CHAPTER_INCOMPLETE + '\n공시 심층 장은 이번 보고서에 반영하지 못했습니다. '
+                '아래 내용은 기존 기본 분석이며 공시 위험을 전부 점검한 결과가 아닙니다. '
+                '이 자료 누락 자체를 별도의 매수·매도 조건으로 해석하지 않습니다.'
+                if language == 'ko' else CHAPTER_INCOMPLETE + '\nThe filing-depth chapter is not included. '
+                'This is a basic report, not a complete filing-risk review. Missing optional evidence is not a separate trading condition.')
+
         # 6. Integrate content from other reports
         section_reports['shared_reference'] = shared_reference
         combined_reports = shared_reference
-        for section in base_sections:
+        synthesis_sections = base_sections + ['peer_comparison', 'dart_deep_analysis', 'dart_depth_limit']
+        for section in synthesis_sections:
             if section in section_reports:
                 combined_reports += f"\n\n--- {section.upper()} ---\n\n"
                 combined_reports += section_reports[section]
@@ -240,6 +300,9 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                 section_reports, combined_reports, company_name, company_code, reference_date, logger, language
             )
             section_reports["investment_strategy"] = investment_strategy.lstrip('\n')
+            if dart_chapter:
+                section_reports['investment_strategy'] = re.sub(
+                    r'(?m)^(#{2,4})[ \t]+5(?=[.-])', r'\1 6', section_reports['investment_strategy'])
             logger.info(f"Completed investment_strategy - {len(investment_strategy)} characters")
         except Exception as e:
             logger.error(f"Error processing investment_strategy: {e}")
@@ -247,7 +310,7 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
 
         # 8. Generate comprehensive report including all sections
         all_reports = ""
-        for section in base_sections + ["investment_strategy"]:
+        for section in synthesis_sections + ["investment_strategy"]:
             if section in section_reports:
                 all_reports += f"\n\n--- {section.upper()} ---\n\n"
                 all_reports += section_reports[section]
@@ -258,7 +321,6 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                 section_reports, company_name, company_code, reference_date, logger, language
             )
             # Remove duplicate title/date if the agent added them
-            import re
             executive_summary = executive_summary.lstrip('\n')
             # Remove any leading H1 title that matches the report title pattern
             executive_summary = re.sub(
@@ -279,6 +341,8 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             executive_summary = executive_summary.lstrip('\n')
         except Exception as e:
             logger.error(f"Error generating executive summary: {e}")
+            if dart_chapter:
+                raise  # Never publish a deep report with unresolved final factual edits.
             executive_summary = "## 핵심 요약\n\n요약 생성 중 오류가 발생했습니다." if language == "ko" else "## Executive Summary\n\nProblem occurred while generating analysis summary."
 
         # 10. Generate charts
@@ -322,7 +386,6 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         if vision_available() and _vision_buy_quality_active:
             try:
                 import base64
-                import re
                 import tempfile
                 from cores.llm.features.render_qa import qa_and_log
                 _qa_html = price_chart_html or volume_chart_html
@@ -463,6 +526,10 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
 
         # 12. Compose final report with proper heading hierarchy
         disclaimer = get_disclaimer(language)
+        # The raw comparison records already reached synthesis. Keep the reader's
+        # main chapters focused on analysis, while retaining every record below.
+        from prism_core.us_report_consistency import evidence_appendix
+        section_reports, comparison_appendix = evidence_appendix(section_reports, language)
 
         # Format reference date for display
         formatted_date = f"{reference_date[:4]}.{reference_date[4:6]}.{reference_date[6:]}"
@@ -541,6 +608,8 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                         final_report += chart_subtitle + fundamentals_chart_html + "\n\n"
             if "company_overview" in section_reports:
                 final_report += section_reports["company_overview"] + "\n\n"
+            if section_reports.get('peer_comparison'):
+                final_report += section_reports['peer_comparison'] + '\n\n'
 
         # News Analysis section
         if "news_analysis" in section_reports:
@@ -556,6 +625,11 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                 final_report += macro_header + macro_section
 
         # Investment Strategy section
+        if dart_chapter:
+            final_report += dart_chapter + '\n\n'
+            main_headers['strategy'] = main_headers['strategy'].replace('## 5.', '## 6.', 1)
+        elif section_reports.get('dart_depth_limit'):
+            final_report += section_reports['dart_depth_limit'] + '\n\n'
         if "investment_strategy" in section_reports:
             final_report += main_headers["strategy"]
             final_report += section_reports["investment_strategy"] + "\n\n"
@@ -565,6 +639,7 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         # The existing PDF-to-BUY path carries this same block without a refetch.
         if prefetched.get("flow_evidence"):
             final_report += prefetched.get('flow_evidence_public', prefetched["flow_evidence"]) + "\n"
+        final_report += comparison_appendix
         references = [prefetched.get('report_calculation_reference', ''),
                       prefetched.get('market_calculation_reference', '')]
         dart = prefetched.get('official_dart', {})

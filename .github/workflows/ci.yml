@@ -66,7 +66,12 @@ jobs:
             tests/test_material_filing_selection.py tests/test_kr_official_report_inputs.py \
             tests/test_report_calculations.py tests/test_kr_report_calculation_prefetch.py \
             tests/test_kr_production_report_quality.py tests/test_report_presentation.py \
+            tests/test_report_fact_editor.py \
             tests/test_us_public_technical_presentation.py -q
+          python -m pytest tests/test_dart_chapter*.py tests/test_dart_port*.py \
+            tests/test_dart_deep_analysis.py tests/test_dart_depth_cache_contract.py \
+            tests/test_dart_evaluation_context.py tests/test_kr_dart_pdf_buy_handoff.py \
+            tests/test_kr_peer_comparison.py -q
           python -m pytest tests/test_agent_virtual_initialization.py \
             tests/test_agent_instance_mcp_fallback.py tests/test_isolated_agent_runtime.py -q
           python -m pytest tests/test_codex_full_stage.py tests/test_codex_probe_stage.py \
@@ -128,6 +133,7 @@ jobs:
             tests/test_kis_consumer_boundary.py tests/test_kis_source.py \
             tests/test_kis_current_capabilities.py tests/test_kis_market_snapshot.py \
             tests/test_kis_previous_snapshot.py tests/test_market_data_sources.py \
+            tests/test_market_data_preopen_flows.py \
             tests/test_market_data_mcp_server.py tests/test_prefetch_auth_outage.py \
             tests/test_trigger_provider_outage.py -q
 

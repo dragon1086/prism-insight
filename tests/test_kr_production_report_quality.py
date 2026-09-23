@@ -1,6 +1,7 @@
 """Actual KR assembly and agent contracts, with collection/model/order I/O replaced."""
 import asyncio
 import copy
+import json
 
 import pytest
 
@@ -70,6 +71,113 @@ def test_public_flow_preserves_partial_coverage_and_missing_ratio():
     assert '0일, 20일, 4일' in public
     assert '최근 20관측일 구간은 거래량 자료' in public
     assert 'MISSING' not in public
+
+
+def test_required_depth_stops_before_models_when_sources_are_unready(monkeypatch):
+    import cores.data_prefetch as prefetch
+    import prism_core.kr_official_report_inputs as official
+    import prism_core.report_research_prefetch as research
+    from cores import analysis
+
+    monkeypatch.setattr(prefetch, 'prefetch_kr_analysis_data', lambda *args: {})
+    async def unavailable(*args):
+        return {'dart_chapter_inputs': {'ready': False}}
+    async def no_research(*args):
+        return None
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Analysis models prepared before required source validation')
+    monkeypatch.setattr(official, 'collect_kr_official_report_inputs', unavailable)
+    monkeypatch.setattr(research, 'prefetch_report_research', no_research)
+    monkeypatch.setattr(analysis, 'get_agent_directory', forbidden)
+    with pytest.raises(ValueError, match='완성본'):
+        asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923', require_dart_depth=True))
+
+
+@pytest.mark.parametrize('summary_fails', [False, True])
+def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(monkeypatch, tmp_path, summary_fails):
+    import cores.data_prefetch as prefetch
+    import prism_core.kr_official_report_inputs as official
+    import prism_core.kr_peer_comparison as peers
+    import prism_core.report_research_prefetch as research
+    from cores import analysis, dart_deep_analysis
+    from cores.llm import capabilities
+    from prism_core.dart_source_table_evidence import pack_readable_units
+    from prism_core.dart_source_tree_catalog import build_catalog
+
+    data = inputs()
+    dart = data.pop('official_dart')
+    dart['dart_chapter_inputs'] = {'ready': True,
+        'contexts': {key: json.dumps({'sources': [{'source': {
+            'url': 'https://dart.fss.or.kr/report/viewer.do?rcpNo=20260813001728', 'source_id': 'fixture-' + key,
+            'filing': {'role': 'primary', 'scope': 'consolidated',
+                       'period_start': '2026-01-01', 'period_end': '2026-06-30'}},
+            'catalog': pack_readable_units(build_catalog('<p>WHOLE_SOURCE_' + key + '</p>')['units'])}]})
+                     for key in dart_deep_analysis.ROLES},
+        'receipt': {'core_conserved': True, 'capacity_ok': True}}
+    monkeypatch.setattr(prefetch, 'prefetch_kr_analysis_data', lambda *args: data)
+    async def collect(*args):
+        return dart
+    async def no_research(*args):
+        return None
+    monkeypatch.setattr(official, 'collect_kr_official_report_inputs', collect)
+    monkeypatch.setattr(research, 'prefetch_report_research', no_research)
+    monkeypatch.setattr(analysis, '_report_stock_names', lambda: {'111111': '비교기업'})
+    monkeypatch.setattr(analysis, 'get_chart_as_base64_html', lambda *a, **k: '')
+    monkeypatch.setattr(capabilities, 'vision_available', lambda: False)
+    monkeypatch.setattr(capabilities, 'vision_buy_quality_active', lambda: False)
+    monkeypatch.setenv('PRISM_PARALLEL_REPORT', 'false')
+    work = tmp_path / 'work'
+    work.mkdir()
+    monkeypatch.chdir(work)
+    analysis._market_analysis_cache.clear()
+    model_calls, peer_calls = [], []
+    evidence = ('#### Competitive Evidence\n'
+                '- **peer_universe:** 비교기업 / **source:** https://example.com/source')
+    async def base(agent, section, *args):
+        model_calls.append(section)
+        return '### 기본 분석\n' + (evidence if section == 'news_analysis' else '기본 사실')
+    async def peer_collect(ticker, company, candidates, reference_date):
+        peer_calls.append(candidates)
+        return {'public_markdown': '### 동종기업 비교\nPEER 9.23배', 'model_context': 'PEER 9.23배'}
+    monkeypatch.setattr(peers, 'collect_peer_comparison', peer_collect)
+    authored = {}
+    async def write(agent, message):
+        role = agent.name.removeprefix('dart_depth_')
+        model_calls.append(role)
+        assert 'WHOLE_SOURCE_' + role in message
+        assert ('PEER 9.23배' in message) is (role == 'business')
+        text = f'### 상세 분석 {role}\n\n' + (f'{role}의 금액 987.65와 이행 요청 조건 및 남은 약정 한도와 기간을 설명합니다.\n\n' * 180)
+        text += '\n\n출처: https://dart.fss.or.kr/report/viewer.do?rcpNo=20260813001728'
+        authored[role] = text.strip()
+        return text, {'input_tokens': 100, 'output_tokens': 50, 'total_tokens': 150}
+    monkeypatch.setattr(dart_deep_analysis, '_write', write)
+    async def strategy(reports, combined, *args):
+        model_calls.append('strategy')
+        assert all(text in combined for text in authored.values())
+        assert 'PEER 9.23배' in combined
+        assert reports['dart_deep_analysis'] in combined
+        return '### 5-1. 투자 전략\n조건부 의무를 고려한 전략'
+    async def summary(reports, *args):
+        model_calls.append('summary')
+        if summary_fails:
+            raise ValueError('unresolved_fact_conflict')
+        assert all(text in reports['dart_deep_analysis'] for text in authored.values())
+        assert reports['peer_comparison'].endswith('9.23배')
+        return '## 핵심 요약\n심층 분석의 조건을 유지합니다.'
+    monkeypatch.setattr(analysis, 'generate_report', base)
+    monkeypatch.setattr(analysis, 'generate_market_report', base)
+    monkeypatch.setattr(analysis, 'generate_investment_strategy', strategy)
+    monkeypatch.setattr(analysis, 'generate_summary', summary)
+    if summary_fails:
+        with pytest.raises(ValueError, match='unresolved_fact_conflict'):
+            asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923', require_dart_depth=True))
+        return
+    report = asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923', require_dart_depth=True))
+    assert len(model_calls) == 11 and len(peer_calls) == 1
+    assert all(text in report for text in authored.values())
+    assert report.index('## 5. DART') < report.index('## 6. 투자 전략')
+    assert '### 6-1. 투자 전략' in report and '### 5-1. 투자 전략' not in report
+    assert dart_deep_analysis.CHAPTER_START in report and dart_deep_analysis.CHAPTER_END in report
 
 
 @pytest.mark.parametrize('parallel', [False, True])
