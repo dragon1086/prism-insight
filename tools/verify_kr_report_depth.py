@@ -156,6 +156,8 @@ def main():
         original_run = backend.run
 
         async def capture_editor_reply(spec, message):
+            if spec.name == 'report_final_fact_editor':
+                (output / 'final_editor_request.json').write_text(message, encoding='utf-8')
             result = await original_run(spec, message)
             if spec.name == 'report_final_fact_editor':
                 (output / 'final_editor_reply.json').write_text(result.text, encoding='utf-8')
@@ -166,7 +168,7 @@ def main():
     async def capture_editor(*a, **kw):
         edited, summary, receipt = await original_editor(*a, **kw)
         save_json('final_editor_receipt.json', receipt)
-        for section in ('company_status', 'company_overview'):
+        for section in ('company_status', 'company_overview', 'news_analysis'):
             (output / f'edited_{section}.md').write_text(edited.get(section, ''), encoding='utf-8')
         (output / 'edited_summary.md').write_text(summary, encoding='utf-8')
         return edited, summary, receipt

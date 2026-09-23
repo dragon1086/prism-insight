@@ -158,3 +158,87 @@ def test_tilde_fence_with_blank_lines_remains_protected():
     reports['company_status'] = '~~~text\n\n' + reports['company_status'] + '\n\n~~~'
     with pytest.raises(editor.ReportFactEditorError, match='fenced'):
         editor._validate_and_apply(reports, payload)
+
+
+@pytest.mark.parametrize('boundary', ['\n \n', '\n\t\n', '\r\n\r\n', '\r\n \t\r\n'])
+@pytest.mark.parametrize('side', ['original', 'replacement'])
+def test_whitespace_and_crlf_paragraph_boundaries_are_rejected(boundary, side):
+    reports, payload = fixture()
+    item = payload['edits'][0]
+    previous = item[side]
+    item[side] = previous.replace(' ', boundary, 1)
+    if side == 'original':
+        reports[item['section']] = reports[item['section']].replace(previous, item[side])
+    before = copy.deepcopy(reports)
+    with pytest.raises(editor.ReportFactEditorError, match='structure'):
+        editor._validate_and_apply(reports, payload)
+    assert reports == before
+
+
+def session_fixture():
+    reports, payload = fixture()
+    reports['news_analysis'] = ('단기적으로는 9월 24일 실제 거래량과 확정 종가, 기관 매도 지속 여부, '
+                                '경쟁사 대비 상대수익률을 확인해야 합니다.')
+    payload['edits'] = [{'section': 'news_analysis', 'original': reports['news_analysis'],
+                         'replacement': ('9월 24일은 휴장이므로 다음 거래일의 실제 거래량과 확정 종가, '
+                                         '기관 매도 지속 여부, 경쟁사 대비 상대수익률을 확인해야 합니다.'),
+                         'reason': 'session_timing'}]
+    return reports, payload
+
+
+def test_verified_closed_date_allows_observation_only_correction():
+    reports, payload = session_fixture()
+    calendar = {'reference_date': '2026-09-24', 'calendar': 'XKRX', 'is_session': False}
+    patched, _ = editor._validate_and_apply(reports, payload, calendar)
+    assert '휴장' in patched['news_analysis']
+    assert '기관 매도 지속 여부' in patched['news_analysis']
+    assert patched['investment_strategy'] == reports['investment_strategy']
+
+
+@pytest.mark.parametrize('calendar', [None, {}, {'calendar': 'XKRX', 'is_session': None},
+                                     {'calendar': 'XKRX', 'is_session': True},
+                                     {'calendar': 'XNYS', 'is_session': False}])
+def test_session_correction_requires_verified_closed_calendar(calendar):
+    reports, payload = session_fixture()
+    with pytest.raises(editor.ReportFactEditorError, match='verified closed'):
+        editor._validate_and_apply(reports, payload, calendar)
+
+
+@pytest.mark.parametrize('reason', ['profit_attribution', 'comparison_basis', 'availability_scope'])
+def test_news_never_allows_other_edit_reasons(reason):
+    reports, payload = session_fixture()
+    payload['edits'][0]['reason'] = reason
+    with pytest.raises(editor.ReportFactEditorError, match='immutable'):
+        editor._validate_and_apply(reports, payload, {'calendar': 'XKRX', 'is_session': False})
+
+
+@pytest.mark.parametrize('side', ['original', 'replacement'])
+@pytest.mark.parametrize('decision', [' 개인은 매도해야 합니다.', ' 손절을 실행합니다.', ' 기관 매도하라.'])
+def test_session_correction_never_masks_actual_decisions(side, decision):
+    reports, payload = session_fixture()
+    payload['edits'][0][side] += decision
+    if side == 'original':
+        reports['news_analysis'] += decision
+    with pytest.raises(editor.ReportFactEditorError):
+        editor._validate_and_apply(reports, payload, {'calendar': 'XKRX', 'is_session': False})
+
+
+def test_existing_local_calendar_recognizes_closed_and_open_dates():
+    assert editor._calendar_context('20260924') == {
+        'reference_date': '2026-09-24', 'calendar': 'XKRX', 'is_session': False}
+    assert editor._calendar_context('2026-09-23')['is_session'] is True
+
+
+@pytest.mark.parametrize('date', ['invalid', '20260230', '2026-9-24', None])
+def test_invalid_calendar_date_remains_unavailable(date):
+    assert editor._calendar_context(date)['is_session'] is None
+
+
+def test_calendar_failure_is_unknown_not_closed(monkeypatch):
+    import pandas_market_calendars as mcal
+
+    def unavailable(*args, **kwargs):
+        raise RuntimeError('local calendar unavailable')
+
+    monkeypatch.setattr(mcal, 'get_calendar', unavailable)
+    assert editor._calendar_context('20260924')['is_session'] is None
