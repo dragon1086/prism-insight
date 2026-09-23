@@ -93,6 +93,18 @@ def test_annual_ratios_do_not_fallback_to_quarterly_or_older_income():
     assert '47.8735%' in text
 
 
+def test_financial_appendix_is_a_renderable_markdown_table():
+    import markdown
+
+    income, balance = frames()
+    blocks = extract_report_financial_math(
+        render_target_upside_calculations({'target_mean': 247.4}, 234.76),
+        render_annual_leverage_calculations(income, balance))
+    html = markdown.markdown(blocks, extensions=['tables'])
+    assert html.count('<table>') == 2
+    assert '<td>5.3842%</td>' in html and '<td>47.8735%</td>' in html
+
+
 def load_prefetch():
     path = Path(__file__).resolve().parents[1] / 'prism-us/cores/data_prefetch.py'
     spec = importlib.util.spec_from_file_location('financial_math_prefetch', path)
