@@ -1851,7 +1851,7 @@ class TelegramAIBot:
         )
 
         # Check if cached report exists
-        is_cached, cached_content, cached_file, cached_pdf = get_cached_report(stock_code)
+        is_cached, cached_content, cached_file, cached_pdf = get_cached_report(stock_code, require_dart_depth=True)
 
         if is_cached:
             logger.info(f"Found cached report: {cached_file}")
