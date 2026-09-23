@@ -31,6 +31,9 @@ def _competitive_evidence_contract(reference_date):
   Prefer company filings/IR, regulators, exchanges, or industry statistics over marketing
   summaries. Choose URLs actually supplied in input or discovered in search; never invent URLs.
   Reuse source text already read. Do not recursively scrape peer news or all articles.
+  If a material regulator/IR URL fails, use any remaining Query 2 / primary-read budget
+  to discover a different official page (for example the regulator's newsroom or fee-schedule
+  index). Do not guess URLs, repeat the failed URL, or exceed the same total query/read limits.
   A search answer/citation or HTTP success without the relevant source content is not
   source verification. On access/parsing failure preserve that reason without retry loops.
 - Separate sector_tailwind, price_leadership, and business_competitive_position. Price
