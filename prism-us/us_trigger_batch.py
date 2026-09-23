@@ -141,12 +141,14 @@ def _aligned_trigger_inputs(
     return current.loc[common].copy(), previous.loc[common].copy()
 
 
-def _run_trigger_fail_open(name: str, trigger, *args, **kwargs) -> pd.DataFrame:
+def _run_trigger_fail_open(name: str, trigger, *args, _diagnostics=None, **kwargs) -> pd.DataFrame:
     """Isolate one trigger failure so other triggers and the batch keep running."""
     try:
         result = trigger(*args, **kwargs)
         return result if isinstance(result, pd.DataFrame) else pd.DataFrame()
     except Exception as error:  # noqa: BLE001 - explicit batch fail-open boundary
+        if _diagnostics is not None:
+            _diagnostics.append({'trigger': name, 'error_type': type(error).__name__})
         logger.exception(
             "[TRIGGER-FAIL-OPEN] trigger=%s error=%s",
             name,
@@ -425,6 +427,9 @@ def trigger_morning_gap_up_momentum(trade_date: str, snapshot: pd.DataFrame,
     snap = apply_absolute_filters(snap, min_value=MIN_TRADING_VALUE)
 
     # Gap up calculation
+    if snap.empty:
+        return pd.DataFrame()
+    prev = prev.loc[snap.index]
     snap["GapUpRate"] = (snap["Open"] / prev["Close"] - 1) * 100
     snap["IntradayChange"] = (snap["Close"] / snap["Open"] - 1) * 100
     snap["DailyChange"] = ((snap["Close"] - prev["Close"]) / prev["Close"]) * 100
@@ -681,6 +686,9 @@ def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame,
     snap = apply_absolute_filters(snap, min_value=MIN_TRADING_VALUE)
 
     # Closing strength (closer to high = closer to 1)
+    if snap.empty:
+        return pd.DataFrame()
+    prev = prev.loc[snap.index]
     snap["ClosingStrength"] = 0.0
     valid_range = (snap["High"] != snap["Low"])
     snap.loc[valid_range, "ClosingStrength"] = (
@@ -1453,19 +1461,14 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
     # Get S&P 500 + NASDAQ-100 tickers (combined, deduplicated)
     tickers = get_major_tickers()
 
-    try:
-        snapshot = get_snapshot(trade_date, tickers)
-    except ValueError as e:
-        logger.error(f"Snapshot retrieval failed: {e}")
-        # Try previous day
-        trade_date = get_nearest_business_day(
-            (datetime.datetime.strptime(trade_date, '%Y%m%d') - datetime.timedelta(days=1)).strftime('%Y%m%d'),
-            prev=True
-        )
-        logger.info(f"Retry with date: {trade_date}")
-        snapshot = get_snapshot(trade_date, tickers)
-
+    # A failed current-session read is not yesterday's screening opportunity.
+    # Let the caller report the data failure rather than silently relabel dates.
+    snapshot = get_snapshot(trade_date, tickers)
     prev_snapshot, prev_date = get_previous_snapshot(trade_date, tickers)
+    from prism_core.batch_run_status import snapshot_coverage
+    coverage = snapshot_coverage(snapshot, prev_snapshot, tickers, trade_date, prev_date)
+    trigger_errors = []
+    logger.info('US snapshot coverage: %s', coverage)
     from prism_core.market_intelligence import optional_participation
     market_participation = optional_participation(snapshot, prev_snapshot, "US", trade_date, len(tickers))
     logger.debug(f"Previous trading day: {prev_date}")
@@ -1487,6 +1490,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             snapshot,
             prev_snapshot,
             None,
+            _diagnostics=trigger_errors,
         )
         res2 = _run_trigger_fail_open(
             "Gap Up Momentum Top",
@@ -1495,6 +1499,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             snapshot,
             prev_snapshot,
             None,
+            _diagnostics=trigger_errors,
         )
         primary_tickers = set(res1.index).union(res2.index)
         primary_candidate_count = len(primary_tickers)
@@ -1516,6 +1521,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
                 "Market Cap Lookup",
                 get_market_cap_df,
                 cap_tickers,
+                _diagnostics=trigger_errors,
                 max_workers=MARKET_CAP_MAX_WORKERS,
             )
             cap_lookup_coverage = (
@@ -1541,6 +1547,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
                     cap_df,
                     top_n=needed,
                     exclude_tickers=primary_tickers,
+                    _diagnostics=trigger_errors,
                 )
                 if not res3.empty:
                     res3["CapacityFill"] = True
@@ -1573,6 +1580,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             snapshot,
             prev_snapshot,
             cap_df,
+            _diagnostics=trigger_errors,
         )
         res2 = _run_trigger_fail_open(
             "Closing Strength Top",
@@ -1581,6 +1589,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             snapshot,
             prev_snapshot,
             cap_df,
+            _diagnostics=trigger_errors,
         )
         res3 = _run_trigger_fail_open(
             "Volume Surge Sideways",
@@ -1589,6 +1598,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             snapshot,
             prev_snapshot,
             cap_df,
+            _diagnostics=trigger_errors,
         )
         triggers = {
             "Intraday Rise Top": res1,
@@ -1613,6 +1623,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
                 prev_snapshot,
                 cap_df,
                 macro_context,
+                _diagnostics=trigger_errors,
             )
             if not res_macro.empty:
                 triggers["Macro Sector Leader"] = res_macro
@@ -1627,6 +1638,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
                 snapshot,
                 prev_snapshot,
                 cap_df,
+                _diagnostics=trigger_errors,
             )
             if not res_value.empty:
                 triggers["Contrarian Value Pick"] = res_value
@@ -1738,6 +1750,8 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
 
         # Metadata
         output_data["metadata"] = {
+            "snapshot_coverage": coverage,
+            "trigger_errors": trigger_errors,
             **({"market_participation": market_participation} if market_participation else {}),
             "run_time": datetime.datetime.now().isoformat(),
             "trigger_mode": trigger_time,
