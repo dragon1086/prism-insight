@@ -74,6 +74,8 @@ def main():
                         help='Optional same-day peer receipt for chapter-only replay')
     parser.add_argument('--reuse-reviewed-chapter', type=Path,
                         help='Full integration only: reuse an explicitly reviewed same-source chapter')
+    parser.add_argument('--resume-sections', type=Path,
+                        help='Explicit staged validation: reuse six captured base drafts, not a production cache')
     args = parser.parse_args()
     if sum(map(bool, (args.run_model, args.peer_source_report, args.render_source_report))) != 1:
         parser.error('Choose one of --run-model, --peer-source-report or --render-source-report')
@@ -96,6 +98,9 @@ def main():
     if args.render_source_report and (args.replay_inputs or args.peer_receipt
             or not args.render_source_report.resolve().is_relative_to(operational / 'runtime' / 'report_validation')):
         parser.error('Render source must be an isolated validation report without model replay inputs')
+    if args.resume_sections and (not args.run_model or args.replay_inputs
+            or not args.resume_sections.resolve().is_relative_to(operational / 'runtime' / 'report_validation')):
+        parser.error('Section resume is restricted to full isolated validation')
     output.mkdir(parents=True, exist_ok=False)
 
     from dotenv import load_dotenv
@@ -140,14 +145,33 @@ def main():
     def save_json(name, value):
         (output / name).write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
 
+    resumed = {}
+    source_checked = False
+    save_json('validation_invocation.json', {
+        'ticker': args.ticker, 'company': args.company, 'reference_date': args.date,
+        'started_at': datetime.now(ZoneInfo('Asia/Seoul')).isoformat(),
+        'resume_sections': str(args.resume_sections) if args.resume_sections else None,
+        'note': 'Staged drafts are explicitly selected by the operator; this is not a same-input A/B claim.'})
+
     # Preserve each generated section for source/contradiction review. Never
     # publish these intermediate drafts to the bot's ordinary report cache.
     def capture_section(original):
         async def captured(agent, section, *a, **kw):
-            text = await original(agent, section, *a, **kw)
             if section not in {'price_volume_analysis', 'investor_trading_analysis', 'company_status',
                                'company_overview', 'news_analysis', 'market_index_analysis'}:
                 raise ValueError('Unknown report section artifact name')
+            if args.resume_sections:
+                if not source_checked:
+                    raise ValueError('Current filing source basis was not verified before section resume')
+                source = args.resume_sections / f'section_{section}.md'
+                text = source.read_text(encoding='utf-8')
+                if len(text.strip()) < 300:
+                    raise ValueError('Captured section is not substantive')
+                resumed[section] = {'source': str(source), 'sha256': hashlib.sha256(text.encode()).hexdigest(),
+                                    'characters': len(text), 'model_calls': 0}
+                save_json('staged_section_reuse.json', resumed)
+            else:
+                text = await original(agent, section, *a, **kw)
             (output / f'section_{section}.md').write_text(text, encoding='utf-8')
             return text
         return captured
@@ -156,8 +180,17 @@ def main():
     analysis.generate_market_report = capture_section(analysis.generate_market_report)
 
     async def collect(*a, **kw):
+        nonlocal source_checked
         value = await original_collect(*a, **kw)
         save_json('dart_inputs.json', value.get('dart_chapter_inputs', {}))
+        if args.resume_sections:
+            prior = json.loads((args.resume_sections / 'dart_inputs.json').read_text(encoding='utf-8'))
+            current = value.get('dart_chapter_inputs', {})
+            if (not prior.get('ready') or not current.get('ready')
+                    or not prior['receipt'].get('core_union_sha256')
+                    or prior['receipt']['core_union_sha256'] != current['receipt'].get('core_union_sha256')):
+                raise ValueError('Captured base drafts belong to a different filing source basis')
+            source_checked = True
         return value
 
     async def write(agent, message):

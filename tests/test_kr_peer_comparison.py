@@ -6,6 +6,7 @@ import pytest
 
 from prism_core.kr_peer_comparison import (
     _day,
+    _plain_fields,
     collect_peer_comparison,
     parse_wisereport,
     render_peer_comparison,
@@ -233,6 +234,60 @@ def test_bold_label_colon_outside_with_source_link():
               "**source**: [자료](https://example.com/a)")
     result = select_report_peer_candidates([report], "017670", {"030200": "KT"})
     assert result[0]["ticker"] == "030200"
+
+
+def plain_proposal(source="UNKNOWN", status="INCOMPARABLE"):
+    return ("#### Competitive Evidence\n"
+            "- field: 상대 주가 리더십, type: price_leadership, entity: SK텔레콤(017670), "
+            "peer_universe: SK텔레콤·KT·LG유플러스, metric: 동일 기간 상대수익률, "
+            "value: UNKNOWN, unit: %, period: 2026년 9월 17~23일, geography: 한국, "
+            f"source: {source}, publication_date: UNKNOWN, status: {status}, supporting excerpt: 비교자료 미확보")
+
+
+def test_plain_actual_proposals_without_comparison_sources_trigger_bounded_lookup():
+    result = select_report_peer_candidates([plain_proposal()], "017670",
+        {"017670": "SK텔레콤", "030200": "KT", "032640": "LG유플러스"})
+    assert [r["ticker"] for r in result] == ["030200", "032640"]
+    assert all(r["source"] == "report_peer_proposal" for r in result)
+    assert all("독립적 경쟁관계 검증 아님" in r["rationale"] for r in result)
+
+
+def test_plain_numeric_and_peer_commas_are_not_field_boundaries():
+    line = ("- field: 비교, type: business_competitive_position, peer_universe: KT, LG유플러스, "
+            "metric: 매출, 영업이익, value: 1,362.5, unit: 억원, source: UNKNOWN, status: NOT_FOUND")
+    fields = _plain_fields(line)
+    assert fields["metric"] == "매출, 영업이익"
+    assert fields["value"] == "1,362.5"
+    assert fields["peer_universe"] == "KT, LG유플러스"
+    result = select_report_peer_candidates(["#### Competitive Evidence\n" + line], "017670",
+                                          {"030200": "KT", "032640": "LG유플러스"})
+    assert len(result) == 2
+
+
+def test_plain_sector_combined_metric_field_and_unmapped_suffix():
+    text = ("#### Competitive Evidence\n- field: 섹터 수요, type: sector_tailwind, entity: 국내 통신, "
+            "peer_universe: SK텔레콤·KT·LG유플러스 및 관련 산업, metric/value/unit/period/geography: UNKNOWN, "
+            "source: UNKNOWN, publication_date: UNKNOWN, status: NOT_FOUND, supporting excerpt: 부족")
+    result = select_report_peer_candidates([text], "017670",
+        {"017670": "SK텔레콤", "030200": "KT", "032640": "LG유플러스"})
+    assert [r["ticker"] for r in result] == ["030200", "032640"]
+
+
+@pytest.mark.parametrize("source,status", [
+    ("UNKNOWN", ""), ("UNKNOWN", "SOURCE_CHECKED"), ("", "NOT_FOUND"),
+    ("https://user:password@example.com/a", "NOT_FOUND"),
+    ("https://host.internal/a", "UNKNOWN"), ("broken URL", "INCOMPARABLE"),
+])
+def test_missing_proposal_source_needs_explicit_missing_status_and_never_allows_unsafe_urls(source, status):
+    assert select_report_peer_candidates([plain_proposal(source, status)], "017670",
+                                         {"030200": "KT", "032640": "LG유플러스"}) == []
+
+
+@pytest.mark.parametrize("wrap", [lambda s: "```\n" + s + "\n```",
+                                lambda s: s.replace("Competitive Evidence", "General commentary")])
+def test_plain_proposals_keep_existing_scope_and_fence_guards(wrap):
+    assert select_report_peer_candidates([wrap(plain_proposal())], "017670",
+                                         {"030200": "KT", "032640": "LG유플러스"}) == []
 
 
 def test_same_peer_facts_have_stable_presentation_without_mutating_inputs():
