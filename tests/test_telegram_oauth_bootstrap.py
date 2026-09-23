@@ -35,8 +35,67 @@ def test_tunnel_example_is_loopback_only_and_noninteractive():
     unit = (ROOT / 'deploy/systemd/prism-report-oauth-tunnel.service.example').read_text()
     assert 'User=prism' in unit
     for flag in ('BatchMode=yes', 'ExitOnForwardFailure=yes', 'StrictHostKeyChecking=yes',
-                 '-L 127.0.0.1:18741:127.0.0.1:18741'):
+                 '-L 127.0.0.1:18741:127.0.0.1:18742'):
         assert flag in unit
     config = (ROOT / 'deploy/report-oauth.env.example').read_text()
     assert 'http://127.0.0.1:18741/v1' in config
     assert 'OPENAI_API_KEY=chatgpt-oauth-placeholder' in config
+
+
+def test_report_proxy_is_separate_from_batch_and_validates_host_auth(monkeypatch):
+    import importlib.util
+
+    from aiohttp import web
+
+    from cores.chatgpt_proxy import proxy_server, token_manager
+    spec = importlib.util.spec_from_file_location('report_proxy_test', ROOT / 'tools/run_report_oauth_proxy.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    calls = []
+
+    class Manager:
+        def validate_or_fail(self):
+            calls.append('validated')
+
+    monkeypatch.setattr(token_manager, 'TokenManager', Manager)
+    monkeypatch.setattr(proxy_server, 'create_app', lambda manager: calls.append('app') or 'APP')
+    monkeypatch.setattr(web, 'run_app', lambda app, **kwargs: calls.append((app, kwargs)))
+    module.main()
+    assert calls == ['validated', 'app', ('APP', {'host': '127.0.0.1', 'port': 18742, 'access_log': None})]
+
+
+def test_report_proxy_reloads_host_token_and_never_refreshes(monkeypatch):
+    import asyncio
+    import importlib.util
+    import time
+
+    import pytest
+
+    from cores.chatgpt_proxy.token_manager import ChatGPTAuthExpiredError
+    spec = importlib.util.spec_from_file_location('report_proxy_reader_test', ROOT / 'tools/run_report_oauth_proxy.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    manager = module.create_report_token_manager()
+    current = {'access_token': 'synthetic-first', 'account_id': 'first-account', 'expires_at': time.time() + 3600}
+    monkeypatch.setattr(manager, '_load_from_disk', lambda: dict(current))
+
+    async def forbidden(*args):
+        pytest.fail('Report reader must never refresh shared host credentials')
+
+    monkeypatch.setattr(manager, '_refresh_token', forbidden)
+
+    async def run():
+        assert await manager.get_token() == 'synthetic-first'
+        current['account_id'] = 'rotated-account'
+        assert await manager.get_account_id() == 'first-account'
+        current['access_token'] = 'synthetic-rotated'
+        assert await manager.get_token() == 'synthetic-rotated'
+        assert await manager.get_account_id() == 'rotated-account'
+        for expiry in (0, float('nan'), float('inf'), True, 'invalid'):
+            current['expires_at'] = expiry
+            with pytest.raises(ChatGPTAuthExpiredError):
+                await manager.get_token()
+            with pytest.raises(ChatGPTAuthExpiredError):
+                await manager.get_account_id()
+
+    asyncio.run(run())

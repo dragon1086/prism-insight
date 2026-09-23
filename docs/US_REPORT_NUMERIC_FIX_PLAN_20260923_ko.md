@@ -22,8 +22,10 @@
 
 ## app-server OAuth 배포
 
-`deploy/systemd/prism-report-oauth-tunnel.service.example`을 app-server에 설치한다. 기존 prism 사용자의 전용 SSH 키와 DB의 기존 OAuth proxy를 재사용한다. DB authorized_keys에서는 해당 키의 기존 `permitopen=127.0.0.1:8765`를 유지하면서 `127.0.0.1:18741`만 추가한다. 기존 forced command, no-pty, no-agent-forwarding 등은 그대로 보존한다. 다른 키나 전역 SSH 정책을 변경하지 않는다.
+`deploy/systemd/prism-report-oauth-tunnel.service.example`을 app-server에 설치한다. 기존 prism 사용자의 전용 SSH 키를 재사용한다. DB에는 기존 인증·proxy 구현을 재사용하는 `prism-report-oauth-proxy.service`를 루프백 18742 포트에 별도로 띄운다. 정규 배치 소유의 18741 프록시는 배치 종료와 함께 꺼지므로 공유하지 않는다. DB authorized_keys에서는 해당 키의 기존 `permitopen=127.0.0.1:8765`를 유지하면서 `127.0.0.1:18742`만 추가한다. 초기 시험의 18741 허용은 18742로 교체한다. 기존 forced command, no-pty, no-agent-forwarding 등은 그대로 보존한다. 다른 키나 전역 SSH 정책을 변경하지 않는다.
 
 `deploy/report-oauth.env.example`을 app-server의 ignored `.env.report-oauth`에 설치한다. 이 파일에는 루프백 URL과 placeholder만 있으며 실제 인증정보는 없다. 봇은 SDK·worker import 전에 이를 읽는다. 터널 오류 시 다른 인증 경로로 전환하지 않는다. 기존 `.env` 및 비밀 설정은 수정하지 않는다. 인증정보·개인키는 서버 사이에 복사하지 않는다.
+
+상시 보고서 proxy는 요청마다 호스트의 최신 인증 파일을 다시 읽되 직접 갱신하지 않는다. 기존 호스트의 갱신 작업과 refresh token 경합을 만들지 않기 위해서다. 만료 시 명시적 인증 오류로 멈추고 기존 호스트 갱신 후 정상화한다. 정규 배치와 호스트 인증 갱신 스케줄은 변경하지 않는다.
 
 배포 전 파일 해시·서비스·프로세스 상태를 기록하고 변경 대상 외 설정과 cron 불변을 확인한다. 실패한 임시 시험 터널은 이미 종료했다. 서비스 설치·권한 변경·봇 재기동은 정확한 PR head CI 통과 이후에만 적용한다.
