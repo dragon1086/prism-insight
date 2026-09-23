@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 
 from prism_core.competitive_evidence import _HEADING, _mask_fences
+from prism_core.competitive_evidence import plain_evidence_fields as _plain_fields
 from prism_core.market_report_context import _public_https
 
 _BASE = "https://comp.wisereport.co.kr/company/c1010001.aspx?cmp_cd="
@@ -22,25 +23,6 @@ _PEER_TABLE_HEADERS = (
     ("field", "type", "entity", "peer_universe", "metric", "value", "period", "geography", "unit",
      "source", "publication_date", "status", "excerpt"),
 )
-_PLAIN_FIELD = re.compile(
-    r"(?:^|,\s*)(field|type|entity|peer_universe|metric/value/unit/period/geography|"
-    r"metric|value|unit|period|geography|source|publication_date|status|supporting excerpt|excerpt)\s*:\s*"
-)
-
-
-def _plain_fields(line):
-    """Parse known comma-delimited field boundaries, not commas inside values."""
-    line = re.sub(r"^\s*[-*]\s+", "", line).strip()
-    if not line.startswith("field:"):
-        return {}
-    matches = list(_PLAIN_FIELD.finditer(line))
-    fields = {}
-    for index, match in enumerate(matches):
-        if match[1] in fields:
-            return {}
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(line)
-        fields[match[1]] = line[match.end():end].strip()
-    return fields
 
 
 def _table_cells(line):
