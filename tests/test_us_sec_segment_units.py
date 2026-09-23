@@ -138,3 +138,19 @@ def test_latest_valid_filing_selected_and_download_bounded(module, monkeypatch):
     text = module.prefetch_segment_revenue('DGX')
     assert calls == [('https://example.com/new', 30)]
     assert '10-Q' in text and '2026-05-01' in text
+
+
+@pytest.mark.parametrize('url', ['file:///etc/passwd', 'http://example.com/file',
+                                 'https:///missing-host', 'https://user:pass@example.com/file'])
+def test_invalid_filing_url_is_never_opened(module, monkeypatch, url):
+    import urllib.request
+
+    import yfinance
+    monkeypatch.setattr(yfinance, 'Ticker', lambda _: SimpleNamespace(sec_filings=[
+        {'type': '10-Q', 'date': '2026-05-01', 'exhibits': {'10-Q': url}}]))
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('Invalid source URL must not be opened')
+
+    monkeypatch.setattr(urllib.request, 'urlopen', forbidden)
+    assert module.prefetch_segment_revenue('DGX') == ''

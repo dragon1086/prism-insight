@@ -22,11 +22,13 @@ def test_actual_downstream_assembly_excludes_dangling_claim_before_strategy():
     # Execute the production block that builds downstream strategy/summary inputs.
     namespace = {"section_reports": {"market_index_analysis": "연준 25bp 인하[1][10]"},
                  "macro_context": {"market_intelligence": {}, "market_regime": "sideways"},
-                 "language": "ko", "base_sections": ["market_index_analysis"]}
+                 "language": "ko", "base_sections": ["market_index_analysis"],
+                 "shared_reference": "REFERENCE_SENTINEL\n"}
     exec(compile(ast.Module(body=block[start:end], type_ignores=[]), "assembly", "exec"), namespace)  # noqa: S102 - trusted checked-in AST only
     combined = namespace["combined_reports"]
     assert "25bp" not in combined and "[10]" not in combined
     assert "제외했습니다" in combined and "공통 시장 근거" in combined
+    assert combined.startswith("REFERENCE_SENTINEL\n")
 
 
 def test_provider_price_only_prose_needs_no_fabricated_url():

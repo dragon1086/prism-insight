@@ -750,6 +750,7 @@ def prefetch_segment_revenue(ticker: str) -> str:
     try:
         import yfinance as yf
         import urllib.request
+        from urllib.parse import urlsplit
 
         stock = yf.Ticker(ticker)
         filings = stock.sec_filings
@@ -779,14 +780,15 @@ def prefetch_segment_revenue(ticker: str) -> str:
         filed, filing = max(candidates, key=lambda item: item[0])
         filing_type = filing.get('type', '10-K')
         url = filing.get('exhibits', {}).get(filing_type, '')
-        if not url:
+        parsed_url = urlsplit(url)
+        if parsed_url.scheme != 'https' or not parsed_url.hostname or parsed_url.username or parsed_url.password:
             logger.warning(f"No {filing_type} exhibit URL for {ticker}")
             return ""
 
         # Download filing HTML from Yahoo Finance CDN
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         max_bytes = 25_000_000
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310 - HTTPS scheme and host validated above
             payload = resp.read(max_bytes + 1)
         if len(payload) > max_bytes:
             logger.warning(f"SEC filing exceeds bounded download limit for {ticker}")
