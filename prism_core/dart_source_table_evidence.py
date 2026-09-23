@@ -49,16 +49,16 @@ def _aligned_rows(table):
         tokens = []
         for c, index in enumerate(grid_row):
             if index is None:
-                token = '`'
+                cell_text = '`'
             else:
                 cell = table['cells'][index]
                 if (cell['row'], cell['col']) != (r, c):
-                    token = '^'
+                    cell_text = '^'
                 else:
-                    token = cell['text']
-                    if token.startswith(('^', '`')):
-                        token = token[0] + token
-            tokens.append(token)
+                    cell_text = cell['text']
+                    if cell_text.startswith(('^', '`')):
+                        cell_text = cell_text[0] + cell_text
+            tokens.append(cell_text)
         rows.append('\t'.join(tokens))
     return rows
 
