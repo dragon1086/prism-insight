@@ -1,5 +1,111 @@
 """Reader-facing report guidance; never changes evidence or trading authority."""
 
+import re
+
+_EVIDENCE_LABELS = {
+    "field": ("점검 항목", "Check"), "type": ("비교 주제", "Topic"),
+    "entity": ("대상", "Entity"), "peer_universe": ("비교 대상", "Peers"),
+    "metric": ("비교 지표", "Metric"), "value": ("수치·내용", "Value"),
+    "unit": ("단위", "Unit"), "period": ("대상 기간", "Period"),
+    "geography": ("대상 지역", "Geography"), "source": ("출처", "Source"),
+    "publication_date": ("자료 발표일", "Publication date"),
+    "status": ("근거 확인 범위", "Evidence scope"),
+}
+_EVIDENCE_VALUES = {
+    "UNKNOWN": ("확인되지 않음", "Not established"),
+    "NOT_FOUND": ("이번 수집에서 근거를 확보하지 못함", "Evidence not obtained in this collection"),
+    "INCOMPARABLE": ("동일 기준 비교에 필요한 근거가 부족함", "Insufficient evidence for a like-for-like comparison"),
+    "SOURCE_CHECKED": ("원자료 확인 범위의 근거이며 독립 검증을 뜻하지 않음", "Original source reviewed; not independently verified"),
+    "SEARCH_ONLY": ("검색 결과만 확인했으며 원자료는 확인하지 못함", "Search results only; original source not reviewed"),
+    "sector_tailwind": ("업종 수요·환경", "Sector demand and conditions"),
+    "price_leadership": ("주가 상대 강세", "Relative price strength"),
+    "business_competitive_position": ("사업 경쟁력", "Business competitive position"),
+}
+_EVIDENCE_HEADINGS = {
+    "Competitive Evidence": ("경쟁력 비교 근거", "Competitive comparison evidence"),
+    "Competitive Evidence Handoff": ("경쟁력 비교 근거의 재사용", "Reused competitive comparison evidence"),
+}
+_HANDOFF_STATES = {
+    "RECORD_ABSENT": ("전달할 비교 근거 기록이 확보되지 않았습니다.", "No comparison evidence record was available to reuse."),
+    "RECORD_EMPTY": ("비교 근거 기록에 전달할 내용이 없었습니다.", "The comparison evidence record contained no reusable content."),
+    "RECORD_AMBIGUOUS": ("비교 근거 기록의 구분이 불명확해 전달하지 못했습니다.", "Ambiguous record boundaries prevented evidence reuse."),
+    "RECORD_OVERSIZE": ("비교 근거 기록이 전달 가능한 크기를 초과했습니다.", "The evidence record exceeded the supported transfer size."),
+    "RECORD_MALFORMED": ("비교 근거 기록의 형식을 해석하지 못해 전달하지 못했습니다.", "The evidence record could not be reused because its format could not be interpreted."),
+}
+
+
+def _public_evidence_records(text, language):
+    """Translate known labels only in explicit evidence sections, losslessly.
+
+    Free prose is unchanged except one known Korean narrative topic alias.
+    URLs, inline code and fenced payloads are not parsed or rewritten.
+    Unknown/malformed fields remain intact rather than dropping their contents.
+    """
+    index = 0 if language == "ko" else 1
+    active_level = None
+    fence = None
+    result = []
+    field = re.compile(r"\*\*([a-z_]+):\*\*([ \t]*)(.*?)(?=[ \t]+/[ \t]+|$)")
+
+    def render_field(match):
+        key, whitespace, value = match.groups()
+        if key not in _EVIDENCE_LABELS:
+            return match.group(0)
+        # Exact scalar matching cannot alter identifiers inside a URL or quote.
+        scalar = value.rstrip()
+        mapped = _EVIDENCE_VALUES.get(scalar)
+        value = (mapped[index] + value[len(scalar):]) if mapped else value
+        return f"**{_EVIDENCE_LABELS[key][index]}:**{whitespace}{value}"
+
+    for line in text.splitlines(keepends=True):
+        marker = re.match(r"^[ \t]{0,3}(`{3,}|~{3,})", line)
+        if fence:
+            result.append(line)
+            if (marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence)
+                    and not line[marker.end():].strip()):
+                fence = None
+            continue
+        if marker:
+            fence = marker[1]
+            result.append(line)
+            continue
+        for title in ("주가·수급 지표 기준값", "시장 지표 기준값"):
+            if line.startswith(title + "기준일:"):
+                line = "### " + title + "\n\n" + line[len(title):]
+        if line.startswith("회사: ") and "; 주요 공시; 공시일: " in line and "; 대상 기간: " in line:
+            line = line.replace("; 연결 기준출처: https://", "; 연결 기준\n\n출처: https://", 1)
+        heading = re.match(r"^(#{1,6})[ \t]+(.+?)[ \t]*(\r?\n)?$", line)
+        if heading:
+            title = heading[2]
+            if active_level and len(heading[1]) <= active_level:
+                active_level = None
+            if title in _EVIDENCE_HEADINGS:
+                active_level = len(heading[1])
+                line = heading[1] + " " + _EVIDENCE_HEADINGS[title][index] + (heading[3] or "")
+            result.append(line)
+            continue
+        # Code spans and URLs are retained even when they contain instructions.
+        chunks = re.split(r"(`+[^`]*`+|https?://[^\s<>]+)", line)
+        for position in range(0, len(chunks), 2):
+            if language == "ko":
+                chunks[position] = re.sub(r"(?<![\w])price_leadership는", "주가 상대강도는", chunks[position])
+            if active_level:
+                chunks[position] = field.sub(render_field, chunks[position])
+                chunks[position] = chunks[position].replace(
+                    "원문의 상태·출처·기간을 따르세요.", "원문의 확인 범위·출처·대상 기간을 유지한 기록입니다.")
+                chunks[position] = chunks[position].replace(
+                    "Preserve the record's status, source and period.",
+                    "The original evidence scope, source and period are retained.")
+        line = "".join(chunks)
+        if active_level:
+            if line.startswith("Evidence ID: "):
+                line = ("근거 식별자: " if index == 0 else "Evidence identifier: ") + line[len("Evidence ID: "):]
+            handoff = re.fullmatch(r"Handoff status: ([A-Z_]+)(\r?\n)?", line)
+            if handoff and handoff[1] in _HANDOFF_STATES:
+                line = _HANDOFF_STATES[handoff[1]][index] + (handoff[2] or "")
+        result.append(line)
+    return "".join(result)
+
 
 def report_narrative_contract(language="ko"):
     if language == "ko":
@@ -28,6 +134,6 @@ These style rules do not change numbers, trading conditions, risk limits or evid
 
 
 def humanize_report_status(text, language="ko"):
-    """Translate only the known finality token at the final publication boundary."""
+    """Present known diagnostics only at the final publication boundary."""
     phrase = "마감 확정 여부를 확인하지 못한" if language == "ko" else "final close not yet verified"
-    return text.replace("BAR_FINALITY_UNKNOWN", phrase)
+    return _public_evidence_records(text.replace("BAR_FINALITY_UNKNOWN", phrase), language)

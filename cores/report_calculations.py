@@ -261,4 +261,4 @@ def render_report_metrics(result, *, scope='all'):
     lines.append('- 필요한 관측 기간과 입력값이 충족된 지표만 제시했습니다.')
     if scope != 'market':
         lines.append('- 수급은 당일을 제외한 완료 관측일의 원시 주식 수입니다. 기관+외국인 합계와 개인을 포함한 3주체 합계는 다릅니다.')
-    return '\n'.join(lines)
+    return '\n\n'.join(lines)
