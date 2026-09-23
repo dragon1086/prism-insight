@@ -62,3 +62,34 @@ def test_report_proxy_is_separate_from_batch_and_validates_host_auth(monkeypatch
     monkeypatch.setattr(web, 'run_app', lambda app, **kwargs: calls.append((app, kwargs)))
     module.main()
     assert calls == ['validated', 'app', ('APP', {'host': '127.0.0.1', 'port': 18742, 'access_log': None})]
+
+
+def test_report_proxy_reloads_host_token_and_never_refreshes(monkeypatch):
+    import asyncio
+    import importlib.util
+    import time
+
+    import pytest
+
+    from cores.chatgpt_proxy.token_manager import ChatGPTAuthExpiredError
+    spec = importlib.util.spec_from_file_location('report_proxy_reader_test', ROOT / 'tools/run_report_oauth_proxy.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    manager = module.create_report_token_manager()
+    current = {'access_token': 'synthetic-first', 'expires_at': time.time() + 3600}
+    monkeypatch.setattr(manager, '_load_from_disk', lambda: dict(current))
+
+    async def forbidden(*args):
+        pytest.fail('Report reader must never refresh shared host credentials')
+
+    monkeypatch.setattr(manager, '_refresh_token', forbidden)
+
+    async def run():
+        assert await manager.get_token() == 'synthetic-first'
+        current['access_token'] = 'synthetic-rotated'
+        assert await manager.get_token() == 'synthetic-rotated'
+        current['expires_at'] = 0
+        with pytest.raises(ChatGPTAuthExpiredError):
+            await manager.get_token()
+
+    asyncio.run(run())
