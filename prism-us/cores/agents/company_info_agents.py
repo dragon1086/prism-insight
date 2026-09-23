@@ -217,6 +217,14 @@ Company: {company_name} ({ticker})
     pf = prefetched_data or {}
     has_prefetch = bool(pf.get("stock_info"))
     has_analysis = bool(pf.get("analysis_estimates"))
+    analysis_status = pf.get('analysis_estimates_status')
+    if isinstance(analysis_status, dict):
+        # Reuse any usable data like the legacy path; optional gaps add no lookups.
+        has_analysis = has_analysis and analysis_status.get('status') in ('complete', 'partial')
+    elif str(pf.get('analysis_estimates', '')).startswith('### Analyst collection status: '):
+        # Also support callers using the existing string-only prefetch interface.
+        state = pf['analysis_estimates'].splitlines()[0].removeprefix('### Analyst collection status: ')
+        has_analysis = state in ('complete', 'partial')
 
     if has_prefetch and has_analysis:
         # Full prefetch - no firecrawl needed
@@ -313,6 +321,33 @@ Key Statistics, Financials 페이지 스크랩 금지. yahoo_finance MCP 도구 
             end_idx = instruction.find(end_marker)
             if start_idx != -1 and end_idx != -1:
                 instruction = instruction[:start_idx] + prefetch_block + "\n" + instruction[end_idx:]
+
+    if has_analysis and not has_prefetch:
+        # Keep stock-info fallbacks, but do not refetch already usable estimates.
+        start_marker = ('### 3. Yahoo Finance Analysis 페이지' if language == 'ko'
+                        else '### 3. From Yahoo Finance Analysis Page')
+        end_marker = ('### 4. yahoo_finance MCP 서버' if language == 'ko'
+                      else '### 4. From yahoo_finance MCP Server')
+        start_idx, end_idx = instruction.find(start_marker), instruction.find(end_marker)
+        if start_idx != -1 and end_idx > start_idx:
+            reuse = ('### 3. 애널리스트 자료\n사전 수집된 추정치를 사용하고 Analysis 페이지는 다시 수집하지 마세요.\n\n'
+                     if language == 'ko' else
+                     '### 3. Analyst Data\nUse the prefetched estimates; do not refetch the Analysis page.\n\n')
+            instruction = instruction[:start_idx] + reuse + instruction[end_idx:]
+
+    # Partial or absent stock info must not discard usable estimates/status.
+    if pf.get('analysis_estimates') and not (has_prefetch and has_analysis):
+        instruction += '\n\n## Pre-collected Analyst Data / 사전 수집 애널리스트 자료\n' + pf['analysis_estimates']
+    if isinstance(analysis_status, dict):
+        instruction += ('\n\n수집 시각을 전망 발표 시각으로 간주하지 마세요. 미확인·오류는 0이나 '
+                        '부정적 전망이 아닙니다. 공급자의 전망 기간 라벨을 보존하고 직접 peer 자료가 '
+                        '없으면 업종 평균을 만들지 마세요.\n'
+                        'Capture time is not estimate publication time. Missing/error is not zero or '
+                        'a negative forecast. Preserve provider fiscal-period labels; do not invent peer averages.\n')
+    instruction += ('\n회사 가이던스와 애널리스트 컨센서스를 구분하세요. 공시가 성장 구성을 제공하면 '
+                    '전체 성장·유기적 성장·인수 효과를 분리하고, 원문에 없는 구성은 추정하지 마세요.\n'
+                    'Distinguish company guidance from analyst consensus. When disclosed, separate total, '
+                    'organic and acquisition-driven growth; do not invent missing components.\n')
 
     # Server selection based on prefetch status
     if has_prefetch and has_analysis:

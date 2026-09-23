@@ -8,16 +8,21 @@ This reduces token usage by avoiding MCP tool call round-trips for predictable,
 parameterized data fetches (OHLCV, holder info, market indices).
 """
 
-import logging
-from pathlib import Path
 import importlib.util
-from datetime import datetime, timedelta
+import logging
+from datetime import datetime, timedelta, timezone
+from numbers import Real
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+
 from prism_core.flow_evidence import (
-    compute_us_flow_evidence, describe_us_holdings, holdings_asof_frame, render_flow_evidence,
+    compute_us_flow_evidence,
+    describe_us_holdings,
+    holdings_asof_frame,
+    render_flow_evidence,
     us_flow_interpretation_contract,
 )
 
@@ -213,8 +218,12 @@ def prefetch_stock_info(ticker: str) -> str:
             return ""
 
         def _fmt(val, fmt_type="default"):
-            if val is None or val == 0:
+            if (val is None or val is pd.NA or isinstance(val, (bool, np.bool_))
+                    or (isinstance(val, Real) and not np.isfinite(val))
+                    or (fmt_type != 'default' and not isinstance(val, Real))):
                 return "N/A"
+            if fmt_type == 'target_price':
+                return _fmt(val, 'currency') if val > 0 else 'N/A'
             if fmt_type == "currency":
                 if abs(val) >= 1e12:
                     return f"${val/1e12:.2f}T"
@@ -224,7 +233,7 @@ def prefetch_stock_info(ticker: str) -> str:
                     return f"${val/1e6:.2f}M"
                 return f"${val:,.2f}"
             elif fmt_type == "percent":
-                return f"{val*100:.2f}%" if abs(val) < 1 else f"{val:.2f}%"
+                return f"{val*100:.2f}%"
             elif fmt_type == "ratio":
                 return f"{val:.2f}"
             elif fmt_type == "number":
@@ -239,7 +248,7 @@ def prefetch_stock_info(ticker: str) -> str:
 
         result += "#### Valuation Measures\n\n"
         result += "| Metric | Value |\n|--------|-------|\n"
-        result += f"| Market Cap | {_fmt(info.get('market_cap'), 'currency')} |\n"
+        result += f"| Market Cap | {_fmt(info.get('market_cap'), 'target_price')} |\n"
         result += f"| Enterprise Value | {_fmt(info.get('enterprise_value'), 'currency')} |\n"
         result += f"| Trailing P/E | {_fmt(info.get('pe_ratio'), 'ratio')} |\n"
         result += f"| Forward P/E | {_fmt(info.get('forward_pe'), 'ratio')} |\n"
@@ -263,34 +272,34 @@ def prefetch_stock_info(ticker: str) -> str:
 
         result += "#### Trading Information\n\n"
         result += "| Metric | Value |\n|--------|-------|\n"
-        result += f"| Current Price | {_fmt(info.get('price'), 'currency')} |\n"
-        result += f"| Previous Close | {_fmt(info.get('previous_close'), 'currency')} |\n"
+        result += f"| Current Price | {_fmt(info.get('price'), 'target_price')} |\n"
+        result += f"| Previous Close | {_fmt(info.get('previous_close'), 'target_price')} |\n"
         result += f"| Beta | {_fmt(info.get('beta'), 'ratio')} |\n"
-        result += f"| 52-Week High | {_fmt(info.get('fifty_two_week_high'), 'currency')} |\n"
-        result += f"| 52-Week Low | {_fmt(info.get('fifty_two_week_low'), 'currency')} |\n"
-        result += f"| 50-Day Average | {_fmt(info.get('fifty_day_avg'), 'currency')} |\n"
-        result += f"| 200-Day Average | {_fmt(info.get('two_hundred_day_avg'), 'currency')} |\n"
-        result += f"| Avg Volume (3mo) | {_fmt(info.get('avg_volume'), 'number')} |\n"
-        result += f"| Shares Outstanding | {_fmt(info.get('shares_outstanding'), 'number')} |\n"
-        result += f"| Float Shares | {_fmt(info.get('float_shares'), 'number')} |\n"
+        result += f"| 52-Week High | {_fmt(info.get('fifty_two_week_high'), 'target_price')} |\n"
+        result += f"| 52-Week Low | {_fmt(info.get('fifty_two_week_low'), 'target_price')} |\n"
+        result += f"| 50-Day Average | {_fmt(info.get('fifty_day_avg'), 'target_price')} |\n"
+        result += f"| 200-Day Average | {_fmt(info.get('two_hundred_day_avg'), 'target_price')} |\n"
+        result += f"| Avg Volume (3mo) | {_fmt(info.get('avg_volume') or None, 'number')} |\n"
+        result += f"| Shares Outstanding | {_fmt(info.get('shares_outstanding') or None, 'number')} |\n"
+        result += f"| Float Shares | {_fmt(info.get('float_shares') or None, 'number')} |\n"
         result += f"| Short Ratio | {_fmt(info.get('short_ratio'), 'ratio')} |\n"
         result += "\n"
 
         result += "#### Dividend Info\n\n"
         result += "| Metric | Value |\n|--------|-------|\n"
         result += f"| Dividend Rate | {_fmt(info.get('dividend_rate'), 'currency')} |\n"
-        result += f"| Dividend Yield | {_fmt(info.get('dividend_yield'), 'percent')} |\n"
+        result += f"| Dividend Yield (provider raw; unit unverified) | {_fmt(info.get('dividend_yield'))} |\n"
         result += f"| Payout Ratio | {_fmt(info.get('payout_ratio'), 'percent')} |\n"
         result += "\n"
 
         result += "#### Analyst Targets\n\n"
         result += "| Metric | Value |\n|--------|-------|\n"
-        result += f"| Target High | {_fmt(info.get('target_high'), 'currency')} |\n"
-        result += f"| Target Low | {_fmt(info.get('target_low'), 'currency')} |\n"
-        result += f"| Target Mean | {_fmt(info.get('target_mean'), 'currency')} |\n"
-        result += f"| Target Median | {_fmt(info.get('target_median'), 'currency')} |\n"
+        result += f"| Target High | {_fmt(info.get('target_high'), 'target_price')} |\n"
+        result += f"| Target Low | {_fmt(info.get('target_low'), 'target_price')} |\n"
+        result += f"| Target Mean | {_fmt(info.get('target_mean'), 'target_price')} |\n"
+        result += f"| Target Median | {_fmt(info.get('target_median'), 'target_price')} |\n"
         result += f"| Recommendation | {info.get('recommendation', 'N/A')} |\n"
-        result += f"| Number of Analysts | {info.get('num_analysts', 'N/A')} |\n"
+        result += f"| Number of Analysts | {_fmt(info.get('num_analysts'), 'number')} |\n"
         result += "\n"
 
         return result
@@ -323,7 +332,7 @@ def prefetch_recommendations(ticker: str) -> str:
         return ""
 
 
-def prefetch_analysis_estimates(ticker: str) -> str:
+def prefetch_analysis_estimates(ticker: str, status: dict | None = None) -> str:
     """Prefetch earnings/revenue estimates and analyst data via yfinance.
 
     Replaces firecrawl scrape of Yahoo Finance Analysis page for company_status agent.
@@ -332,91 +341,79 @@ def prefetch_analysis_estimates(ticker: str) -> str:
         ticker: Stock ticker symbol
 
     Returns:
-        Markdown formatted analysis estimates string, or empty string on error
+        Markdown data and collection status. Capture time is not publication time.
     """
+    components = (
+        ('earnings_estimate', 'Earnings Estimates'), ('revenue_estimate', 'Revenue Estimates'),
+        ('eps_trend', 'EPS Trend'), ('eps_revisions', 'EPS Revisions'),
+        ('growth_estimates', 'Growth Estimates'), ('analyst_price_targets', 'Analyst Price Targets'),
+        ('recommendations_summary', 'Recommendations Summary'),
+    )
+    captured = datetime.now(timezone.utc).isoformat()
+    states, blocks = {}, []
+
+    def usable(value):
+        return isinstance(value, Real) and not isinstance(value, (bool, np.bool_)) and np.isfinite(value)
+
+    def display(value):
+        if (value is None or isinstance(value, (bool, np.bool_))
+                or (isinstance(value, Real) and not usable(value)) or value is pd.NA):
+            return 'N/A'
+        return value
+
+    def usable_target(value):
+        return usable(value) and value > 0
+
     try:
         import yfinance as yf
         stock = yf.Ticker(ticker)
-
-        result = ""
-
-        # 1. Earnings Estimates
+    except Exception:  # noqa: BLE001 - provider construction failure becomes explicit status
+        stock = None
+    for key, title in components:
+        states[key] = 'missing'
+        if stock is None:
+            states[key] = 'error'
+            continue
         try:
-            earnings_est = stock.earnings_estimate
-            if earnings_est is not None and not earnings_est.empty:
-                result += _df_to_markdown(earnings_est, f"Earnings Estimates: {ticker}")
-                result += "\n"
-        except Exception as e:
-            logger.debug(f"No earnings estimates for {ticker}: {e}")
-
-        # 2. Revenue Estimates
-        try:
-            revenue_est = stock.revenue_estimate
-            if revenue_est is not None and not revenue_est.empty:
-                result += _df_to_markdown(revenue_est, f"Revenue Estimates: {ticker}")
-                result += "\n"
-        except Exception as e:
-            logger.debug(f"No revenue estimates for {ticker}: {e}")
-
-        # 3. EPS Trend
-        try:
-            eps_trend = stock.eps_trend
-            if eps_trend is not None and not eps_trend.empty:
-                result += _df_to_markdown(eps_trend, f"EPS Trend: {ticker}")
-                result += "\n"
-        except Exception as e:
-            logger.debug(f"No EPS trend for {ticker}: {e}")
-
-        # 4. EPS Revisions
-        try:
-            eps_revisions = stock.eps_revisions
-            if eps_revisions is not None and not eps_revisions.empty:
-                result += _df_to_markdown(eps_revisions, f"EPS Revisions: {ticker}")
-                result += "\n"
-        except Exception as e:
-            logger.debug(f"No EPS revisions for {ticker}: {e}")
-
-        # 5. Growth Estimates
-        try:
-            growth_est = stock.growth_estimates
-            if growth_est is not None and not growth_est.empty:
-                result += _df_to_markdown(growth_est, f"Growth Estimates: {ticker}")
-                result += "\n"
-        except Exception as e:
-            logger.debug(f"No growth estimates for {ticker}: {e}")
-
-        # 6. Analyst Price Targets (dict format)
-        try:
-            targets = stock.analyst_price_targets
-            if targets and isinstance(targets, dict):
-                result += f"### Analyst Price Targets: {ticker}\n\n"
-                result += "| Metric | Value |\n|--------|-------|\n"
-                result += f"| Current | ${targets.get('current', 'N/A')} |\n"
-                result += f"| High | ${targets.get('high', 'N/A')} |\n"
-                result += f"| Low | ${targets.get('low', 'N/A')} |\n"
-                result += f"| Mean | ${targets.get('mean', 'N/A')} |\n"
-                result += f"| Median | ${targets.get('median', 'N/A')} |\n"
-                result += "\n"
-        except Exception as e:
-            logger.debug(f"No analyst price targets for {ticker}: {e}")
-
-        # 7. Recommendations Summary
-        try:
-            rec_summary = stock.recommendations_summary
-            if rec_summary is not None and not rec_summary.empty:
-                result += _df_to_markdown(rec_summary, f"Recommendations Summary: {ticker}")
-                result += "\n"
-        except Exception as e:
-            logger.debug(f"No recommendations summary for {ticker}: {e}")
-
-        if not result:
-            logger.warning(f"No analysis estimates data for {ticker}")
-            return ""
-
-        return result
-    except Exception as e:
-        logger.error(f"Error prefetching analysis estimates for {ticker}: {e}")
-        return ""
+            value = getattr(stock, key)  # Exactly one access per existing property; no retries.
+            if key == 'analyst_price_targets':
+                if isinstance(value, dict) and any(usable_target(value.get(k)) for k in ('high', 'low', 'mean', 'median')):
+                    lines = [f'### {title}: {ticker}', '', '| Metric | Value |', '|---|---|']
+                    for field in ('current', 'high', 'low', 'mean', 'median'):
+                        cell = f'${value[field]:,.2f}' if usable_target(value.get(field)) else 'N/A'
+                        lines.append(f'| {field.title()} | {cell} |')
+                    blocks.append('\n'.join(lines))
+                    states[key] = 'available'
+            elif isinstance(value, pd.DataFrame):
+                # Analyst counts or historical values alone are not forecasts.
+                columns = [c for c in value.columns if c in ('avg', 'low', 'high')]
+                relevant = value[columns] if key in ('earnings_estimate', 'revenue_estimate') else value
+                if any(usable(v) for v in relevant.to_numpy().flat):
+                    clean = value.astype(object).apply(lambda column: column.map(display))
+                    blocks.append(_df_to_markdown(clean, f'{title}: {ticker}'))
+                    states[key] = 'available'
+        except Exception as exc:  # noqa: BLE001 - independent provider failures must not discard other components
+            states[key] = 'error'
+            logger.debug('Analyst component %s unavailable for %s (%s)', key, ticker, type(exc).__name__)
+    available = sum(value == 'available' for value in states.values())
+    overall = ('complete' if available == len(components) else 'partial' if available
+               else 'error' if 'error' in states.values() else 'missing')
+    if status is not None:
+        status.update(status=overall, components=states, source='Yahoo Finance / yfinance',
+                      captured_at=captured, estimate_published_at=None)
+    header = (f'### Analyst collection status: {overall}\n'
+              f'Source: Yahoo Finance / yfinance\nCapture time (UTC): {captured}\n'
+              'Estimate publication time: unavailable (capture time is not publication time).\n'
+              'Status complete means each requested component has some usable values, not that '
+              'every field or fiscal period is verified. Missing means no usable values were '
+              'collected, not that the issuer has no estimates.\n'
+              'Fiscal/forecast period labels are provider labels, not inferred calendar dates.\n'
+              'Estimate tables retain raw provider units; growth values are not rescaled. '
+              'No direct peer data or peer average is inferred.\n' +
+              '\n'.join(f'- {key}: {value}' for key, value in states.items()))
+    if not available:
+        header += '\nNo usable analyst estimates were collected; unavailable is not zero.'
+    return header + '\n\n' + '\n\n'.join(blocks)
 
 
 def prefetch_company_profile(ticker: str) -> str:
@@ -883,9 +880,12 @@ def prefetch_us_analysis_data(ticker: str) -> dict:
         result["company_profile"] = company_profile
 
     # 7. Analysis estimates (for company_status - replaces firecrawl Analysis page)
-    analysis_estimates = prefetch_analysis_estimates(ticker)
+    analysis_status = {}
+    analysis_estimates = prefetch_analysis_estimates(ticker, status=analysis_status)
     if analysis_estimates:
         result["analysis_estimates"] = analysis_estimates
+    if analysis_status:
+        result['analysis_estimates_status'] = analysis_status
 
     # 8. Financial statements (for company_status - replaces SEC EDGAR financials)
     financial_statements = prefetch_financial_statements(ticker)

@@ -1,4 +1,4 @@
-"""Write nonsecret optional research config; does not grant TradingView rights."""
+"""Write nonsecret optional research configuration."""
 import argparse
 import json
 import os
@@ -32,8 +32,7 @@ def configure(path, enabled, timeout_seconds=60, namespace="production", market_
                "market_context_enabled": (bool(existing.get("market_context_enabled", False))
                                           if market_context_enabled is None else bool(market_context_enabled)),
                "timeout_seconds": timeout_seconds, "namespace": namespace,
-               "sources": ["perplexity_search", "firecrawl_scrape"],
-               "tradingview_status": "RIGHTS_UNCONFIRMED"}
+               "sources": ["perplexity_search", "firecrawl_scrape"]}
     if validated_symbols is not None:
         payload["validated_symbols"] = validated_symbols
     elif "validated_symbols" in existing:

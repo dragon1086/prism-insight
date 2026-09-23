@@ -1,0 +1,167 @@
+"""US report assembly contracts with all external effects replaced by test doubles."""
+import asyncio
+import builtins
+import importlib.util
+import io
+import logging
+import os
+import socket
+import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
+from types import SimpleNamespace
+
+import pandas as pd
+import pytest
+import yfinance as yf
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def isolated_imports_and_effects(monkeypatch, tmp_path):
+    """US file loaders must not change a later test's root-package resolution."""
+    prefixes = ('cores', 'trading', 'tracking', 'kis_auth', 'domestic_stock_trading',
+                'overseas_stock_trading')
+
+    def affected(name):
+        return any(name == prefix or name.startswith(prefix + '.') for prefix in prefixes)
+
+    original_path = sys.path[:]
+    original_modules = {name: module for name, module in sys.modules.items() if affected(name)}
+    monkeypatch.setenv('PYTHON_DOTENV_DISABLED', '1')
+    monkeypatch.setenv('KIS_CONFIG_ROOT', str(tmp_path))
+    forbidden = {'.env', '.env.mcp-cloud', 'kis_devlp.yaml', 'mcp_agent.secrets.yaml',
+                 'mcp-agent.secrets.yaml', 'mcp_agent.config.yaml', 'mcp-agent.config.yaml'}
+
+    def guarded_open(original):
+        def open_without_credentials(file, *args, **kwargs):
+            if isinstance(file, (str, bytes, os.PathLike)) and Path(os.fsdecode(file)).name in forbidden:
+                raise AssertionError('Credential/config access forbidden in report contract tests')
+            return original(file, *args, **kwargs)
+        return open_without_credentials
+
+    def no_network(*args, **kwargs):
+        raise AssertionError('Network access forbidden in report contract tests')
+
+    monkeypatch.setattr(builtins, 'open', guarded_open(builtins.open))
+    monkeypatch.setattr(io, 'open', guarded_open(io.open))
+    monkeypatch.setattr(socket.socket, 'connect', no_network)
+    monkeypatch.setattr(socket.socket, 'connect_ex', no_network)
+    monkeypatch.setattr(socket, 'create_connection', no_network)
+    try:
+        yield
+    finally:
+        sys.path[:] = original_path
+        for name in list(sys.modules):
+            if affected(name):
+                del sys.modules[name]
+        sys.modules.update(original_modules)
+
+
+def load(relative):
+    spec = importlib.util.spec_from_file_location('us_evidence_' + Path(relative).stem, ROOT / relative)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def analysis(monkeypatch):
+    import dotenv
+    monkeypatch.setattr(dotenv, 'load_dotenv', lambda *a, **k: None)
+    module = load('prism-us/cores/us_analysis.py')
+
+    class App:
+        def __init__(self, **kwargs):
+            pass
+
+        @asynccontextmanager
+        async def run(self):
+            yield SimpleNamespace(logger=logging.getLogger('test-us-evidence'))
+
+    monkeypatch.setattr(module, 'MCPApp', App)
+    monkeypatch.setattr(module, 'get_us_agent_directory', lambda *a, **k: {
+        name: object() for name in ('company_status', 'price_volume_analysis', 'market_index_analysis')})
+
+    async def model(*args, **kwargs):
+        return 'MODEL BODY WITHOUT COLLECTION METADATA'
+
+    async def no_sleep(*args):
+        return None
+
+    monkeypatch.setattr(module, 'generate_report', model)
+    monkeypatch.setattr(module, 'generate_market_report', model)
+    monkeypatch.setattr(module.asyncio, 'sleep', no_sleep)
+    monkeypatch.setattr(yf, 'Ticker', lambda ticker: SimpleNamespace(history=lambda **kwargs: pd.DataFrame()))
+    import prism_core.report_research_prefetch as research
+
+    async def no_research(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(research, 'prefetch_report_research', no_research)
+    return module
+
+
+@pytest.mark.parametrize('language', ['ko', 'en'])
+@pytest.mark.parametrize('state', ['complete', 'partial', 'missing', 'error', None])
+def test_actual_report_assembly_keeps_receipt_before_both_synthesis_calls(analysis, monkeypatch, language, state):
+    receipt = {'status': state, 'source': 'Yahoo Finance / yfinance',
+               'captured_at': '2026-09-23T18:00:00+00:00', 'estimate_published_at': None,
+               'components': {'earnings_estimate': 'available', 'revenue_estimate': 'error'}} if state else {}
+    original = analysis.importlib.util.spec_from_file_location
+
+    class PrefetchLoader:
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            module.prefetch_us_analysis_data = lambda ticker: {'analysis_estimates_status': receipt}
+
+    def spec_for(name, path, *args, **kwargs):
+        if name == 'us_data_prefetch':
+            return importlib.util.spec_from_loader(name, PrefetchLoader())
+        return original(name, path, *args, **kwargs)
+
+    monkeypatch.setattr(analysis.importlib.util, 'spec_from_file_location', spec_for)
+    seen = []
+
+    async def synthesis(sections, *args, **kwargs):
+        seen.append(sections['company_status'])
+        return 'SYNTHESIS OMITTED ALL RECEIPTS'
+
+    monkeypatch.setattr(analysis, 'generate_investment_strategy', synthesis)
+    monkeypatch.setattr(analysis, 'generate_summary', synthesis)
+    report = asyncio.run(analysis.analyze_us_stock('TEST', 'Example', '20260923', language, include_news=False))
+    text = analysis.render_us_analyst_receipt(receipt, language)
+    assert text in report and len(seen) == 2 and all(text in s for s in seen)
+    trading = load('prism-us/cores/agents/trading_agents.py')
+    assert 'forecast EPS' in trading.create_us_trading_scenario_agent('en').instruction
+
+
+@pytest.mark.parametrize('invalid', [None, [], 'SECRET', {'status': 'SECRET', 'source': 'SECRET',
+                                                       'captured_at': 'SECRET', 'components': {'x': 'SECRET'}}])
+def test_invalid_receipt_is_safe_and_cannot_inject_text(analysis, invalid):
+    text = analysis.render_us_analyst_receipt(invalid, 'en')
+    assert 'SECRET' not in text and 'unverified' in text.lower()
+
+
+@pytest.mark.parametrize('captured', ['2026-09-23T18:00:00', '9999-12-31T23:59:59-01:00'])
+def test_invalid_capture_time_stays_unverified(analysis, captured):
+    text = analysis.render_us_analyst_receipt({'captured_at': captured}, 'en')
+    assert 'Capture time (UTC): unverified' in text
+
+
+@pytest.mark.parametrize('language', ['ko', 'en'])
+def test_trading_prompt_finality_never_promotes_last_hour_or_cached_preclose(language):
+    trading = load('prism-us/cores/agents/trading_agents.py')
+    buy = trading.create_us_trading_scenario_agent(language).instruction
+    sell = trading.create_us_sell_decision_agent(language).instruction
+    for text in (buy, sell):
+        assert '사실상 확정' not in text and "today's data is settled" not in text
+        assert ('조기폐장' if language == 'ko' else 'early close') in text
+        assert ('마감 전 수집' if language == 'ko' else 'captured before close') in text
+        assert ('선택적' if language == 'ko' else 'optional') in text
+        assert ('회사 가이던스' if language == 'ko' else 'Company guidance') in text
+        assert ('유기적 성장' if language == 'ko' else 'organic') in text
+    assert ('확정 종가' if language == 'ko' else 'confirmed close') in sell

@@ -1,5 +1,8 @@
 # TradingView Essential 실호출 검증 결과
 
+> 역사적 기록: TradingView는 2026-09-23 사용자 결정으로 자동매매 프로젝트에서 제거합니다.
+> 현재 배포 범위는 `US_EVIDENCE_RELEASE_20260923_ko.md`를 따릅니다. 아래 내용은 당시의 조사 기록입니다.
+
 ## 범위
 
 리눅스 서버의 사용자가 승인한 OAuth로 실제 tools/list와 읽기 도구를 호출했다.

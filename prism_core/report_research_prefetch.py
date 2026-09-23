@@ -327,7 +327,7 @@ def _packet(market, symbol, day, sources, gaps, calls):
                         "recent_news_present": any(s["recent_news"] for s in payload["sources"]),
                         "sources": [{k: v for k, v in s.items() if k != "excerpt"} for s in sources],
                         "collection_complete": calls == 3 and not gaps,
-                        "tradingview": "RIGHTS_UNCONFIRMED", "competitive_complete": False}}
+                        "competitive_complete": False}}
 
 
 async def prefetch_report_research(market, symbol, reference_date, company_name="", *,

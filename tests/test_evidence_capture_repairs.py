@@ -27,12 +27,42 @@ def test_buy_prompt_reconciles_evidence_without_new_gate(market, language):
     factory = "create_trading_scenario_agent" if market == "KR" else "create_us_trading_scenario_agent"
     prompt = namespace[factory](language).instruction
     if market == "US":
-        # Permit only the reviewed flow-interpretation appendix and the explicit
-        # ownership-vs-price-volume wording repair; keep legacy rule/JSON hashes.
+        # Reverse only reviewed analyst/finality additions, then retain the
+        # original legacy-rule and JSON hashes below. Literal snapshots ensure
+        # an unrelated future appendix change cannot silently bypass this guard.
+        analyst_appendix = '''
+## 애널리스트 자료의 해석 경계
+- 보고서의 자료 확인 범위는 수집 상태입니다. 선택적 컨센서스의 미확보·오류·발표 시각 미확인을
+  긍정·부정 근거, 자동 가감점 또는 별도 매수·매도 게이트로 사용하지 마세요.
+- 예상 EPS(forecast EPS)는 실제 실적이 아니며 F1의 최근 분기 실제 영업이익 근거를 대신하지 않습니다.
+- 선택적 컨센서스 누락과 필수 재무 근거 부족은 다릅니다. 미충족·미검증 F1–F4를 통과로 꾸미지 마세요.
+- 매수 당시 보고서·저장 시나리오의 전망은 과거 전망입니다. 현재 SELL 전망으로 승격하지 마세요.
+- 수집 시각은 전망 발표 시각이 아닙니다. 기간·단위·실적/전망을 구분하고 없는 peer 평균을 만들지 마세요.
+- 회사 가이던스와 애널리스트 컨센서스, 전체 성장과 유기적 성장·인수 효과를 구분하세요.
+  원문에 없는 성장 구성을 계산하거나 같은 것으로 간주하지 마세요.
+- 기존 F1–F4, 점수, 손익비, 포지션 한도, 손절 규칙을 유지하세요.
+''' if language == 'ko' else '''
+## Analyst Evidence Interpretation
+- The report's collection scope describes collection only. Missing/error/unverified publication time
+  for optional consensus is neither positive nor negative evidence, an automatic score adjustment,
+  nor a separate buy/sell gate.
+- Expected forecast EPS is not actual earnings and cannot replace F1's recent actual operating-profit evidence.
+- This applies only to optional consensus; do not fabricate a pass for unmet or unverified required F1–F4 fundamentals.
+- Forecasts in the historical purchase report or stored scenario are historical, not current SELL forecasts.
+- Capture time is not forecast publication time. Preserve periods, units and actual/forecast distinctions;
+  do not invent peer averages. Preserve existing F1–F4, scores, R/R, position limits and stop rules.
+- Company guidance is not analyst consensus. Distinguish total, organic and acquisition-driven growth
+  when disclosed; do not fabricate a growth decomposition missing from the source.
+'''
+        assert prompt.count(analyst_appendix) == 1
+        assert prompt.endswith(analyst_appendix)
+        legacy_prompt = prompt[:-len(analyst_appendix)]
+        # Preserve the previously reviewed flow and ownership wording allowance.
         from prism_core.flow_evidence import us_flow_interpretation_contract
         appendix = us_flow_interpretation_contract(language)
-        assert prompt.endswith(appendix)
-        legacy_prompt = prompt[:-len(appendix)]
+        assert legacy_prompt.count(appendix) == 1
+        assert legacy_prompt.endswith(appendix)
+        legacy_prompt = legacy_prompt[:-len(appendix)]
         replacements = (
             [("이 값은 거래량 동반 가격 하락의 누적 경고이며, 기관 매도를 직접 관측한 값은 아닙니다.",
               "이 값이 높을수록 기관 분배가 진행 중이라는 천장 경고입니다.")]
@@ -41,6 +71,21 @@ def test_buy_prompt_reconciles_evidence_without_new_gate(market, language):
               "Distribution days (institutional selling sessions with ≥ -0.2% close on rising volume) are"),
              ("A higher count of distribution days warns of repeated price-volume weakness, not confirmed institutional selling.",
               "The HIGHER this count of distribution days, the more institutional selling is underway.")]
+        )
+        replacements += (
+            [('''- **장 후반도 실제 마감 전에는 미완성 관측값**입니다. 현재 호가는 기존 진입·수량 산정에
+  사용할 수 있으며 장중 트리거를 일괄 거절하지 마세요. 확정 종가·완성 일봉과 구분하세요.
+- 정규장·조기폐장의 실제 세션 종료와 자료 수집 시각·완결성을 함께 확인하세요. 마감 전 수집한
+  캐시를 마감 후에 읽었다고 확정봉으로 승격하지 마세요. 확정봉 판단은 실제 완료 관측에만 근거하세요.''',
+              '''- **장 후반 (마감 1시간 전 이후)**: 당일 데이터가 사실상 확정. 모든 기술적 지표를 사용해도 됩니다.
+- 분석이 미국 시장 마감 후(아침 KST)에 실행되는 경우 직전 거래일 종가 기준으로 판단하십시오.''')]
+            if language == 'ko' else
+            [('''- **The closing hour is still in-progress before actual close.** Current quotes may support existing
+  entry/sizing rules; do not blanket-reject intraday triggers. They are not confirmed closes or completed daily bars.
+- Check the actual regular/early close plus capture time and data finality. A cache captured before close
+  does not become final when read after close. Completed-bar judgments require actually completed observations.''',
+              '''- **Closing hour onward**: today's data is settled. All technical indicators are usable.
+- When the analysis runs after US market close (KST morning), use the most recent settled session.''')]
         )
         for current, previous in replacements:
             assert legacy_prompt.count(current) == 1
