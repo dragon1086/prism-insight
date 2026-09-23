@@ -14,6 +14,29 @@ def test_reference_context_keeps_quote_separate_and_unknown_not_close():
     assert 'fiscal period' in context and 'company guidance' in context
 
 
+def test_reference_context_carries_only_exact_financial_calculation_blocks():
+    from prism_core.report_financial_math import render_target_upside_calculations
+
+    calculated = render_target_upside_calculations({'target_mean': 247.4}, 234.76)
+    prefetched = {'stock_info': calculated + '\nRAW PROFILE NOT SHARED',
+                  'financial_statements': 'RAW INCOME NOT SHARED',
+                  'analysis_estimates': '| Mean target from another snapshot | 248 |'}
+    for language in ('ko', 'en'):
+        context = reference_context(prefetched, language)
+        assert '5.3842%' in context and '247.40 USD / 234.76 USD' in context
+        assert 'RAW PROFILE NOT SHARED' not in context and 'RAW INCOME NOT SHARED' not in context
+        assert '248' not in context
+    english = reference_context(prefetched, 'en')
+    assert 'different target snapshot' in english and 'stock_info' in english
+
+
+def test_optional_financial_appendix_retains_exact_record_without_mutation():
+    record = '### Code-calculated annual leverage\n| Debt / (Debt + Equity) | 47.8735% |'
+    original = {'company_status': 'READABLE STATUS'}
+    public, appendix = evidence_appendix(original, 'en', financial_reference=record)
+    assert public == original and record in appendix
+
+
 def test_shared_news_is_untrusted_evidence_not_new_tools_or_verification():
     agent = ReportAgent('status', 'BASE', ('time',))
     changed = add_shared_context(agent, 'REFERENCE', 'NEWS GUIDANCE SENTINEL', 'en')

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 import yfinance as yf
+from test_us_report_public_inputs import company_packet, macro_packet
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -155,7 +156,10 @@ def test_invalid_capture_time_stays_unverified(analysis, captured):
 
 
 def test_news_is_reused_before_financials_and_canonical_facts_reach_pdf_body(analysis, monkeypatch):
-    from prism_core.report_technical_facts import TECHNICAL_FACTS_START, TECHNICAL_FACTS_END
+    from prism_core.report_technical_facts import (
+        TECHNICAL_FACTS_END,
+        TECHNICAL_FACTS_START,
+    )
     original = analysis.importlib.util.spec_from_file_location
     canonical = 'CANONICAL SMA50 233.3818 ASOF 2026-09-21'
 
@@ -211,7 +215,10 @@ def test_news_is_reused_before_financials_and_canonical_facts_reach_pdf_body(ana
 
 def test_shared_market_cache_never_receives_ticker_specific_reference(analysis, monkeypatch):
     from prism_core.market_report_singleflight import MarketReportCache
-    from prism_core.report_technical_facts import TECHNICAL_FACTS_START, TECHNICAL_FACTS_END
+    from prism_core.report_technical_facts import (
+        TECHNICAL_FACTS_END,
+        TECHNICAL_FACTS_START,
+    )
     original = analysis.importlib.util.spec_from_file_location
 
     class Loader:
@@ -254,7 +261,6 @@ def test_shared_market_cache_never_receives_ticker_specific_reference(analysis, 
 
 
 def test_official_inputs_reach_real_factories_synthesis_and_public_report(analysis, monkeypatch):
-    from test_us_report_public_inputs import company_packet, macro_packet
     original = analysis.importlib.util.spec_from_file_location
 
     class Loader:
@@ -313,6 +319,80 @@ def test_official_inputs_reach_real_factories_synthesis_and_public_report(analys
     assert 'Official company source coverage' in report and 'Official macro source coverage' in report
     assert 'GUIDANCE_SOURCE' not in report and 'CPI_SOURCE_SENTINEL' not in report
     assert '2026-09-30' in report and '4.76%' in report
+
+
+def test_code_financial_math_reaches_real_agents_synthesis_and_appendix_without_extra_calls(analysis, monkeypatch):
+    from prism_core.report_financial_math import (
+        END,
+        START,
+        render_annual_leverage_calculations,
+        render_target_upside_calculations,
+    )
+
+    period = pd.Timestamp('2025-12-31')
+    income = pd.DataFrame({period: {'EBITDA': 2_000_000_000}})
+    balance = pd.DataFrame({period: {'Total Debt': 6_585_000_000, 'Stockholders Equity': 7_170_000_000,
+                                    'Cash And Cash Equivalents': 420_000_000}})
+    target = render_target_upside_calculations({'target_mean': 247.4}, 234.76,
+                                             'regularMarketPrice', '2026-09-23T16:00:00Z', 'dated_recent')
+    leverage = render_annual_leverage_calculations(income, balance)
+    assert START in target and END in leverage
+    original = analysis.importlib.util.spec_from_file_location
+
+    class Loader:
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            module.prefetch_us_analysis_data = lambda ticker: {
+                'stock_info': target + '\n| Current Price | $234.76 |',
+                'financial_statements': leverage + '\nRAW_FINANCIALS_NOT_A_SHARED_RECORD',
+                'company_profile': 'PROFILE', 'analysis_estimates': 'ESTIMATES',
+                'stock_ohlcv': 'OHLCV', 'market_indices': {'SPY': 'INDEX_ONLY'}}
+
+    def spec_for(name, path, *args, **kwargs):
+        if name == 'us_data_prefetch':
+            return importlib.util.spec_from_loader(name, Loader())
+        return original(name, path, *args, **kwargs)
+
+    monkeypatch.setattr(analysis.importlib.util, 'spec_from_file_location', spec_for)
+    monkeypatch.setattr(analysis, 'get_us_agent_directory', analysis._us_agents_module.get_us_agent_directory)
+    calls = []
+
+    def assert_math(text):
+        assert '5.3842%' in text and '47.8735%' in text
+        assert '247.40 USD / 234.76 USD' in text and '2025-12-31' in text
+
+    async def section(agent, name, *args, **kwargs):
+        calls.append(name)
+        if name in ('company_status', 'company_overview'):
+            assert_math(agent.instruction)
+        if name == 'market_index_analysis':
+            assert '5.3842%' not in agent.instruction  # Shared market cache is not ticker-specific.
+        return 'MODEL PROSE DELIBERATELY OMITS CALCULATION RECORDS'
+
+    async def strategy(sections, combined, *args, **kwargs):
+        calls.append('strategy')
+        assert_math(sections['shared_reference'])
+        assert_math(combined)
+        assert 'RAW_FINANCIALS_NOT_A_SHARED_RECORD' not in sections['shared_reference']
+        return 'STRATEGY WITHOUT CALCULATIONS'
+
+    async def summary(sections, *args, **kwargs):
+        calls.append('summary')
+        assert_math(sections['shared_reference'])
+        return 'SUMMARY WITHOUT CALCULATIONS'
+
+    monkeypatch.setattr(analysis, 'generate_report', section)
+    monkeypatch.setattr(analysis, 'generate_market_report', section)
+    monkeypatch.setattr(analysis, 'generate_investment_strategy', strategy)
+    monkeypatch.setattr(analysis, 'generate_summary', summary)
+    report = asyncio.run(analysis.analyze_us_stock('TEST', 'Example', '20260923', 'en'))
+    assert len(calls) == 8 and len(set(calls)) == 8
+    appendix = report.split('## Appendix:', 1)[1]
+    assert_math(appendix)
+    assert 'RAW_FINANCIALS_NOT_A_SHARED_RECORD' not in appendix
+    assert START not in appendix and END not in appendix
 
 
 @pytest.mark.parametrize('language', ['ko', 'en'])
