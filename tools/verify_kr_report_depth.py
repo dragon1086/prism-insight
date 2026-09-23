@@ -23,7 +23,12 @@ def reviewed_chapter(directory, packet, *, company_code, reference_date, peer_co
     Reuses just source-only DART prose, not prior market/technical/synthesis
     stages. Fail instead of silently regenerating when the source basis changes.
     """
-    from cores.dart_deep_analysis import CHAPTER_END, CHAPTER_START, _checked_prose, _source_urls
+    from cores.dart_deep_analysis import (
+        CHAPTER_END,
+        CHAPTER_START,
+        _checked_prose,
+        _source_urls,
+    )
     from report_model_config import DART_REPORT_EFFORT, DART_REPORT_MODEL
 
     receipt = json.loads((directory / 'generation_receipt.json').read_text(encoding='utf-8'))['receipt']
@@ -162,7 +167,7 @@ def main():
             [args.peer_source_report.read_text(encoding='utf-8')], args.ticker, _report_stock_names())
         packet = asyncio.run(original_peers(args.ticker, args.company, candidates, args.date))
         save_json('peer_receipt.json', {**packet['private_receipt'], 'probe': {
-            'reference_date': datetime.strptime(args.date, '%Y%m%d').date().isoformat(),
+            'reference_date': datetime.strptime(args.date, '%Y%m%d').replace(tzinfo=ZoneInfo('Asia/Seoul')).date().isoformat(),
             'observed_at': datetime.now(ZoneInfo('Asia/Seoul')).isoformat(),
             'provider': 'native Firecrawl MCP', 'source_report': str(args.peer_source_report),
             'candidates': candidates}})
