@@ -76,11 +76,11 @@ def writer_agent(role, company_name, company_code, reference_date, language='ko'
 async def _write(agent, message):
     from cores.llm.ports import AgentSpec, LLMParams
     from cores.report_generation import _get_report_backend
-    from report_model_config import REPORT_EFFORT, REPORT_MODEL
+    from report_model_config import DART_REPORT_EFFORT, DART_REPORT_MODEL
 
     result = await _get_report_backend().run(AgentSpec(
-        name=agent.name, instructions=agent.instruction, model=REPORT_MODEL,
-        mcp_servers=(), params=LLMParams(max_tokens=16000, reasoning_effort=REPORT_EFFORT,
+        name=agent.name, instructions=agent.instruction, model=DART_REPORT_MODEL,
+        mcp_servers=(), params=LLMParams(max_tokens=16000, reasoning_effort=DART_REPORT_EFFORT,
                                       parallel_tool_calls=False, max_iterations=1)), message)
     return result.text, result.usage
 
@@ -130,7 +130,7 @@ async def generate_dart_chapter(packet, *, company_name, company_code, reference
             or max(sizes) > WRITER_MAX_BYTES or sum(sizes) > TOTAL_MAX_BYTES):
         raise ValueError('DART source conservation or capacity check failed')
     limit = max(1, min(3, int(concurrency)))
-    from report_model_config import REPORT_EFFORT, REPORT_MODEL
+    from report_model_config import DART_REPORT_EFFORT, DART_REPORT_MODEL
     semaphore = asyncio.Semaphore(limit)
     receipts = {}
     logger = logging.getLogger(__name__)
@@ -150,7 +150,7 @@ async def generate_dart_chapter(packet, *, company_name, company_code, reference
             text, usage = await _write(agent, message)
             text = _checked_prose(text, source_urls[role])
             receipts[role] = {'input_bytes': len((agent.instruction + message).encode()),
-                              'model': REPORT_MODEL, 'reasoning_effort': REPORT_EFFORT,
+                              'model': DART_REPORT_MODEL, 'reasoning_effort': DART_REPORT_EFFORT,
                               'output_chars': len(text), 'elapsed_seconds': round(time.monotonic() - started, 3),
                               'usage': {key: usage.get(key) for key in ('input_tokens', 'output_tokens', 'total_tokens')}
                               if isinstance(usage, dict) else None}

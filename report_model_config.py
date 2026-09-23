@@ -5,11 +5,15 @@ from __future__ import annotations
 import os
 import re
 
-
 REPORT_MODEL = os.environ.get("REPORT_MODEL", "gpt-5.6-luna")
 REPORT_EFFORT = os.environ.get("REPORT_EFFORT", "medium")
 REPORT_AUX_MODEL = os.environ.get("REPORT_AUX_MODEL", REPORT_MODEL)
 REPORT_AUX_EFFORT = os.environ.get("REPORT_AUX_EFFORT", "low")
+# Filing tables mix comparative periods and hierarchical accounting scopes.
+# Keep the existing eight general report stages unchanged; specialize only the
+# three tool-free filing writers after the documented small-model failures.
+DART_REPORT_MODEL = os.environ.get("DART_REPORT_MODEL", "gpt-6-astra")
+DART_REPORT_EFFORT = os.environ.get("DART_REPORT_EFFORT", "low")
 
 
 def report_model_slug(model: str | None = None) -> str:
@@ -20,6 +24,8 @@ def report_model_slug(model: str | None = None) -> str:
 
 
 __all__ = [
+    "DART_REPORT_EFFORT",
+    "DART_REPORT_MODEL",
     "REPORT_AUX_EFFORT",
     "REPORT_AUX_MODEL",
     "REPORT_EFFORT",

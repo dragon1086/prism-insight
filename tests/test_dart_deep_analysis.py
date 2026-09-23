@@ -18,6 +18,31 @@ def test_writer_contract_covers_observed_period_and_accounting_failure_classes()
             assert boundary in instruction
 
 
+def test_dart_writer_uses_specialized_model_without_changing_general_report(monkeypatch):
+    from types import SimpleNamespace
+
+    import report_model_config
+    from cores import report_generation
+
+    captured = []
+
+    class Backend:
+        async def run(self, spec, message):
+            captured.append(spec)
+            return SimpleNamespace(text='draft', usage=None)
+
+    monkeypatch.setattr(report_model_config, 'REPORT_MODEL', 'unchanged-general-model')
+    monkeypatch.setattr(report_model_config, 'DART_REPORT_MODEL', 'gpt-6-astra')
+    monkeypatch.setattr(report_model_config, 'DART_REPORT_EFFORT', 'low')
+    monkeypatch.setattr(report_generation, '_get_report_backend', lambda: Backend())
+    assert asyncio.run(depth._write(depth.writer_agent('finance', '예시', '123456', '20260924'), 'source')) == ('draft', None)
+    assert captured[0].model == 'gpt-6-astra'
+    assert captured[0].params.reasoning_effort == 'low'
+    assert captured[0].params.max_iterations == 1
+    assert not captured[0].mcp_servers
+    assert report_model_config.REPORT_MODEL == 'unchanged-general-model'
+
+
 def packet():
     return {'ready': True, 'contexts': {key: json.dumps({'sources': [{'source': {'url': SOURCE_URL},
                                          'catalog': 'SOURCE_' + key}]}) for key in depth.ROLES},

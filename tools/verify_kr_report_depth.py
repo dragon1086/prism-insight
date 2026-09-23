@@ -24,13 +24,15 @@ def main():
     parser.add_argument('--company', required=True)
     parser.add_argument('--date', default=datetime.now(ZoneInfo('Asia/Seoul')).strftime('%Y%m%d'))
     parser.add_argument('--run-model', action='store_true')
+    parser.add_argument('--peer-source-report', type=Path,
+                        help='Read-only peer smoke from an existing report, without model calls')
     parser.add_argument('--replay-inputs', type=Path,
                         help='Reuse a saved chapter packet; run only the three DART writers')
     parser.add_argument('--peer-receipt', type=Path,
                         help='Optional same-day peer receipt for chapter-only replay')
     args = parser.parse_args()
-    if not args.run_model:
-        parser.error('Explicit --run-model is required; no implicit model run')
+    if bool(args.run_model) == bool(args.peer_source_report):
+        parser.error('Choose --run-model or --peer-source-report; never both')
     operational = args.operational_root.resolve()
     output = args.output.resolve()
     if not output.is_relative_to(operational / 'runtime' / 'report_validation'):
@@ -41,6 +43,9 @@ def main():
     if args.peer_receipt and (not args.replay_inputs or not args.peer_receipt.resolve().is_relative_to(
             operational / 'runtime' / 'report_validation')):
         parser.error('Peer receipt is only supported inside an isolated chapter replay')
+    if args.peer_source_report and (args.replay_inputs or not args.peer_source_report.resolve().is_relative_to(
+            operational / 'runtime' / 'report_validation')):
+        parser.error('Peer smoke source must be an isolated validation report')
     output.mkdir(parents=True, exist_ok=False)
 
     from dotenv import load_dotenv
@@ -106,6 +111,20 @@ def main():
     dart_deep_analysis._write = write
     kr_peer_comparison.collect_peer_comparison = peers
     started = time.monotonic()
+    if args.peer_source_report:
+        from cores.analysis import _report_stock_names
+        candidates = kr_peer_comparison.select_report_peer_candidates(
+            [args.peer_source_report.read_text(encoding='utf-8')], args.ticker, _report_stock_names())
+        packet = asyncio.run(original_peers(args.ticker, args.company, candidates, args.date))
+        save_json('peer_receipt.json', packet['private_receipt'])
+        (output / 'peer_comparison.md').write_text(packet['public_markdown'], encoding='utf-8')
+        print(json.dumps({'status': packet['private_receipt']['status'], 'candidates': len(candidates),
+                          'requested': packet['private_receipt'].get('requested', 0),
+                          'received': packet['private_receipt'].get('received', 0),
+                          'model_calls': 0, 'elapsed_seconds': round(time.monotonic() - started, 2)}))
+        if packet['private_receipt']['status'] != 'available':
+            raise RuntimeError('Native peer smoke did not produce a comparable peer snapshot')
+        return
     if args.replay_inputs:
         from prism_core.dart_chapter_sources import enrich_dart_chapter_inputs
         packet = enrich_dart_chapter_inputs(json.loads(args.replay_inputs.read_text(encoding='utf-8')))
