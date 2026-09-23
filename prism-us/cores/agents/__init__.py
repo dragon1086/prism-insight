@@ -138,6 +138,8 @@ def get_us_agent_directory(
             if pf.get("report_research"):
                 from prism_core.report_research_context import apply_section_research
                 agent = apply_section_research(agent, section, pf, reference_date, language)
+            from prism_core.us_report_public_inputs import apply_public_report_inputs
+            agent = apply_public_report_inputs(agent, section, pf, language)
             agents[section] = agent
 
     return agents

@@ -73,7 +73,7 @@ def _get_us_data_client():
     return module.USDataClient()
 
 
-def prefetch_us_stock_ohlcv(ticker: str, period: str = "1y") -> str:
+def prefetch_us_stock_ohlcv(ticker: str, period: str = "1y", metadata: dict | None = None) -> str:
     """Prefetch US stock OHLCV data using yfinance.
 
     Args:
@@ -85,35 +85,61 @@ def prefetch_us_stock_ohlcv(ticker: str, period: str = "1y") -> str:
     """
     try:
         client = _get_us_data_client()
-        df = client.get_ohlcv(ticker, period=period, interval="1d")
+        # Report-only raw OHLCV: preserve raw O/H/L when adjustment factors are
+        # missing. Shared screening/trading callers retain provider defaults.
+        df = client.get_ohlcv(ticker, period=period, interval="1d", auto_adjust=False)
 
         if df is None or df.empty:
             logger.warning(f"No OHLCV data for {ticker}")
             return ""
 
         # Calculate before display formatting, from this exact provider snapshot.
-        technical_facts = render_report_technical_facts(df)
+        technical_facts = render_report_technical_facts(df, unit="index points" if ticker.startswith('^') else "USD")
         df = df.sort_index().copy()
         # Reuse this exact fetch; no extra network/LLM call for flow context.
         try:
-            flow_facts = render_flow_evidence(compute_us_flow_evidence(
-                df, asof_utc=pd.Timestamp.now(tz="UTC")))
+            now = pd.Timestamp.now(tz="UTC")
+            current_flow = compute_us_flow_evidence(df, asof_utc=now)
+            flow_facts = render_flow_evidence(current_flow)
+            # Preserve a dated historical window when the newest source row is
+            # incomplete. Never relabel it as today's flow or institutional trades.
+            if any(m.get("status") == "MISSING" for m in current_flow["metrics"].values()):
+                columns = ["open", "high", "low", "close", "volume"]
+                if all(c in df.columns for c in columns) and not df.columns.duplicated().any():
+                    numeric = df[columns].apply(pd.to_numeric, errors="coerce")
+                    valid = np.isfinite(numeric).all(axis=1) & (numeric[columns[:4]] > 0).all(axis=1) & (numeric.volume >= 0)
+                    historical = df.loc[valid]
+                    if not historical.empty:
+                        date = pd.Timestamp(historical.index[-1]).date()
+                        cutoff = (pd.Timestamp(date, tz="America/New_York") + pd.Timedelta(days=1)).tz_convert("UTC")
+                        if cutoff < now:
+                            older_flow = compute_us_flow_evidence(df, asof_utc=cutoff)
+                            if any(m.get("status") == "computed" for m in older_flow["metrics"].values()):
+                                flow_facts += ("\nHistorical price-volume proxy window only / 과거 가격·거래량 참고 지표. "
+                                               "Not current flow or institutional net buying; no new signal credit.\n"
+                                               + render_flow_evidence(older_flow))
         except Exception:
             # Optional context must not suppress the existing price input.
             flow_facts = "\nFlow evidence: MISSING (calculation_unavailable)\n"
         # Capitalize column names for readability
         df.columns = [col.title().replace("_", " ") for col in df.columns]
         df.index.name = "Date"
+        if metadata is not None:
+            metadata['_report_ohlcv_frame'] = df.copy(deep=True)
 
         # yfinance returns a Close column but no per-row finality attestation.
         # Supply provenance next to the table rather than relying on prose caveats.
         observation_note = (
             "\nOHLCV observation metadata: source=yfinance; interval=1d; "
+            "price_basis=provider_unadjusted_close; auto_adjust=False; "
             f"fetched_at_utc={datetime.now(ZoneInfo('UTC')).isoformat()}; "
             f"latest_row_date={df.index[-1]}; latest_row_finality=BAR_FINALITY_UNKNOWN. "
             "The fetch time and Close column are not proof that the latest session closed. "
             "Describe the latest row as an observed price/volume unless separate explicit "
-            "finality evidence exists; this does not invalidate confirmed historical bars.\n"
+            "finality evidence exists; this does not invalidate confirmed historical bars. "
+            "Missing Close remains missing, never replaced by an intraday quote. Raw prices "
+            "are not total-return adjusted; splits/corporate actions can affect comparisons. "
+            "No independent provider Close recovery was attempted; remaining gaps are source limitations.\n"
         )
         return technical_facts + observation_note + _df_to_markdown(df, f"OHLCV: {ticker} ({period})") + flow_facts
     except Exception as e:
@@ -201,7 +227,7 @@ def prefetch_us_market_indices(reference_date: str = None) -> dict:
     return result
 
 
-def prefetch_stock_info(ticker: str) -> str:
+def prefetch_stock_info(ticker: str, metadata: dict | None = None) -> str:
     """Prefetch company info and key statistics via yfinance.
 
     Replaces yahoo_finance MCP get_stock_info call and
@@ -220,6 +246,9 @@ def prefetch_stock_info(ticker: str) -> str:
         if not info or not info.get("name"):
             logger.warning(f"No company info for {ticker}")
             return ""
+
+        if metadata is not None:
+            metadata['company_website'] = info.get('website')
 
         def _fmt(val, fmt_type="default"):
             if (val is None or val is pd.NA or isinstance(val, (bool, np.bool_))
@@ -276,7 +305,53 @@ def prefetch_stock_info(ticker: str) -> str:
 
         result += "#### Trading Information\n\n"
         result += "| Metric | Value |\n|--------|-------|\n"
+        regular_price = info.get('regular_market_price')
+        regular_time = info.get('regular_market_time')
+        now_utc = datetime.now(timezone.utc)
+
+        def quote_datetime(value):
+            if (not isinstance(value, Real) or isinstance(value, (bool, np.bool_))
+                    or not np.isfinite(value) or value <= 0):
+                return None
+            try:
+                timestamp = datetime.fromtimestamp(value, tz=timezone.utc)
+                return timestamp if timestamp <= now_utc + timedelta(minutes=5) else None
+            except (ValueError, OverflowError, OSError):
+                return None
+
+        regular_datetime = quote_datetime(regular_time)
+        regular_recent = regular_datetime is not None and regular_datetime >= now_utc - timedelta(days=7)
+        dated_regular = all(isinstance(value, Real) and not isinstance(value, (bool, np.bool_))
+                            and np.isfinite(value) and value > 0
+                            for value in (regular_price,)) and regular_recent
+        # Select only the report reference, leaving USDataClient.price and all
+        # execution consumers unchanged. A timestamp is never transferred between fields.
+        reference_price = regular_price if dated_regular else info.get('price')
+        reference_source = 'regularMarketPrice' if dated_regular else info.get('price_field_source')
+        reference_datetime = regular_datetime if dated_regular else quote_datetime(info.get('price_market_time'))
+        if not dated_regular and reference_source == 'regularMarketPrice':
+            # The client fallback can itself be the same stale regular quote.
+            reference_price = None
+            reference_datetime = None
+        reference_time = (regular_time if dated_regular else info.get('price_market_time')) if reference_datetime else None
+        result += f"| Report reference price (dated regular quote preferred) | {_fmt(reference_price, 'target_price')} |\n"
+        result += f"| Report reference field / market timestamp (Unix seconds) | {reference_source or 'N/A'} / {_fmt(reference_time)} |\n"
+        result += f"| Report reference market time UTC | {reference_datetime.isoformat() if reference_datetime else 'N/A'} |\n"
+        result += "| Report reference freshness rule | regularMarketPrice timestamp within 7 calendar days and at most 5 minutes future; undated currentPrice freshness is UNKNOWN |\n"
+        result += f"| Report reference freshness status | {'dated_recent_within_7_calendar_days' if dated_regular else 'UNKNOWN_or_unavailable; not certified fresh'} |\n"
+        try:
+            exchange_zone = ZoneInfo(info.get('exchange_timezone') or '')
+        except (KeyError, ValueError, TypeError):
+            exchange_zone = None
+        local_time = reference_datetime.astimezone(exchange_zone).isoformat() if reference_datetime and exchange_zone else 'N/A (valid exchange timezone unavailable)'
+        result += f"| Report reference exchange-local market time | {local_time} |\n"
         result += f"| Current Price | {_fmt(info.get('price'), 'target_price')} |\n"
+        result += f"| Price field source | {info.get('price_field_source') or 'N/A'} |\n"
+        result += f"| Capture time UTC (not quote time) | {info.get('captured_at_utc') or 'N/A'} |\n"
+        result += f"| Selected price market timestamp (Unix seconds) | {_fmt(info.get('price_market_time'))} |\n"
+        result += f"| regularMarketPrice (separate observation) | {_fmt(info.get('regular_market_price'), 'target_price')} |\n"
+        result += f"| regularMarketTime (Unix seconds; regularMarketPrice only) | {_fmt(info.get('regular_market_time'))} |\n"
+        result += f"| Market state / exchange timezone | {info.get('market_state') or 'N/A'} / {info.get('exchange_timezone') or 'N/A'} |\n"
         result += f"| Previous Close | {_fmt(info.get('previous_close'), 'target_price')} |\n"
         result += f"| Beta | {_fmt(info.get('beta'), 'ratio')} |\n"
         result += f"| 52-Week High | {_fmt(info.get('fifty_two_week_high'), 'target_price')} |\n"
@@ -291,9 +366,18 @@ def prefetch_stock_info(ticker: str) -> str:
 
         result += "#### Dividend Info\n\n"
         result += "| Metric | Value |\n|--------|-------|\n"
-        result += f"| Dividend Rate | {_fmt(info.get('dividend_rate'), 'currency')} |\n"
+        annual_dividend = info.get('dividend_rate')
+        quote = reference_price
+        valid_dividend = (isinstance(annual_dividend, Real) and not isinstance(annual_dividend, (bool, np.bool_))
+                          and np.isfinite(annual_dividend) and annual_dividend >= 0)
+        valid_quote = (isinstance(quote, Real) and not isinstance(quote, (bool, np.bool_))
+                       and np.isfinite(quote) and quote > 0)
+        annual_yield = annual_dividend / quote if valid_dividend and valid_quote else None
+        result += f"| Annual dividendRate (USD/share/year, provider indicated) | {_fmt(annual_dividend if valid_dividend else None, 'currency')} |\n"
+        result += f"| Indicated annualized dividend yield (dividendRate / report reference price) | {_fmt(annual_yield, 'percent')} |\n"
         result += f"| Dividend Yield (provider raw; unit unverified) | {_fmt(info.get('dividend_yield'))} |\n"
         result += f"| Payout Ratio | {_fmt(info.get('payout_ratio'), 'percent')} |\n"
+        result += "\nAnnualized yield is a calculation from provider indicated annual dividend per share, not realized trailing yield or a guaranteed payment. Quote capture/market timestamps do not certify a final session Close.\n"
         result += "\n"
 
         result += "#### Analyst Targets\n\n"
@@ -449,7 +533,9 @@ def prefetch_company_profile(ticker: str) -> str:
         result += f"| Industry | {info.get('industry', 'N/A')} |\n"
         result += f"| Website | {info.get('website', 'N/A')} |\n"
         employees = info.get('fullTimeEmployees')
-        result += f"| Full-Time Employees | {employees:,} |\n" if employees else "| Full-Time Employees | N/A |\n"
+        valid_employees = (isinstance(employees, Real) and not isinstance(employees, (bool, np.bool_))
+                           and np.isfinite(employees) and employees >= 0)
+        result += f"| Full-Time Employees (상근 직원, 전체 인력 아님) | {employees:,.0f} |\n" if valid_employees else "| Full-Time Employees (상근 직원, 전체 인력 아님) | N/A |\n"
         city = info.get('city', '')
         state = info.get('state', '')
         country = info.get('country', '')
@@ -735,7 +821,7 @@ def _parse_10k_segment_revenue(html_content: str) -> str:
             "| Dimensions | Revenue concept | Actual period | Revenue (USD) |\n"
             "|---|---|---|---|\n" + "\n".join(rows[:80]) + "\n")
 
-def prefetch_segment_revenue(ticker: str) -> str:
+def prefetch_segment_revenue(ticker: str, filings=None) -> str:
     """Prefetch segment revenue data from latest 10-K filing via Yahoo Finance CDN.
 
     Uses yfinance sec_filings to find 10-K URL, downloads XBRL inline HTML from
@@ -752,8 +838,8 @@ def prefetch_segment_revenue(ticker: str) -> str:
         import urllib.request
         from urllib.parse import urlsplit
 
-        stock = yf.Ticker(ticker)
-        filings = stock.sec_filings
+        if filings is None:
+            filings = yf.Ticker(ticker).sec_filings
 
         if not filings:
             logger.warning(f"No SEC filings for {ticker}")
@@ -829,7 +915,7 @@ def prefetch_us_analysis_data(ticker: str) -> dict:
     result = {}
 
     # 1. Stock OHLCV
-    stock_ohlcv = prefetch_us_stock_ohlcv(ticker, period="1y")
+    stock_ohlcv = prefetch_us_stock_ohlcv(ticker, period="1y", metadata=result)
     if stock_ohlcv:
         result["stock_ohlcv"] = stock_ohlcv
 
@@ -844,9 +930,11 @@ def prefetch_us_analysis_data(ticker: str) -> dict:
         result["market_indices"] = market_indices
 
     # 4. Stock info (for company_status - replaces key-statistics/financials firecrawl + yahoo_finance MCP)
-    stock_info = prefetch_stock_info(ticker)
+    company_metadata = {}
+    stock_info = prefetch_stock_info(ticker, metadata=company_metadata)
     if stock_info:
         result["stock_info"] = stock_info
+    result['_company_website'] = company_metadata.get('company_website')
 
     # 5. Recommendations (for company_status - replaces yahoo_finance MCP get_recommendations)
     recommendations = prefetch_recommendations(ticker)
@@ -872,7 +960,13 @@ def prefetch_us_analysis_data(ticker: str) -> dict:
         result["financial_statements"] = financial_statements
 
     # 9. Segment revenue (for company_overview - parsed from 10-K XBRL via Yahoo Finance CDN)
-    segment_revenue = prefetch_segment_revenue(ticker)
+    try:
+        import yfinance as yf
+        filings = yf.Ticker(ticker).sec_filings or []
+    except Exception:
+        filings = []
+    result['_sec_filings'] = filings
+    segment_revenue = prefetch_segment_revenue(ticker, filings=filings)
     if segment_revenue:
         result["segment_revenue"] = segment_revenue
 
