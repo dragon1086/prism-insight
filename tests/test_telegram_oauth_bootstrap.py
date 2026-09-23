@@ -76,7 +76,7 @@ def test_report_proxy_reloads_host_token_and_never_refreshes(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     manager = module.create_report_token_manager()
-    current = {'access_token': 'synthetic-first', 'expires_at': time.time() + 3600}
+    current = {'access_token': 'synthetic-first', 'account_id': 'first-account', 'expires_at': time.time() + 3600}
     monkeypatch.setattr(manager, '_load_from_disk', lambda: dict(current))
 
     async def forbidden(*args):
@@ -86,10 +86,16 @@ def test_report_proxy_reloads_host_token_and_never_refreshes(monkeypatch):
 
     async def run():
         assert await manager.get_token() == 'synthetic-first'
+        current['account_id'] = 'rotated-account'
+        assert await manager.get_account_id() == 'first-account'
         current['access_token'] = 'synthetic-rotated'
         assert await manager.get_token() == 'synthetic-rotated'
-        current['expires_at'] = 0
-        with pytest.raises(ChatGPTAuthExpiredError):
-            await manager.get_token()
+        assert await manager.get_account_id() == 'rotated-account'
+        for expiry in (0, float('nan'), float('inf'), True, 'invalid'):
+            current['expires_at'] = expiry
+            with pytest.raises(ChatGPTAuthExpiredError):
+                await manager.get_token()
+            with pytest.raises(ChatGPTAuthExpiredError):
+                await manager.get_account_id()
 
     asyncio.run(run())
