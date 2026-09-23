@@ -28,7 +28,7 @@ def _operand(value, minimum_decimals=0):
 
 
 def _block(title, rows, note):
-    return '\n'.join([START, '### ' + title, note, '| Calculation | Value | Input basis / formula |',
+    return '\n'.join([START, '### ' + title, note, '', '| Calculation | Value | Input basis / formula |',
                       '|---|---|---|', *['| ' + ' | '.join(row) + ' |' for row in rows], END]) + '\n\n'
 
 

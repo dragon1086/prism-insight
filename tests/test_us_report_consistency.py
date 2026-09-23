@@ -10,6 +10,8 @@ from prism_core.us_report_consistency import (
 def test_reference_context_keeps_quote_separate_and_unknown_not_close():
     context = reference_context({'stock_info': '| Current Price | $234.76 |\n| Previous Close | $244.88 |'}, 'en')
     assert '$234.76' in context and 'observed quote' in context
+    assert 'label its basis unverified' in context
+    assert '같거나 다르다고 단정하지' in reference_context({}, 'ko')
     assert 'not a confirmed close' in context
     assert 'fiscal period' in context and 'company guidance' in context
 
