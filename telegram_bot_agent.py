@@ -235,7 +235,7 @@ class TelegramBotAgent:
             logger.error(f"Telegram photo send failed: {e}")
             return False
 
-    async def process_messages_directory(self, directory, chat_id, sent_dir=None, msg_type=None):
+    async def process_messages_directory(self, directory, chat_id, sent_dir=None, msg_type=None, message_paths=None):
         """
         Process and send all Telegram message files in directory
 
@@ -255,7 +255,22 @@ class TelegramBotAgent:
             return success_count
 
         # Find Telegram message files (.txt files only)
-        message_files = list(dir_path.glob("*_telegram.txt"))
+        if message_paths is None:
+            message_files = list(dir_path.glob("*_telegram.txt"))
+        else:
+            # A batch must never drain unrelated messages left by an older run.
+            root = dir_path.resolve()
+            message_files = []
+            seen = set()
+            for raw_path in message_paths:
+                path = Path(raw_path)
+                resolved = path.resolve()
+                if (resolved.parent != root or path.is_symlink()
+                        or not path.name.endswith("_telegram.txt")
+                        or not path.is_file() or resolved in seen):
+                    continue
+                seen.add(resolved)
+                message_files.append(path)
 
         if not message_files:
             logger.warning(f"No message files to send: {directory}")

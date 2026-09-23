@@ -35,6 +35,9 @@ from messaging.batch_campaign_publisher import (  # noqa: E402
     publish_batch_reports_best_effort,
     publish_batch_tracking_story_best_effort,
 )
+from prism_core.batch_run_status import (
+    batch_status_message, fresh_result_metadata, result_fingerprint,
+)
 
 # Logger configuration
 logging.basicConfig(
@@ -633,21 +636,22 @@ class StockAnalysisOrchestrator:
         message_paths = []
         for report_pdf_path in report_pdf_paths:
             try:
-                # Generate telegram message
-                await generator.process_report(str(report_pdf_path), str(TELEGRAM_MSGS_DIR), to_lang=language)
-
-                # Estimate generated message file path
+                # The generator can fail silently. An unchanged previous
+                # batch's same-company summary is not this report's result.
                 report_file = Path(report_pdf_path)
                 ticker = report_file.stem.split('_')[0]
                 company_name = report_file.stem.split('_')[1]
-
                 message_path = TELEGRAM_MSGS_DIR / f"{ticker}_{company_name}_telegram.txt"
+                previous_message = result_fingerprint(message_path)
 
-                if message_path.exists():
+                await generator.process_report(str(report_pdf_path), str(TELEGRAM_MSGS_DIR), to_lang=language)
+                current_message = result_fingerprint(message_path)
+
+                if current_message is not None and current_message != previous_message:
                     logger.info(f"Telegram message generation complete: {message_path}")
                     message_paths.append(message_path)
                 else:
-                    logger.warning(f"Telegram message file not found at expected path: {message_path}")
+                    logger.warning(f"No fresh Telegram message generated at expected path: {message_path}")
 
             except Exception as e:
                 logger.error(f"Error during telegram message generation for {report_pdf_path}: {str(e)}")
@@ -701,7 +705,7 @@ class StockAnalysisOrchestrator:
                 str(TELEGRAM_MSGS_DIR),
                 chat_id,
                 str(TELEGRAM_MSGS_DIR / "sent"),
-                msg_type="analysis"
+                msg_type="analysis", message_paths=message_paths,
             )
 
             # Send PDF files to main channel
@@ -947,7 +951,7 @@ class StockAnalysisOrchestrator:
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def send_trigger_alert(self, mode, trigger_results_file, language: str = "ko"):
+    async def send_trigger_alert(self, mode, trigger_results_file, language: str = "ko", *, status_message=None):
         """
         Send trigger execution result information to telegram channel immediately
 
@@ -964,6 +968,16 @@ class StockAnalysisOrchestrator:
         logger.info(f"Starting Prism Signal alert transmission - mode: {mode}, language: {language}")
 
         try:
+            if status_message is not None:
+                # Deterministic operational notices require neither a result
+                # file nor another model/translation request.
+                if not self.telegram_config.channel_id:
+                    return False
+                from telegram_bot_agent import TelegramBotAgent
+                self._campaign_messages[mode] = status_message
+                return await TelegramBotAgent().send_message(
+                    self.telegram_config.channel_id, status_message, msg_type="trigger",
+                )
             # Read JSON file
             with open(trigger_results_file, 'r', encoding='utf-8') as f:
                 results = json.load(f)
@@ -1233,6 +1247,7 @@ class StockAnalysisOrchestrator:
         """
         logger.info(f"Starting full pipeline - mode: {mode}")
         campaign_trade_date = datetime.now().strftime("%Y%m%d")
+        results_file = f"trigger_results_{mode}_{campaign_trade_date}.json"
         from observability.micro_split import (
             begin_shadow_batch, complete_shadow_batch, end_shadow_batch,
         )
@@ -1255,11 +1270,20 @@ class StockAnalysisOrchestrator:
                 logger.warning("Macro intelligence unavailable - proceeding without macro context")
 
             # 1. Execute trigger batch - changed to async method (improved asyncio resource management)
-            results_file = f"trigger_results_{mode}_{datetime.now().strftime('%Y%m%d')}.json"
+            previous_result = result_fingerprint(results_file)
             tickers = await self.run_trigger_batch(mode, macro_context=macro_context)
 
             if not tickers:
                 logger.warning("No stocks selected. Terminating process.")
+                message = batch_status_message(
+                    "KR", mode, campaign_trade_date, "no_candidates",
+                    metadata=fresh_result_metadata(results_file, previous_result), language=language,
+                )
+                await self.send_trigger_alert(mode, results_file, language, status_message=message)
+                await publish_batch_campaign_best_effort(
+                    market="KR", session=mode, trade_date=campaign_trade_date,
+                    regime=campaign_regime, status=SKIPPED, candidates=[], display_message=message,
+                )
                 return
 
             # 1-1. Send trigger results to telegram immediately
@@ -1289,6 +1313,12 @@ class StockAnalysisOrchestrator:
             report_paths = await self.generate_reports(tickers, mode, timeout=600, language=language, macro_context=macro_context)
             if not report_paths:
                 logger.warning("No reports generated. Terminating process.")
+                await self.send_trigger_alert(
+                    mode, results_file, language, status_message=batch_status_message(
+                        "KR", mode, campaign_trade_date, "report_failed", language=language,
+                        selected_count=len(tickers),
+                    ),
+                )
                 return
 
             # Archive ingest (fire-and-forget, does not block pipeline)
@@ -1300,6 +1330,14 @@ class StockAnalysisOrchestrator:
 
             # 3. PDF conversion
             pdf_paths = await self.convert_to_pdf(report_paths)
+            if not pdf_paths:
+                await self.send_trigger_alert(
+                    mode, results_file, language, status_message=batch_status_message(
+                        "KR", mode, campaign_trade_date, "pdf_failed", language=language,
+                        selected_count=len(tickers), report_count=len(report_paths),
+                    ),
+                )
+                return
 
             # 4. Generate the channel-neutral summary artifacts regardless of
             # whether Telegram transport is enabled.
@@ -1419,6 +1457,12 @@ class StockAnalysisOrchestrator:
             from telegram_config import is_openai_quota_error, send_openai_quota_alert
             if is_openai_quota_error(e):
                 await send_openai_quota_alert(self.telegram_config, market="KR")
+            else:
+                await self.send_trigger_alert(
+                    mode, results_file, language, status_message=batch_status_message(
+                        "KR", mode, campaign_trade_date, "pipeline_failed", language=language,
+                    ),
+                )
 
         finally:
             if shadow_batch_token is not None:

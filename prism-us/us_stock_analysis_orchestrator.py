@@ -53,6 +53,9 @@ from messaging.batch_campaign_publisher import (  # noqa: E402
     publish_batch_reports_best_effort,
     publish_batch_tracking_story_best_effort,
 )
+from prism_core.batch_run_status import (
+    batch_status_message, fresh_result_metadata, result_fingerprint,
+)
 
 # Load openai_debug from project root via importlib (prism-us/cores/ shadows root cores/)
 _spec = _ilu.spec_from_file_location("cores.openai_debug", PROJECT_ROOT / "cores" / "openai_debug.py")
@@ -729,19 +732,20 @@ class USStockAnalysisOrchestrator:
         message_paths = []
         for report_pdf_path in report_pdf_paths:
             try:
-                await generator.process_report(str(report_pdf_path), str(US_TELEGRAM_MSGS_DIR), language=language)
-
                 report_file = Path(report_pdf_path)
                 ticker = report_file.stem.split('_')[0]
                 company_name = report_file.stem.split('_')[1]
 
                 message_path = US_TELEGRAM_MSGS_DIR / f"{ticker}_{company_name}_telegram.txt"
+                previous_message = result_fingerprint(message_path)
+                await generator.process_report(str(report_pdf_path), str(US_TELEGRAM_MSGS_DIR), language=language)
+                current_message = result_fingerprint(message_path)
 
-                if message_path.exists():
+                if current_message is not None and current_message != previous_message:
                     logger.info(f"Telegram message generation complete: {message_path}")
                     message_paths.append(message_path)
                 else:
-                    logger.warning(f"Telegram message file not found at expected path: {message_path}")
+                    logger.warning(f"Fresh Telegram message file not generated at expected path: {message_path}")
 
             except Exception as e:
                 logger.error(f"Error during telegram message generation for {report_pdf_path}: {str(e)}")
@@ -793,7 +797,7 @@ class USStockAnalysisOrchestrator:
                 str(US_TELEGRAM_MSGS_DIR),
                 chat_id,
                 str(US_TELEGRAM_MSGS_DIR / "sent"),
-                msg_type="analysis"
+                msg_type="analysis", message_paths=message_paths,
             )
 
             # Send PDF files to main channel
@@ -1038,7 +1042,7 @@ class USStockAnalysisOrchestrator:
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def send_trigger_alert(self, mode: str, trigger_results_file: str, language: str = "ko"):
+    async def send_trigger_alert(self, mode: str, trigger_results_file: str, language: str = "ko", *, status_message=None):
         """
         Send trigger execution result to telegram channel immediately
 
@@ -1054,6 +1058,16 @@ class USStockAnalysisOrchestrator:
         logger.info(f"Starting US Prism Signal alert transmission - mode: {mode}, language: {language}")
 
         try:
+            if status_message is not None:
+                # Empty/error notices must not depend on the failed result
+                # artifact or invoke model-powered broadcast translation.
+                if not self.telegram_config.channel_id:
+                    return False
+                from telegram_bot_agent import TelegramBotAgent
+                self._campaign_messages[mode] = status_message
+                return await TelegramBotAgent().send_message(
+                    self.telegram_config.channel_id, status_message, msg_type="trigger",
+                )
             with open(trigger_results_file, 'r', encoding='utf-8') as f:
                 results = json.load(f)
 
@@ -1338,6 +1352,8 @@ class USStockAnalysisOrchestrator:
             begin_shadow_batch, complete_shadow_batch, end_shadow_batch,
         )
         shadow_batch_token = None
+        effective_date = datetime.now(tz=ZoneInfo("America/New_York")).strftime("%Y%m%d")
+        results_file = None
 
         try:
             # 0. Run macro intelligence (US market regime, sector data)
@@ -1357,10 +1373,20 @@ class USStockAnalysisOrchestrator:
 
             # 1. Execute trigger batch
             results_file = str(PRISM_US_DIR / f"trigger_results_us_{mode}_{effective_date}.json")
+            previous_result = result_fingerprint(results_file)
             tickers = await self.run_trigger_batch(mode, macro_context=macro_context, override_date=override_date)
 
             if not tickers:
                 logger.warning("No US stocks selected. Terminating process.")
+                message = batch_status_message(
+                    "US", mode, effective_date, "no_candidates",
+                    metadata=fresh_result_metadata(results_file, previous_result), language=language,
+                )
+                await self.send_trigger_alert(mode, results_file, language, status_message=message)
+                await publish_batch_campaign_best_effort(
+                    market="US", session=mode, trade_date=effective_date,
+                    regime=campaign_regime, status=SKIPPED, candidates=[], display_message=message,
+                )
                 return
 
             # 1-1. Send trigger results to telegram immediately
@@ -1397,6 +1423,12 @@ class USStockAnalysisOrchestrator:
             )
             if not report_paths:
                 logger.warning("No US reports generated. Terminating process.")
+                await self.send_trigger_alert(
+                    mode, results_file, language, status_message=batch_status_message(
+                        "US", mode, effective_date, "report_failed", language=language,
+                        selected_count=len(tickers),
+                    ),
+                )
                 return
 
             # 3. Archive ingest (fire-and-forget, does not block pipeline)
@@ -1410,6 +1442,14 @@ class USStockAnalysisOrchestrator:
 
             # 4. PDF conversion
             pdf_paths = await self.convert_to_pdf(report_paths)
+            if not pdf_paths:
+                await self.send_trigger_alert(
+                    mode, results_file, language, status_message=batch_status_message(
+                        "US", mode, effective_date, "pdf_failed", language=language,
+                        selected_count=len(tickers), report_count=len(report_paths),
+                    ),
+                )
+                return
 
             message_paths = await self.generate_telegram_messages(pdf_paths, language)
             await publish_batch_reports_best_effort(
@@ -1522,6 +1562,12 @@ class USStockAnalysisOrchestrator:
             from telegram_config import is_openai_quota_error, send_openai_quota_alert
             if is_openai_quota_error(e):
                 await send_openai_quota_alert(self.telegram_config, market="US")
+            else:
+                await self.send_trigger_alert(
+                    mode, results_file, language, status_message=batch_status_message(
+                        "US", mode, effective_date, "pipeline_failed", language=language,
+                    ),
+                )
 
         finally:
             if shadow_batch_token is not None:

@@ -3,13 +3,20 @@ from __future__ import annotations
 import ast
 import asyncio
 from contextlib import nullcontext
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from observability import micro_split
+from prism_core.batch_run_status import (
+    batch_status_message,
+    fresh_result_metadata,
+    result_fingerprint,
+)
 from tools.build_micro_split_evidence_packet import build_micro_split_evidence_packet
 
 
@@ -119,7 +126,7 @@ def test_disabled_capture_creates_no_completion(monkeypatch):
     (True, ["r"], [], False, 0),
     (True, ["r"], ["p"], True, 0),
 ])
-def test_real_pipeline_completion_boundary(monkeypatch, tracking_ok, reports, pdfs, raises, expected):
+def test_real_pipeline_completion_boundary(monkeypatch, tmp_path, tracking_ok, reports, pdfs, raises, expected):
     """Execute the actual pipeline method with I/O replaced, not a copied algorithm."""
     monkeypatch.setenv("MICRO_SPLIT_SHADOW_ENABLED", "true")
     captured = []
@@ -129,13 +136,16 @@ def test_real_pipeline_completion_boundary(monkeypatch, tracking_ok, reports, pd
     method = next(node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_full_pipeline")
     ns = {
         "logger": MagicMock(), "resolve_us_trade_date": lambda _: "20260911",
-        "PRISM_US_DIR": source.parent, "os": SimpleNamespace(path=SimpleNamespace(exists=lambda _: False)),
+        "PRISM_US_DIR": tmp_path, "os": SimpleNamespace(path=SimpleNamespace(exists=lambda _: False)),
         "asyncio": asyncio, "nullcontext": nullcontext, "COLLECTING": "COLLECTING",
+        "datetime": datetime, "ZoneInfo": ZoneInfo, "SKIPPED": "SKIPPED",
+        "result_fingerprint": result_fingerprint, "fresh_result_metadata": fresh_result_metadata,
+        "batch_status_message": batch_status_message,
         "_import_main_archive_ingest": lambda: SimpleNamespace(ingest_reports_async=AsyncMock()),
     }
     for name in ("publish_batch_campaign_best_effort", "publish_batch_reports_best_effort", "publish_batch_tracking_story_best_effort"):
         ns[name] = AsyncMock()
-    exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), ns)
+    exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), ns)  # noqa: S102 - repository method
     tracker = SimpleNamespace(run=AsyncMock(return_value=tracking_ok), last_batch_messages=[])
     monkeypatch.setitem(__import__("sys").modules, "us_stock_tracking_agent", SimpleNamespace(
         USStockTrackingAgent=lambda **_: tracker, _us_codex_runtime_enabled=lambda: True, app=None,
@@ -149,9 +159,18 @@ def test_real_pipeline_completion_boundary(monkeypatch, tracking_ok, reports, pd
         generate_reports=AsyncMock(return_value=reports, side_effect=RuntimeError("test") if raises else None),
         convert_to_pdf=AsyncMock(return_value=pdfs),
         generate_telegram_messages=AsyncMock(return_value=[]),
+        send_trigger_alert=AsyncMock(return_value=True),
         _campaign_messages={}, _broadcast_tasks=[],
         telegram_config=SimpleNamespace(use_telegram=False, log_status=lambda: None),
     )
     asyncio.run(ns["run_full_pipeline"](instance, "afternoon"))
     assert len(captured) == expected
     assert micro_split._BATCH.get() is None
+    if raises or not reports or not pdfs:
+        tracker.run.assert_not_awaited()
+        instance.send_trigger_alert.assert_awaited_once()
+        assert instance.send_trigger_alert.await_args.kwargs["status_message"]
+        instance.generate_telegram_messages.assert_not_awaited()
+    else:
+        tracker.run.assert_awaited_once()
+        instance.send_trigger_alert.assert_not_awaited()
