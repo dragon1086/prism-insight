@@ -242,6 +242,9 @@ def parse_wisereport(html, ticker, company, reference_date):
 def render_peer_comparison(snapshots):
     if not snapshots:
         return ""
+    # The same selected companies/facts must not produce different prose solely
+    # because an upstream section listed the two peers in another order.
+    snapshots = [snapshots[0], *sorted(snapshots[1:], key=lambda item: item['ticker'])]
     target, *peers = snapshots
     lines = ["### 주요 비교기업의 실적·예상 지표", "",
              "선정한 기업의 공개 지표를 함께 살펴봅니다. 전체 업종 평균이나 순위는 아닙니다."]

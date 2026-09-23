@@ -233,3 +233,12 @@ def test_bold_label_colon_outside_with_source_link():
               "**source**: [자료](https://example.com/a)")
     result = select_report_peer_candidates([report], "017670", {"030200": "KT"})
     assert result[0]["ticker"] == "030200"
+
+
+def test_same_peer_facts_have_stable_presentation_without_mutating_inputs():
+    target = parsed(code='017670', name='SK텔레콤')
+    kt = parsed(code='030200', name='KT')
+    lg = parsed(code='032640', name='LG유플러스')
+    reversed_order = [target, lg, kt]
+    assert render_peer_comparison(reversed_order) == render_peer_comparison([target, kt, lg])
+    assert [item['ticker'] for item in reversed_order] == ['017670', '032640', '030200']
