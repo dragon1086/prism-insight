@@ -35,8 +35,30 @@ def test_tunnel_example_is_loopback_only_and_noninteractive():
     unit = (ROOT / 'deploy/systemd/prism-report-oauth-tunnel.service.example').read_text()
     assert 'User=prism' in unit
     for flag in ('BatchMode=yes', 'ExitOnForwardFailure=yes', 'StrictHostKeyChecking=yes',
-                 '-L 127.0.0.1:18741:127.0.0.1:18741'):
+                 '-L 127.0.0.1:18741:127.0.0.1:18742'):
         assert flag in unit
     config = (ROOT / 'deploy/report-oauth.env.example').read_text()
     assert 'http://127.0.0.1:18741/v1' in config
     assert 'OPENAI_API_KEY=chatgpt-oauth-placeholder' in config
+
+
+def test_report_proxy_is_separate_from_batch_and_validates_host_auth(monkeypatch):
+    import importlib.util
+
+    from aiohttp import web
+
+    from cores.chatgpt_proxy import proxy_server, token_manager
+    spec = importlib.util.spec_from_file_location('report_proxy_test', ROOT / 'tools/run_report_oauth_proxy.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    calls = []
+
+    class Manager:
+        def validate_or_fail(self):
+            calls.append('validated')
+
+    monkeypatch.setattr(token_manager, 'TokenManager', Manager)
+    monkeypatch.setattr(proxy_server, 'create_app', lambda manager: calls.append('app') or 'APP')
+    monkeypatch.setattr(web, 'run_app', lambda app, **kwargs: calls.append((app, kwargs)))
+    module.main()
+    assert calls == ['validated', 'app', ('APP', {'host': '127.0.0.1', 'port': 18742, 'access_log': None})]

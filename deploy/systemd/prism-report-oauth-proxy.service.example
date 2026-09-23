@@ -1,0 +1,16 @@
+[Unit]
+Description=PRISM persistent report-only ChatGPT OAuth proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/prism-insight
+Environment=HOME=/root
+ExecStart=/root/.pyenv/shims/python tools/run_report_oauth_proxy.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

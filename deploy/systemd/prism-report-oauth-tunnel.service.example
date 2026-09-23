@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=prism
-ExecStart=/bin/bash -c 'exec /usr/bin/ssh -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes -i /home/prism/.ssh/id_ed25519 -L 127.0.0.1:18741:127.0.0.1:18741 root@64.176.227.37'
+ExecStart=/bin/bash -c 'exec /usr/bin/ssh -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes -i /home/prism/.ssh/id_ed25519 -L 127.0.0.1:18741:127.0.0.1:18742 root@64.176.227.37'
 Restart=always
 RestartSec=5
 
