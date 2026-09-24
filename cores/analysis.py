@@ -253,7 +253,10 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             f"record_chars={evidence_receipt['record_chars']}"
         )
 
-        from prism_core.market_report_context import market_report_context
+        from prism_core.market_report_context import market_report_context, public_market_analysis
+        section_reports['market_index_analysis'] = public_market_analysis(
+            section_reports.get('market_index_analysis', ''), macro_context, language,
+            require_citation_integrity=True)
         shared_market = market_report_context(macro_context, language)
         if shared_market:
             section_reports["market_index_analysis"] = section_reports.get("market_index_analysis", "") + shared_market

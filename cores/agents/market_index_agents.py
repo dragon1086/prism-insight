@@ -123,7 +123,8 @@ def create_market_index_analysis_agent(reference_date, max_years_ago, max_years,
                         - Emphasize important information in **bold**
                         - Organize key indicators in table format
                         - Present market situation assessments with clear grades/scores (e.g., bullish/neutral/bearish or 1-10 scale)
-                        - Present macroeconomic information with reliability through source numbers ([1], [2] format)
+                        - Cite macroeconomic claims using actual public source URLs returned by the existing tools. For numbered citations, include a resolvable mapping such as [1]: <actual source HTTPS URL> or an inline [1](<actual source HTTPS URL>).
+                        - Never invent URLs or treat citation numbers alone as evidence. Omit macroeconomic events and figures whose supporting public source was not obtained. The example URLs are formatting examples, not usable sources. Provided deterministic index calculations need no fabricated external citation.
 
                         ## Precautions
                         - Make identifying same-day market fluctuation factors the top priority and analyze them in detail at the beginning of the report
@@ -260,7 +261,8 @@ def create_market_index_analysis_agent(reference_date, max_years_ago, max_years,
                         - 중요 정보는 **굵은 글씨**로 강조
                         - 핵심 지표는 표 형식으로 정리
                         - 시장 상황 평가는 명확한 등급/점수로 제시 (예: 강세/중립/약세 또는 1-10점 스케일)
-                        - 거시경제 정보는 출처 번호를 통해 신뢰성 제시 ([1], [2] 방식으로)
+                        - 거시경제 주장은 기존 도구가 실제로 반환한 공개 출처 URL로 뒷받침하세요. 번호 인용에는 [1]: <실제 출처의 HTTPS URL> 형식의 연결 목록 또는 [1](<실제 출처의 HTTPS URL>) 형식의 인라인 링크를 함께 제시하세요.
+                        - URL을 만들지 말고 출처 번호만으로 근거가 있다고 주장하지 마세요. 뒷받침하는 공개 출처를 확보하지 못한 거시경제 사건·수치는 서술하지 마세요. 예시 URL은 형식 설명이며 실제 근거가 아닙니다. 제공된 코드 계산 지수값에 외부 출처를 지어 붙이지 마세요.
 
                         ## 주의사항
                         - 당일 시장 변동 요인 파악을 최우선으로 하고, 반드시 보고서 첫 부분에 상세히 분석할 것

@@ -42,6 +42,32 @@ def test_off_preserves_legacy_market_body():
     assert public_market_analysis("Claim [1]", None) == "Claim [1]"
 
 
+@pytest.mark.parametrize('language', ['ko', 'en'])
+def test_explicit_standalone_guard_removes_claim_not_only_citation_markers(language):
+    prose = 'Fed raised rates by 0.25 to 3.75–4.00 [5][4][7][1]'
+    text = public_market_analysis(prose, None, language, require_citation_integrity=True)
+    assert '0.25' not in text and '3.75' not in text and '[5]' not in text
+    assert ('제외했습니다' if language == 'ko' else 'omitted') in text
+    assert '공통 시장 근거' not in text and 'shared market evidence below' not in text
+
+
+@pytest.mark.parametrize('prose', [
+    'Provided index calculation: KOSPI 7,080.92, RSI 41.0.',
+    'Public announcement [1](https://www.federalreserve.gov/newsevents/pressreleases/monetary.htm)',
+    'Public announcement [1]\n\n[1]: https://www.federalreserve.gov/newsevents/pressreleases/monetary.htm',
+])
+def test_standalone_guard_retains_calculations_and_resolvable_public_references(prose):
+    assert public_market_analysis(prose, None, require_citation_integrity=True) == prose
+
+
+@pytest.mark.parametrize('language', ['ko', 'en'])
+def test_kr_prompt_requires_real_reference_mappings_not_bare_numbers(language):
+    from cores.agents.market_index_agents import create_market_index_analysis_agent
+    agent = create_market_index_analysis_agent('20260925', '20250925', 1, language)
+    assert '[1]: <' in agent.instruction and 'HTTPS URL>' in agent.instruction
+    assert ('URL을 만들지' if language == 'ko' else 'Never invent URLs') in agent.instruction
+
+
 @pytest.mark.parametrize("language", ["ko", "en"])
 def test_prefetched_index_agent_uses_only_provided_prices(language):
     spec = importlib.util.spec_from_file_location("test_us_market_prompt", ROOT / "prism-us/cores/agents/market_index_agents.py")

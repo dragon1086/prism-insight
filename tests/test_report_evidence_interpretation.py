@@ -20,6 +20,14 @@ def test_specialists_and_synthesis_share_the_same_period_and_rank_contract(langu
         'denominator' in contract and 'gaps' in contract and 'rank' in contract)
 
 
+@pytest.mark.parametrize('language', ['ko', 'en'])
+def test_comparison_and_profit_owner_scope_are_common_not_reviewer_only(language):
+    contract = financial_evidence_contract(language)
+    for required in (('업종 PER', '업종 PBR', '지배주주', '비지배', '확인되지') if language == 'ko'
+                     else ('industry PER', 'industry PBR', 'parent owners', 'non-controlling', 'unknown')):
+        assert required in contract
+
+
 @pytest.mark.parametrize('stage', ['assessment', 'final'])
 def test_actual_review_receives_period_definition_and_all_section_rank_invariant(monkeypatch, tmp_path, stage):
     from cores import report_fact_editor as editor, report_generation
