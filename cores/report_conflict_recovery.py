@@ -31,7 +31,7 @@ async def regenerate_conflicting_sections(section_reports, agents, prefetched, c
     The caller must rebuild strategy and pass the unchanged final editor again.
     All drafts are staged locally, so a partial failure cannot modify its inputs.
     """
-    from cores.report_fact_editor import ReportFactConflictError, ReportFactEditorError, _numbers, _URL
+    from cores.report_fact_editor import ReportFactConflictError, ReportFactEditorError, _numeric_literals, _URL
     from cores.report_generation import _get_report_backend
     from cores.llm.ports import AgentSpec, LLMParams
     from cores.agents.report_agent import report_time_contract
@@ -107,8 +107,7 @@ async def regenerate_conflicting_sections(section_reports, agents, prefetched, c
                 or 'traceback (most recent call last)' in revised.casefold()
                 # An explicit plus on an already-positive literal changes no
                 # value. Never normalize a minus, precision or magnitude.
-                or {n.removeprefix('+') for n in _numbers(revised)}
-                - {n.removeprefix('+') for n in _numbers(basis)}
+                or _numeric_literals(revised) - _numeric_literals(basis)
                 or set(_URL.findall(revised)) - set(_URL.findall(basis))
                 or _split_protected(revised)[1]
                 or re.search(r'<!--|```|CE-[0-9a-f]+', revised)):

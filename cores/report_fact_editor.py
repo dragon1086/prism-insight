@@ -109,6 +109,11 @@ def _numbers(text):
     return Counter(_NUMBER.findall(text))
 
 
+def _numeric_literals(text):
+    """Explicit positive signs do not change a value; keep all other spelling."""
+    return {literal.removeprefix('+') for literal in _numbers(text)}
+
+
 def _decode(text):
     if not isinstance(text, str):
         raise ReportFactEditorError('Final editor output is not text')
@@ -160,7 +165,7 @@ def _validate_and_apply(reports, payload, calendar_context=None):
     if not isinstance(summary, str) or not 200 <= len(summary.strip()) <= 6000:
         raise ReportFactEditorError('Final editor summary is incomplete or oversized')
     all_text = '\n\n'.join(reports.values())
-    if (set(_numbers(summary)) - set(_numbers(all_text))
+    if (_numeric_literals(summary) - _numeric_literals(all_text)
             or set(_URL.findall(summary)) - set(_URL.findall(all_text))
             or _INTERNAL.search(summary)):
         raise ReportFactEditorError('Final editor summary introduced unsupported literals')

@@ -37,6 +37,22 @@ def fixture():
     return reports, {'summary': summary, 'edits': edits, 'unresolved': []}
 
 
+@pytest.mark.parametrize('source,output,allowed', [
+    ('+951,112', '951,112', True), ('951,112', '+951,112', True),
+    ('-951,112', '951,112', False), ('951,112', '-951,112', False),
+    ('951,112', '951112', False), ('9.10', '9.1', False),
+])
+def test_summary_positive_sign_equivalence_preserves_value_guards(source, output, allowed):
+    reports, payload = fixture()
+    reports['shared_reference'] += ' 순매수 ' + source + '주'
+    payload['summary'] += ' 순매수 ' + output + '주입니다.'
+    if allowed:
+        assert output in editor._validate_and_apply(reports, payload)[1]
+    else:
+        with pytest.raises(editor.ReportFactEditorError, match='unsupported'):
+            editor._validate_and_apply(reports, payload)
+
+
 def install_backend(monkeypatch, text):
     import report_model_config
     from cores import report_generation
