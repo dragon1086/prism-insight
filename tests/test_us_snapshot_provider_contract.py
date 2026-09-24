@@ -11,6 +11,7 @@ import pytest
 
 @pytest.fixture
 def detector(monkeypatch):
+    monkeypatch.setenv('US_DAILY_CACHE_ENABLED', 'false')
     root = Path(__file__).resolve().parents[1]
     original_path = sys.path[:]
     spec = importlib.util.spec_from_file_location(
