@@ -106,3 +106,18 @@ def test_preflight_failures_make_no_model_calls(monkeypatch, condition):
     if condition == 'wrong_type': case = (*case[:3], ValueError('conflict'), case[-1])
     with pytest.raises(ReportFactEditorError): execute(case)
     assert case[-1] == []
+
+
+@pytest.mark.parametrize('literal,allowed', [('+9.10', True), ('-9.10', False),
+                                            ('+9.1', False), ('+91.0', False)])
+def test_explicit_positive_sign_is_equivalent_not_a_new_number(monkeypatch, literal, allowed):
+    case = setup_case(monkeypatch)
+    case[0]['news_analysis'] += '\n기존 수익률 9.10%입니다.'
+    from cores import report_generation
+    async def run(*args):
+        return SimpleNamespace(text='### 분석\n\n' + f'기존 수익률은 {literal}%입니다. ' * 20)
+    monkeypatch.setattr(report_generation, '_get_report_backend', lambda: SimpleNamespace(run=run))
+    if allowed:
+        assert literal in execute(case)['news_analysis']
+    else:
+        with pytest.raises(ReportFactEditorError): execute(case)

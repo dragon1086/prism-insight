@@ -105,7 +105,10 @@ async def regenerate_conflicting_sections(section_reports, agents, prefetched, c
         if (not 200 <= len(revised) <= 16000 or not re.search(r'(?m)^#{2,4}\s+\S', revised)
                 or revised.casefold().startswith(('analysis failed', '분석 실패'))
                 or 'traceback (most recent call last)' in revised.casefold()
-                or set(_numbers(revised)) - set(_numbers(basis))
+                # An explicit plus on an already-positive literal changes no
+                # value. Never normalize a minus, precision or magnitude.
+                or {n.removeprefix('+') for n in _numbers(revised)}
+                - {n.removeprefix('+') for n in _numbers(basis)}
                 or set(_URL.findall(revised)) - set(_URL.findall(basis))
                 or _split_protected(revised)[1]
                 or re.search(r'<!--|```|CE-[0-9a-f]+', revised)):
