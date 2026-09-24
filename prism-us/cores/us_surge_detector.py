@@ -231,7 +231,7 @@ def _recover_daily_snapshot(data, requested_date, tickers, captured_at, referenc
         try:
             cache_saved += cache.save_history(ticker, frame)
         except Exception:
-            pass  # Cache I/O never destroys a valid provider result.
+            logger.debug('Completed-day cache write unavailable; provider result retained')
 
     missing = [ticker for ticker in tickers if ticker not in snapshot.index]
     started = time.monotonic()
@@ -275,7 +275,7 @@ def _recover_daily_snapshot(data, requested_date, tickers, captured_at, referenc
             try:
                 cache_saved += DailyBarCache(root, now=request_time).save_history(ticker, retry)
             except Exception:
-                pass
+                logger.debug('Completed-day retry cache write unavailable; retry result retained')
     snapshot = snapshot.reindex([t for t in tickers if t in snapshot.index])
     count = len(tickers)
     remaining = count-len(snapshot)
