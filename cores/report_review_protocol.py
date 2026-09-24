@@ -8,6 +8,7 @@ from pydantic import ConfigDict, Field, create_model
 BASE_SECTIONS = ('price_volume_analysis', 'investor_trading_analysis', 'company_status',
                  'company_overview', 'news_analysis', 'market_index_analysis')
 DART_SOURCE_ROLES = ('finance', 'business', 'risks')
+EDIT_REASONS = ('profit_attribution', 'comparison_basis', 'availability_scope', 'session_timing')
 SECTION_POLICIES = MappingProxyType({
     **{key: 'REGENERATE_FACTS' for key in BASE_SECTIONS},
     'investment_strategy': 'FRESH_SYNTHESIS', 'dart_deep_analysis': 'REBUILD_DART',
@@ -127,7 +128,8 @@ def review_output_schema(sections):
     key_type = Literal[keys]
     config = ConfigDict(extra='forbid', strict=True)
     edit = create_model('ReportReviewEdit', __config__=config,
-                        section=(key_type, ...), original=(str, ...), replacement=(str, ...), reason=(str, ...))
+                        section=(key_type, ...), original=(str, ...), replacement=(str, ...),
+                        reason=(Literal[EDIT_REASONS], ...))
     conflict = create_model('ReportReviewConflict', __config__=config,
                             section=(key_type, ...), issue=(str, ...), evidence_section=(key_type | None, ...),
                             kind=(Literal['contradiction', 'unsupported_claim'], ...),
@@ -164,6 +166,8 @@ def validate_review_envelope(sections, payload, *, stage='final'):
             if (not isinstance(edit, dict) or set(edit) != {'section', 'original', 'replacement', 'reason'}
                     or not all(isinstance(value, str) and value.strip() for value in edit.values())):
                 _fail('INVALID_SCHEMA', 'edits', index=index)
+            if edit['reason'] not in EDIT_REASONS:
+                _fail('EDIT_SCHEMA', 'reason', index=index)
             if max(len(edit['original']), len(edit['replacement'])) > 6000:
                 _fail('CAPACITY_EXCEEDED', 'edits', index=index, limit=6000)
         return payload

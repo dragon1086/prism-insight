@@ -83,6 +83,19 @@ def test_dynamic_schema_uses_actual_section_keys_and_nullable_evidence():
         schema.model_validate(conflicts('news_analysis'))
 
 
+def test_edit_reason_is_a_code_not_freeform_explanation():
+    schema = review_output_schema(reports())
+    edit = {'section': 'news_analysis', 'original': '9월 24일 하락 원인입니다.',
+            'replacement': '9월 24일은 휴장입니다.', 'reason': 'session_timing'}
+    payload = {'status': 'READY', 'summary': 'summary', 'edits': [edit], 'unresolved': []}
+    assert schema.model_validate(payload).edits[0].reason == 'session_timing'
+    edit['reason'] = 'session_timing: 제공된 XKRX 달력에서 휴장일입니다.'
+    with pytest.raises(ValueError):
+        schema.model_validate(payload)
+    with pytest.raises(ReportFactEditorError):
+        validate_review_envelope(reports(), payload)
+
+
 def test_mixed_source_and_model_conflicts_never_partially_repair():
     payload = conflicts('company_status')
     payload['unresolved'] += conflicts('shared_reference')['unresolved']

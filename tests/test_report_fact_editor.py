@@ -107,6 +107,34 @@ def install_backend(monkeypatch, text):
     return calls
 
 
+def test_review_reads_canonical_ce_once_but_preserves_published_handoff(monkeypatch):
+    from prism_core.competitive_evidence import attach_competitive_evidence
+    reports, payload = fixture()
+    reports['news_analysis'] = '뉴스입니다.\n\n### Competitive Evidence\n사업 근거는 미확인입니다.'
+    reports, _ = attach_competitive_evidence(reports, 'KR', '123456', '20260924')
+    payload['edits'] = []
+    calls = install_backend(monkeypatch, json.dumps(payload, ensure_ascii=False))
+    patched, _, _ = asyncio.run(editor.edit_and_summarize(reports, '회사', '123456', '20260924'))
+    view = json.loads(calls[0][1])['sections']
+    assert 'Competitive Evidence Handoff' not in view['company_overview']
+    assert view['news_analysis'] == reports['news_analysis']
+    assert patched == reports
+
+
+def test_independent_overview_edit_is_not_ambiguous_with_hidden_ce_copy(monkeypatch):
+    from prism_core.competitive_evidence import attach_competitive_evidence
+    reports, payload = fixture()
+    reports['news_analysis'] = '뉴스입니다.\n\n### Competitive Evidence\n' + reports['company_overview']
+    reports, receipt = attach_competitive_evidence(reports, 'KR', '123456', '20260924')
+    payload['edits'] = [payload['edits'][2]]
+    install_backend(monkeypatch, json.dumps(payload, ensure_ascii=False))
+    patched, _, _ = asyncio.run(editor.edit_and_summarize(reports, '회사', '123456', '20260924'))
+    assert patched['company_overview'].startswith(payload['edits'][0]['replacement'])
+    assert patched['news_analysis'] == reports['news_analysis']
+    assert patched['company_overview'].count(receipt['evidence_id']) == 1
+    assert patched['company_overview'].count(payload['edits'][0]['original']) == 1
+
+
 def test_three_generic_corrections_atomic_immutable_sources_and_one_call(monkeypatch):
     reports, payload = fixture()
     before = copy.deepcopy(reports)

@@ -39,7 +39,7 @@ jobs:
           PRISM_DISABLE_SIGNAL_PUBLISH: "1"
         run: |
           python -m pytest tests/test_dart_standalone_resolution.py tests/test_report_synthesis_reference_contract.py tests/test_report_macro_synthesis.py tests/test_report_fact_editor.py tests/test_report_conflict_recovery.py tests/test_report_specialist_recovery.py tests/test_telegram_bot_shutdown.py -q
-          python -m pytest tests/test_report_review_protocol.py tests/test_report_review_end_to_end.py tests/test_report_review_diagnostics.py tests/test_bot_report_entry_validation.py -q
+          python -m pytest tests/test_report_review_protocol.py tests/test_report_review_end_to_end.py tests/test_report_review_diagnostics.py tests/test_bot_report_entry_validation.py tests/test_competitive_evidence_recovery.py -q
           python -m pytest tests/test_report_calculations.py tests/test_kr_report_calculation_prefetch.py tests/test_report_evidence_interpretation.py -q
           python -m pytest tests/test_us_snapshot_provider_contract.py tests/test_batch_run_status.py tests/test_batch_message_scope.py tests/test_telegram_delivery_safety.py -q
           python -m pytest tests/test_us_daily_cache.py tests/test_us_daily_cache_provider.py tests/test_us_daily_cache_batch.py -q

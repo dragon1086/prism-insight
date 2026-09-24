@@ -74,6 +74,13 @@ def actual_pipeline(monkeypatch, tmp_path):
             if name.endswith('_fact_recovery'):
                 if control['scenario'] == 'repair_timeout': raise TimeoutError('fixture timeout')
                 if control['scenario'] == 'repair_cancel': raise asyncio.CancelledError()
+                if control['scenario'] == 'ce_conflict':
+                    request = json.loads(message)
+                    assert 'stalepeerclaim' in request['original_draft']
+                    assert 'Evidence ID:' not in request['original_draft']
+                    assert request['conflict_reports'][0]['kind'] == 'unsupported_claim'
+                    return LLMResult(text=prose('뉴스 사실을 확인합니다.') +
+                        '\n\n#### Competitive Evidence\n- 주장: correctedpeerclaim\n- 별도 근거: preservedentry')
                 return LLMResult(text=prose('correctedfact'))
             if name == 'investment_strategy_agent':
                 control['strategies'] += 1
@@ -82,6 +89,9 @@ def actual_pipeline(monkeypatch, tmp_path):
                     assert 'stalecompanyfact' not in message
                 if control['scenario'] == 'dart_conflict':
                     assert 'correctedfiling' in message and 'stalefiling' not in message
+                if control['scenario'] == 'ce_conflict':
+                    assert 'correctedpeerclaim' in message and 'stalepeerclaim' not in message
+                    assert 'preservedentry' in message
                 if control['scenario'] == 'strategy_failure':
                     return LLMResult(text='Investment strategy analysis failed')
                 return LLMResult(text='### 5-1. 투자 전략\n\n' + prose('기존 매매 정책을 유지합니다.'))
@@ -96,18 +106,26 @@ def actual_pipeline(monkeypatch, tmp_path):
                     assert 'investment_strategy' not in sections
                     scenario = control['scenario']
                     conflict = (scenario in ('base_conflict', 'repair_timeout', 'repair_cancel', 'unsupported_claim',
-                                             'price_conflict', 'dart_conflict') and control['assessments'] == 1
+                                             'price_conflict', 'dart_conflict', 'ce_conflict') and control['assessments'] == 1
                                 or scenario in ('repeated_conflict', 'source_conflict'))
                     if conflict:
                         target = {'source_conflict': 'shared_reference', 'price_conflict': 'price_volume_analysis',
-                                  'dart_conflict': 'dart_deep_analysis'}.get(scenario, 'company_status')
+                                  'dart_conflict': 'dart_deep_analysis', 'ce_conflict': 'news_analysis'}.get(scenario, 'company_status')
                         payload.update(status='CONFLICTS', unresolved=[{
                             'section': target, 'issue': '기간 설명이 기준 원문과 다릅니다.',
-                            'kind': 'unsupported_claim' if scenario == 'unsupported_claim' else 'contradiction',
-                            'evidence_section': None if scenario == 'unsupported_claim' else 'dart_deep_analysis',
-                            'source_roles': [] if scenario == 'unsupported_claim' else ['finance']}])
+                            'kind': 'unsupported_claim' if scenario in ('unsupported_claim', 'ce_conflict') else 'contradiction',
+                            'evidence_section': None if scenario in ('unsupported_claim', 'ce_conflict') else 'dart_deep_analysis',
+                            'source_roles': [] if scenario in ('unsupported_claim', 'ce_conflict') else ['finance']}])
+                    if scenario == 'ce_conflict':
+                        expected = 'stalepeerclaim' if control['assessments'] == 1 else 'correctedpeerclaim'
+                        assert expected in sections['news_analysis']
+                        assert expected not in sections['company_overview']
                 else:
                     control['finals'] += 1
+                    if control['scenario'] == 'ce_conflict':
+                        assert 'correctedpeerclaim' in sections['news_analysis']
+                        assert 'correctedpeerclaim' not in sections['company_overview']
+                        assert 'stalepeerclaim' not in message
                     if control['scenario'] == 'repeated_strategy' or (
                             control['scenario'] == 'strategy_only' and control['finals'] == 1):
                         payload.update(status='CONFLICTS', unresolved=[{
@@ -118,6 +136,9 @@ def actual_pipeline(monkeypatch, tmp_path):
                             '제공한 공시의 기간과 별도 범위, 현금흐름과 원금 이행 조건을 구분합니다. '
                             '이미 발생한 사건과 남은 위험을 나누고 기존 매매 정책을 유지합니다. ' * 5)
                 return LLMResult(structured=spec.output_schema.model_validate(payload))
+            if control['scenario'] == 'ce_conflict' and name == 'news_analysis_agent':
+                return LLMResult(text=prose('뉴스 사실을 확인합니다.') +
+                    '\n\n#### Competitive Evidence\n- 주장: stalepeerclaim\n- 별도 근거: preservedentry')
             return LLMResult(text=prose('stalecompanyfact' if name == 'company_status_agent' else '기본 자료입니다.'))
 
     monkeypatch.setattr(report_generation, '_get_report_backend', lambda: Backend())
@@ -203,3 +224,14 @@ def test_cancellation_during_repair_propagates_without_synthesis(actual_pipeline
     control['scenario'] = 'repair_cancel'
     with pytest.raises(asyncio.CancelledError): run(actual_pipeline)
     assert control['strategies'] == control['finals'] == 0
+
+
+def test_actual_ce_repair_rebuilds_copy_before_strategy_and_final_publication(actual_pipeline):
+    _, events, control = actual_pipeline
+    control['scenario'] = 'ce_conflict'
+    report = run(actual_pipeline)
+    assert 'correctedpeerclaim' in report and 'preservedentry' in report
+    assert 'stalepeerclaim' not in report
+    assert control['assessments'] == 2 and control['strategies'] == control['finals'] == 1
+    assert events.count('news_analysis_agent_fact_recovery') == 1
+    assert events.count('collect') == events.count('official') == 1

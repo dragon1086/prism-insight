@@ -5,12 +5,16 @@ import asyncio
 import hashlib
 
 
-def _split_protected(text):
+def _split_protected(text, *, editable_news_evidence=False):
     """Keep copied evidence and decision subchapters out of factual rewriting."""
-    headings = list(re.finditer(r'(?m)^(#{1,6})[ \t]+([^\n]+)', text))
+    from prism_core.competitive_evidence import _mask_fences, _HEADING
+    visible, _ = _mask_fences(text)
+    headings = list(re.finditer(r'(?m)^(#{1,6})[ \t]+([^\n]+)', visible))
     spans = []
     for index, heading in enumerate(headings):
         title = heading[2]
+        if editable_news_evidence and _HEADING.fullmatch(heading[0]):
+            continue  # Canonical model-authored prose is not a code-owned copy.
         if not re.search(r'Competitive Evidence|공통 시장 근거|Shared market evidence|'
                          r'투자 전략|매매 전략|Investment Strategy|Trading Strategy', title, re.I):
             continue
@@ -74,6 +78,21 @@ async def _regenerate_conflicting_sections(section_reports, agents, prefetched, 
     targets = conflicts.targets
     if not targets or any(key not in agents or key not in section_reports for key in targets):
         raise ReportFactEditorError('Recovery specialist unavailable', code='RECOVERY_TARGET')
+    from prism_core.competitive_evidence import (
+        CompetitiveEvidenceIntegrityError, detach_competitive_evidence,
+        attach_competitive_evidence, _HEADING, _mask_fences,
+    )
+    try:
+        canonical_reports, ce_receipt = detach_competitive_evidence(
+            section_reports, 'KR', company_code, reference_date, language)
+    except CompetitiveEvidenceIntegrityError as error:
+        raise ReportFactEditorError('Competitive evidence ownership check failed', code='RECOVERY_PROTECTED') from error
+    section_reports = canonical_reports
+    original_news_ce = bool(_HEADING.search(_mask_fences(section_reports.get('news_analysis', ''))[0]))
+    if 'news_analysis' in targets and original_news_ce:
+        _, initial_ce = attach_competitive_evidence(section_reports, 'KR', company_code, reference_date, language)
+        if initial_ce['status'] != 'COPIED_NOT_VALIDATED':
+            raise ReportFactEditorError('Canonical competitive evidence is not recoverable', code='RECOVERY_PROTECTED')
     packet = prefetched.get('official_dart', {}).get('dart_chapter_inputs', {})
     receipt = packet.get('receipt', {})
     if (packet.get('ready') is not True or receipt.get('core_conserved') is not True
@@ -106,7 +125,8 @@ async def _regenerate_conflicting_sections(section_reports, agents, prefetched, 
     staged, requests = dict(section_reports), []
     for section in targets:
         agent = agents[section]
-        draft, protected = _split_protected(section_reports[section])
+        editable_ce = section == 'news_analysis' and bool(_HEADING.search(_mask_fences(section_reports[section])[0]))
+        draft, protected = _split_protected(section_reports[section], editable_news_evidence=editable_ce)
         market_only = section == 'market_index_analysis'
         reference = (reference_context(prefetched, language, market_only=True) if market_only
                      else synthesis_reference_context(prefetched, language))
@@ -155,8 +175,12 @@ async def _regenerate_conflicting_sections(section_reports, agents, prefetched, 
             '기존 글자수 목표에 맞추려는 요약·반올림도 하지 마세요. 소수 자릿수와 쉼표를 유지하세요. '
             '주어진 두 가격으로 새 수익률을 계산하지 마세요. 수익률의 날짜를 바로잡을 때에는 '
             '이미 계산된 수익률과 그 시작·종료일만 쓰세요. 음수 수량을 절댓값으로 바꿔 서술하지 마세요. '
-            '별도 보존한 경쟁근거·공통시장근거·투자전략 하위 장은 코드가 그대로 붙이므로 절대 재작성하거나 출력하지 마세요. '
-            '원래 지침에서 Competitive Evidence 생성을 요구해도 이 복구 호출에서는 출력하지 마세요. '
+            '별도 보존한 공통시장근거·투자전략 하위 장은 코드가 그대로 붙이므로 절대 재작성하거나 출력하지 마세요. '
+            '뉴스 original_draft에 있는 Competitive Evidence는 모델이 쓴 검토 대상입니다. '
+            '공식 근거에 따라 지적된 주장만 교정·철회하고 관계없는 근거 항목은 보존하세요. '
+            'SOURCE_CHECKED 등 기존 표기는 모델의 주장이지 독립 검증 인증이 아닙니다. '
+            'Evidence ID와 Competitive Evidence Handoff는 코드가 재생성하므로 출력하지 마세요. '
+            'original_draft에 없는 새 Competitive Evidence 블록은 만들지 마세요. '
             '숫자와 URL은 제공 근거 또는 기존 초안에 있는 표기만 사용하고, 해결할 근거가 없으면 미확인으로 명시하세요. '
             '출처·시점·한계를 숨기지 마세요. 해당 장의 완성된 Markdown 본문만 반환하세요. '
             '정상 발행 여부는 후속 동일 최종 검수가 다시 판단합니다. '
@@ -175,9 +199,9 @@ async def _regenerate_conflicting_sections(section_reports, agents, prefetched, 
                                         details={'section': section, 'count': request_bytes, 'limit': 400000})
         inventory = (agent.instruction + draft + source_basis + '\n\n'.join(related_drafts.values())
                      + json.dumps(filing_sources, ensure_ascii=False))
-        requests.append((section, agent, instruction, message, inventory, protected))
+        requests.append((section, agent, instruction, message, inventory, protected, editable_ce))
 
-    for section, agent, instruction, message, basis, protected in requests:
+    for section, agent, instruction, message, basis, protected, editable_ce in requests:
         capture.update(section=section, instructions=instruction, request=message, output=None)
         result = await _get_report_backend().run(AgentSpec(
             name=agent.name + '_fact_recovery', instructions=instruction, model=DART_REPORT_MODEL,
@@ -192,8 +216,9 @@ async def _regenerate_conflicting_sections(section_reports, agents, prefetched, 
              or 'traceback (most recent call last)' in revised.casefold()),
             ('RECOVERY_NUMBER', bool(_numeric_literals(revised) - _numeric_literals(basis))),
             ('RECOVERY_URL', bool(set(_URL.findall(revised)) - set(_URL.findall(basis)))),
-            ('RECOVERY_PROTECTED', bool(_split_protected(revised)[1]
-                                       or re.search(r'<!--|```|CE-[0-9a-f]+', revised))),
+            ('RECOVERY_PROTECTED', bool(_split_protected(revised, editable_news_evidence=editable_ce)[1]
+                                       or (editable_ce and len(list(_HEADING.finditer(_mask_fences(revised)[0]))) != 1)
+                                       or re.search(r'<!--|```|CE-[0-9a-f]+|Evidence ID:', revised))),
         )
         for code, invalid in checks:
             if invalid:
@@ -201,4 +226,12 @@ async def _regenerate_conflicting_sections(section_reports, agents, prefetched, 
                                             details={'section': section})
         staged[section] = revised + ''.join('\n\n' + block for block in protected)
         logger.info('Factual specialist recovery completed: section=%s calls=1', section)
+    if ce_receipt['attached'] or ('news_analysis' in targets and _HEADING.search(_mask_fences(section_reports['news_analysis'])[0])):
+        try:
+            staged, rebuilt = attach_competitive_evidence(staged, 'KR', company_code, reference_date, language)
+        except CompetitiveEvidenceIntegrityError as error:
+            raise ReportFactEditorError('Competitive evidence rebuild failed', code='RECOVERY_PROTECTED') from error
+        allowed_ce = ('COPIED_NOT_VALIDATED',) if original_news_ce else ('COPIED_NOT_VALIDATED', 'RECORD_ABSENT', 'RECORD_EMPTY')
+        if rebuilt['status'] not in allowed_ce:
+            raise ReportFactEditorError('Competitive evidence rebuild is ambiguous', code='RECOVERY_PROTECTED')
     return staged

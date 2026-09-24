@@ -79,13 +79,65 @@ def test_each_specialist_once_with_frozen_scoped_sources_and_no_tools(monkeypatc
 
 def test_protected_evidence_and_strategy_subchapter_preserved_verbatim(monkeypatch):
     case = setup_case(monkeypatch)
-    protected = '#### Competitive Evidence\nEvidence ID: CE-abc\nSOURCE_CHECKED 원문\n'
+    protected = '#### 공통 시장 근거\n원문\n'
     decision = '#### 투자 전략\n기존 정책은 그대로 유지합니다.\n'
     case[0]['news_analysis'] += '\n\n' + protected + '\n#### 향후 주시점\n사실 설명\n' + decision
     result = execute(case)['news_analysis']
     assert protected in result and decision in result
-    assert 'CE-abc' not in case[-1][0][1]['original_draft']
+    assert protected not in case[-1][0][1]['original_draft']
     assert len(_split_protected(result)[1]) == 2
+
+
+def test_canonical_news_evidence_is_corrected_and_verified_copy_rebuilt_once(monkeypatch):
+    from prism_core.competitive_evidence import attach_competitive_evidence, detach_competitive_evidence
+    from cores import report_generation
+    case = setup_case(monkeypatch)
+    record = '#### Competitive Evidence\n- 주장: unsupported rank\n- 관계없는 항목: 원문 보존'
+    case[0]['news_analysis'] += '\n\n' + record
+    attached, old_receipt = attach_competitive_evidence(case[0], 'KR', '252990', '20260924')
+    case[0].update(attached)
+    before = copy.deepcopy(case[0])
+    async def run(spec, message):
+        body = json.loads(message)['original_draft']
+        assert record in body and 'Evidence ID:' not in body
+        return SimpleNamespace(text=body.replace('unsupported rank', '순위를 입증할 자료는 미확인'))
+    monkeypatch.setattr(report_generation, '_get_report_backend', lambda: SimpleNamespace(run=run))
+    result = execute(case)
+    assert case[0] == before
+    assert 'unsupported rank' not in result['news_analysis'] + result['company_overview']
+    assert result['company_overview'].count('#### Competitive Evidence Handoff') == 1
+    assert result['news_analysis'].count('Evidence ID:') == 1
+    assert '- 관계없는 항목: 원문 보존' in result['news_analysis']
+    canonical, receipt = detach_competitive_evidence(result, 'KR', '252990', '20260924')
+    assert receipt['evidence_id'] != old_receipt['evidence_id']
+    assert 'COPIED_NOT_VALIDATED' == receipt['status']
+    assert 'Handoff' not in canonical['company_overview']
+
+
+def test_unverified_news_evidence_id_fails_before_model_call(monkeypatch):
+    case = setup_case(monkeypatch)
+    case[0]['news_analysis'] += '\n#### Competitive Evidence\nEvidence ID: CE-abc\nUnverified'
+    before = copy.deepcopy(case[0])
+    with pytest.raises(ReportFactEditorError) as caught:
+        execute(case)
+    assert caught.value.code == 'RECOVERY_PROTECTED'
+    assert not case[-1] and case[0] == before
+
+
+@pytest.mark.parametrize('bad_record', ['', '#### Competitive Evidence\n',
+                                      '#### Competitive Evidence\n' + 'oversize ' * 1400,
+                                      '#### Competitive Evidence\n```\nunclosed'])
+def test_original_canonical_record_cannot_disappear_or_become_invalid(monkeypatch, bad_record):
+    from cores import report_generation
+    case = setup_case(monkeypatch)
+    case[0]['news_analysis'] += '\n\n#### Competitive Evidence\nPreserve unrelated item'
+    before = copy.deepcopy(case[0])
+    async def run(*args):
+        return SimpleNamespace(text='### News\n' + 'Existing report text. ' * 20 + '\n' + bad_record)
+    monkeypatch.setattr(report_generation, '_get_report_backend', lambda: SimpleNamespace(run=run))
+    with pytest.raises(ReportFactEditorError):
+        execute(case)
+    assert case[0] == before
 
 
 @pytest.mark.parametrize('bad', ['### 분석\n\n' + '없는 수치 987654321을 추가합니다. ' * 15,
