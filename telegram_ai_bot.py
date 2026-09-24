@@ -3961,48 +3961,48 @@ class TelegramAIBot:
 
     async def run(self):
         """Run bot"""
-        # Run bot
-        await self.application.initialize()
-        # Sync slash-command menu with BotFather (1x on startup)
+        initialized = False
+        result_task = None
         try:
-            await self._register_bot_commands()
-        except Exception as e:
-            logger.warning(f"_register_bot_commands failed on startup: {e}")
-        await self.application.start()
-        await self.application.updater.start_polling()
-
-        # Add task for result processing
-        asyncio.create_task(self.process_results())
-
-        logger.info("Telegram AI conversational bot has started.")
-
-        try:
-            # Keep running until bot is stopped
-            # Simple way to wait indefinitely
+            await self.application.initialize()
+            initialized = True
+            # Sync slash-command menu with BotFather (1x on startup)
+            try:
+                await self._register_bot_commands()
+            except Exception as e:
+                logger.warning(f"_register_bot_commands failed on startup: {e}")
+            await self.application.start()
+            await self.application.updater.start_polling()
+            result_task = asyncio.create_task(self.process_results())
+            logger.info("Telegram AI conversational bot has started.")
             await self.stop_event.wait()
-        except asyncio.CancelledError:
-            pass
         finally:
-            # Clean up resources on exit
+            self.stop_event.set()
             logger.info("Bot shutdown started - cleaning up resources...")
-            
-            # Stop bot
-            await self.application.stop()
-            await self.application.shutdown()
-
+            # PTB must drain its own update fetcher, not have it cancelled by a
+            # global task sweep. Stop polling before application.stop(), then
+            # finish any in-flight report delivery before closing the HTTP client.
+            try:
+                if self.application.updater and self.application.updater.running:
+                    await self.application.updater.stop()
+            finally:
+                try:
+                    if self.application.running:
+                        await self.application.stop()
+                finally:
+                    try:
+                        if result_task is not None:
+                            await result_task
+                    finally:
+                        if initialized:
+                            await self.application.shutdown()
             logger.info("Telegram AI conversational bot has stopped.")
 
-async def shutdown(sig, loop):
-    """Cleanup tasks tied to the service's shutdown."""
-    logger.info(f"Received signal {sig.name}, shutting down...")
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-
-    for task in tasks:
-        task.cancel()
-
-    logger.info(f"Cancelling {len(tasks)} outstanding tasks")
-    await asyncio.gather(*tasks, return_exceptions=True)
-    loop.stop()
+async def shutdown(sig, bot):
+    """Request an orderly stop; repeated signals never cancel active reports."""
+    if not bot.stop_event.is_set():
+        logger.info(f"Received signal {sig.name}, shutting down...")
+        bot.stop_event.set()
 
 # Main execution section
 async def main():
@@ -4010,17 +4010,21 @@ async def main():
     Main function
     """
     # Set up signal handler
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
+    bot = TelegramAIBot()
     signals = (signal.SIGINT, signal.SIGTERM)
 
     def create_signal_handler(sig):
-        return lambda: asyncio.create_task(shutdown(sig, loop))
+        return lambda: asyncio.create_task(shutdown(sig, bot))
 
     for s in signals:
         loop.add_signal_handler(s, create_signal_handler(s))
 
-    bot = TelegramAIBot()
-    await bot.run()
+    try:
+        await bot.run()
+    finally:
+        for s in signals:
+            loop.remove_signal_handler(s)
 
 if __name__ == "__main__":
     asyncio.run(main())

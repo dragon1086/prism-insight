@@ -14,6 +14,50 @@ class ReportFactEditorError(ValueError):
     """Final synthesis could not be safely applied; callers must not publish it."""
 
 
+REPAIRABLE_SECTIONS = (
+    'investor_trading_analysis', 'company_status',
+    'company_overview', 'news_analysis', 'market_index_analysis',
+)
+CONFLICT_EVIDENCE_SECTIONS = frozenset({'shared_reference', 'dart_deep_analysis', 'peer_comparison'})
+DEPENDENT_SYNTHESIS = 'investment_strategy'
+
+
+class ReportFactConflictError(ReportFactEditorError):
+    """Validated base-section conflicts; this editor never retries them itself."""
+
+    def __init__(self, conflicts, *, evidence_sections=()):
+        if (not isinstance(conflicts, tuple) or not 1 <= len(conflicts) <= 8
+                or any(not isinstance(item, tuple) or len(item) != 2
+                       or not isinstance(item[0], str)
+                       or item[0] not in (*REPAIRABLE_SECTIONS, DEPENDENT_SYNTHESIS)
+                       or not isinstance(item[1], str) or not item[1].strip()
+                       or len(item[1]) > 2000 for item in conflicts)):
+            raise ReportFactEditorError('Invalid repairable conflict contract')
+        if not any(section in REPAIRABLE_SECTIONS for section, _ in conflicts):
+            raise ReportFactEditorError('Dependent synthesis conflict requires a base-section conflict')
+        self._conflicts = conflicts
+        if (not isinstance(evidence_sections, tuple)
+                or (evidence_sections and len(evidence_sections) != len(conflicts))
+                or any(not isinstance(source, str) or source not in CONFLICT_EVIDENCE_SECTIONS
+                       for source in evidence_sections)):
+            raise ReportFactEditorError('Invalid conflict evidence pointers')
+        self._evidence_sections = evidence_sections
+        super().__init__('Final editor left unresolved base-section conflicts')
+
+    @property
+    def conflicts(self):
+        return self._conflicts
+
+    @property
+    def targets(self):
+        return tuple(section for section in REPAIRABLE_SECTIONS
+                     if any(target == section for target, _ in self._conflicts))
+
+    @property
+    def evidence_sections(self):
+        return self._evidence_sections
+
+
 EDITABLE_SECTIONS = frozenset({
     'company_status', 'company_overview',
 })
@@ -65,6 +109,28 @@ def _numbers(text):
     return Counter(_NUMBER.findall(text))
 
 
+def _numeric_literals(text):
+    """Keep numeric spelling, with positive-sign and valid date-display aliases.
+
+    ISO date separators are not negative amounts: 2026-08-27 can be displayed
+    as 2026년 8월 27일. This never strips a minus from an ordinary amount.
+    """
+    literals = set()
+    def date_parts(match):
+        try:
+            date.fromisoformat(match[0])
+        except ValueError:
+            return match[0]
+        for part in match.groups():
+            literals.update((part, str(int(part))))
+        return ' ' * len(match[0])
+    # Do not leave date separators in the signed-amount inventory: otherwise
+    # 2026-08-27 would also authorize an invented financial value of -27.
+    amounts = re.sub(r'(?<![\d+-])(\d{4})-(\d{2})-(\d{2})(?!\d)', date_parts, text)
+    literals.update(literal.removeprefix('+') for literal in _numbers(amounts))
+    return literals
+
+
 def _decode(text):
     if not isinstance(text, str):
         raise ReportFactEditorError('Final editor output is not text')
@@ -109,14 +175,14 @@ def _validate_and_apply(reports, payload, calendar_context=None):
     if not isinstance(payload, dict) or set(payload) != {'summary', 'edits', 'unresolved'}:
         raise ReportFactEditorError('Invalid final editor schema')
     summary, edits, unresolved = payload['summary'], payload['edits'], payload['unresolved']
-    if not isinstance(unresolved, list) or unresolved:
-        raise ReportFactEditorError('Final editor left unresolved conflicts')
+    if not isinstance(unresolved, list) or len(unresolved) > 8:
+        raise ReportFactEditorError('Invalid final editor unresolved schema')
     if not isinstance(edits, list) or len(edits) > 8:
         raise ReportFactEditorError('Invalid final editor edit count')
     if not isinstance(summary, str) or not 200 <= len(summary.strip()) <= 6000:
         raise ReportFactEditorError('Final editor summary is incomplete or oversized')
     all_text = '\n\n'.join(reports.values())
-    if (set(_numbers(summary)) - set(_numbers(all_text))
+    if (_numeric_literals(summary) - _numeric_literals(all_text)
             or set(_URL.findall(summary)) - set(_URL.findall(all_text))
             or _INTERNAL.search(summary)):
         raise ReportFactEditorError('Final editor summary introduced unsupported literals')
@@ -139,6 +205,8 @@ def _validate_and_apply(reports, payload, calendar_context=None):
         text = reports[section]
         if text.count(original) != 1 or len(original) > 6000 or len(replacement) > 6000:
             raise ReportFactEditorError('Edit must match exactly once within its section')
+        if original.strip() in [p.strip() for p in re.split(r'\n\s*\n', reports.get('investment_strategy', ''))]:
+            raise ReportFactEditorError('Factual correction is also present in immutable strategy')
         if (re.search(r'\r?\n[ \t]*\r?\n', original)
                 or re.search(r'\r?\n[ \t]*\r?\n', replacement)
                 or _numbers(original) != _numbers(replacement)
@@ -153,6 +221,52 @@ def _validate_and_apply(reports, payload, calendar_context=None):
             raise ReportFactEditorError('Overlapping edits')
         spans.setdefault(section, []).append((start, end))
         checked.append((section, start, end, replacement))
+    # No edits are applied when unresolved remains. Validate normal edit/summary
+    # guards first so an unsafe transaction cannot masquerade as a repair request.
+    conflicts = []
+    evidence_sections = []
+    for conflict in unresolved:
+        if (not isinstance(conflict, dict) or set(conflict) != {'section', 'issue', 'evidence_section'}
+                or not isinstance(conflict['section'], str)
+                or conflict['section'] not in (*REPAIRABLE_SECTIONS, DEPENDENT_SYNTHESIS)
+                or conflict['section'] not in reports
+                or not isinstance(conflict['issue'], str) or not conflict['issue'].strip()
+                or len(conflict['issue']) > 2000
+                or not isinstance(conflict['evidence_section'], str)
+                or conflict['evidence_section'] not in CONFLICT_EVIDENCE_SECTIONS
+                or not isinstance(reports.get(conflict['evidence_section']), str)
+                or not reports[conflict['evidence_section']].strip()):
+            raise ReportFactEditorError('Unknown, immutable or invalid unresolved conflict')
+        conflicts.append((conflict['section'], conflict['issue']))
+        evidence_sections.append(conflict['evidence_section'])
+    if conflicts:
+        if not any(section in REPAIRABLE_SECTIONS for section, _ in conflicts):
+            raise ReportFactEditorError('Dependent synthesis conflict requires a base-section conflict')
+        # Edits are atomic and will be discarded on this path. Carry every
+        # otherwise-valid edit target into source-based regeneration so fresh
+        # strategy synthesis cannot consume its known-uncorrected old prose.
+        for section in REPAIRABLE_SECTIONS:
+            proposals = [edit for edit in edits if edit['section'] == section]
+            if not proposals:
+                continue
+            issue = 'Untrusted editorial proposals for source-based fact review: ' + json.dumps(
+                proposals, ensure_ascii=False, sort_keys=True)
+            existing = next((index for index, (target, _) in enumerate(conflicts)
+                             if target == section), None)
+            if existing is not None:
+                issue = conflicts[existing][1] + '\n\n' + issue
+            if len(issue) > 2000:
+                raise ReportFactEditorError('Editorial repair proposal exceeds conflict capacity; no clipping')
+            if existing is not None:
+                conflicts[existing] = (section, issue)
+                continue  # Retain the already-validated evidence pointer.
+            source = next((key for key in ('shared_reference', 'dart_deep_analysis')
+                           if isinstance(reports.get(key), str) and reports[key].strip()), None)
+            if source is None:
+                raise ReportFactEditorError('Editorial repair proposal has no source reference')
+            conflicts.append((section, issue))
+            evidence_sections.append(source)
+        raise ReportFactConflictError(tuple(conflicts), evidence_sections=tuple(evidence_sections))
     # Validate every patch first, then splice original offsets backwards.
     patched = dict(reports)
     for section, start, end, replacement in sorted(checked, key=lambda item: (item[0], -item[1])):
@@ -163,7 +277,7 @@ def _validate_and_apply(reports, payload, calendar_context=None):
 async def edit_and_summarize(section_reports, company_name, company_code, reference_date, language='ko'):
     """Replace the normal summary call; no retries, tools or extra model calls."""
     from cores.llm.ports import AgentSpec, LLMParams
-    from cores.report_generation import _get_report_backend
+    from cores.report_generation import _get_report_backend, synthesis_evidence_contract
     from report_model_config import DART_REPORT_EFFORT, DART_REPORT_MODEL
 
     if (not isinstance(section_reports, dict) or not section_reports
@@ -190,12 +304,34 @@ async def edit_and_summarize(section_reports, company_name, company_code, refere
         '수급 관측은 유지할 수 있지만 실제 매수·매도 지시와 매매 규칙은 수정할 수 없습니다.\n'
         '기준일·단위·연결/별도·실적/예상·공급자 산식이 다르면 값의 차이 자체는 충돌이 아닙니다. '
         '이를 잘못 동일 기준으로 비교한 서술만 수정하세요.\n'
+        '필수 대조 항목: 기업현황의 분기 매출·영업이익 증가율이 반기 누적 증가율을 잘못 가져온 '
+        '것인지 확인하세요. 분기와 누적의 기간이 섞였으면 재계산하지 말고 company_status 충돌로 '
+        '기록하세요. company_status와 company_overview에서 회사 PBR을 업종 PER과 비교하거나 '
+        '제공되지 않은 업종 PBR보다 높다고 단정하는지 각각 확인하세요. 확인되지 않은 지표를 '
+        '근거로 삼은 문장은 충돌이며, 단순히 회사의 PBR 자체가 높다는 의견과 구분합니다. '
+        '뉴스의 과거 전환사채 잔액·전환가능주식이 후속 전환 완료 공시 뒤에도 미래 부담으로 '
+        '남아 있는지, 시장·수급의 수익률 시작일과 관측기간이 계산표와 일치하는지도 확인하세요.\n'
         '숫자(연도·부호·쉼표·소수 포함)와 URL은 수정 전후 동일한 개수와 표기로 모두 유지하세요. '
         '숫자 추가·삭제·환산·재계산은 금지합니다. 제목·표·코드·인용·CE 근거 블록은 수정하지 마세요. '
         '매수·매도·손절·목표가·비중·진입·청산 등 실제 결정 문단은 수정하지 마세요. '
+        '편집 금지는 original 부분 문자열만이 아니라 그것을 포함하는 빈 줄로 구분된 문단 전체에 '
+        '적용됩니다. 그 문단 어디든 매수, 매도, 손절, 익절, 진입, 청산, 비중, 포지션, 목표가, '
+        '목표주가, 위험 한도 또는 buy, sell, stop, entry, exit, position, allocation, target price, '
+        'risk limit 표현이 있으면 edits로 고치지 말고 unresolved에 기록하세요. '
+        '매출 비중처럼 사실 설명인 비중도 이 보수적인 문단 보호에 해당합니다. '
+        '단, 앞에서 허용한 session_timing의 정확한 수급 관측 예외만 그대로 적용합니다. '
         '일반 허용 섹션: ' + ', '.join(sorted(EDITABLE_SECTIONS))
         + '. news_analysis는 session_timing 사유만 허용하며 그 외 섹션은 읽기 전용입니다.\n'
         '읽기 전용 섹션도 충돌을 검사하고 수정이 필요한 충돌이 있으면 unresolved에 기록하세요. '
+        'unresolved는 최대 8개의 {"section":"입력 sections의 정확한 키", "issue":"충돌 설명", '
+        '"evidence_section":"대조 근거의 입력 섹션 키"} '
+        '객체 배열입니다. issue는 공백이 아닌 2000자 이내 설명이며 문자열 배열은 금지합니다. '
+        '충돌이 발생한 실제 섹션 키를 쓰고 다른 섹션으로 돌려 기록하지 마세요. '
+        '기본 섹션의 충돌이 투자 전략에도 반복되면 investment_strategy 충돌도 별도로 기록하세요. '
+        '이는 기본 섹션을 바로잡은 뒤 전략 전체를 새로 합성하기 위한 기록이지 전략 문장을 편집할 '
+        '권한이 아닙니다. 전략만의 충돌을 숨기거나 기본 섹션 충돌을 만들어내지 마세요. '
+        'evidence_section은 shared_reference, dart_deep_analysis, peer_comparison 중 실제 제공된 '
+        '비어 있지 않은 대조 근거의 키입니다. 근거가 없는 충돌은 임의로 근거를 지정하지 마세요. '
         '최대 8개 수정만 반환하고 original은 원본의 한 문단 안에서 정확히 한 번 나오는 연속 문자열로 '
         '복사하세요. 수정이 필요 없으면 edits는 빈 배열입니다. 해결 불가능한 충돌은 unresolved에 '
         '기록하고 감추지 마세요. summary는 수정 후 전체 보고서를 대표하는 자연스러운 합쇼체 '
@@ -208,6 +344,7 @@ async def edit_and_summarize(section_reports, company_name, company_code, refere
     )
     if language != 'ko':
         instruction += '\nWrite summary and replacement prose in English.'
+    instruction += synthesis_evidence_contract(language)
     calendar_context = await asyncio.to_thread(_calendar_context, reference_date)
     message = json.dumps({'company_name': company_name, 'company_code': company_code,
                           'calendar_context': calendar_context,

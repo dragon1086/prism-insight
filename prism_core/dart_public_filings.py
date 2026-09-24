@@ -359,6 +359,20 @@ def _scope_body(html, scope, scan=None):
     _fail('SCOPE_FINANCIAL_TABLE_MISSING')
 
 
+def _consolidated_not_applicable(body):
+    """Only an explicit, otherwise empty official consolidated statement.
+
+    A fetch failure, missing table, search snippet, or unrelated footnote is not
+    permission to substitute standalone financials.
+    """
+    if len(body.encode('utf-8')) > 16384:
+        return False
+    text = _compact(_text(_tree(body)))
+    return bool(re.fullmatch(
+        r'\d+\.연결재무제표(?:당사는)?(?:보고서작성기준일현재)?'
+        r'해당사항(?:이)?없(?:습니다\.?|음\.?)', text))
+
+
 def _section_scan(body):
     return SectionHTML(body) if len(body.encode('utf-8')) > _LIMIT else None
 
@@ -698,6 +712,13 @@ async def collect_dart_periodic_filings(*, corp_code, decision_at, start_date, s
                     body = await request('GET', sections[0]['viewer_url'],
                                          _body_limit=MAX_HTML_BYTES if include_section_bodies else _LIMIT)
                     scan = _section_scan(body)
+                    if scope == 'consolidated' and _consolidated_not_applicable(body):
+                        row['scope_absence_evidence'] = {
+                            'scope': 'consolidated', 'reason': 'OFFICIAL_NOT_APPLICABLE',
+                            'receipt_id': row['receipt_id'],
+                            **_provenance(body, sections[0], scan),
+                        }
+                        _fail('CONSOLIDATED_NOT_APPLICABLE')
                     _scope_body(body, scope, scan)
                     if include_section_bodies:
                         _section_scope(body, scope, scan=scan)
