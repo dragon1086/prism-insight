@@ -12,6 +12,7 @@ scenarios impossible to replay.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Mapping
 
@@ -34,8 +35,15 @@ _REGIME_RE = re.compile(
 _T1_RE = re.compile(r"T1_hit[^:]*:\s*(true|false)", re.IGNORECASE)
 _T2_RE = re.compile(r"T2_hit[^:]*:\s*(true|false)", re.IGNORECASE)
 _DIST_RE = re.compile(r"distribution\s*days[^:]*:\s*(\d+)", re.IGNORECASE)
-_ATR_RE = re.compile(r"ATR20\s*[:=]\s*([0-9.]+)", re.IGNORECASE)
-_ADR_RE = re.compile(r"ADR20\s*[:=]\s*([0-9.]+)", re.IGNORECASE)
+# KR/US facts use signed decimal percentages. Keep legacy unitless decimals,
+# but require a complete value, not a prefix of malformed text or another unit.
+_VOLATILITY_VALUE = (
+    r"(\+?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))"
+    r"(?:[ \t]*%(?=$|[\s/;|,)])|"
+    r"(?=[ \t]*(?:$|[\r\n/;|)]|,(?![0-9])|(?:ATR20|ADR20)\b)))"
+)
+_ATR_RE = re.compile(r"\bATR20\s*[:=]\s*" + _VOLATILITY_VALUE, re.IGNORECASE)
+_ADR_RE = re.compile(r"\bADR20\s*[:=]\s*" + _VOLATILITY_VALUE, re.IGNORECASE)
 
 _DISTRIBUTION_CAUTION = 6
 _REGIME_STEP_DOWN = {
@@ -86,9 +94,14 @@ def _distribution_from_text(text: str) -> int | None:
 def _volatility_from_text(text: str) -> tuple[float | None, float | None]:
     atr = _ATR_RE.search(text or "")
     adr = _ADR_RE.search(text or "")
+
+    def finite_value(match: re.Match | None) -> float | None:
+        value = _number(match.group(1)) if match else None
+        return value if value is not None and math.isfinite(value) else None
+
     return (
-        _number(atr.group(1)) if atr else None,
-        _number(adr.group(1)) if adr else None,
+        finite_value(atr),
+        finite_value(adr),
     )
 
 
