@@ -66,6 +66,15 @@ def test_valid_iso_date_separator_is_not_a_negative_financial_amount(source, all
             editor._validate_and_apply(reports, payload)
 
 
+@pytest.mark.parametrize('literal', ['-27', '-08'])
+def test_iso_date_does_not_authorize_negative_financial_values(literal):
+    reports, payload = fixture()
+    reports['shared_reference'] += '기준일 2026-08-27'
+    payload['summary'] += ' 영업이익률 ' + literal + '%입니다.'
+    with pytest.raises(editor.ReportFactEditorError, match='unsupported'):
+        editor._validate_and_apply(reports, payload)
+
+
 def install_backend(monkeypatch, text):
     import report_model_config
     from cores import report_generation

@@ -115,14 +115,19 @@ def _numeric_literals(text):
     ISO date separators are not negative amounts: 2026-08-27 can be displayed
     as 2026년 8월 27일. This never strips a minus from an ordinary amount.
     """
-    literals = {literal.removeprefix('+') for literal in _numbers(text)}
-    for match in re.finditer(r'(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)', text):
+    literals = set()
+    def date_parts(match):
         try:
             date.fromisoformat(match[0])
         except ValueError:
-            continue
+            return match[0]
         for part in match.groups():
             literals.update((part, str(int(part))))
+        return ' ' * len(match[0])
+    # Do not leave date separators in the signed-amount inventory: otherwise
+    # 2026-08-27 would also authorize an invented financial value of -27.
+    amounts = re.sub(r'(?<![\d+-])(\d{4})-(\d{2})-(\d{2})(?!\d)', date_parts, text)
+    literals.update(literal.removeprefix('+') for literal in _numbers(amounts))
     return literals
 
 
