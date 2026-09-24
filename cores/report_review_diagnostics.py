@@ -11,6 +11,7 @@ import re
 import stat
 import time
 import uuid
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 
 MAX_BYTES = 1024 * 1024
@@ -26,12 +27,36 @@ _SECTIONS = frozenset({
 })
 _DETAILS = frozenset({'section', 'sections', 'targets', 'reason', 'issue', 'issues',
                       'count', 'limit', 'status', 'attempt', 'field', 'index', 'stage'})
-_SECRET_NAMES = r'(?:(?:x[-_])?api[_-]?key|api[_-]?token|api|access[_-]?token|access|refresh[_-]?token|id[_-]?token|token|key|(?:x-amz-)?signature|authorization|password|passwd|secret|client[_-]?secret|(?:private|secret)[_-]?key)'
+_SECRET_NAMES = r'(?:(?:x[-_])?api[_-]?key|api[_-]?token|api|access[_-]?token|access|refresh[_-]?token|id[_-]?token|token|key|signature|x-amz-(?:signature|credential|security-token)|authorization|password|passwd|secret|client[_-]?secret|(?:private|secret)[_-]?key)'
 _SECRET_KEY = re.compile(r'^' + _SECRET_NAMES + r'$', re.I)
 
 
 def _clip(text, limit):
     return text.encode('utf-8', errors='replace')[:limit].decode('utf-8', errors='ignore')
+
+
+def _redact_url(match):
+    url = match.group(0)
+    # Strip userinfo before parsing: secret values may themselves contain URL
+    # punctuation or brackets that make urlsplit reject an otherwise usable URL.
+    url = re.sub(r'^(https?://)[^/?#]*@', r'\1REDACTED@', url, flags=re.I)
+    try:
+        parsed = urlsplit(url)
+        fields = re.split(r'([&;])', parsed.query)
+        for index in range(0, len(fields), 2):
+            key, separator, value = fields[index].partition('=')
+            decoded = key
+            for _ in range(3):
+                next_key = unquote_plus(decoded)
+                if next_key == decoded:
+                    break
+                decoded = next_key
+            if separator and _SECRET_KEY.fullmatch(decoded):
+                fields[index] = key + '=[REDACTED]'
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, ''.join(fields), parsed.fragment))
+    except ValueError:
+        # Never retain a potentially credential-bearing malformed URL.
+        return '[REDACTED_URL]'
 
 
 def _redact(text):
@@ -42,8 +67,9 @@ def _redact(text):
     text = re.sub(r'\bsk-[A-Za-z0-9_-]+', '[REDACTED]', text)
     text = re.sub(r'([?&]' + _SECRET_NAMES + r'=)[^&#\s"\'<>]*', r'\1[REDACTED]', text, flags=re.I)
     text = re.sub(r'((?:["\']?' + _SECRET_NAMES + r'["\']?)\s*[:=]\s*)'
-                  r'(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[^\s,;}\]<>]+)',
+                  r'(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[^\s,;}\]<>&#]+)',
                   r'\1[REDACTED]', text, flags=re.I)
+    text = re.sub(r'https?://[^\s<>"\']+', _redact_url, text, flags=re.I)
     return text
 
 

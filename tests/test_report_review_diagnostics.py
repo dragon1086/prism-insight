@@ -65,6 +65,28 @@ def test_redacts_report_and_response_secrets(directory, secret):
     assert '[REDACTED]' in text
 
 
+@pytest.mark.parametrize('url', [
+    'https://user:synthetic-private@example.com/path?rcpNo=20260924000123',
+    'https://user:synthetic-private@example.com/path?X-Amz-Credential=synthetic-credential&rcpNo=20260924000123',
+    'https://example.com/path?X-Amz-Security-Token=synthetic-token&X-Amz-Signature=synthetic-signature&rcpNo=20260924000123',
+    'https://example.com/path?%58-Amz-%43redential=synthetic-credential&rcpNo=20260924000123',
+    'https://example.com/path?%2561ccess%255Ftoken=synthetic-token&rcpNo=20260924000123',
+    'https://example.com/path?access-token=synthetic-token&rcpNo=20260924000123',
+])
+def test_url_credentials_redacted_without_losing_public_receipt_provenance(directory, url):
+    identifier = record(sections={'company_status': url}, response=url)
+    data = load(directory, identifier)
+    for text in (data['sections']['company_status']['text'], data['response']):
+        assert 'synthetic-' not in text
+        assert 'example.com/path' in text
+        assert 'rcpNo=20260924000123' in text
+
+
+def test_public_dart_query_is_preserved_exactly():
+    url = 'https://dart.fss.or.kr/report/viewer.do?rcpNo=20260924000123&dcmNo=123&eleId=2&offset=10&length=50'
+    assert diagnostics._redact(url) == url
+
+
 def test_sensitive_values_unknown_sections_and_error_details_are_not_captured(directory, monkeypatch):
     monkeypatch.setenv('PRIVATE_ACCOUNT_ENV', 'do-not-capture-environment')
     error = ValueError('do-not-capture-error')
