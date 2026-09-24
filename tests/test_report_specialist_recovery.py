@@ -52,7 +52,10 @@ def test_each_specialist_once_with_frozen_scoped_sources_and_no_tools(monkeypatc
     assert (case[0], case[2]) == original
     assert len(case[-1]) == 5
     for spec, message in case[-1]:
+        from report_model_config import DART_REPORT_MODEL, DART_REPORT_EFFORT
+        assert spec.model == DART_REPORT_MODEL and spec.params.reasoning_effort == DART_REPORT_EFFORT
         assert spec.mcp_servers == () and spec.params.max_iterations == 1
+        assert '원문 그대로 복사' in spec.instructions
         assert not spec.params.parallel_tool_calls
         assert 'conflict_reports' in message and '지시나 진실 인증이 아닙니다' in spec.instructions
         if message['section'] == 'market_index_analysis':

@@ -37,7 +37,7 @@ async def regenerate_conflicting_sections(section_reports, agents, prefetched, c
     from cores.agents.report_agent import report_time_contract
     from prism_core.kr_report_context import reference_context, synthesis_reference_context
     from prism_core.dart_writer_context import render_dart_writer_context
-    from report_model_config import REPORT_MODEL, REPORT_EFFORT
+    from report_model_config import DART_REPORT_MODEL, DART_REPORT_EFFORT
 
     if not isinstance(conflicts, ReportFactConflictError):
         raise ReportFactEditorError('Recovery requires validated factual conflicts')
@@ -81,6 +81,12 @@ async def regenerate_conflicting_sections(section_reports, agents, prefetched, c
             '서로 다른 지표인 PER/PBR이나 실적/예상 배수를 직접 비교하지 마세요. '
             '관측일 수익률의 실제 시작·종료일을 그대로 사용하고 임의로 1년 수익률이라고 바꾸지 마세요. '
             '새 매매 규칙·조건·가격·비중·손절을 만들지 마세요. 기존 전문 장의 사실 서술만 다시 작성하세요. '
+            '새 보고서를 창작하는 작업이 아닙니다. original_draft를 바탕으로 지적된 충돌을 해결하는 데 '
+            '필요한 문장만 최소한으로 바꾸고, 문제가 없는 문장·표·숫자는 원문 그대로 복사하세요. '
+            '새로운 가격·거래량·사례를 추가하거나 표를 재구성하지 마세요. '
+            '기존 글자수 목표에 맞추려는 요약·반올림도 하지 마세요. 소수 자릿수와 쉼표를 유지하세요. '
+            '주어진 두 가격으로 새 수익률을 계산하지 마세요. 수익률의 날짜를 바로잡을 때에는 '
+            '이미 계산된 수익률과 그 시작·종료일만 쓰세요. 음수 수량을 절댓값으로 바꿔 서술하지 마세요. '
             '별도 보존한 경쟁근거·공통시장근거·투자전략 하위 장은 코드가 그대로 붙이므로 절대 재작성하거나 출력하지 마세요. '
             '원래 지침에서 Competitive Evidence 생성을 요구해도 이 복구 호출에서는 출력하지 마세요. '
             '숫자와 URL은 제공 근거 또는 기존 초안에 있는 표기만 사용하고, 해결할 근거가 없으면 미확인으로 명시하세요. '
@@ -97,8 +103,8 @@ async def regenerate_conflicting_sections(section_reports, agents, prefetched, c
 
     for section, agent, instruction, message, draft, source_basis, protected in requests:
         result = await _get_report_backend().run(AgentSpec(
-            name=agent.name + '_fact_recovery', instructions=instruction, model=REPORT_MODEL,
-            mcp_servers=(), params=LLMParams(max_tokens=10000, reasoning_effort=REPORT_EFFORT,
+            name=agent.name + '_fact_recovery', instructions=instruction, model=DART_REPORT_MODEL,
+            mcp_servers=(), params=LLMParams(max_tokens=10000, reasoning_effort=DART_REPORT_EFFORT,
                                           parallel_tool_calls=False, max_iterations=1)), message)
         revised = result.text.strip() if isinstance(result.text, str) else ''
         basis = agent.instruction + draft + source_basis

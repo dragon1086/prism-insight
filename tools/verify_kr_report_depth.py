@@ -227,6 +227,9 @@ def main():
 
         async def capture_editor_reply(spec, message):
             nonlocal editor_calls
+            if spec.name.endswith('_fact_recovery') and re.fullmatch(r'[a-z_]+', spec.name):
+                save_json(spec.name + '_request.json', {'instructions': spec.instructions,
+                                                       'message': message, 'model': spec.model})
             if spec.name == 'report_final_fact_editor':
                 editor_calls += 1
                 (output / 'final_editor_request.json').write_text(message, encoding='utf-8')
