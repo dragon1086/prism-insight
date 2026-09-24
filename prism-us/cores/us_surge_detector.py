@@ -191,8 +191,8 @@ def _recover_daily_snapshot(data, requested_date, tickers, captured_at, referenc
     except ImportError:
         logger.warning('Optional daily cache unavailable; keeping original provider result')
         return snapshot
-    root = Path(os.getenv('PRISM_US_DAILY_CACHE_DIR',
-                          str(Path(__file__).resolve().parents[2] / 'runtime/us_daily_ohlcv_cache')))
+    root = Path(os.getenv('PRISM_US_DAILY_CACHE_DIR') or
+                str(Path(__file__).resolve().parents[2] / 'runtime/us_daily_ohlcv_cache')).expanduser()
     cache = DailyBarCache(root, now=captured_at)
     original = dict(snapshot.attrs['snapshot_coverage'])
     sources = {ticker: 'provider' for ticker in snapshot.index}
