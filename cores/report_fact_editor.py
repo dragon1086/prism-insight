@@ -51,6 +51,7 @@ def _calendar_context(reference_date):
             day = date.fromisoformat(reference_date)
         else:
             return context
+        context['reference_date'] = day.isoformat()
         import pandas_market_calendars as mcal
         sessions = mcal.get_calendar('XKRX').valid_days(start_date=day, end_date=day)
         context.update(reference_date=day.isoformat(), is_session=bool(len(sessions)))
@@ -93,7 +94,7 @@ def _numeric_literals(text):
         return ' ' * len(match[0])
     # Do not leave date separators in the signed-amount inventory: otherwise
     # 2026-08-27 would also authorize an invented financial value of -27.
-    amounts = re.sub(r'(?<![\d+./-])(\d{4})([-./])(\d{2})\2(\d{2})(?!\d)', date_parts, text)
+    amounts = re.sub(r'(?<![\d+./-])(\d{4})([-./])(\d{1,2})\2(\d{1,2})(?!\d)', date_parts, text)
     literals.update(Decimal(literal.replace(',', '')) for literal in _numbers(amounts))
     return literals
 
@@ -204,7 +205,8 @@ def _validate_and_apply(reports, payload, calendar_context=None):
     return patched, summary.strip()
 
 
-async def _run_review(section_reports, company_name, company_code, reference_date, language, stage, capture):
+async def _run_review(section_reports, company_name, company_code, reference_date, language, stage, capture,
+                      calendar_context=None):
     """Replace the normal summary call; no retries, tools or extra model calls."""
     from cores.llm.ports import AgentSpec, LLMParams
     from cores.report_generation import _get_report_backend, synthesis_evidence_contract
@@ -299,7 +301,19 @@ async def _run_review(section_reports, company_name, company_code, reference_dat
     if language != 'ko':
         instruction += '\nWrite summary and replacement prose in English.'
     instruction += synthesis_evidence_contract(language)
-    calendar_context = await asyncio.to_thread(_calendar_context, reference_date)
+    if calendar_context is None:
+        calendar_context = await asyncio.to_thread(_calendar_context, reference_date)
+    else:
+        expected_date = reference_date
+        if isinstance(reference_date, str) and re.fullmatch(r'\d{8}', reference_date):
+            expected_date = f'{reference_date[:4]}-{reference_date[4:6]}-{reference_date[6:]}'
+        if (not isinstance(calendar_context, dict)
+                or calendar_context.get('calendar') != 'XKRX'
+                or calendar_context.get('reference_date') != expected_date
+                or calendar_context.get('is_session') is not None
+                and type(calendar_context.get('is_session')) is not bool):
+            raise ReportFactEditorError('Invalid shared report calendar', code='INVALID_INPUT')
+        calendar_context = dict(calendar_context)
     message = json.dumps({'company_name': company_name, 'company_code': company_code,
                           'calendar_context': calendar_context,
                           'reference_date': reference_date, 'sections': review_sections}, ensure_ascii=False)
@@ -339,14 +353,14 @@ async def _run_review(section_reports, company_name, company_code, reference_dat
     return patched, summary, receipt
 
 
-async def _review(section_reports, company_name, company_code, reference_date, language, stage):
+async def _review(section_reports, company_name, company_code, reference_date, language, stage, calendar_context=None):
     """Capture review failures locally; never expose payloads in exceptions/logs."""
     from report_model_config import DART_REPORT_MODEL
     from pydantic import ValidationError
     capture = {}
     try:
         return await _run_review(section_reports, company_name, company_code, reference_date,
-                                 language, stage, capture)
+                                 language, stage, capture, calendar_context)
     except (Exception, asyncio.CancelledError) as original:
         error = original if isinstance(original, ReportFactEditorError) else ReportFactEditorError(
             'Report review backend failed',
@@ -372,11 +386,11 @@ async def _review(section_reports, company_name, company_code, reference_date, l
         raise error from original
 
 
-async def assess_report_facts(section_reports, company_name, company_code, reference_date, language='ko'):
+async def assess_report_facts(section_reports, company_name, company_code, reference_date, language='ko', *, calendar_context=None):
     """One tool-free pre-strategy assessment; READY returns (copy, None, receipt)."""
-    return await _review(section_reports, company_name, company_code, reference_date, language, 'assessment')
+    return await _review(section_reports, company_name, company_code, reference_date, language, 'assessment', calendar_context)
 
 
-async def edit_and_summarize(section_reports, company_name, company_code, reference_date, language='ko'):
+async def edit_and_summarize(section_reports, company_name, company_code, reference_date, language='ko', *, calendar_context=None):
     """One structured final review and conservative atomic edit/summary call."""
-    return await _review(section_reports, company_name, company_code, reference_date, language, 'final')
+    return await _review(section_reports, company_name, company_code, reference_date, language, 'final', calendar_context)

@@ -85,7 +85,8 @@ def test_iso_date_does_not_authorize_negative_financial_values(literal):
         editor._validate_and_apply(reports, payload)
 
 
-@pytest.mark.parametrize('rendered', ['2026.08.26', '2026/08/26', '2026년 8월 26일'])
+@pytest.mark.parametrize('rendered', ['2026.08.26', '2026.8.26', '2026-8-26',
+                                    '2026/08/26', '2026년 8월 26일'])
 def test_full_valid_date_presentation_does_not_invent_financial_decimals(rendered):
     assert not (editor._numeric_literals(rendered) - editor._numeric_literals('2026-08-26'))
 
@@ -121,6 +122,35 @@ def install_backend(monkeypatch, text):
     monkeypatch.setattr(report_model_config, 'DART_REPORT_MODEL', 'gpt-6-astra')
     monkeypatch.setattr(report_model_config, 'DART_REPORT_EFFORT', 'low')
     return calls
+
+
+@pytest.mark.parametrize('stage', ['assessment', 'final'])
+@pytest.mark.parametrize('is_session', [False, True, None])
+def test_frozen_calendar_is_used_without_second_lookup(monkeypatch, stage, is_session):
+    reports, payload = fixture()
+    payload['edits'] = []
+    if stage == 'assessment':
+        payload['summary'] = None
+    calls = install_backend(monkeypatch, json.dumps(payload, ensure_ascii=False))
+    def unexpected_lookup(day):
+        raise AssertionError('Calendar must be reused from report start')
+    monkeypatch.setattr(editor, '_calendar_context', unexpected_lookup)
+    frozen = {'reference_date': '2026-09-25', 'calendar': 'XKRX', 'is_session': is_session}
+    function = editor.assess_report_facts if stage == 'assessment' else editor.edit_and_summarize
+    asyncio.run(function(reports, '회사', '123456', '20260925', calendar_context=frozen))
+    assert json.loads(calls[0][1])['calendar_context'] == frozen
+
+
+@pytest.mark.parametrize('field,value', [('reference_date', '2026-09-23'), ('calendar', 'NYSE'),
+                                        ('is_session', 0), ('is_session', 'false')])
+def test_invalid_shared_calendar_is_not_trusted(monkeypatch, field, value):
+    reports, payload = fixture()
+    calls = install_backend(monkeypatch, json.dumps(payload, ensure_ascii=False))
+    frozen = {'reference_date': '2026-09-25', 'calendar': 'XKRX', 'is_session': False}
+    frozen[field] = value
+    with pytest.raises(editor.ReportFactEditorError):
+        asyncio.run(editor.edit_and_summarize(reports, '회사', '123456', '20260925', calendar_context=frozen))
+    assert not calls
 
 
 def test_review_reads_canonical_ce_once_but_preserves_published_handoff(monkeypatch):

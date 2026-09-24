@@ -163,13 +163,13 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
         assert '수급 기준 2026-09-22: 외국인 987주' in combined
         assert 'INTERNAL_FLOW_NOT_FOR_PUBLIC_SYNTHESIS' not in combined
         return '\\n\\n### 5-1. 투자 전략\n조건부 의무를 고려한 전략'
-    async def assessed(reports, *args):
+    async def assessed(reports, *args, **kwargs):
         model_calls.append('assessment')
         assert all(text in reports['dart_deep_analysis'] for text in authored.values())
         return dict(reports), None, {'calls': 0}
     from cores import report_fact_editor
     monkeypatch.setattr(report_fact_editor, 'assess_report_facts', assessed)
-    async def summary(reports, *args):
+    async def summary(reports, *args, **kwargs):
         model_calls.append('summary')
         if summary_fails:
             raise ValueError('unresolved_fact_conflict')
@@ -248,7 +248,7 @@ def test_real_kr_assembly_reaches_synthesis_and_publication_without_extra_models
         assert ('공시 확인' in combined) is (not dart_fails)
         return '기존 위험 한도를 유지하는 전략'
 
-    async def summary(reports, *args):
+    async def summary(reports, *args, **kwargs):
         calls.append('summary')
         assert '12345.67원' in reports['shared_reference']
         assert 'investment_strategy' in reports

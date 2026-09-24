@@ -271,7 +271,7 @@ async def generate_market_report(agent, section, reference_date, logger, languag
     return report
 
 
-async def generate_summary(section_reports, company_name, company_code, reference_date, logger, language="ko"):
+async def generate_summary(section_reports, company_name, company_code, reference_date, logger, language="ko", *, calendar_context=None):
     """
     Generate executive summary based on section reports
 
@@ -289,7 +289,8 @@ async def generate_summary(section_reports, company_name, company_code, referenc
         # must not become a successfully published report.
         from cores.report_fact_editor import edit_and_summarize
         edited, summary, receipt = await edit_and_summarize(
-            section_reports, company_name, company_code, reference_date, language)
+            section_reports, company_name, company_code, reference_date, language,
+            calendar_context=calendar_context)
         section_reports.update(edited)
         logger.info(f'Report factual-summary stage completed: {receipt}')
         if not summary.startswith('## '):

@@ -51,7 +51,7 @@ def actual_pipeline(monkeypatch, tmp_path):
     monkeypatch.setenv('PRISM_PARALLEL_REPORT', 'false')
     monkeypatch.setenv('PRISM_REPORT_DIAGNOSTICS_DIR', str(tmp_path / 'diagnostics'))
     monkeypatch.setattr(report_fact_editor, '_calendar_context', lambda day: {
-        'reference_date': day, 'calendar': 'XKRX', 'is_session': False})
+        'reference_date': f'{day[:4]}-{day[4:6]}-{day[6:]}', 'calendar': 'XKRX', 'is_session': False})
     work = tmp_path / 'work'; work.mkdir(); monkeypatch.chdir(work)
     analysis._market_analysis_cache.clear()
 
@@ -116,6 +116,20 @@ def actual_pipeline(monkeypatch, tmp_path):
                             'kind': 'unsupported_claim' if scenario in ('unsupported_claim', 'ce_conflict') else 'contradiction',
                             'evidence_section': None if scenario in ('unsupported_claim', 'ce_conflict') else 'dart_deep_analysis',
                             'source_roles': [] if scenario in ('unsupported_claim', 'ce_conflict') else ['finance']}])
+                    if scenario in ('late_new_owner', 'third_owner_wave', 'mixed_repeated_owner',
+                                    'final_new_owner', 'final_repeated_owner', 'final_wave_exhausted'):
+                        targets = {1: ['company_status'], 2: ['price_volume_analysis']}.get(control['assessments'], [])
+                        if scenario in ('final_new_owner', 'final_repeated_owner') and control['assessments'] > 1:
+                            targets = []
+                        if scenario == 'third_owner_wave' and control['assessments'] == 3:
+                            targets = ['news_analysis']
+                        if scenario == 'mixed_repeated_owner' and control['assessments'] == 2:
+                            targets = ['company_status', 'price_volume_analysis']
+                        if targets:
+                            payload.update(status='CONFLICTS', unresolved=[{
+                                'section': target, 'issue': '제공 근거로 확인되지 않은 서술입니다.',
+                                'kind': 'unsupported_claim', 'evidence_section': None, 'source_roles': []}
+                                for target in targets])
                     if scenario == 'ce_conflict':
                         expected = 'stalepeerclaim' if control['assessments'] == 1 else 'correctedpeerclaim'
                         assert expected in sections['news_analysis']
@@ -135,6 +149,13 @@ def actual_pipeline(monkeypatch, tmp_path):
                         payload['summary'] = '## 종합 요약\n\n' + (
                             '제공한 공시의 기간과 별도 범위, 현금흐름과 원금 이행 조건을 구분합니다. '
                             '이미 발생한 사건과 남은 위험을 나누고 기존 매매 정책을 유지합니다. ' * 5)
+                    if control['scenario'] in ('final_new_owner', 'final_repeated_owner', 'final_wave_exhausted') and control['finals'] == 1:
+                        target = {'final_new_owner': 'price_volume_analysis',
+                                  'final_repeated_owner': 'company_status',
+                                  'final_wave_exhausted': 'news_analysis'}[control['scenario']]
+                        payload.update(status='CONFLICTS', summary=None, unresolved=[{
+                            'section': target, 'issue': '새 검토에서 확인된 근거 부족입니다.',
+                            'kind': 'unsupported_claim', 'evidence_section': None, 'source_roles': []}])
                 return LLMResult(structured=spec.output_schema.model_validate(payload))
             if control['scenario'] == 'ce_conflict' and name == 'news_analysis_agent':
                 return LLMResult(text=prose('뉴스 사실을 확인합니다.') +
@@ -157,6 +178,49 @@ def test_actual_typed_review_repairs_before_first_strategy(actual_pipeline):
     assert events.index('company_status_agent_fact_recovery') < events.index('investment_strategy_agent')
     assert events.count('collect') == events.count('official') == 1
     assert 'correctedfact' in result and 'stalecompanyfact' not in result
+
+
+def test_new_owner_gets_one_repair_without_repeating_prior_owner(actual_pipeline):
+    _, events, control = actual_pipeline
+    control['scenario'] = 'late_new_owner'
+    assert '종합 요약' in run(actual_pipeline)
+    assert events.count('company_status_agent_fact_recovery') == 1
+    assert events.count('price_volume_analysis_agent_fact_recovery') == 1
+    assert control['assessments'] == 3 and control['strategies'] == control['finals'] == 1
+    assert events.count('collect') == events.count('official') == 1
+
+
+@pytest.mark.parametrize('scenario', ['third_owner_wave', 'mixed_repeated_owner'])
+def test_owner_budget_and_two_wave_global_limit_fail_before_extra_calls(actual_pipeline, scenario):
+    _, events, control = actual_pipeline
+    control['scenario'] = scenario
+    with pytest.raises(ValueError):
+        run(actual_pipeline)
+    assert control['strategies'] == control['finals'] == 0
+    assert events.count('company_status_agent_fact_recovery') == 1
+    assert events.count('price_volume_analysis_agent_fact_recovery') == (1 if scenario == 'third_owner_wave' else 0)
+    assert 'news_analysis_agent_fact_recovery' not in events
+
+
+def test_final_first_time_owner_can_use_remaining_wave(actual_pipeline):
+    _, events, control = actual_pipeline
+    control['scenario'] = 'final_new_owner'
+    assert '종합 요약' in run(actual_pipeline)
+    assert events.count('company_status_agent_fact_recovery') == 1
+    assert events.count('price_volume_analysis_agent_fact_recovery') == 1
+    assert control['strategies'] == control['finals'] == 2
+
+
+@pytest.mark.parametrize('scenario', ['final_repeated_owner', 'final_wave_exhausted'])
+def test_final_stage_does_not_reset_owner_or_wave_budget(actual_pipeline, scenario):
+    _, events, control = actual_pipeline
+    control['scenario'] = scenario
+    with pytest.raises(ValueError):
+        run(actual_pipeline)
+    assert events.count('company_status_agent_fact_recovery') == 1
+    assert events.count('price_volume_analysis_agent_fact_recovery') == (1 if scenario == 'final_wave_exhausted' else 0)
+    assert 'news_analysis_agent_fact_recovery' not in events
+    assert control['strategies'] == control['finals'] == 1
 
 
 def test_actual_strategy_only_conflict_rebuilds_without_recollecting(actual_pipeline):

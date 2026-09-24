@@ -120,6 +120,11 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             logger.warning(f"Data prefetch failed, falling back to MCP: {e}")
             prefetched = {}
 
+        # Writers, repairs and synthesis need the same local calendar fact as
+        # the reviewer; do not disclose a closed session only at final review.
+        from cores.report_fact_editor import _calendar_context
+        prefetched['report_calendar_context'] = await asyncio.to_thread(_calendar_context, reference_date)
+
         # Optional research is gathered once before section/model retries.
         try:
             from prism_core.report_research_prefetch import prefetch_report_research
@@ -325,13 +330,22 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         from cores.report_fact_editor import (
             ReportFactConflictError, ReportFactEditorError, assess_report_facts,
         )
-        factual_repair_used = False
+        repaired_owners = set()
+        factual_repair_waves = 0
 
         async def repair_factual_drafts(reports, conflict):
-            nonlocal factual_repair_used
-            if factual_repair_used:
+            nonlocal factual_repair_waves
+            owners = set(conflict.targets)
+            if conflict.repair_dart:
+                owners.add('dart_deep_analysis')
+            # Two finite waves across the entire report, one call per original
+            # owner. A mixed repeated/new request fails before any new calls.
+            # Derived CE copies are not separate repair owners.
+            if not owners or factual_repair_waves >= 2 or owners & repaired_owners:
                 raise ReportFactEditorError('Factual repair budget exhausted', code='FACT_REPAIR_EXHAUSTED')
-            factual_repair_used = True
+            factual_repair_waves += 1
+            repaired_owners.update(owners)
+            logger.info('Report fact repair wave=%s owners=%s', factual_repair_waves, ','.join(sorted(owners)))
             repaired = dict(reports)
             repaired.pop('investment_strategy', None)
             if conflict.repair_dart:
@@ -358,15 +372,21 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         async def assess_factual_drafts(reports):
             # A final-stage strategy is never smuggled into pre-strategy review.
             factual = {key: value for key, value in reports.items() if key != 'investment_strategy'}
-            await assess_report_facts(factual, company_name, company_code, reference_date, language)
+            await assess_report_facts(factual, company_name, company_code, reference_date, language,
+                                      calendar_context=prefetched['report_calendar_context'])
 
         if dart_chapter:
-            try:
-                await assess_factual_drafts(section_reports)
-            except ReportFactConflictError as conflict:
-                section_reports = await repair_factual_drafts(section_reports, conflict)
-                # No loop. A second unresolved assessment remains an explicit failure.
-                await assess_factual_drafts(section_reports)
+            # Never retry an already repaired owner. A later first-time owner
+            # may consume the second wave, followed by one mandatory assessment.
+            for assessment_pass in range(3):
+                try:
+                    await assess_factual_drafts(section_reports)
+                    break
+                except ReportFactConflictError as conflict:
+                    if assessment_pass == 2:
+                        raise ReportFactEditorError('Factual repair budget exhausted',
+                                                    code='FACT_REPAIR_EXHAUSTED') from conflict
+                    section_reports = await repair_factual_drafts(section_reports, conflict)
 
         async def write_strategy(reports, conflict=None):
             reports.pop('investment_strategy', None)
@@ -398,7 +418,8 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         try:
             try:
                 executive_summary = await generate_summary(
-                    section_reports, company_name, company_code, reference_date, logger, language
+                    section_reports, company_name, company_code, reference_date, logger, language,
+                    calendar_context=prefetched['report_calendar_context']
                 )
             except ReportFactConflictError as conflict:
                 if not dart_chapter:
@@ -410,7 +431,8 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                 # One final synthesis retry only, even if earlier drafts were
                 # repaired. Any second final error propagates without publication.
                 executive_summary = await generate_summary(
-                    section_reports, company_name, company_code, reference_date, logger, language
+                    section_reports, company_name, company_code, reference_date, logger, language,
+                    calendar_context=prefetched['report_calendar_context']
                 )
             # Remove duplicate title/date if the agent added them
             executive_summary = executive_summary.lstrip('\n')

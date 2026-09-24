@@ -24,7 +24,7 @@ def test_standalone_kr_market_claim_removed_before_assessor_strategy_and_summary
         assert 'FIXED_MARKET_SOURCE' in reports['shared_reference']
         assert 'FIXED_CALCULATED_SOURCE' in reports['shared_reference']
 
-    async def assess(reports, *args):
+    async def assess(reports, *args, **kwargs):
         check(reports)
         stages.append('assess')
 
