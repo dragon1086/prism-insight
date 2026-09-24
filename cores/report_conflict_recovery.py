@@ -105,8 +105,8 @@ async def regenerate_conflicting_sections(section_reports, agents, prefetched, c
         if (not 200 <= len(revised) <= 16000 or not re.search(r'(?m)^#{2,4}\s+\S', revised)
                 or revised.casefold().startswith(('analysis failed', '분석 실패'))
                 or 'traceback (most recent call last)' in revised.casefold()
-                # An explicit plus on an already-positive literal changes no
-                # value. Never normalize a minus, precision or magnitude.
+                # Equivalent positive signs and valid ISO date display parts
+                # are allowed, never a changed signed amount or precision.
                 or _numeric_literals(revised) - _numeric_literals(basis)
                 or set(_URL.findall(revised)) - set(_URL.findall(basis))
                 or _split_protected(revised)[1]

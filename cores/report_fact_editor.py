@@ -110,8 +110,20 @@ def _numbers(text):
 
 
 def _numeric_literals(text):
-    """Explicit positive signs do not change a value; keep all other spelling."""
-    return {literal.removeprefix('+') for literal in _numbers(text)}
+    """Keep numeric spelling, with positive-sign and valid date-display aliases.
+
+    ISO date separators are not negative amounts: 2026-08-27 can be displayed
+    as 2026년 8월 27일. This never strips a minus from an ordinary amount.
+    """
+    literals = {literal.removeprefix('+') for literal in _numbers(text)}
+    for match in re.finditer(r'(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)', text):
+        try:
+            date.fromisoformat(match[0])
+        except ValueError:
+            continue
+        for part in match.groups():
+            literals.update((part, str(int(part))))
+    return literals
 
 
 def _decode(text):

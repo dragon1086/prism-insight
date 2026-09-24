@@ -53,6 +53,19 @@ def test_summary_positive_sign_equivalence_preserves_value_guards(source, output
             editor._validate_and_apply(reports, payload)
 
 
+@pytest.mark.parametrize('source,allowed', [('2026-08-27', True), ('-27', False),
+                                          ('2026-13-27', False), ('2026-02-31', False)])
+def test_valid_iso_date_separator_is_not_a_negative_financial_amount(source, allowed):
+    reports, payload = fixture()
+    reports['shared_reference'] += source
+    payload['summary'] += ' 27일 관측입니다.'
+    if allowed:
+        assert '27일' in editor._validate_and_apply(reports, payload)[1]
+    else:
+        with pytest.raises(editor.ReportFactEditorError, match='unsupported'):
+            editor._validate_and_apply(reports, payload)
+
+
 def install_backend(monkeypatch, text):
     import report_model_config
     from cores import report_generation
