@@ -320,7 +320,7 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             section_reports["investment_strategy"] = investment_strategy.lstrip('\n')
             if dart_chapter:
                 section_reports['investment_strategy'] = re.sub(
-                    r'(?m)^(#{2,4})[ \t]+5(?=[.-])', r'\1 6', section_reports['investment_strategy'])
+                    r'(?m)^((?:\\n)*)(#{2,4})[ \t]+5(?=[.-])', r'\1\2 6', section_reports['investment_strategy'])
             logger.info(f"Completed investment_strategy - {len(investment_strategy)} characters")
         except Exception as e:
             logger.error(f"Error processing investment_strategy: {e}")
@@ -354,7 +354,7 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                         or investment_strategy.strip() in {'Investment strategy analysis failed', '투자 전략 분석 실패'}):
                     raise ValueError('Conflict recovery investment strategy generation failed')
                 section_reports['investment_strategy'] = re.sub(
-                    r'(?m)^(#{2,4})[ \t]+5(?=[.-])', r'\1 6', investment_strategy.lstrip('\n'))
+                    r'(?m)^((?:\\n)*)(#{2,4})[ \t]+5(?=[.-])', r'\1\2 6', investment_strategy.lstrip('\n'))
                 # Any error here propagates: never loop or publish the failed draft.
                 executive_summary = await generate_summary(
                     section_reports, company_name, company_code, reference_date, logger, language

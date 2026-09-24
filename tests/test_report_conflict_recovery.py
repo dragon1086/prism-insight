@@ -88,7 +88,7 @@ def test_actual_assembly_one_failure_only_repair_round(pipeline, monkeypatch, ou
             assert analysis._market_analysis_cache == snapshots['cache_before']
             if outcome == 'strategy_error': raise RuntimeError('repair strategy failed')
             if outcome == 'strategy_failure_text': return '투자 전략 분석 실패'
-            return '### 5-1. 투자 전략\nRECOVERED_STRATEGY'
+            return '\\n\\n### 5-1. 투자 전략\nRECOVERED_STRATEGY'
         return '### 5-1. 투자 전략\nINITIAL_STRATEGY'
 
     async def summary(reports, *args):
