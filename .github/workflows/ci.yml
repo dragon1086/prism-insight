@@ -38,6 +38,8 @@ jobs:
         env:
           PRISM_DISABLE_SIGNAL_PUBLISH: "1"
         run: |
+          python -m pytest tests/test_us_stock_universe.py tests/test_us_batched_snapshots.py tests/test_us_expanded_universe_integration.py -q
+          python -m pytest tests/test_screening_quality.py tests/test_screening_quality_handoff.py tests/test_screening_quality_tracker_integration.py tests/test_buy_gate_volatility_contract.py tests/test_volatility_producer_integration.py -q
           python -m pytest tests/test_us_snapshot_provider_contract.py tests/test_batch_run_status.py tests/test_batch_message_scope.py tests/test_telegram_delivery_safety.py -q
           python -m pytest tests/test_kr_full_batch_integration.py -q
           python -m pytest tests/test_us_full_batch_integration.py -q

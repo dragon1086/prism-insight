@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUN_BATCH = r'''
 import json
 from pathlib import Path
+import os
 import socket
 import sys
 from types import SimpleNamespace
@@ -27,6 +28,11 @@ import pandas as pd
 sys.path.insert(0, str(Path.cwd() / "prism-us"))
 import us_trigger_batch as batch
 from cores import us_surge_detector as provider
+if os.getenv("TEST_QUALITY_CAPTURE_FAIL") == "true":
+    import prism_core.screening_quality as quality
+    def broken_capture(*a, **kw):
+        raise ValueError("fixture capture failure")
+    quality.build_screening_quality_context = broken_capture
 
 mode, shape, output = sys.argv[1:4]
 watch = len(sys.argv) > 4 and sys.argv[4] == "watch"
@@ -100,14 +106,17 @@ with patch.object(socket.socket, "connect", no_network), \
         after = json.loads(oneil_watchlist.STATE_PATH.read_text())
         assert {w["watch_id"] for w in before["watches"]} == {w["watch_id"] for w in after["watches"]}
         assert all(w["batch_ref"] == "batch2" for w in after["watches"])
+print(json.dumps(download_calls))
 '''
 
 
-def _run_batch(tmp_path, mode, shape, watch=False):
+def _run_batch(tmp_path, mode, shape, watch=False, quality=False, capture_fail=False, capture_requests=False):
     output = tmp_path / f"{mode}-{shape}-{watch}.json"
     env = dict(os.environ, PYTHONHASHSEED="0", PRISM_DISABLE_SIGNAL_PUBLISH="1",
                PRISM_OBSERVABILITY_SPOOL=str(tmp_path / "isolated-events.jsonl"),
                REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED="false")
+    env.update(US_SCREENING_QUALITY_CAPTURE_ENABLED=str(quality).lower(),
+               TEST_QUALITY_CAPTURE_FAIL=str(capture_fail).lower())
     result = subprocess.run(
         [sys.executable, "-c", RUN_BATCH, mode, shape, str(output)] + (["watch"] if watch else []),
         cwd=ROOT, env=env, text=True, capture_output=True, timeout=45, check=False,
@@ -115,7 +124,27 @@ def _run_batch(tmp_path, mode, shape, watch=False):
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(output.read_text())
     payload["metadata"].pop("run_time")
+    if capture_requests:
+        payload["metadata"]["_test_download_calls"] = json.loads(result.stdout.splitlines()[-1])
     return payload
+
+
+@pytest.mark.parametrize("mode", ["morning", "afternoon"])
+@pytest.mark.parametrize("capture_fail", [False, True])
+def test_quality_capture_only_adds_observations_not_scores_or_requests(tmp_path, mode, capture_fail):
+    baseline = _run_batch(tmp_path, mode, "flat", capture_requests=True)
+    observed = _run_batch(tmp_path, mode, "flat", quality=True, capture_fail=capture_fail, capture_requests=True)
+    contexts = observed["metadata"].pop("screening_quality_candidates")
+    assert set(contexts) == {"AAA", "BBB", "CCC"}
+    assert all(c["scoring_applied"] is False for c in contexts.values())
+    if capture_fail:
+        assert all(c["status"] == "MISSING" for c in contexts.values())
+        from prism_core.screening_quality import load_quality_candidates
+        assert len(load_quality_candidates({'trade_date': '20260914',
+                                           'screening_quality_candidates': contexts})) == 3
+    else:
+        assert all(c["last_completed_session"] == "2026-09-11" for c in contexts.values())
+    assert observed == baseline
 
 
 @pytest.mark.parametrize("mode", ["morning", "afternoon"])

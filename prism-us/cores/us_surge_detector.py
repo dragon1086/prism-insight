@@ -220,6 +220,71 @@ def get_snapshot(trade_date: str, tickers: List[str] = None) -> pd.DataFrame:
         raise ValueError(f"Failed to get snapshot for {trade_date}: {exc}") from exc
 
 
+def get_batched_snapshot_pair(trade_date: str, tickers: List[str], *,
+                              batch_size: int = 50, max_seconds: float = 600):
+    """Expanded-universe path: decode both dates before discarding each chunk.
+
+    No global reuse cache, implicit fallback, or unbounded retries. The budget
+    stops new chunks; an in-flight yfinance call can still outlive it. Provider
+    timestamps/delay are NOT guaranteed by this wall-clock collection budget.
+    """
+    from collections import Counter
+
+    if batch_size < 1 or not np.isfinite(max_seconds) or max_seconds <= 0:
+        raise ValueError('Invalid snapshot collection limits')
+    tickers = list(dict.fromkeys(tickers))
+    date = datetime.datetime.strptime(trade_date, '%Y%m%d').date()
+    prev_date = get_last_trading_day(date - datetime.timedelta(days=1))
+    dates = [trade_date, prev_date.strftime('%Y%m%d')]
+    frames = [[], []]
+    reasons = [Counter(), Counter()]
+    started = time.monotonic()
+    calls = 0
+    for offset in range(0, len(tickers), batch_size):
+        if time.monotonic() - started >= max_seconds:
+            for counts in reasons:
+                counts['collection_budget_exhausted'] += len(tickers) - offset
+            break
+        chunk = tickers[offset:offset + batch_size]
+        calls += 1
+        try:
+            raw = yf.download(
+                chunk, start=(prev_date - datetime.timedelta(days=5)).isoformat(),
+                end=(date + datetime.timedelta(days=1)).isoformat(),
+                progress=False, threads=2, timeout=10)
+        except Exception as exc:
+            for counts in reasons:
+                counts['provider_error'] += len(chunk)
+            # Do not retry a possible rate limit or expose provider response text.
+            logger.warning('Expanded snapshot chunk failed: %s', type(exc).__name__)
+            continue
+        for index, requested in enumerate(dates):
+            frame = _snapshot_from_history(raw, requested, chunk)
+            reasons[index].update(frame.attrs['snapshot_coverage']['reason_counts'])
+            frame.attrs = {}
+            if not frame.empty:
+                frames[index].append(frame)
+    results = []
+    for index, requested in enumerate(dates):
+        frame = (pd.concat(frames[index]) if frames[index] else
+                 pd.DataFrame(columns=[*_SNAPSHOT_FIELDS, 'Amount']))
+        count = len(tickers)
+        frame.attrs['snapshot_coverage'] = {
+            'requested_date': requested, 'requested_count': count,
+            'valid_count': len(frame), 'missing_count': count - len(frame),
+            'status': ('COMPLETE' if count and len(frame) == count else
+                       'PARTIAL' if len(frame) else 'UNAVAILABLE'),
+            'reason_counts': dict(reasons[index]),
+        }
+        results.append(frame)
+    return (*results, dates[1], {
+        'download_invocations': calls,
+        'elapsed_seconds': round(time.monotonic() - started, 3),
+        'batch_size': batch_size,
+        'network_request_count': None,
+    })
+
+
 def get_previous_snapshot(trade_date: str, tickers: List[str] = None) -> Tuple[pd.DataFrame, str]:
     """Get the exact preceding NYSE session, reusing matching fresh history once."""
     global _snapshot_history
