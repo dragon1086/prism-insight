@@ -2,11 +2,12 @@
 from types import MappingProxyType
 from typing import Literal
 
-from pydantic import ConfigDict, create_model
+from pydantic import ConfigDict, Field, create_model
 
 
 BASE_SECTIONS = ('price_volume_analysis', 'investor_trading_analysis', 'company_status',
                  'company_overview', 'news_analysis', 'market_index_analysis')
+DART_SOURCE_ROLES = ('finance', 'business', 'risks')
 SECTION_POLICIES = MappingProxyType({
     **{key: 'REGENERATE_FACTS' for key in BASE_SECTIONS},
     'investment_strategy': 'FRESH_SYNTHESIS', 'dart_deep_analysis': 'REBUILD_DART',
@@ -47,7 +48,7 @@ class ReportSourceConflictError(ReportFactEditorError):
 
 
 class ReportFactConflictError(ReportFactEditorError):
-    def __init__(self, conflicts, *, evidence_sections=()):
+    def __init__(self, conflicts, *, evidence_sections=(), kinds=(), source_roles=()):
         if (not isinstance(conflicts, tuple) or not 1 <= len(conflicts) <= 8
                 or any(not isinstance(item, tuple) or len(item) != 2
                        or not isinstance(item[0], str) or item[0] not in SECTION_POLICIES
@@ -55,12 +56,32 @@ class ReportFactConflictError(ReportFactEditorError):
                        or not isinstance(item[1], str) or not item[1].strip()
                        or len(item[1]) > 2000 for item in conflicts)):
             raise ReportFactEditorError('Invalid conflict contract', code='INVALID_SCHEMA')
+        if not isinstance(kinds, tuple):
+            raise ReportFactEditorError('Invalid conflict kinds', code='INVALID_SCHEMA')
+        if not kinds:
+            kinds = ('contradiction',) * len(conflicts)
+        if (not isinstance(kinds, tuple) or len(kinds) != len(conflicts)
+                or any(kind not in ('contradiction', 'unsupported_claim') for kind in kinds)):
+            raise ReportFactEditorError('Invalid conflict kinds', code='INVALID_SCHEMA')
         if (not isinstance(evidence_sections, tuple)
                 or (evidence_sections and len(evidence_sections) != len(conflicts))
-                or any(not isinstance(key, str) or key not in SECTION_POLICIES for key in evidence_sections)):
+                or any((key is None and kinds[index] != 'unsupported_claim')
+                       or (key is not None and (not isinstance(key, str) or key not in SECTION_POLICIES))
+                       for index, key in enumerate(evidence_sections))):
             raise ReportFactEditorError('Invalid evidence pointers', code='UNKNOWN_EVIDENCE')
         self._conflicts = conflicts
         self._evidence_sections = evidence_sections
+        self._kinds = kinds
+        if not isinstance(source_roles, tuple):
+            raise ReportFactEditorError('Invalid source role locators', code='INVALID_SCHEMA')
+        if not source_roles:
+            source_roles = ((),) * len(conflicts)
+        if (len(source_roles) != len(conflicts)
+                or any(not isinstance(roles, tuple) or len(roles) > 3
+                       or any(role not in DART_SOURCE_ROLES for role in roles)
+                       or len(set(roles)) != len(roles) for roles in source_roles)):
+            raise ReportFactEditorError('Invalid source role locators', code='INVALID_SCHEMA')
+        self._source_roles = source_roles
         super().__init__('Report factual conflicts require bounded regeneration', code='FACT_CONFLICTS',
                          details={'count': len(conflicts)})
 
@@ -71,6 +92,14 @@ class ReportFactConflictError(ReportFactEditorError):
     @property
     def evidence_sections(self):
         return self._evidence_sections
+
+    @property
+    def kinds(self):
+        return self._kinds
+
+    @property
+    def source_roles(self):
+        return self._source_roles
 
     @property
     def targets(self):
@@ -100,7 +129,9 @@ def review_output_schema(sections):
     edit = create_model('ReportReviewEdit', __config__=config,
                         section=(key_type, ...), original=(str, ...), replacement=(str, ...), reason=(str, ...))
     conflict = create_model('ReportReviewConflict', __config__=config,
-                            section=(key_type, ...), issue=(str, ...), evidence_section=(key_type | None, ...))
+                            section=(key_type, ...), issue=(str, ...), evidence_section=(key_type | None, ...),
+                            kind=(Literal['contradiction', 'unsupported_claim'], ...),
+                            source_roles=(list[Literal['finance', 'business', 'risks']], Field(max_length=3)))
     return create_model('ReportReviewEnvelope', __config__=config,
                         status=(Literal['READY', 'CONFLICTS'], ...), summary=(str | None, ...),
                         edits=(list[edit], ...), unresolved=(list[conflict], ...))
@@ -138,9 +169,9 @@ def validate_review_envelope(sections, payload, *, stage='final'):
         return payload
     if summary is not None or payload['edits'] or not payload['unresolved']:
         _fail('INVALID_ENVELOPE', 'conflicts')
-    conflicts, sources, blocked = [], [], []
+    conflicts, sources, kinds, source_roles, blocked = [], [], [], [], []
     for index, item in enumerate(payload['unresolved']):
-        if not isinstance(item, dict) or set(item) != {'section', 'issue', 'evidence_section'}:
+        if not isinstance(item, dict) or set(item) != {'section', 'issue', 'evidence_section', 'kind', 'source_roles'}:
             _fail('INVALID_SCHEMA', 'unresolved', index=index)
         section, issue, evidence = item['section'], item['issue'], item['evidence_section']
         if not isinstance(section, str) or section not in SECTION_POLICIES:
@@ -151,17 +182,32 @@ def validate_review_envelope(sections, payload, *, stage='final'):
             _fail('INVALID_SCHEMA', 'issue', index=index)
         if len(issue) > 2000:
             _fail('CAPACITY_EXCEEDED', 'issue', index=index, limit=2000)
-        if evidence is None:
+        kind = item['kind']
+        if kind not in ('contradiction', 'unsupported_claim'):
+            _fail('INVALID_SCHEMA', 'kind', index=index)
+        immutable = SECTION_POLICIES[section] == 'IMMUTABLE_SOURCE'
+        if evidence is None and kind == 'contradiction' and not immutable:
             _fail('MISSING_EVIDENCE', 'evidence_section', index=index)
-        if not isinstance(evidence, str) or evidence not in SECTION_POLICIES:
+        if evidence is not None and (not isinstance(evidence, str) or evidence not in SECTION_POLICIES):
             _fail('UNKNOWN_EVIDENCE', 'evidence_section', index=index)
-        if not isinstance(sections.get(evidence), str) or not sections[evidence].strip():
+        if evidence is not None and (not isinstance(sections.get(evidence), str) or not sections[evidence].strip()):
             _fail('MISSING_EVIDENCE', 'evidence_section', index=index)
+        roles = item['source_roles']
+        if (not isinstance(roles, list) or len(roles) > 3
+                or any(not isinstance(role, str) or role not in DART_SOURCE_ROLES for role in roles)
+                or len(set(roles)) != len(roles)):
+            _fail('INVALID_SCHEMA', 'source_roles', index=index)
+        if ((evidence == 'dart_deep_analysis' and kind == 'contradiction' and not roles)
+                or (evidence != 'dart_deep_analysis' and roles)):
+            _fail('INVALID_ENVELOPE', 'source_roles', index=index)
         conflicts.append((section, issue))
         sources.append(evidence)
-        if SECTION_POLICIES[section] == 'IMMUTABLE_SOURCE':
+        kinds.append(kind)
+        source_roles.append(tuple(roles))
+        if immutable:
             blocked.append(section)
     if blocked:
         raise ReportSourceConflictError('Report source conflict requires investigation', code='SOURCE_CONFLICT',
                                          details={'section': blocked[0], 'count': len(blocked)})
-    raise ReportFactConflictError(tuple(conflicts), evidence_sections=tuple(sources))
+    raise ReportFactConflictError(tuple(conflicts), evidence_sections=tuple(sources),
+                                  kinds=tuple(kinds), source_roles=tuple(source_roles))

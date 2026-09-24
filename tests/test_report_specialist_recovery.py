@@ -23,7 +23,9 @@ def setup_case(monkeypatch, targets=('news_analysis',)):
               'flow_evidence_public': 'FLOW_REFERENCE',
               'official_dart': {'public_receipt': 'ISSUER_RECEIPT', 'dart_chapter_inputs': {
                   'ready': True, 'receipt': {'core_conserved': True, 'capacity_ok': True},
-                  'contexts': {'finance': 'RAW_SOURCE'}}}}
+                  'contexts': {'finance': json.dumps({'text': 'OFFICIAL_SOURCE 120'}),
+                               'business': json.dumps({'text': 'BUSINESS_SOURCE 120'}),
+                               'risks': json.dumps({'text': 'RISK_SOURCE 120'})}}}}
     agents = {key: ReportAgent(key, 'SPECIALIST_CONTRACT', ('forbidden_tool',)) for key in targets}
     monkeypatch.setattr(dart_writer_context, 'render_dart_writer_context',
                         lambda text: ('OFFICIAL_SOURCE 120', {'cell_text_conserved': True, 'truncated': False}))
@@ -32,8 +34,10 @@ def setup_case(monkeypatch, targets=('news_analysis',)):
         calls.append((spec, json.loads(message)))
         return SimpleNamespace(text='### 수정 분석\n\n' + '제공된 기간과 공식 출처의 기준을 구분합니다. ' * 15)
     monkeypatch.setattr(report_generation, '_get_report_backend', lambda: SimpleNamespace(run=run))
+    numerical = {'price_volume_analysis', 'investor_trading_analysis', 'market_index_analysis'}
     error = ReportFactConflictError(tuple((key, '관측 기간이 충돌합니다.') for key in targets),
-                                    evidence_sections=tuple('shared_reference' for _ in targets))
+        evidence_sections=tuple('shared_reference' if key in numerical else 'dart_deep_analysis' for key in targets),
+        source_roles=tuple(() if key in numerical else ('finance',) for key in targets))
     return reports, agents, packet, error, calls
 
 
@@ -67,7 +71,7 @@ def test_each_specialist_once_with_frozen_scoped_sources_and_no_tools(monkeypatc
             assert 'FLOW_REFERENCE' in message['frozen_evidence']
             assert 'OFFICIAL_SOURCE' not in message['frozen_evidence']
         else:
-            assert 'OFFICIAL_SOURCE' in message['frozen_evidence']
+            assert 'OFFICIAL_SOURCE' in json.dumps(message['frozen_filing_sources'])
         assert '수정 분석' in result[message['section']]
     for key in ('dart_deep_analysis', 'shared_reference', 'investment_strategy', 'peer_comparison'):
         assert result[key] == case[0][key]
@@ -145,3 +149,65 @@ def test_news_can_reference_exact_signed_flow_in_existing_related_draft(monkeypa
             'investor_trading_analysis': case[0]['investor_trading_analysis']}
     else:
         with pytest.raises(ReportFactEditorError): execute(case)
+
+
+def test_large_company_uses_only_complete_explicit_role_catalog_without_clipping(monkeypatch):
+    case = setup_case(monkeypatch, ('company_status',))
+    packet = case[2]['official_dart']['dart_chapter_inputs']
+    catalog = {'finance': {'catalog': '재무 원문 ' * 12000},
+               'business': {'catalog': '사업 원문 ' * 9000},
+               'risks': {'catalog': '약정 원문 ' * 11000}}
+    packet['contexts'] = {key: json.dumps(value, ensure_ascii=False) for key, value in catalog.items()}
+    from prism_core import dart_writer_context
+    def rendered(text):
+        return json.loads(text)['catalog'] * 2, {'cell_text_conserved': True, 'truncated': False}
+    monkeypatch.setattr(dart_writer_context, 'render_dart_writer_context', rendered)
+    execute(case)
+    spec, message = case[-1][0]
+    assert message['frozen_filing_sources'] == {'finance': catalog['finance']}
+    assert message['source_scope']['selected_roles'] == ['finance']
+    assert set(message['source_scope']['omitted_roles']) == {'business', 'risks'}
+    assert len((spec.instructions + json.dumps(message, ensure_ascii=False)).encode()) < 400000
+
+
+def test_news_capital_event_uses_explicit_business_role_not_keyword_guess(monkeypatch):
+    case = setup_case(monkeypatch)
+    case = (*case[:3], ReportFactConflictError((('news_analysis', '전환 완료를 대조합니다.'),),
+        evidence_sections=('dart_deep_analysis',), source_roles=(('business',),)), case[-1])
+    execute(case)
+    assert list(case[-1][0][1]['frozen_filing_sources']) == ['business']
+
+
+def test_unsupported_claim_withdrawal_does_not_load_full_filing_catalogs(monkeypatch):
+    case = setup_case(monkeypatch, ('company_overview',))
+    case = (*case[:3], ReportFactConflictError((('company_overview', '업종 PBR 근거가 없습니다.'),),
+        evidence_sections=(None,), kinds=('unsupported_claim',)), case[-1])
+    execute(case)
+    message = case[-1][0][1]
+    assert message['frozen_filing_sources'] == {}
+    assert message['conflict_reports'][0]['kind'] == 'unsupported_claim'
+
+
+def test_unrequested_catalog_values_do_not_authorize_new_recovery_numbers(monkeypatch):
+    case = setup_case(monkeypatch, ('company_status',))
+    case[2]['official_dart']['dart_chapter_inputs']['contexts']['business'] = json.dumps({'value': '987654321'})
+    from cores import report_generation
+    async def run(*args):
+        return SimpleNamespace(text='### 분석\n\n' + '전달되지 않은 숫자 987654321을 썼습니다. ' * 20)
+    monkeypatch.setattr(report_generation, '_get_report_backend', lambda: SimpleNamespace(run=run))
+    with pytest.raises(ReportFactEditorError) as caught:
+        execute(case)
+    assert caught.value.code == 'RECOVERY_NUMBER'
+
+
+def test_combined_requested_roles_still_fail_before_models_if_capacity_exceeded(monkeypatch):
+    case = setup_case(monkeypatch, ('company_status',))
+    packet = case[2]['official_dart']['dart_chapter_inputs']
+    packet['contexts'] = {key: json.dumps({'catalog': 'x' * 150000})
+                          for key in ('finance', 'business', 'risks')}
+    case = (*case[:3], ReportFactConflictError((('company_status', '여러 공시 영역을 대조합니다.'),),
+        evidence_sections=('dart_deep_analysis',), source_roles=(('finance', 'business', 'risks'),)), case[-1])
+    with pytest.raises(ReportFactEditorError) as caught:
+        execute(case)
+    assert caught.value.code == 'RECOVERY_CAPACITY' and case[-1] == []
+    assert caught.value.details['count'] > caught.value.details['limit']

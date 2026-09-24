@@ -95,7 +95,7 @@ def actual_pipeline(monkeypatch, tmp_path):
                     control['assessments'] += 1
                     assert 'investment_strategy' not in sections
                     scenario = control['scenario']
-                    conflict = (scenario in ('base_conflict', 'repair_timeout', 'repair_cancel',
+                    conflict = (scenario in ('base_conflict', 'repair_timeout', 'repair_cancel', 'unsupported_claim',
                                              'price_conflict', 'dart_conflict') and control['assessments'] == 1
                                 or scenario in ('repeated_conflict', 'source_conflict'))
                     if conflict:
@@ -103,14 +103,16 @@ def actual_pipeline(monkeypatch, tmp_path):
                                   'dart_conflict': 'dart_deep_analysis'}.get(scenario, 'company_status')
                         payload.update(status='CONFLICTS', unresolved=[{
                             'section': target, 'issue': '기간 설명이 기준 원문과 다릅니다.',
-                            'evidence_section': 'dart_deep_analysis'}])
+                            'kind': 'unsupported_claim' if scenario == 'unsupported_claim' else 'contradiction',
+                            'evidence_section': None if scenario == 'unsupported_claim' else 'dart_deep_analysis',
+                            'source_roles': [] if scenario == 'unsupported_claim' else ['finance']}])
                 else:
                     control['finals'] += 1
                     if control['scenario'] == 'repeated_strategy' or (
                             control['scenario'] == 'strategy_only' and control['finals'] == 1):
                         payload.update(status='CONFLICTS', unresolved=[{
                             'section': 'investment_strategy', 'issue': '종합 문장의 기간 설명을 다시 대조해야 합니다.',
-                            'evidence_section': 'shared_reference'}])
+                            'kind': 'contradiction', 'evidence_section': 'shared_reference', 'source_roles': []}])
                     else:
                         payload['summary'] = '## 종합 요약\n\n' + (
                             '제공한 공시의 기간과 별도 범위, 현금흐름과 원금 이행 조건을 구분합니다. '
@@ -162,6 +164,13 @@ def test_price_facts_are_repairable_without_changing_source_packet(actual_pipeli
     assert events.count('price_volume_analysis_agent_fact_recovery') == 1
     assert control['assessments'] == 2 and control['strategies'] == 1
     assert events.count('official') == 1
+
+
+def test_unsupported_model_claim_is_qualified_without_inventing_evidence(actual_pipeline):
+    _, events, control = actual_pipeline
+    control['scenario'] = 'unsupported_claim'
+    assert '종합 요약' in run(actual_pipeline)
+    assert control['assessments'] == 2 and events.count('company_status_agent_fact_recovery') == 1
 
 
 def test_dart_model_chapter_rebuilds_from_identical_official_source_once(actual_pipeline):

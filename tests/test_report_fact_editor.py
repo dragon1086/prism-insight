@@ -360,7 +360,7 @@ def test_protocol_invalid_issue_cannot_trigger_regeneration(issue):
     from cores.report_review_protocol import validate_review_envelope
     reports, _ = fixture()
     payload = {'status': 'CONFLICTS', 'summary': None, 'edits': [], 'unresolved': [
-        {'section': 'company_status', 'issue': issue, 'evidence_section': 'shared_reference'}]}
+        {'section': 'company_status', 'issue': issue, 'evidence_section': 'shared_reference', 'kind': 'contradiction', 'source_roles': []}]}
     with pytest.raises(editor.ReportFactEditorError) as caught:
         validate_review_envelope(reports, payload)
     assert not isinstance(caught.value, editor.ReportFactConflictError)
@@ -372,7 +372,7 @@ def test_mixed_conflict_envelope_never_applies_edits_or_generates_summary(bad):
     reports, legacy = fixture()
     before = copy.deepcopy(reports)
     payload = {'status': 'CONFLICTS', 'summary': None, 'edits': [], 'unresolved': [
-        {'section': 'company_status', 'issue': 'conflict', 'evidence_section': 'shared_reference'}]}
+        {'section': 'company_status', 'issue': 'conflict', 'evidence_section': 'shared_reference', 'kind': 'contradiction', 'source_roles': []}]}
     payload[bad] = legacy[bad]
     with pytest.raises(editor.ReportFactEditorError) as caught:
         validate_review_envelope(reports, payload)
@@ -417,7 +417,7 @@ def test_real_review_boundary_reports_conflicts_without_summary_guards(monkeypat
         return SimpleNamespace(structured=spec.output_schema.model_validate({
             'status': 'CONFLICTS', 'summary': None, 'edits': [], 'unresolved': [
                 {'section': 'investment_strategy', 'issue': 'period conflict',
-                 'evidence_section': 'company_status'}]}), text='', usage={})
+                 'evidence_section': 'company_status', 'kind': 'contradiction', 'source_roles': []}]}), text='', usage={})
     monkeypatch.setattr(report_generation, '_get_report_backend', lambda: SimpleNamespace(run=run))
     with pytest.raises(editor.ReportFactConflictError) as caught:
         asyncio.run(editor.edit_and_summarize(reports, '회사', '123456', '20260924'))
@@ -428,7 +428,7 @@ def test_failure_diagnostic_receives_structured_payload_but_exception_is_safe(mo
     from cores import report_generation, report_review_diagnostics as diagnostics
     reports, _ = fixture()
     payload = {'status': 'CONFLICTS', 'summary': None, 'edits': [], 'unresolved': [
-        {'section': 'shared_reference', 'issue': 'PRIVATE_SOURCE_ISSUE', 'evidence_section': 'company_status'}]}
+        {'section': 'shared_reference', 'issue': 'PRIVATE_SOURCE_ISSUE', 'evidence_section': 'company_status', 'kind': 'contradiction', 'source_roles': []}]}
     captured = []
     def record(**kwargs):
         captured.append(kwargs)

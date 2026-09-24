@@ -17,6 +17,9 @@ from cores.report_review_protocol import (
     ReportSourceConflictError as ReportSourceConflictError, review_output_schema, validate_review_envelope,
 )
 
+__all__ = ['ReportFactEditorError', 'ReportFactConflictError', 'ReportSourceConflictError',
+           'assess_report_facts', 'edit_and_summarize']
+
 
 EDITABLE_SECTIONS = frozenset({
     'company_status', 'company_overview',
@@ -249,7 +252,18 @@ async def _run_review(section_reports, company_name, company_code, reference_dat
         + '. news_analysis는 session_timing 사유만 허용하며 그 외 섹션은 읽기 전용입니다.\n'
         '모든 제공 섹션을 검토하되 모델 초안과 원천 근거를 구분하세요. 충돌 보고는 편집 권한이 아닙니다. '
         '한 건이라도 미해결 충돌이 있으면 status=CONFLICTS, summary=null, edits=[]로 반환하세요. '
-        'unresolved는 최대 8개이며 각 항목은 section, issue, evidence_section입니다. '
+        'unresolved는 최대 8개이며 각 항목은 section, issue, evidence_section, kind, source_roles입니다. '
+        'source_roles는 finance, business, risks 중 명시적으로 참조한 역할만 담는 중복 없는 배열입니다. '
+        'DART 상세 분석의 5-1은 finance, 5-2는 business, 5-3은 risks이며 한국어·영어에서 동일합니다. '
+        'evidence_section=dart_deep_analysis인 contradiction은 참조한 역할을 최소 하나 지정하세요. '
+        '관계없는 역할을 기본값으로 모두 지정하지 마세요. 다른 근거 섹션이면 source_roles=[]입니다. '
+        'unsupported_claim은 source_roles=[]일 수 있습니다. 역할은 근거 위치이며 새 조회 권한이 아닙니다. '
+        'kind=contradiction은 제공된 다른 근거와 모순되는 주장입니다. 이 경우 실제 비어 있지 않은 '
+        '근거 섹션 키가 반드시 필요합니다. kind=unsupported_claim은 제공 근거로 입증할 수 없는 '
+        '주장입니다. 이 경우 evidence_section=null을 사용할 수 있습니다. '
+        'unsupported_claim은 해당 주장을 삭제하거나 확인 한계를 명시할 사유이지 빈 자료를 '
+        '새 사실로 채울 권한이 아닙니다. 업종 PBR이 없으면 업종 비교를 철회하거나 미확인으로 '
+        '명시해야 하며 업종 PBR이나 비교기업 수치를 만들어내지 마세요. '
         'section과 evidence_section은 실제 제공된 섹션 키를 정확히 사용하세요. '
         'issue는 공백이 아닌 2000자 이내 충돌 설명입니다. 근거가 없으면 evidence_section=null로 '
         '명시하고 임의 근거를 붙이지 마세요. 근거로 가리킨 모델 초안은 진실 인증이 아닙니다. '

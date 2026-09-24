@@ -11,9 +11,10 @@ def reports():
     return {key: 'Provided source or model draft' for key in SECTION_POLICIES}
 
 
-def conflicts(section, evidence='shared_reference'):
+def conflicts(section, evidence='shared_reference', kind='contradiction', source_roles=None):
     return {'status': 'CONFLICTS', 'summary': None, 'edits': [], 'unresolved': [
-        {'section': section, 'issue': 'period mismatch', 'evidence_section': evidence}]}
+        {'section': section, 'issue': 'period mismatch', 'evidence_section': evidence, 'kind': kind,
+         'source_roles': [] if source_roles is None else source_roles}]}
 
 
 @pytest.mark.parametrize('target', ['price_volume_analysis', 'investor_trading_analysis',
@@ -135,3 +136,78 @@ def test_ready_size_limits_apply_before_content_guards(field):
     with pytest.raises(ReportFactEditorError) as caught:
         validate_review_envelope(reports(), payload)
     assert caught.value.code == 'CAPACITY_EXCEEDED'
+
+
+@pytest.mark.parametrize('target', ['company_overview', 'price_volume_analysis', 'dart_deep_analysis', 'investment_strategy'])
+def test_unsupported_claim_without_source_permits_only_withdrawal_review(target):
+    payload = conflicts(target, None, 'unsupported_claim')
+    with pytest.raises(ReportFactConflictError) as caught:
+        validate_review_envelope(reports(), payload)
+    assert caught.value.kinds == ('unsupported_claim',)
+    assert caught.value.evidence_sections == (None,)
+
+
+@pytest.mark.parametrize('target', ['shared_reference', 'peer_comparison', 'macro_context', 'dart_depth_limit'])
+def test_unsupported_claim_never_grants_immutable_source_rewrite(target):
+    with pytest.raises(ReportSourceConflictError) as caught:
+        validate_review_envelope(reports(), conflicts(target, None, 'unsupported_claim'))
+    assert caught.value.code == 'SOURCE_CONFLICT'
+
+
+@pytest.mark.parametrize('kind', [None, 'guess', 1])
+def test_conflict_kind_must_be_known(kind):
+    with pytest.raises(ReportFactEditorError) as caught:
+        validate_review_envelope(reports(), conflicts('company_status', None, kind))
+    assert caught.value.code == 'INVALID_SCHEMA'
+
+
+def test_conflict_kind_is_required_by_sdk_schema():
+    payload = conflicts('company_status')
+    del payload['unresolved'][0]['kind']
+    with pytest.raises(ValueError):
+        review_output_schema(reports()).model_validate(payload)
+
+
+def test_legacy_direct_error_defaults_to_contradiction_and_keeps_missing_pointer_guard():
+    error = ReportFactConflictError((('company_status', 'period mismatch'),), evidence_sections=('shared_reference',))
+    assert error.kinds == ('contradiction',)
+    with pytest.raises(ReportFactEditorError):
+        ReportFactConflictError((('company_status', 'period mismatch'),), evidence_sections=(None,))
+
+
+@pytest.mark.parametrize('roles', [[], ['unknown'], ['finance', 'finance'],
+                                  ['finance', 'business', 'risks', 'finance'], None])
+def test_dart_contradiction_requires_valid_unique_explicit_source_roles(roles):
+    payload = conflicts('company_status', 'dart_deep_analysis')
+    payload['unresolved'][0]['source_roles'] = roles
+    with pytest.raises(ReportFactEditorError) as caught:
+        validate_review_envelope(reports(), payload)
+    assert not isinstance(caught.value, ReportFactConflictError)
+
+
+def test_dart_source_role_locator_is_preserved_without_issue_inference():
+    payload = conflicts('company_status', 'dart_deep_analysis', source_roles=['risks', 'finance'])
+    payload['unresolved'][0]['issue'] = 'business keyword does not change explicit roles'
+    with pytest.raises(ReportFactConflictError) as caught:
+        validate_review_envelope(reports(), payload)
+    assert caught.value.source_roles == (('risks', 'finance'),)
+
+
+def test_non_dart_source_never_carries_dart_roles():
+    with pytest.raises(ReportFactEditorError) as caught:
+        validate_review_envelope(reports(), conflicts('company_status', source_roles=['finance']))
+    assert not isinstance(caught.value, ReportFactConflictError)
+
+
+def test_sdk_schema_requires_source_roles_and_rejects_unknown_role():
+    schema = review_output_schema(reports())
+    payload = conflicts('company_status')
+    del payload['unresolved'][0]['source_roles']
+    with pytest.raises(ValueError): schema.model_validate(payload)
+    payload['unresolved'][0]['source_roles'] = ['unknown']
+    with pytest.raises(ValueError): schema.model_validate(payload)
+
+
+def test_legacy_direct_constructor_defaults_to_aligned_empty_roles():
+    error = ReportFactConflictError((('company_status', 'conflict'), ('news_analysis', 'conflict')))
+    assert error.source_roles == ((), ())
