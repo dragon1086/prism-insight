@@ -43,8 +43,9 @@ async def regenerate_conflicting_sections(section_reports, agents, prefetched, c
             error.diagnostic_id = record_report_review_failure(
                 stage='recovery', company_code=company_code, reference_date=reference_date,
                 sections=section_reports, response=capture, error=error, model=DART_REPORT_MODEL)
-        except Exception:
-            pass
+        except Exception as diagnostic_error:
+            logger.warning('Report recovery diagnostic recording unavailable: %s',
+                           type(diagnostic_error).__name__)
         logger.warning('Report recovery failed: code=%s diagnostic_id=%s', error.code, error.diagnostic_id)
         if isinstance(original, asyncio.CancelledError) or error is original:
             raise

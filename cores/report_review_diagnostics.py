@@ -27,8 +27,8 @@ _SECTIONS = frozenset({
 })
 _DETAILS = frozenset({'section', 'sections', 'targets', 'reason', 'issue', 'issues',
                       'count', 'limit', 'status', 'attempt', 'field', 'index', 'stage'})
-_SECRET_NAMES = r'(?:(?:x[-_])?api[_-]?key|api[_-]?token|api|access[_-]?token|access|refresh[_-]?token|id[_-]?token|token|key|signature|x-amz-(?:signature|credential|security-token)|authorization|password|passwd|secret|client[_-]?secret|(?:private|secret)[_-]?key)'
-_SECRET_KEY = re.compile(r'^' + _SECRET_NAMES + r'$', re.I)
+_SENSITIVE_NAMES = r'(?:(?:x[-_])?api[_-]?key|api[_-]?token|api|access[_-]?token|access|refresh[_-]?token|id[_-]?token|token|key|signature|x-amz-(?:signature|credential|security-token)|authorization|password|passwd|secret|client[_-]?secret|(?:private|secret)[_-]?key)'
+_SECRET_KEY = re.compile(r'^' + _SENSITIVE_NAMES + r'$', re.I)
 
 
 def _clip(text, limit):
@@ -65,8 +65,8 @@ def _redact(text):
                   '[REDACTED]', text, flags=re.S)
     text = re.sub(r'\bBearer\s+[^\s"\'<>]+', 'Bearer [REDACTED]', text, flags=re.I)
     text = re.sub(r'\bsk-[A-Za-z0-9_-]+', '[REDACTED]', text)
-    text = re.sub(r'([?&]' + _SECRET_NAMES + r'=)[^&#\s"\'<>]*', r'\1[REDACTED]', text, flags=re.I)
-    text = re.sub(r'((?:["\']?' + _SECRET_NAMES + r'["\']?)\s*[:=]\s*)'
+    text = re.sub(r'([?&]' + _SENSITIVE_NAMES + r'=)[^&#\s"\'<>]*', r'\1[REDACTED]', text, flags=re.I)
+    text = re.sub(r'((?:["\']?' + _SENSITIVE_NAMES + r'["\']?)\s*[:=]\s*)'
                   r'(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[^\s,;}\]<>&#]+)',
                   r'\1[REDACTED]', text, flags=re.I)
     text = re.sub(r'https?://[^\s<>"\']+', _redact_url, text, flags=re.I)
@@ -120,7 +120,9 @@ def _directory_fd(path):
             fd = child
         if os.fstat(fd).st_uid != os.getuid():
             raise PermissionError('Diagnostics directory is not owned by this user')
-        os.fchmod(fd, 0o700)
+        # This is an O_DIRECTORY descriptor: only its owner may read, write,
+        # or traverse it. No group/other permission bits are granted.
+        os.fchmod(fd, stat.S_IRWXU)
         return fd
     except BaseException:
         os.close(fd)

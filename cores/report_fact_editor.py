@@ -13,8 +13,8 @@ from decimal import Decimal
 
 
 from cores.report_review_protocol import (
-    BASE_SECTIONS as REPAIRABLE_SECTIONS, ReportFactEditorError, ReportFactConflictError,
-    ReportSourceConflictError, review_output_schema, validate_review_envelope,
+    ReportFactEditorError, ReportFactConflictError as ReportFactConflictError,
+    ReportSourceConflictError as ReportSourceConflictError, review_output_schema, validate_review_envelope,
 )
 
 
@@ -322,8 +322,11 @@ async def _review(section_reports, company_name, company_code, reference_date, l
                 stage=stage, company_code=company_code, reference_date=reference_date,
                 sections=section_reports, response=capture.get('response'), error=error,
                 model=DART_REPORT_MODEL, response_id=capture.get('response_id'))
-        except Exception:
-            pass  # Diagnostics must never change publication or recovery authority.
+        except Exception as diagnostic_error:
+            # Log only the type: diagnostics must not mask the original error
+            # or leak a failed path/credential through its exception message.
+            logging.getLogger(__name__).warning('Report diagnostic recording unavailable: %s',
+                                                 type(diagnostic_error).__name__)
         logging.getLogger(__name__).warning('Report review failed stage=%s code=%s diagnostic_id=%s',
                                              stage, error.code, error.diagnostic_id)
         if isinstance(original, asyncio.CancelledError):
