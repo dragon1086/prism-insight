@@ -146,3 +146,54 @@ def test_lossy_integer_schema_price_is_rejected():
     rows = captures()
     rows[0]['response']['table']['data'][-1]['Close'] = 318.5
     assert facts(compute(rows))['stock.latest']['value'] is None
+
+
+@pytest.mark.parametrize('n', [5, 20])
+@pytest.mark.parametrize('prefix', ['stock', 'index.1001', 'index.2001'])
+def test_return_intervals_are_not_input_price_count(n, prefix):
+    result = compute(captures())
+    item = facts(result)[f'{prefix}.return.{n}']
+    dates = pd.bdate_range(end='2026-09-21', periods=220).strftime('%Y-%m-%d')
+    assert item['horizon_intervals'] == n
+    assert item['input_price_count'] == n + 1
+    assert item['baseline_price_date'] == dates[-n-1]
+    assert item['window_start_date'] == dates[-n]
+    assert item['end_date'] == dates[-1]
+    assert item['period'] == {'start': dates[-n-1], 'end': dates[-1], 'observations': n + 1}
+    assert item['value'] == (319 / (319 - n) - 1) * 100
+    assert item['formula'] == f'(close[t]/close[t-{n}]-1)*100'
+    line = next(line for line in render_report_metrics(result).splitlines()
+                if item['label'] + ':' in line)
+    assert f'수익률 {n}관측구간' in line
+    assert f'가격 입력 {n + 1}개' in line
+    assert f'{n + 1}관측일' not in line
+
+
+def test_return_dates_use_actual_observations_across_missing_date_without_calendar_inference():
+    rows = captures(8)
+    data = rows[0]['response']['table']['data']
+    del data[-4]
+    actual = [pd.Timestamp(row['index']).date().isoformat() for row in data]
+    item = facts(compute(rows))['stock.return.5']
+    assert item['baseline_price_date'] == actual[-6]
+    assert item['window_start_date'] == actual[-5]
+    assert item['end_date'] == actual[-1]
+    assert item['value'] == (data[-1]['Close'] / data[-6]['Close'] - 1) * 100
+
+
+def test_short_return_history_does_not_invent_baseline_or_window_dates():
+    item = facts(compute(captures(5)))['stock.return.5']
+    assert item['status'] == 'MISSING'
+    assert item['horizon_intervals'] == 5 and item['input_price_count'] == 5
+    assert item['baseline_price_date'] is None and item['window_start_date'] is None
+    assert item['end_date'] == '2026-09-21'
+
+
+@pytest.mark.parametrize('n', [5, 20])
+def test_return_and_flow_windows_do_not_claim_identical_dates(n):
+    f = facts(compute(captures()))
+    price, flow = f[f'stock.return.{n}'], f[f'flow.{n}']
+    assert price['end_date'] == '2026-09-21'
+    assert flow['period']['end'] == '2026-09-18'
+    assert price['window_start_date'] != flow['period']['start']
+    assert price['baseline_price_date'] == flow['period']['start']

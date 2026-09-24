@@ -7,6 +7,7 @@ from prism_core.report_research_context import _replace_agent
 
 def reference_context(prefetched, language='ko', *, market_only=False):
     from prism_core.report_presentation import report_narrative_contract
+    from prism_core.report_evidence_contract import financial_evidence_contract
 
     rules = (
         '공통 숫자 기준: 아래 코드 계산값의 수치·단위·기준일을 유지하세요. 없는 값을 추정하지 마세요. '
@@ -26,7 +27,8 @@ def reference_context(prefetched, language='ko', *, market_only=False):
     reference = prefetched.get(key, '')
     dart = prefetched.get('official_dart', {})
     receipt = dart.get('public_receipt', '') if isinstance(dart, dict) and not market_only else ''
-    return report_narrative_contract(language) + '\n' + rules + '\n' + reference + '\n' + receipt
+    return (report_narrative_contract(language) + financial_evidence_contract(language)
+            + '\n' + rules + '\n' + reference + '\n' + receipt)
 
 
 def synthesis_reference_context(prefetched, language='ko'):
