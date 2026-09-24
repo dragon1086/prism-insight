@@ -218,6 +218,32 @@ def _validate_and_apply(reports, payload, calendar_context=None):
         conflicts.append((conflict['section'], conflict['issue']))
         evidence_sections.append(conflict['evidence_section'])
     if conflicts:
+        if not any(section in REPAIRABLE_SECTIONS for section, _ in conflicts):
+            raise ReportFactEditorError('Dependent synthesis conflict requires a base-section conflict')
+        # Edits are atomic and will be discarded on this path. Carry every
+        # otherwise-valid edit target into source-based regeneration so fresh
+        # strategy synthesis cannot consume its known-uncorrected old prose.
+        for section in REPAIRABLE_SECTIONS:
+            proposals = [edit for edit in edits if edit['section'] == section]
+            if not proposals:
+                continue
+            issue = 'Untrusted editorial proposals for source-based fact review: ' + json.dumps(
+                proposals, ensure_ascii=False, sort_keys=True)
+            existing = next((index for index, (target, _) in enumerate(conflicts)
+                             if target == section), None)
+            if existing is not None:
+                issue = conflicts[existing][1] + '\n\n' + issue
+            if len(issue) > 2000:
+                raise ReportFactEditorError('Editorial repair proposal exceeds conflict capacity; no clipping')
+            if existing is not None:
+                conflicts[existing] = (section, issue)
+                continue  # Retain the already-validated evidence pointer.
+            source = next((key for key in ('shared_reference', 'dart_deep_analysis')
+                           if isinstance(reports.get(key), str) and reports[key].strip()), None)
+            if source is None:
+                raise ReportFactEditorError('Editorial repair proposal has no source reference')
+            conflicts.append((section, issue))
+            evidence_sections.append(source)
         raise ReportFactConflictError(tuple(conflicts), evidence_sections=tuple(evidence_sections))
     # Validate every patch first, then splice original offsets backwards.
     patched = dict(reports)
@@ -266,6 +292,12 @@ async def edit_and_summarize(section_reports, company_name, company_code, refere
         '숫자(연도·부호·쉼표·소수 포함)와 URL은 수정 전후 동일한 개수와 표기로 모두 유지하세요. '
         '숫자 추가·삭제·환산·재계산은 금지합니다. 제목·표·코드·인용·CE 근거 블록은 수정하지 마세요. '
         '매수·매도·손절·목표가·비중·진입·청산 등 실제 결정 문단은 수정하지 마세요. '
+        '편집 금지는 original 부분 문자열만이 아니라 그것을 포함하는 빈 줄로 구분된 문단 전체에 '
+        '적용됩니다. 그 문단 어디든 매수, 매도, 손절, 익절, 진입, 청산, 비중, 포지션, 목표가, '
+        '목표주가, 위험 한도 또는 buy, sell, stop, entry, exit, position, allocation, target price, '
+        'risk limit 표현이 있으면 edits로 고치지 말고 unresolved에 기록하세요. '
+        '매출 비중처럼 사실 설명인 비중도 이 보수적인 문단 보호에 해당합니다. '
+        '단, 앞에서 허용한 session_timing의 정확한 수급 관측 예외만 그대로 적용합니다. '
         '일반 허용 섹션: ' + ', '.join(sorted(EDITABLE_SECTIONS))
         + '. news_analysis는 session_timing 사유만 허용하며 그 외 섹션은 읽기 전용입니다.\n'
         '읽기 전용 섹션도 충돌을 검사하고 수정이 필요한 충돌이 있으면 unresolved에 기록하세요. '

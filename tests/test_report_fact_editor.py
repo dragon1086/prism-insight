@@ -302,9 +302,11 @@ def test_structured_conflicts_are_atomic_immutable_and_targets_follow_base_order
         editor._validate_and_apply(reports, payload)
     error = caught.value
     assert reports == before  # Valid ordinary edits must not be applied either.
-    assert error.conflicts == tuple((item['section'], item['issue']) for item in payload['unresolved'])
-    assert error.targets == ('investor_trading_analysis', 'company_status', 'market_index_analysis')
-    assert error.evidence_sections == ('shared_reference',) * 4
+    for (section, issue), item in zip(error.conflicts[:4], payload['unresolved']):
+        assert section == item['section'] and issue.startswith(item['issue'])
+    assert error.conflicts[4][0] == 'company_overview'
+    assert error.targets == ('investor_trading_analysis', 'company_status', 'company_overview', 'market_index_analysis')
+    assert error.evidence_sections == ('shared_reference',) * 5
     payload['unresolved'][0]['issue'] = 'mutated'
     assert error.conflicts[0][1] != 'mutated'
     with pytest.raises(AttributeError):
@@ -316,6 +318,7 @@ def test_structured_conflicts_are_atomic_immutable_and_targets_follow_base_order
 @pytest.mark.parametrize('section', editor.REPAIRABLE_SECTIONS)
 def test_each_exact_base_section_can_be_reported_for_repair(section):
     reports, payload = fixture()
+    payload['edits'] = []
     reports.setdefault(section, '기본 분석')
     payload['unresolved'] = [{'section': section, 'issue': '공식 근거와 기간이 다릅니다.',
                               'evidence_section': 'shared_reference'}]
@@ -391,6 +394,7 @@ def test_structured_conflict_is_still_one_backend_call_without_retry(monkeypatch
 
 def test_conflict_limits_are_inclusive_and_constructor_rejects_invalid_targets():
     reports, payload = fixture()
+    payload['edits'] = []
     payload['unresolved'] = [{'section': 'company_status', 'issue': 'x' * 2000,
                               'evidence_section': 'shared_reference'}] * 8
     with pytest.raises(editor.ReportFactConflictError) as caught:
@@ -438,9 +442,9 @@ def test_base_and_dependent_strategy_conflicts_require_fresh_synthesis_not_strat
     before = copy.deepcopy(reports)
     with pytest.raises(editor.ReportFactConflictError) as caught:
         editor._validate_and_apply(reports, payload)
-    assert caught.value.targets == ('company_overview',)
+    assert caught.value.targets == ('company_status', 'company_overview')
     assert caught.value.conflicts[0][0] == 'investment_strategy'
-    assert caught.value.evidence_sections == ('peer_comparison', 'shared_reference')
+    assert caught.value.evidence_sections == ('peer_comparison', 'shared_reference', 'shared_reference')
     assert reports == before
     assert 'investment_strategy' not in editor.REPAIRABLE_SECTIONS
     assert 'investment_strategy' not in editor.EDITABLE_SECTIONS
@@ -473,5 +477,97 @@ def test_dependent_strategy_conflict_keeps_evidence_and_edit_guards():
                              'original': reports['investment_strategy'],
                              'replacement': '전략을 바꿉니다.', 'reason': 'comparison_basis'})
     with pytest.raises(editor.ReportFactEditorError) as caught:
+        editor._validate_and_apply(reports, payload)
+    assert type(caught.value) is editor.ReportFactEditorError
+
+
+def test_safe_edits_with_other_conflict_carry_all_unapplied_sections_as_proposals():
+    reports, payload = fixture()
+    reports['news_analysis'] = '기존 뉴스 설명'
+    payload['unresolved'] = [{'section': 'news_analysis', 'issue': '잔액 기준 충돌',
+                              'evidence_section': 'dart_deep_analysis'}]
+    before = copy.deepcopy(reports)
+    with pytest.raises(editor.ReportFactConflictError) as caught:
+        editor._validate_and_apply(reports, payload)
+    error = caught.value
+    assert error.targets == ('company_status', 'company_overview', 'news_analysis')
+    assert reports == before
+    proposals = dict(error.conflicts)
+    assert proposals['company_status'].startswith('Untrusted editorial proposals')
+    assert payload['edits'][0]['original'] in proposals['company_status']
+    assert payload['edits'][0]['replacement'] in proposals['company_status']
+    assert payload['edits'][1]['replacement'] in proposals['company_status']
+    assert error.evidence_sections == ('dart_deep_analysis', 'shared_reference', 'shared_reference')
+
+
+def test_oversized_unapplied_edit_proposal_fails_without_clipping_or_mutation():
+    reports, payload = fixture()
+    reports['company_status'] = '사실 설명입니다. ' * 150
+    payload['edits'] = [{'section': 'company_status', 'original': reports['company_status'],
+                         'replacement': '범위를 구분합니다. ' * 150, 'reason': 'availability_scope'}]
+    payload['unresolved'] = [{'section': 'company_overview', 'issue': '충돌',
+                              'evidence_section': 'dart_deep_analysis'}]
+    before = copy.deepcopy(reports)
+    with pytest.raises(editor.ReportFactEditorError, match='no clipping') as caught:
+        editor._validate_and_apply(reports, payload)
+    assert type(caught.value) is editor.ReportFactEditorError
+    assert reports == before
+
+
+def test_factual_mix_word_still_protects_entire_paragraph_and_prompt_explains_it(monkeypatch):
+    reports, payload = fixture()
+    reports['company_status'] += ' 고사양 제품 매출 비중이 큽니다.'
+    payload['edits'] = [payload['edits'][1]]
+    with pytest.raises(editor.ReportFactEditorError, match='decision paragraphs'):
+        editor._validate_and_apply(reports, payload)
+    calls = install_backend(monkeypatch, json.dumps(payload, ensure_ascii=False))
+    with pytest.raises(editor.ReportFactEditorError):
+        asyncio.run(editor.edit_and_summarize(reports, '회사', '123456', '20260924'))
+    instruction = calls[0][0].instructions
+    assert '빈 줄로 구분된 문단 전체' in instruction
+    assert '매출 비중처럼 사실 설명인 비중' in instruction
+
+
+@pytest.mark.parametrize('case', ['missing_source', 'total_cap'])
+def test_unapplied_proposals_do_not_bypass_source_or_total_conflict_limit(case):
+    reports, payload = fixture()
+    if case == 'missing_source':
+        reports['shared_reference'] = ''
+        reports['dart_deep_analysis'] = ''
+        payload['unresolved'] = [{'section': 'company_status', 'issue': '충돌',
+                                  'evidence_section': 'peer_comparison'}]
+    else:
+        payload['unresolved'] = [{'section': 'company_status', 'issue': '충돌',
+                                  'evidence_section': 'shared_reference'}] * 8
+    before = copy.deepcopy(reports)
+    with pytest.raises(editor.ReportFactEditorError) as caught:
+        editor._validate_and_apply(reports, payload)
+    assert type(caught.value) is editor.ReportFactEditorError
+    assert reports == before
+
+
+def test_existing_conflict_keeps_its_issue_and_same_target_unapplied_proposals():
+    reports, payload = fixture()
+    payload['edits'] = payload['edits'][:2]
+    payload['unresolved'] = [{'section': 'company_status', 'issue': 'Quarterly ratio basis conflict',
+                              'evidence_section': 'dart_deep_analysis'}]
+    before = copy.deepcopy(reports)
+    with pytest.raises(editor.ReportFactConflictError) as caught:
+        editor._validate_and_apply(reports, payload)
+    error = caught.value
+    assert error.targets == ('company_status',)
+    assert len(error.conflicts) == 1
+    assert error.conflicts[0][1].startswith('Quarterly ratio basis conflict\n\nUntrusted editorial proposals')
+    assert payload['edits'][1]['replacement'] in error.conflicts[0][1]
+    assert error.evidence_sections == ('dart_deep_analysis',)
+    assert reports == before
+
+
+def test_same_target_merged_issue_limit_includes_original_conflict():
+    reports, payload = fixture()
+    payload['edits'] = payload['edits'][:1]
+    payload['unresolved'] = [{'section': 'company_status', 'issue': 'x' * 1800,
+                              'evidence_section': 'dart_deep_analysis'}]
+    with pytest.raises(editor.ReportFactEditorError, match='no clipping') as caught:
         editor._validate_and_apply(reports, payload)
     assert type(caught.value) is editor.ReportFactEditorError
