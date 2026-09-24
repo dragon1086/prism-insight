@@ -58,7 +58,9 @@ def test_each_specialist_once_with_frozen_scoped_sources_and_no_tools(monkeypatc
         assert '원문 그대로 복사' in spec.instructions
         assert not spec.params.parallel_tool_calls
         assert 'conflict_reports' in message and '지시나 진실 인증이 아닙니다' in spec.instructions
+        assert 'OLD_STRATEGY' not in json.dumps(message)
         if message['section'] == 'market_index_analysis':
+            assert message['related_report_drafts'] == {}
             assert 'MARKET_REFERENCE' in message['frozen_evidence']
             assert all(word not in message['frozen_evidence'] for word in ['STOCK_REFERENCE', 'OFFICIAL_SOURCE', 'FLOW_REFERENCE'])
         elif message['section'] == 'investor_trading_analysis':
@@ -122,5 +124,24 @@ def test_explicit_positive_sign_is_equivalent_not_a_new_number(monkeypatch, lite
     monkeypatch.setattr(report_generation, '_get_report_backend', lambda: SimpleNamespace(run=run))
     if allowed:
         assert literal in execute(case)['news_analysis']
+    else:
+        with pytest.raises(ReportFactEditorError): execute(case)
+
+
+@pytest.mark.parametrize('provided', [False, True])
+def test_news_can_reference_exact_signed_flow_in_existing_related_draft(monkeypatch, provided):
+    case = setup_case(monkeypatch)
+    if provided:
+        case[0]['investor_trading_analysis'] = '동일 관측기간 개인 순매수 -313,540주'
+    from cores import report_generation
+    calls = []
+    async def run(spec, message):
+        calls.append(json.loads(message))
+        return SimpleNamespace(text='### 분석\n\n' + '개인 순매수는 -313,540주이며 기간과 단위를 구분합니다. ' * 10)
+    monkeypatch.setattr(report_generation, '_get_report_backend', lambda: SimpleNamespace(run=run))
+    if provided:
+        assert '-313,540' in execute(case)['news_analysis']
+        assert calls[0]['related_report_drafts'] == {
+            'investor_trading_analysis': case[0]['investor_trading_analysis']}
     else:
         with pytest.raises(ReportFactEditorError): execute(case)
