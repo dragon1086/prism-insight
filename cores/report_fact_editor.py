@@ -76,23 +76,24 @@ def _numbers(text):
 def _numeric_literals(text):
     """Inventory exact decimal values, not presentation or rounded approximations.
 
-    ISO date separators are not negative amounts: 2026-08-27 can be displayed
-    as 2026년 8월 27일. Grouping and trailing zeroes preserve numeric value.
+    Complete valid dates are not decimal or negative amounts: 2026-08-27 can
+    be displayed as 2026.08.27 or 2026년 8월 27일. Partial or invalid dates
+    remain numeric text. Grouping and trailing zeroes preserve numeric value.
     Decimal construction is exact regardless of context precision; do not use
     floats, arithmetic or normalize() here. READY edits still use _numbers.
     """
     literals = set()
     def date_parts(match):
         try:
-            date.fromisoformat(match[0])
+            date(int(match[1]), int(match[3]), int(match[4]))
         except ValueError:
             return match[0]
-        for part in match.groups():
+        for part in (match[1], match[3], match[4]):
             literals.add(Decimal(part))
         return ' ' * len(match[0])
     # Do not leave date separators in the signed-amount inventory: otherwise
     # 2026-08-27 would also authorize an invented financial value of -27.
-    amounts = re.sub(r'(?<![\d+-])(\d{4})-(\d{2})-(\d{2})(?!\d)', date_parts, text)
+    amounts = re.sub(r'(?<![\d+./-])(\d{4})([-./])(\d{2})\2(\d{2})(?!\d)', date_parts, text)
     literals.update(Decimal(literal.replace(',', '')) for literal in _numbers(amounts))
     return literals
 

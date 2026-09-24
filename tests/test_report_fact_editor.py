@@ -85,6 +85,22 @@ def test_iso_date_does_not_authorize_negative_financial_values(literal):
         editor._validate_and_apply(reports, payload)
 
 
+@pytest.mark.parametrize('rendered', ['2026.08.26', '2026/08/26', '2026년 8월 26일'])
+def test_full_valid_date_presentation_does_not_invent_financial_decimals(rendered):
+    assert not (editor._numeric_literals(rendered) - editor._numeric_literals('2026-08-26'))
+
+
+@pytest.mark.parametrize('text', ['2026.08', '2026.13.26', '2026.02.30', '2026.08/26',
+                                '-2026.08.26', '12026.08.26'])
+def test_partial_invalid_or_signed_date_is_not_normalized(text):
+    assert editor._numeric_literals(text) - editor._numeric_literals('2026-08-26')
+
+
+def test_dotted_date_does_not_authorize_decimal_amount_or_wrong_day():
+    assert editor._numeric_literals('2026.08') - editor._numeric_literals('2026.08.26')
+    assert editor._numeric_literals('27일') - editor._numeric_literals('2026.08.26')
+
+
 def install_backend(monkeypatch, text):
     import report_model_config
     from cores import report_generation
