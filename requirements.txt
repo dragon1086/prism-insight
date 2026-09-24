@@ -80,7 +80,8 @@ feedparser>=6.0.0  # RSS feed parser
 pydub>=0.25.1  # Audio file manipulation (for splitting large files)
 
 # US Stock Market (prism-us module)
-yfinance==1.2.0  # Production-verified provider shapes (2026-09-18)
+yfinance==1.4.1  # Match validated local market-data runtime (2026-09-24)
+curl_cffi==0.15.0  # Match the validated yfinance transport; avoid resolver drift
 pandas-market-calendars==5.3.1.2  # Match production session calendars
 pytz>=2024.1  # Timezone support
 lxml>=4.9.0  # HTML/XML parsing for pandas read_html
