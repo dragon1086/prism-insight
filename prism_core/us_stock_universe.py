@@ -162,7 +162,7 @@ def fetch_universe() -> UniverseResult:
         response = requests.get(url, timeout=(5, 20))
         response.raise_for_status()
         texts.append(response.text)
-    return parse_directories(*texts)
+    return parse_directories(texts[0], texts[1])
 
 
 def _positive_finite(value) -> bool:
