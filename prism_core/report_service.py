@@ -63,7 +63,7 @@ class ReportArtifact:
 
 @dataclass(frozen=True)
 class _Backend:
-    get_cached: Callable[[str], tuple]
+    get_cached: Callable[..., tuple]
     generate: Callable[[str, str], str | None]
     save_markdown: Callable[[str, str, str], Any]
     save_pdf: Callable[[str, str, Any], Any]
@@ -102,6 +102,8 @@ def generate_report(
     The cache is always consulted first, including when ``cache_only`` is set —
     a cached report is returned even to callers that must not trigger new
     generation. On a cache miss, ``cache_only`` yields :data:`SKIPPED`.
+    Standard KR reports require the current DART-depth cache contract. Evaluation
+    callers using ``cache_only`` retain basic-cache reuse without new analysis.
 
     Raises whatever the underlying generation backend raises; callers own the
     failure policy for their channel.
@@ -109,7 +111,11 @@ def generate_report(
 
     backend = _backend(market)
 
-    is_cached, cached_content, cached_file, cached_pdf = backend.get_cached(ticker)
+    if market != 'us' and not cache_only:
+        cached = backend.get_cached(ticker, require_dart_depth=True)
+    else:
+        cached = backend.get_cached(ticker)
+    is_cached, cached_content, cached_file, cached_pdf = cached
     if is_cached and _is_cacheable_report(cached_content):
         logger.info("Cached report found: %s", cached_file)
         return ReportArtifact(

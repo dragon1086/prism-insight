@@ -6,10 +6,11 @@ import io
 import logging
 import os
 import socket
+import subprocess
 import sys
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -19,9 +20,9 @@ from test_us_report_public_inputs import company_packet, macro_packet
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.fixture(autouse=True)
-def isolated_imports_and_effects(monkeypatch, tmp_path):
-    """US file loaders must not change a later test's root-package resolution."""
+@contextmanager
+def preserved_import_graph():
+    """Restore both import caches: sys.modules and parent package attributes."""
     prefixes = ('cores', 'trading', 'tracking', 'kis_auth', 'domestic_stock_trading',
                 'overseas_stock_trading')
 
@@ -30,6 +31,30 @@ def isolated_imports_and_effects(monkeypatch, tmp_path):
 
     original_path = sys.path[:]
     original_modules = {name: module for name, module in sys.modules.items() if affected(name)}
+    original_attributes = {
+        name: {key: value for key, value in vars(module).items()
+               if isinstance(value, ModuleType)}
+        for name, module in original_modules.items() if module is not None
+    }
+    try:
+        yield
+    finally:
+        sys.path[:] = original_path
+        for name in list(sys.modules):
+            if affected(name):
+                del sys.modules[name]
+        sys.modules.update(original_modules)
+        for name, attributes in original_attributes.items():
+            module = original_modules[name]
+            for key, value in list(vars(module).items()):
+                if isinstance(value, ModuleType) and affected(value.__name__) and key not in attributes:
+                    delattr(module, key)
+            vars(module).update(attributes)
+
+
+@pytest.fixture(autouse=True)
+def isolated_imports_and_effects(monkeypatch, tmp_path):
+    """US/KR file loaders must not change later imports or invoke real backends."""
     monkeypatch.setenv('PYTHON_DOTENV_DISABLED', '1')
     monkeypatch.setenv('KIS_CONFIG_ROOT', str(tmp_path))
     forbidden = {'.env', '.env.mcp-cloud', 'kis_devlp.yaml', 'mcp_agent.secrets.yaml',
@@ -50,14 +75,31 @@ def isolated_imports_and_effects(monkeypatch, tmp_path):
     monkeypatch.setattr(socket.socket, 'connect', no_network)
     monkeypatch.setattr(socket.socket, 'connect_ex', no_network)
     monkeypatch.setattr(socket, 'create_connection', no_network)
-    try:
+    monkeypatch.setattr(subprocess.Popen, '__init__', no_network)
+    # yfinance's curl transport bypasses Python socket.connect.
+    import curl_cffi.requests
+    monkeypatch.setattr(curl_cffi.requests.Session, 'request', no_network)
+    with preserved_import_graph():
+        import cores.report_generation as report_generation
+        monkeypatch.setattr(report_generation, '_get_report_backend', no_network)
         yield
-    finally:
-        sys.path[:] = original_path
-        for name in list(sys.modules):
-            if affected(name):
-                del sys.modules[name]
-        sys.modules.update(original_modules)
+
+
+def test_import_graph_restores_parent_attributes_as_well_as_modules():
+    import cores
+    import cores.report_generation as original
+
+    with preserved_import_graph():
+        replacement = ModuleType('cores.report_generation')
+        sys.modules['cores.report_generation'] = replacement
+        cores.report_generation = replacement
+        newly_imported = ModuleType('cores._isolation_probe')
+        sys.modules[newly_imported.__name__] = newly_imported
+        cores._isolation_probe = newly_imported
+    assert sys.modules['cores.report_generation'] is original
+    assert cores.report_generation is original
+    assert 'cores._isolation_probe' not in sys.modules
+    assert not hasattr(cores, '_isolation_probe')
 
 
 def load(relative):

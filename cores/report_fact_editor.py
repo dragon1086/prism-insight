@@ -139,6 +139,8 @@ def _validate_and_apply(reports, payload, calendar_context=None):
         text = reports[section]
         if text.count(original) != 1 or len(original) > 6000 or len(replacement) > 6000:
             raise ReportFactEditorError('Edit must match exactly once within its section')
+        if original.strip() in [p.strip() for p in re.split(r'\n\s*\n', reports.get('investment_strategy', ''))]:
+            raise ReportFactEditorError('Factual correction is also present in immutable strategy')
         if (re.search(r'\r?\n[ \t]*\r?\n', original)
                 or re.search(r'\r?\n[ \t]*\r?\n', replacement)
                 or _numbers(original) != _numbers(replacement)
@@ -163,7 +165,7 @@ def _validate_and_apply(reports, payload, calendar_context=None):
 async def edit_and_summarize(section_reports, company_name, company_code, reference_date, language='ko'):
     """Replace the normal summary call; no retries, tools or extra model calls."""
     from cores.llm.ports import AgentSpec, LLMParams
-    from cores.report_generation import _get_report_backend
+    from cores.report_generation import _get_report_backend, synthesis_evidence_contract
     from report_model_config import DART_REPORT_EFFORT, DART_REPORT_MODEL
 
     if (not isinstance(section_reports, dict) or not section_reports
@@ -208,6 +210,7 @@ async def edit_and_summarize(section_reports, company_name, company_code, refere
     )
     if language != 'ko':
         instruction += '\nWrite summary and replacement prose in English.'
+    instruction += synthesis_evidence_contract(language)
     calendar_context = await asyncio.to_thread(_calendar_context, reference_date)
     message = json.dumps({'company_name': company_name, 'company_code': company_code,
                           'calendar_context': calendar_context,

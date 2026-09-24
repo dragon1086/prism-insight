@@ -139,6 +139,12 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
 
         shared_reference = reference_context(prefetched, language)
         if require_dart_depth and not prefetched.get('official_dart', {}).get('dart_chapter_inputs', {}).get('ready'):
+            dart_packet = prefetched.get('official_dart', {})
+            diagnostics = dart_packet.get('diagnostics', {})
+            receipt = dart_packet.get('dart_chapter_inputs', {}).get('receipt', {})
+            logger.warning('DART depth unavailable: sources=%s capacity_ok=%s failure_type=%s gaps=%s',
+                           receipt.get('source_count'), receipt.get('capacity_ok'),
+                           receipt.get('failure_type'), diagnostics.get('gaps', []))
             raise ValueError('공시 심층분석 입력을 확보하지 못해 완성본 생성을 중단했습니다.')
         cache_key = market_cache_key(prefetched, reference_date, language)
         # 5. Get agents (with prefetched data)
@@ -283,10 +289,18 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                 if language == 'ko' else CHAPTER_INCOMPLETE + '\nThe filing-depth chapter is not included. '
                 'This is a basic report, not a complete filing-risk review. Missing optional evidence is not a separate trading condition.')
 
+        # Render once before synthesis; reuse the identical block in the PDF.
+        from prism_core.report_macro_section import render_macro_section
+        macro_section = render_macro_section(macro_context, language, "KR")
+        if macro_section:
+            section_reports['macro_context'] = macro_section
+
         # 6. Integrate content from other reports
+        from prism_core.kr_report_context import synthesis_reference_context
+        shared_reference = synthesis_reference_context(prefetched, language)
         section_reports['shared_reference'] = shared_reference
         combined_reports = shared_reference
-        synthesis_sections = base_sections + ['peer_comparison', 'dart_deep_analysis', 'dart_depth_limit']
+        synthesis_sections = base_sections + ['peer_comparison', 'dart_deep_analysis', 'dart_depth_limit', 'macro_context']
         for section in synthesis_sections:
             if section in section_reports:
                 combined_reports += f"\n\n--- {section.upper()} ---\n\n"
@@ -474,55 +488,7 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                 _BQ_LOG.warning("[BUY_QUALITY][SHADOW] hook failed for %s: %s",
                                 company_code, _bqe, exc_info=True)
 
-        # 11. Build macro section (before final report composition)
-        macro_section = ""
-        if macro_context:
-            report_prose = macro_context.get("report_prose", "")
-            if report_prose:
-                macro_section = report_prose + "\n\n"
-            else:
-                # Fallback: build from structured fields if report_prose is empty
-                regime = macro_context.get("market_regime", "sideways")
-                regime_rationale = macro_context.get("regime_rationale", "")
-                leading = macro_context.get("leading_sectors", [])
-                lagging = macro_context.get("lagging_sectors", [])
-                risks = macro_context.get("risk_events", [])
-
-                if language == "ko":
-                    regime_labels = {
-                        "parabolic": "폭주 강세장",
-                        "strong_bull": "강한 강세장", "moderate_bull": "보통 강세장",
-                        "sideways": "횡보장", "moderate_bear": "보통 약세장", "strong_bear": "강한 약세장"
-                    }
-                    macro_section += "### 거시경제 환경\n\n"
-                    macro_section += f"**시장 체제**: {regime_labels.get(regime, regime)}\n\n"
-                    if regime_rationale:
-                        macro_section += f"**판단 근거**: {regime_rationale}\n\n"
-                    if leading:
-                        sectors_str = ", ".join([s.get("sector", "") for s in leading[:3]])
-                        macro_section += f"**주도 섹터**: {sectors_str}\n\n"
-                    if lagging:
-                        sectors_str = ", ".join([s.get("sector", "") for s in lagging[:3]])
-                        macro_section += f"**소외 섹터**: {sectors_str}\n\n"
-                    if risks:
-                        for r in risks[:3]:
-                            macro_section += f"- ⚠️ {r.get('event', '')} (영향: {r.get('severity', 'medium')})\n"
-                        macro_section += "\n"
-                else:
-                    macro_section += "### Macroeconomic Environment\n\n"
-                    macro_section += f"**Market Regime**: {regime.replace('_', ' ').title()}\n\n"
-                    if regime_rationale:
-                        macro_section += f"**Rationale**: {regime_rationale}\n\n"
-                    if leading:
-                        sectors_str = ", ".join([s.get("sector", "") for s in leading[:3]])
-                        macro_section += f"**Leading Sectors**: {sectors_str}\n\n"
-                    if lagging:
-                        sectors_str = ", ".join([s.get("sector", "") for s in lagging[:3]])
-                        macro_section += f"**Lagging Sectors**: {sectors_str}\n\n"
-                    if risks:
-                        for r in risks[:3]:
-                            macro_section += f"- ⚠️ {r.get('event', '')} (Severity: {r.get('severity', 'medium')})\n"
-                        macro_section += "\n"
+        # Reuse the same macro block already supplied to strategy and summary.
 
         # 12. Compose final report with proper heading hierarchy
         disclaimer = get_disclaimer(language)

@@ -83,6 +83,10 @@ async def test_four_report_paths_preserve_limits_and_prompts(monkeypatch):
         "summary_agent",
         "investment_strategy_agent",
     ]
+    for spec, _ in backend.calls[2:]:
+        assert '공시 심층 분석' in spec.instructions
+        assert '정량 수급' in spec.instructions
+        assert '연결/별도' in spec.instructions
     assert all("BAR_FINALITY_UNKNOWN" in message for _, message in backend.calls)
     assert [call[0].params.max_tokens for call in backend.calls] == [
         32000,

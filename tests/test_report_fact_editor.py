@@ -131,6 +131,15 @@ def test_whole_json_fence_and_no_edits_supported():
     assert patched == reports and patched is not reports
 
 
+def test_exact_error_paragraph_in_strategy_cannot_survive_a_body_only_edit():
+    reports, payload = fixture()
+    reports['investment_strategy'] += '\n\n' + payload['edits'][0]['original']
+    before = copy.deepcopy(reports)
+    with pytest.raises(editor.ReportFactEditorError, match='immutable strategy'):
+        editor._validate_and_apply(reports, payload)
+    assert reports == before
+
+
 def test_input_cap_fails_before_call(monkeypatch):
     reports, payload = fixture()
     reports['dart_deep_analysis'] = '한' * 140000

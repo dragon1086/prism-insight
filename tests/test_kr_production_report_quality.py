@@ -4,6 +4,7 @@ import copy
 import json
 
 import pytest
+from test_us_evidence_pipeline_contract import isolated_imports_and_effects  # noqa: F401
 
 from cores.agents.report_agent import ReportAgent
 from prism_core.kr_report_context import (
@@ -18,6 +19,8 @@ def inputs():
     return {
         'report_calculation_reference': '주가 20일 평균 12345.67원, 기준일 2026-09-22',
         'market_calculation_reference': '코스피 20일 평균 3000.00포인트',
+        'flow_evidence': 'INTERNAL_FLOW_NOT_FOR_PUBLIC_SYNTHESIS',
+        'flow_evidence_public': '수급 기준 2026-09-22: 외국인 987주 순매수입니다.',
         'report_calculations': {'facts': [{'id': 'index.1001.sma.20', 'value': 3000.0}]},
         'official_dart': {
             'section_contexts': {'company_status': '공시 재무표 123456천원; 2026년 반기; 연결',
@@ -156,6 +159,9 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
         assert all(text in combined for text in authored.values())
         assert 'PEER 9.23배' in combined
         assert reports['dart_deep_analysis'] in combined
+        assert '코스피 20일 평균 3000.00포인트' in combined
+        assert '수급 기준 2026-09-22: 외국인 987주' in combined
+        assert 'INTERNAL_FLOW_NOT_FOR_PUBLIC_SYNTHESIS' not in combined
         return '### 5-1. 투자 전략\n조건부 의무를 고려한 전략'
     async def summary(reports, *args):
         model_calls.append('summary')
@@ -163,6 +169,8 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
             raise ValueError('unresolved_fact_conflict')
         assert all(text in reports['dart_deep_analysis'] for text in authored.values())
         assert reports['peer_comparison'].endswith('9.23배')
+        assert '코스피 20일 평균 3000.00포인트' in reports['shared_reference']
+        assert '수급 기준 2026-09-22: 외국인 987주' in reports['shared_reference']
         return '## 핵심 요약\n심층 분석의 조건을 유지합니다.'
     monkeypatch.setattr(analysis, 'generate_report', base)
     monkeypatch.setattr(analysis, 'generate_market_report', base)

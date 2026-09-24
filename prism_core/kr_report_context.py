@@ -29,6 +29,22 @@ def reference_context(prefetched, language='ko', *, market_only=False):
     return report_narrative_contract(language) + '\n' + rules + '\n' + reference + '\n' + receipt
 
 
+def synthesis_reference_context(prefetched, language='ko'):
+    """Give both final syntheses the exact references used by the report appendix.
+
+    Keep this separate from specialist inputs and the ticker-free market cache.
+    Prefetch's public flow text is produced by ``render_flow_reference`` below;
+    reuse it verbatim rather than recomputing, rounding or clipping evidence.
+    Older prefetch packets can still supply the authoritative raw flow block.
+    """
+    references = [reference_context(prefetched, language),
+                  prefetched.get('market_calculation_reference', '')]
+    flow = prefetched.get('flow_evidence_public') or prefetched.get('flow_evidence', '')
+    if flow:
+        references.append(flow)
+    return '\n\n'.join(reference for reference in references if reference)
+
+
 def apply_kr_report_context(agent, section, prefetched, language='ko'):
     market = section == 'market_index_analysis'
     instruction = agent.instruction + '\n\n' + reference_context(prefetched, language, market_only=market)

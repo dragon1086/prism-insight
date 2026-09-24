@@ -107,7 +107,9 @@ async def collect_kr_official_report_inputs(ticker, company, reference_date):
     """Collect once per report; the collector has its own strict request budget.
 
     Identity: at most 3 requests/15 seconds. Filings: at most 28 requests/55
-    seconds, with bounded HTML bytes and parser deadlines. No external cache or
+    seconds, with bounded HTML bytes and parser deadlines. Only explicit official
+    non-applicability permits one additional independently bounded standalone
+    pass, with identity and receipt rechecked. No external cache or
     historical 'latest' alias can carry evidence across decision dates.
     """
     empty = {'section_contexts': {}, 'public_receipt': '', 'shared_reference': ''}
@@ -118,9 +120,46 @@ async def collect_kr_official_report_inputs(ticker, company, reference_date):
     try:
         decision = _decision_at(reference_date)
         await collect_latest(ticker, company, decision, 'consolidated', progress, source_sink=chapter_sources)
+        filing = progress.get('filing_selection', {})
+        selection = filing.get('selection', {})
+        latest = selection.get('best_known_candidate_id') or selection.get('latest_candidate_id')
+        proof = filing.get('scope_absence_evidence', {}).get(latest, {})
+        resolution = None
+        if (not progress.get('sources') and not selection.get('primary_id')
+                and not selection.get('unresolved_corrections')
+                and proof.get('reason') == 'OFFICIAL_NOT_APPLICABLE'
+                and proof.get('scope') == 'consolidated' and proof.get('receipt_id') == latest
+                and filing.get('identity', {}).get('ticker_verified_from_company_profile') is True):
+            alternate = {'sources': [], 'gaps': []}
+            alternate_sources = []
+            await collect_latest(ticker, company, decision, 'standalone', alternate,
+                                 source_sink=alternate_sources)
+            actual = alternate.get('filing_selection', {})
+            if (actual.get('selection', {}).get('primary_id') == latest
+                    and actual.get('identity', {}).get('ticker_verified_from_company_profile') is True
+                    and actual.get('identity', {}).get('corp_code') == filing['identity'].get('corp_code')
+                    and alternate.get('sources')
+                    and all(s.get('filing', {}).get('scope') == 'standalone' for s in alternate['sources'])):
+                resolution = {'requested': 'consolidated', 'selected': 'standalone',
+                              'reason': 'OFFICIAL_NOT_APPLICABLE', 'receipt_id': latest,
+                              'evidence_url': proof.get('url'), 'evidence_sha256': proof.get('sha256'),
+                              'consolidated_calls': progress.get('dart_calls'),
+                              'standalone_calls': alternate.get('dart_calls')}
+                alternate['dart_calls'] = (progress.get('dart_calls', 0) or 0) + (alternate.get('dart_calls', 0) or 0)
+                alternate['dart_response_bytes'] = (progress.get('dart_response_bytes', 0) or 0) + (alternate.get('dart_response_bytes', 0) or 0)
+                progress, chapter_sources = alternate, alternate_sources
+                progress['scope_resolution'] = resolution
+            else:
+                progress['gaps'].append('STANDALONE_FALLBACK_NOT_VERIFIED')
         # Parsing/rendering is bounded but CPU-bound; leave the async report
         # event loop available to existing bot work.
         packet = await asyncio.to_thread(_render, progress, company)
+        if resolution:
+            note = ('연결·별도 기준 안내: 이 공시는 연결재무제표에 해당사항이 없음을 명시합니다. '
+                    '따라서 확인한 별도재무제표와 주석을 분석하며 연결 기준 실적으로 바꾸어 해석하지 않습니다.\n'
+                    f"근거: {resolution['evidence_url']}\n\n")
+            packet['public_receipt'] = note + packet.get('public_receipt', '')
+            packet['shared_reference'] = packet['public_receipt']
         try:
             packet['dart_chapter_inputs'] = await asyncio.to_thread(
                 build_dart_chapter_inputs, chapter_sources, collection_gaps=progress['gaps'])

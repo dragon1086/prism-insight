@@ -16,6 +16,21 @@ from prism_core.report_presentation import report_narrative_contract
 _report_backend = None
 
 
+def synthesis_evidence_contract(language='ko'):
+    """All supplied chapters inform synthesis, without adding trading rules."""
+    if language == 'ko':
+        return ('\n종합 입력 계약: 제공된 공시 심층 분석·비교기업·공식 실적/가이던스·정량 수급·'
+                '시장 계산값·거시 위험을 기존 기술·기업·뉴스 분석과 함께 검토하세요. '
+                '중요한 변화와 위험이 결론에 미치는 영향을 반영하되 요약에 모든 문장을 반복하지 마세요. '
+                '연결/별도·실적/예상·기간·단위·관측시점을 섞지 말고, 누락 자료를 만들어내지 마세요. '
+                '부록에 표시될 근거도 같은 입력입니다. 자료 범위의 한계를 유지하고 기존 매매 정책을 바꾸지 마세요.\n')
+    return ('\nSynthesis evidence contract: consider all supplied filing-depth, peer, official results/guidance, '
+            'quantified flow, market calculations and macro-risk evidence alongside technical, company and news sections. '
+            'Reflect material changes and risks, not every sentence. Preserve consolidated/standalone, actual/forecast, '
+            'period, unit and observation-time distinctions. Do not invent missing evidence or alter trading policy. '
+            'Evidence displayed in an appendix is still part of the same synthesis input.\n')
+
+
 def _get_report_backend():
     """Lazily configure the SDK and native MCP registry for report calls."""
     global _report_backend
@@ -345,7 +360,7 @@ Comprehensive Analysis Report:
 
         summary_agent = ReportAgent(
             name="summary_agent",
-            instruction=instruction + report_narrative_contract(language)
+            instruction=instruction + report_narrative_contract(language) + synthesis_evidence_contract(language)
         )
 
         executive_summary = await _generate_agent_text(
@@ -573,7 +588,7 @@ Please present a consistent and executable investment strategy that investors ca
 
         investment_strategy_agent = ReportAgent(
             name="investment_strategy_agent",
-            instruction=instruction + report_narrative_contract(language)
+            instruction=instruction + report_narrative_contract(language) + synthesis_evidence_contract(language)
         )
 
         investment_strategy = await _generate_agent_text(
