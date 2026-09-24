@@ -20,6 +20,20 @@ from test_us_report_public_inputs import company_packet, macro_packet
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def font_discovery_only(original):
+    """Allow only Matplotlib's read-only system font probes, never model CLIs."""
+    allowed = {('fc-list', '--help'), ('fc-list', '--format=%{file}\\n'),
+               ('system_profiler', '-xml', 'SPFontsDataType')}
+
+    def guarded(process, args, *positional, **kwargs):
+        # Positional Popen options can hide shell/executable overrides.
+        if (not isinstance(args, (list, tuple)) or tuple(args) not in allowed
+                or positional or kwargs.get('shell') or kwargs.get('executable') is not None):
+            raise AssertionError('Subprocess access forbidden except exact system font discovery')
+        return original(process, args, **kwargs)
+    return guarded
+
+
 @contextmanager
 def preserved_import_graph():
     """Restore both import caches: sys.modules and parent package attributes."""
@@ -75,7 +89,7 @@ def isolated_imports_and_effects(monkeypatch, tmp_path):
     monkeypatch.setattr(socket.socket, 'connect', no_network)
     monkeypatch.setattr(socket.socket, 'connect_ex', no_network)
     monkeypatch.setattr(socket, 'create_connection', no_network)
-    monkeypatch.setattr(subprocess.Popen, '__init__', no_network)
+    monkeypatch.setattr(subprocess.Popen, '__init__', font_discovery_only(subprocess.Popen.__init__))
     # yfinance's curl transport bypasses Python socket.connect.
     import curl_cffi.requests
     monkeypatch.setattr(curl_cffi.requests.Session, 'request', no_network)
@@ -83,6 +97,30 @@ def isolated_imports_and_effects(monkeypatch, tmp_path):
         import cores.report_generation as report_generation
         monkeypatch.setattr(report_generation, '_get_report_backend', no_network)
         yield
+
+
+@pytest.mark.parametrize('args', [
+    ['fc-list', '--help'], ['fc-list', '--format=%{file}\\n'],
+    ['system_profiler', '-xml', 'SPFontsDataType'],
+])
+def test_subprocess_guard_allows_only_exact_read_only_font_discovery(args):
+    calls = []
+    guard = font_discovery_only(lambda process, command, **kwargs: calls.append(command))
+    guard(object(), args, stdout=subprocess.PIPE)
+    assert calls == [args]
+
+
+@pytest.mark.parametrize('args,kwargs', [
+    (['codex', 'exec', 'prompt'], {}), (['curl', 'https://example.test'], {}),
+    (['fc-list', '--help', 'extra'], {}), ('fc-list --help', {}),
+    (['fc-list', '--help'], {'shell': True}),
+    (['fc-list', '--help'], {'executable': '/bin/sh'}),
+])
+def test_subprocess_guard_rejects_model_network_and_overrides(args, kwargs):
+    def forbidden(*args, **kwargs):
+        raise AssertionError('original Popen must not be reached')
+    with pytest.raises(AssertionError, match='except exact system font discovery'):
+        font_discovery_only(forbidden)(object(), args, **kwargs)
 
 
 def test_import_graph_restores_parent_attributes_as_well_as_modules():
