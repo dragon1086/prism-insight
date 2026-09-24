@@ -1,6 +1,7 @@
 """One bounded, source-frozen specialist recovery; never a publication bypass."""
 import json
 import re
+import asyncio
 
 
 def _split_protected(text):
@@ -26,6 +27,33 @@ def _split_protected(text):
 async def regenerate_conflicting_sections(section_reports, agents, prefetched, conflicts,
                                           company_name, company_code, reference_date,
                                           logger, language='ko'):
+    from cores.report_fact_editor import ReportFactEditorError
+    from report_model_config import DART_REPORT_MODEL
+    capture = {}
+    try:
+        return await _regenerate_conflicting_sections(
+            section_reports, agents, prefetched, conflicts, company_name, company_code,
+            reference_date, logger, language, capture)
+    except (Exception, asyncio.CancelledError) as original:
+        error = original if isinstance(original, ReportFactEditorError) else ReportFactEditorError(
+            'Report factual recovery backend failed',
+            code='CANCELLED' if isinstance(original, asyncio.CancelledError) else 'RECOVERY_BACKEND_ERROR')
+        try:
+            from cores.report_review_diagnostics import record_report_review_failure
+            error.diagnostic_id = record_report_review_failure(
+                stage='recovery', company_code=company_code, reference_date=reference_date,
+                sections=section_reports, response=capture, error=error, model=DART_REPORT_MODEL)
+        except Exception:
+            pass
+        logger.warning('Report recovery failed: code=%s diagnostic_id=%s', error.code, error.diagnostic_id)
+        if isinstance(original, asyncio.CancelledError) or error is original:
+            raise
+        raise error from original
+
+
+async def _regenerate_conflicting_sections(section_reports, agents, prefetched, conflicts,
+                                           company_name, company_code, reference_date,
+                                           logger, language, capture):
     """Regenerate each named specialist at most once, sequentially and tool-free.
 
     The caller must rebuild strategy and pass the unchanged final editor again.
@@ -40,25 +68,26 @@ async def regenerate_conflicting_sections(section_reports, agents, prefetched, c
     from report_model_config import DART_REPORT_MODEL, DART_REPORT_EFFORT
 
     if not isinstance(conflicts, ReportFactConflictError):
-        raise ReportFactEditorError('Recovery requires validated factual conflicts')
+        raise ReportFactEditorError('Recovery requires validated factual conflicts', code='RECOVERY_TARGET')
     targets = conflicts.targets
     if not targets or any(key not in agents or key not in section_reports for key in targets):
-        raise ReportFactEditorError('Recovery specialist unavailable')
+        raise ReportFactEditorError('Recovery specialist unavailable', code='RECOVERY_TARGET')
     packet = prefetched.get('official_dart', {}).get('dart_chapter_inputs', {})
     receipt = packet.get('receipt', {})
     if (packet.get('ready') is not True or receipt.get('core_conserved') is not True
             or receipt.get('capacity_ok') is not True):
-        raise ReportFactEditorError('Recovery requires conserved official source inputs')
+        raise ReportFactEditorError('Recovery requires conserved official source inputs', code='SOURCE_BASIS_MISSING')
 
     sources = []
-    if any(target not in ('market_index_analysis', 'investor_trading_analysis') for target in targets):
+    numerical_sections = ('price_volume_analysis', 'market_index_analysis', 'investor_trading_analysis')
+    if any(target not in numerical_sections for target in targets):
         for context in packet.get('contexts', {}).values():
             source, rendered = render_dart_writer_context(context)
             if not rendered['cell_text_conserved'] or rendered['truncated']:
-                raise ReportFactEditorError('Recovery source presentation is incomplete')
+                raise ReportFactEditorError('Recovery source presentation is incomplete', code='SOURCE_CONSERVATION')
             sources.append(source)
         if not sources:
-            raise ReportFactEditorError('Recovery official sources missing')
+            raise ReportFactEditorError('Recovery official sources missing', code='SOURCE_BASIS_MISSING')
 
     staged, requests = dict(section_reports), []
     for section in targets:
@@ -67,7 +96,7 @@ async def regenerate_conflicting_sections(section_reports, agents, prefetched, c
         market_only = section == 'market_index_analysis'
         reference = (reference_context(prefetched, language, market_only=True) if market_only
                      else synthesis_reference_context(prefetched, language))
-        official = '' if section in ('market_index_analysis', 'investor_trading_analysis') else '\n\n'.join(sources)
+        official = '' if section in numerical_sections else '\n\n'.join(sources)
         source_basis = reference + '\n\n' + official
         if section in ('company_status', 'company_overview', 'news_analysis'):
             source_basis += '\n\n' + section_reports.get('peer_comparison', '')
@@ -105,26 +134,33 @@ async def regenerate_conflicting_sections(section_reports, agents, prefetched, c
                               'related_report_drafts': related_drafts,
                               'frozen_evidence': source_basis}, ensure_ascii=False)
         if len((instruction + message).encode()) > 400000:
-            raise ReportFactEditorError('Recovery input capacity exceeded; no evidence clipped')
+            raise ReportFactEditorError('Recovery input capacity exceeded; no evidence clipped',
+                                        code='RECOVERY_CAPACITY', details={'section': section})
         requests.append((section, agent, instruction, message, draft, source_basis, related_drafts, protected))
 
     for section, agent, instruction, message, draft, source_basis, related_drafts, protected in requests:
+        capture.update(section=section, instructions=instruction, request=message, output=None)
         result = await _get_report_backend().run(AgentSpec(
             name=agent.name + '_fact_recovery', instructions=instruction, model=DART_REPORT_MODEL,
             mcp_servers=(), params=LLMParams(max_tokens=10000, reasoning_effort=DART_REPORT_EFFORT,
                                           parallel_tool_calls=False, max_iterations=1)), message)
         revised = result.text.strip() if isinstance(result.text, str) else ''
+        capture['output'] = revised
         basis = agent.instruction + draft + source_basis + '\n\n'.join(related_drafts.values())
-        if (not 200 <= len(revised) <= 16000 or not re.search(r'(?m)^#{2,4}\s+\S', revised)
-                or revised.casefold().startswith(('analysis failed', '분석 실패'))
-                or 'traceback (most recent call last)' in revised.casefold()
-                # Equivalent positive signs and valid ISO date display parts
-                # are allowed, never a changed signed amount or precision.
-                or _numeric_literals(revised) - _numeric_literals(basis)
-                or set(_URL.findall(revised)) - set(_URL.findall(basis))
-                or _split_protected(revised)[1]
-                or re.search(r'<!--|```|CE-[0-9a-f]+', revised)):
-            raise ReportFactEditorError('Recovery draft violated source or output bounds')
+        checks = (
+            ('RECOVERY_OUTPUT_LENGTH', not 200 <= len(revised) <= 16000),
+            ('RECOVERY_OUTPUT_STRUCTURE', not re.search(r'(?m)^#{2,4}\s+\S', revised)
+             or revised.casefold().startswith(('analysis failed', '분석 실패'))
+             or 'traceback (most recent call last)' in revised.casefold()),
+            ('RECOVERY_NUMBER', bool(_numeric_literals(revised) - _numeric_literals(basis))),
+            ('RECOVERY_URL', bool(set(_URL.findall(revised)) - set(_URL.findall(basis)))),
+            ('RECOVERY_PROTECTED', bool(_split_protected(revised)[1]
+                                       or re.search(r'<!--|```|CE-[0-9a-f]+', revised))),
+        )
+        for code, invalid in checks:
+            if invalid:
+                raise ReportFactEditorError('Recovery draft violated source or output bounds', code=code,
+                                            details={'section': section})
         staged[section] = revised + ''.join('\n\n' + block for block in protected)
         logger.info('Factual specialist recovery completed: section=%s calls=1', section)
     return staged

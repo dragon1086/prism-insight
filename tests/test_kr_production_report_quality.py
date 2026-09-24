@@ -163,6 +163,12 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
         assert '수급 기준 2026-09-22: 외국인 987주' in combined
         assert 'INTERNAL_FLOW_NOT_FOR_PUBLIC_SYNTHESIS' not in combined
         return '\\n\\n### 5-1. 투자 전략\n조건부 의무를 고려한 전략'
+    async def assessed(reports, *args):
+        model_calls.append('assessment')
+        assert all(text in reports['dart_deep_analysis'] for text in authored.values())
+        return dict(reports), None, {'calls': 0}
+    from cores import report_fact_editor
+    monkeypatch.setattr(report_fact_editor, 'assess_report_facts', assessed)
     async def summary(reports, *args):
         model_calls.append('summary')
         if summary_fails:
@@ -181,7 +187,8 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
             asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923', require_dart_depth=True))
         return
     report = asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923', require_dart_depth=True))
-    assert len(model_calls) == 11 and len(peer_calls) == 1
+    assert len(model_calls) == 12 and len(peer_calls) == 1
+    assert model_calls.index('assessment') < model_calls.index('strategy')
     assert all(text in report for text in authored.values())
     assert report.index('## 5. DART') < report.index('## 6. 투자 전략')
     assert '### 6-1. 투자 전략' in report and '### 5-1. 투자 전략' not in report

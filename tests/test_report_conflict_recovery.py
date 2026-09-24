@@ -11,6 +11,7 @@ from test_us_evidence_pipeline_contract import isolated_imports_and_effects  # n
 def pipeline(monkeypatch, tmp_path):
     import cores.data_prefetch as prefetch
     import cores.report_generation as generation
+    import cores.report_fact_editor as review
     from cores import analysis, dart_deep_analysis
     from cores.llm import capabilities
     from cores.report_fact_editor import ReportFactConflictError
@@ -68,6 +69,8 @@ def pipeline(monkeypatch, tmp_path):
         return result
 
     monkeypatch.setattr(generation, 'regenerate_conflicting_sections', repair)
+    async def assessed(reports, *args): return dict(reports), None, {'calls': 0}
+    monkeypatch.setattr(review, 'assess_report_facts', assessed)
     return analysis, ReportFactConflictError, calls, snapshots
 
 

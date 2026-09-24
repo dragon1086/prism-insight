@@ -18,6 +18,12 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _validation_reply_text(result):
+    """Capture the actual schema response instead of an empty text projection."""
+    structured = getattr(result, 'structured', None)
+    return structured.model_dump_json() if structured is not None else result.text
+
+
 def _reviewed_failed_full_run(directory, packet, *, company_code, reference_date, peer_context=''):
     """Recover observed writer artifacts only for explicit staged validation.
 
@@ -170,6 +176,7 @@ def main():
             or not args.resume_sections.resolve().is_relative_to(operational / 'runtime' / 'report_validation')):
         parser.error('Section resume is restricted to full isolated validation')
     output.mkdir(parents=True, exist_ok=False)
+    os.environ['PRISM_REPORT_DIAGNOSTICS_DIR'] = str(output / 'diagnostics')
 
     from dotenv import load_dotenv
     load_dotenv(operational / '.env')
@@ -223,23 +230,32 @@ def main():
     if args.run_model:
         backend = report_generation._get_report_backend()
         original_run = backend.run
-        editor_calls = 0
+        review_calls = {}
 
         async def capture_editor_reply(spec, message):
-            nonlocal editor_calls
+            review_name = {'report_final_fact_editor': 'final_editor',
+                           'report_fact_assessor': 'report_fact_assessor'}.get(spec.name)
+            recovery = spec.name.endswith('_fact_recovery') and re.fullmatch(r'[a-z_]+', spec.name)
+            capture_name = review_name or (spec.name if recovery else None)
+            if capture_name:
+                review_calls[capture_name] = review_calls.get(capture_name, 0) + 1
+                call = review_calls[capture_name]
             if spec.name.endswith('_fact_recovery') and re.fullmatch(r'[a-z_]+', spec.name):
-                save_json(spec.name + '_request.json', {'instructions': spec.instructions,
-                                                       'message': message, 'model': spec.model})
-            if spec.name == 'report_final_fact_editor':
-                editor_calls += 1
-                (output / 'final_editor_request.json').write_text(message, encoding='utf-8')
-                (output / f'final_editor_request_{editor_calls}.json').write_text(message, encoding='utf-8')
+                request = {'instructions': spec.instructions, 'message': message, 'model': spec.model}
+                save_json(spec.name + '_request.json', request)
+                save_json(f'{spec.name}_request_{call}.json', request)
+            if review_name:
+                (output / f'{review_name}_request.json').write_text(message, encoding='utf-8')
+                (output / f'{review_name}_request_{call}.json').write_text(message, encoding='utf-8')
             result = await original_run(spec, message)
-            if spec.name == 'report_final_fact_editor':
-                (output / 'final_editor_reply.json').write_text(result.text, encoding='utf-8')
-                (output / f'final_editor_reply_{editor_calls}.json').write_text(result.text, encoding='utf-8')
-            if spec.name.endswith('_fact_recovery') and re.fullmatch(r'[a-z_]+', spec.name):
-                (output / f'{spec.name}.md').write_text(result.text, encoding='utf-8')
+            if review_name:
+                reply = _validation_reply_text(result)
+                (output / f'{review_name}_reply.json').write_text(reply, encoding='utf-8')
+                (output / f'{review_name}_reply_{call}.json').write_text(reply, encoding='utf-8')
+            if recovery:
+                reply = _validation_reply_text(result)
+                (output / f'{spec.name}.md').write_text(reply, encoding='utf-8')
+                (output / f'{spec.name}_{call}.md').write_text(reply, encoding='utf-8')
             return result
 
         backend.run = capture_editor_reply
