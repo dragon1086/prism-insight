@@ -102,6 +102,48 @@ def test_dotted_date_does_not_authorize_decimal_amount_or_wrong_day():
     assert editor._numeric_literals('27일') - editor._numeric_literals('2026.08.26')
 
 
+@pytest.mark.parametrize('output,allowed', [
+    ('순매수 수량 -1,219,730주', True), ('1,219,730주 순매도', True),
+    ('1,219,730주 순매수', False), ('1,219,730', False), ('-1,219,731주', False),
+])
+def test_explicit_korean_share_quantity_preserves_net_direction(output, allowed):
+    source = '121만 9,730주 순매도'
+    assert bool(editor._unsupported_numeric_literals(output, source)) is not allowed
+
+
+def test_explicit_net_share_list_requires_each_additional_sign_and_unit():
+    source = '-750389, 121만 9,730주 순매도'
+    assert not editor._unsupported_numeric_literals('순매수 수량 -750,389주 및 -1,219,730주', source)
+    assert editor._unsupported_numeric_literals('순매수 수량 -750,389주 및 -1,219,730원', source)
+    assert editor._unsupported_numeric_literals('순매수 수량 -750,389주 및 +1,219,730주', source)
+
+
+def test_known_plain_share_direction_cannot_be_bypassed_by_its_unsigned_token():
+    assert editor._unsupported_numeric_literals('순매수 수량 +100주', '100주 순매도')
+    assert editor._unsupported_numeric_literals('100주 순매도', '순매수 수량 +100주')
+
+
+@pytest.mark.parametrize('source', ['121만 9,730원 순매도', '121만 19,730주 순매도',
+                                    '121만 9,730주', '1만주 및 2만주 순매도'])
+def test_share_direction_is_not_inferred_from_currency_missing_or_coordinated_text(source):
+    target = '-10,000' if source.startswith('1만주') else '-1,219,730'
+    assert editor._unsupported_numeric_literals(target, source)
+
+
+@pytest.mark.parametrize('output', ['-1,219,730원', '-1,219,730%', '121원', '9,730원',
+                                   '순매도 -1,219,730주'])
+def test_composite_share_alias_cannot_authorize_money_percent_fragments_or_ambiguous_sign(output):
+    assert editor._unsupported_numeric_literals(output, '121만 9,730주 순매도')
+
+
+@pytest.mark.parametrize('source', ['약 121만 9,730주 순매도', '121만 9,730주 순매도 이상',
+                                   '(약) 121만 9,730주 순매도', '[약] 121만 9,730주 순매도',
+                                   '약 **121만 9,730주 순매도**', '121만 9,730주 순매도** 이상',
+                                   '120만~121만 9,730주 순매도', '121.5만 9,730주 순매도'])
+def test_approximate_or_range_share_counts_are_not_exact_aliases(source):
+    assert editor._unsupported_numeric_literals('순매수 수량 -1,219,730주', source)
+
+
 def install_backend(monkeypatch, text):
     import report_model_config
     from cores import report_generation

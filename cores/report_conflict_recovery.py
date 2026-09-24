@@ -65,7 +65,7 @@ async def _regenerate_conflicting_sections(section_reports, agents, prefetched, 
     The caller must rebuild strategy and pass the unchanged final editor again.
     All drafts are staged locally, so a partial failure cannot modify its inputs.
     """
-    from cores.report_fact_editor import ReportFactConflictError, ReportFactEditorError, _numeric_literals, _URL
+    from cores.report_fact_editor import ReportFactConflictError, ReportFactEditorError, _unsupported_numeric_literals, _URL
     from cores.report_generation import _get_report_backend
     from cores.llm.ports import AgentSpec, LLMParams
     from cores.agents.report_agent import report_time_contract
@@ -214,7 +214,7 @@ async def _regenerate_conflicting_sections(section_reports, agents, prefetched, 
             ('RECOVERY_OUTPUT_STRUCTURE', not re.search(r'(?m)^#{2,4}\s+\S', revised)
              or revised.casefold().startswith(('analysis failed', '분석 실패'))
              or 'traceback (most recent call last)' in revised.casefold()),
-            ('RECOVERY_NUMBER', bool(_numeric_literals(revised) - _numeric_literals(basis))),
+            ('RECOVERY_NUMBER', bool(_unsupported_numeric_literals(revised, basis))),
             ('RECOVERY_URL', bool(set(_URL.findall(revised)) - set(_URL.findall(basis)))),
             ('RECOVERY_PROTECTED', bool(_split_protected(revised, editable_news_evidence=editable_ce)[1]
                                        or (editable_ce and len(list(_HEADING.finditer(_mask_fences(revised)[0]))) != 1)

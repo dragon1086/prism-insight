@@ -99,6 +99,70 @@ def _numeric_literals(text):
     return literals
 
 
+_SHARE_INTEGER = r'(?:[1-9]\d{0,2}(?:,\d{3})+|0|[1-9]\d*)'
+_NET_SHARE_PATTERNS = (
+    re.compile(r'(?<![\w.,+\-~–—])(?P<major>' + _SHARE_INTEGER + r')'
+               r'(?P<man>\s*만(?:\s*(?P<minor>' + _SHARE_INTEGER + r'))?)?'
+               r'\s*주\s*(?P<direction>순매수|순매도)'),
+    re.compile(r'순매수\s*(?:수량|주식\s*수량)\s*[:：]?\s*'
+               r'(?P<signed>[+-]?' + _SHARE_INTEGER + r')\s*주'
+               r'(?:\s+및\s+[+-]' + _SHARE_INTEGER + r'\s*주)*'),
+)
+
+
+def _net_share_inventory(text):
+    """Typed exact net-share aliases, never untyped currency/percent authority.
+
+    Composite counts lose their component-number tokens. Plain explicit counts
+    retain their prior numeric inventory for source compatibility. No actor,
+    period, coordinated direction, approximation or currency is inferred.
+    """
+    spans, quantities, plain_values = [], set(), set()
+    for pattern in _NET_SHARE_PATTERNS:
+        for match in pattern.finditer(text):
+            before = re.sub(r'[*_`()\[\]{}]', '', text[max(0, match.start() - 32):match.start()])
+            after = re.sub(r'[*_`()\[\]{}]', '', text[match.end():match.end() + 32])
+            if (re.search(r'(?:약|대략|이상|이하|초과|미만|최소|최대|[+~–—-]|만|억|천)\s*$', before)
+                    or re.match(r'\s*(?:이상|이하|초과|미만|내외|가량|정도|안팎)', after)
+                    or any(match.start() < end and match.end() > start for start, end in spans)):
+                continue
+            fields = match.groupdict()
+            if fields.get('signed') is not None:
+                # The field explicitly declares net shares and each additional
+                # list item carries its own sign/unit; no shared verb inference.
+                values = {int(value.replace(',', '')) for value in
+                          re.findall(r'([+-]?' + _SHARE_INTEGER + r')\s*주', match[0])}
+                composite = False
+            else:
+                major = int(fields['major'].replace(',', ''))
+                minor = int((fields.get('minor') or '0').replace(',', ''))
+                composite = fields.get('man') is not None
+                if composite and minor >= 10000:
+                    continue
+                quantity = (major * 10000 + minor) if composite else major
+                if fields['direction'] == '순매도':
+                    quantity = -quantity
+                values = {quantity}
+            quantities.update(values)
+            if not composite:
+                plain_values.update(_numeric_literals(match[0]))
+            spans.append((match.start(), match.end()))
+    masked = text
+    for start, end in sorted(spans, reverse=True):
+        masked = masked[:start] + ' ' * (end - start) + masked[end:]
+    return _numeric_literals(masked), quantities, plain_values
+
+
+def _unsupported_numeric_literals(output, source):
+    """Accept exact typed share notation without licensing the value elsewhere."""
+    source_numbers, source_shares, source_plain = _net_share_inventory(source)
+    output_numbers, output_shares, _ = _net_share_inventory(output)
+    missing = output_numbers - (source_numbers | source_plain)
+    missing.update(('net_shares', value) for value in output_shares
+                   if value not in source_shares and Decimal(value) not in source_numbers)
+    return missing
+
+
 def _decode(text):
     if not isinstance(text, str):
         raise ReportFactEditorError('Final editor output is not text', code='MALFORMED_JSON')
@@ -152,10 +216,10 @@ def _validate_and_apply(reports, payload, calendar_context=None):
     if not isinstance(summary, str) or not 200 <= len(summary.strip()) <= 6000:
         raise ReportFactEditorError('Final editor summary is incomplete or oversized', code='SUMMARY_LENGTH')
     all_text = '\n\n'.join(reports.values())
-    if (_numeric_literals(summary) - _numeric_literals(all_text)
+    if (_unsupported_numeric_literals(summary, all_text)
             or set(_URL.findall(summary)) - set(_URL.findall(all_text))
             or _INTERNAL.search(summary)):
-        code = ('SUMMARY_NUMBER' if _numeric_literals(summary) - _numeric_literals(all_text) else
+        code = ('SUMMARY_NUMBER' if _unsupported_numeric_literals(summary, all_text) else
                 'SUMMARY_URL' if set(_URL.findall(summary)) - set(_URL.findall(all_text)) else 'SUMMARY_INTERNAL')
         raise ReportFactEditorError('Final editor summary introduced unsupported literals', code=code)
     checked = []
