@@ -19,6 +19,7 @@ REPAIRABLE_SECTIONS = (
     'company_overview', 'news_analysis', 'market_index_analysis',
 )
 CONFLICT_EVIDENCE_SECTIONS = frozenset({'shared_reference', 'dart_deep_analysis', 'peer_comparison'})
+DEPENDENT_SYNTHESIS = 'investment_strategy'
 
 
 class ReportFactConflictError(ReportFactEditorError):
@@ -27,10 +28,13 @@ class ReportFactConflictError(ReportFactEditorError):
     def __init__(self, conflicts, *, evidence_sections=()):
         if (not isinstance(conflicts, tuple) or not 1 <= len(conflicts) <= 8
                 or any(not isinstance(item, tuple) or len(item) != 2
-                       or not isinstance(item[0], str) or item[0] not in REPAIRABLE_SECTIONS
+                       or not isinstance(item[0], str)
+                       or item[0] not in (*REPAIRABLE_SECTIONS, DEPENDENT_SYNTHESIS)
                        or not isinstance(item[1], str) or not item[1].strip()
                        or len(item[1]) > 2000 for item in conflicts)):
             raise ReportFactEditorError('Invalid repairable conflict contract')
+        if not any(section in REPAIRABLE_SECTIONS for section, _ in conflicts):
+            raise ReportFactEditorError('Dependent synthesis conflict requires a base-section conflict')
         self._conflicts = conflicts
         if (not isinstance(evidence_sections, tuple)
                 or (evidence_sections and len(evidence_sections) != len(conflicts))
@@ -202,7 +206,7 @@ def _validate_and_apply(reports, payload, calendar_context=None):
     for conflict in unresolved:
         if (not isinstance(conflict, dict) or set(conflict) != {'section', 'issue', 'evidence_section'}
                 or not isinstance(conflict['section'], str)
-                or conflict['section'] not in REPAIRABLE_SECTIONS
+                or conflict['section'] not in (*REPAIRABLE_SECTIONS, DEPENDENT_SYNTHESIS)
                 or conflict['section'] not in reports
                 or not isinstance(conflict['issue'], str) or not conflict['issue'].strip()
                 or len(conflict['issue']) > 2000
@@ -269,6 +273,9 @@ async def edit_and_summarize(section_reports, company_name, company_code, refere
         '"evidence_section":"대조 근거의 입력 섹션 키"} '
         '객체 배열입니다. issue는 공백이 아닌 2000자 이내 설명이며 문자열 배열은 금지합니다. '
         '충돌이 발생한 실제 섹션 키를 쓰고 다른 섹션으로 돌려 기록하지 마세요. '
+        '기본 섹션의 충돌이 투자 전략에도 반복되면 investment_strategy 충돌도 별도로 기록하세요. '
+        '이는 기본 섹션을 바로잡은 뒤 전략 전체를 새로 합성하기 위한 기록이지 전략 문장을 편집할 '
+        '권한이 아닙니다. 전략만의 충돌을 숨기거나 기본 섹션 충돌을 만들어내지 마세요. '
         'evidence_section은 shared_reference, dart_deep_analysis, peer_comparison 중 실제 제공된 '
         '비어 있지 않은 대조 근거의 키입니다. 근거가 없는 충돌은 임의로 근거를 지정하지 마세요. '
         '최대 8개 수정만 반환하고 original은 원본의 한 문단 안에서 정확히 한 번 나오는 연속 문자열로 '

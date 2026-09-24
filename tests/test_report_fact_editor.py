@@ -425,3 +425,53 @@ def test_conflict_missing_evidence_pointer_is_not_retryable():
     with pytest.raises(editor.ReportFactEditorError) as caught:
         editor._validate_and_apply(reports, payload)
     assert type(caught.value) is editor.ReportFactEditorError
+
+
+def test_base_and_dependent_strategy_conflicts_require_fresh_synthesis_not_strategy_patch():
+    reports, payload = fixture()
+    payload['unresolved'] = [
+        {'section': 'investment_strategy', 'issue': '기본 섹션의 비교 기준 혼동이 반복됩니다.',
+         'evidence_section': 'peer_comparison'},
+        {'section': 'company_overview', 'issue': '배수의 기간 기준이 다릅니다.',
+         'evidence_section': 'shared_reference'},
+    ]
+    before = copy.deepcopy(reports)
+    with pytest.raises(editor.ReportFactConflictError) as caught:
+        editor._validate_and_apply(reports, payload)
+    assert caught.value.targets == ('company_overview',)
+    assert caught.value.conflicts[0][0] == 'investment_strategy'
+    assert caught.value.evidence_sections == ('peer_comparison', 'shared_reference')
+    assert reports == before
+    assert 'investment_strategy' not in editor.REPAIRABLE_SECTIONS
+    assert 'investment_strategy' not in editor.EDITABLE_SECTIONS
+
+
+@pytest.mark.parametrize('other', ['unknown', 'dart_deep_analysis', 'price_volume_analysis'])
+def test_base_conflict_never_unprotects_other_readonly_targets(other):
+    reports, payload = fixture()
+    reports.setdefault(other, '보호된 내용')
+    payload['unresolved'] = [
+        {'section': 'company_status', 'issue': '충돌', 'evidence_section': 'shared_reference'},
+        {'section': other, 'issue': '충돌', 'evidence_section': 'shared_reference'},
+    ]
+    with pytest.raises(editor.ReportFactEditorError) as caught:
+        editor._validate_and_apply(reports, payload)
+    assert type(caught.value) is editor.ReportFactEditorError
+
+
+def test_dependent_strategy_conflict_keeps_evidence_and_edit_guards():
+    reports, payload = fixture()
+    payload['unresolved'] = [
+        {'section': 'company_status', 'issue': '충돌', 'evidence_section': 'shared_reference'},
+        {'section': 'investment_strategy', 'issue': '충돌', 'evidence_section': 'missing'},
+    ]
+    with pytest.raises(editor.ReportFactEditorError) as caught:
+        editor._validate_and_apply(reports, payload)
+    assert type(caught.value) is editor.ReportFactEditorError
+    payload['unresolved'][1]['evidence_section'] = 'shared_reference'
+    payload['edits'].append({'section': 'investment_strategy',
+                             'original': reports['investment_strategy'],
+                             'replacement': '전략을 바꿉니다.', 'reason': 'comparison_basis'})
+    with pytest.raises(editor.ReportFactEditorError) as caught:
+        editor._validate_and_apply(reports, payload)
+    assert type(caught.value) is editor.ReportFactEditorError
