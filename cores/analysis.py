@@ -299,12 +299,16 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         from prism_core.kr_report_context import synthesis_reference_context
         shared_reference = synthesis_reference_context(prefetched, language)
         section_reports['shared_reference'] = shared_reference
-        combined_reports = shared_reference
         synthesis_sections = base_sections + ['peer_comparison', 'dart_deep_analysis', 'dart_depth_limit', 'macro_context']
-        for section in synthesis_sections:
-            if section in section_reports:
-                combined_reports += f"\n\n--- {section.upper()} ---\n\n"
-                combined_reports += section_reports[section]
+
+        def combine_synthesis_reports(reports):
+            combined = shared_reference
+            for section in synthesis_sections:
+                if section in reports:
+                    combined += f"\n\n--- {section.upper()} ---\n\n" + reports[section]
+            return combined
+
+        combined_reports = combine_synthesis_reports(section_reports)
 
         # 7. Generate investment strategy
         try:
@@ -322,18 +326,39 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             logger.error(f"Error processing investment_strategy: {e}")
             section_reports["investment_strategy"] = "Investment strategy analysis failed"
 
-        # 8. Generate comprehensive report including all sections
-        all_reports = ""
-        for section in synthesis_sections + ["investment_strategy"]:
-            if section in section_reports:
-                all_reports += f"\n\n--- {section.upper()} ---\n\n"
-                all_reports += section_reports[section]
-
         # 9. Generate summary
+        from cores.report_fact_editor import ReportFactConflictError
         try:
-            executive_summary = await generate_summary(
-                section_reports, company_name, company_code, reference_date, logger, language
-            )
+            try:
+                executive_summary = await generate_summary(
+                    section_reports, company_name, company_code, reference_date, logger, language
+                )
+            except ReportFactConflictError as conflict:
+                if not dart_chapter:
+                    raise
+                # One failure-only repair pass. Reuse the same sources and keep
+                # the market cache untouched; stale synthesis must not survive.
+                from cores.report_generation import regenerate_conflicting_sections
+                repaired_reports = await regenerate_conflicting_sections(
+                    section_reports, agents, prefetched, conflict,
+                    company_name, company_code, reference_date, logger, language,
+                )
+                section_reports = dict(repaired_reports)
+                section_reports.pop('investment_strategy', None)
+                combined_reports = combine_synthesis_reports(section_reports)
+                investment_strategy = await generate_investment_strategy(
+                    section_reports, combined_reports, company_name, company_code,
+                    reference_date, logger, language,
+                )
+                if (not isinstance(investment_strategy, str) or not investment_strategy.strip()
+                        or investment_strategy.strip() in {'Investment strategy analysis failed', '투자 전략 분석 실패'}):
+                    raise ValueError('Conflict recovery investment strategy generation failed')
+                section_reports['investment_strategy'] = re.sub(
+                    r'(?m)^(#{2,4})[ \t]+5(?=[.-])', r'\1 6', investment_strategy.lstrip('\n'))
+                # Any error here propagates: never loop or publish the failed draft.
+                executive_summary = await generate_summary(
+                    section_reports, company_name, company_code, reference_date, logger, language
+                )
             # Remove duplicate title/date if the agent added them
             executive_summary = executive_summary.lstrip('\n')
             # Remove any leading H1 title that matches the report title pattern

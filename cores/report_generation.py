@@ -16,6 +16,14 @@ from prism_core.report_presentation import report_narrative_contract
 _report_backend = None
 
 
+async def regenerate_conflicting_sections(section_reports, agents, prefetched, conflicts,
+                                          company_name, company_code, reference_date,
+                                          logger, language='ko'):
+    from cores.report_conflict_recovery import regenerate_conflicting_sections as regenerate
+    return await regenerate(section_reports, agents, prefetched, conflicts, company_name,
+                            company_code, reference_date, logger, language)
+
+
 def synthesis_evidence_contract(language='ko'):
     """All supplied chapters inform synthesis, without adding trading rules."""
     if language == 'ko':

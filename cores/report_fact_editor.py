@@ -14,6 +14,46 @@ class ReportFactEditorError(ValueError):
     """Final synthesis could not be safely applied; callers must not publish it."""
 
 
+REPAIRABLE_SECTIONS = (
+    'investor_trading_analysis', 'company_status',
+    'company_overview', 'news_analysis', 'market_index_analysis',
+)
+CONFLICT_EVIDENCE_SECTIONS = frozenset({'shared_reference', 'dart_deep_analysis', 'peer_comparison'})
+
+
+class ReportFactConflictError(ReportFactEditorError):
+    """Validated base-section conflicts; this editor never retries them itself."""
+
+    def __init__(self, conflicts, *, evidence_sections=()):
+        if (not isinstance(conflicts, tuple) or not 1 <= len(conflicts) <= 8
+                or any(not isinstance(item, tuple) or len(item) != 2
+                       or not isinstance(item[0], str) or item[0] not in REPAIRABLE_SECTIONS
+                       or not isinstance(item[1], str) or not item[1].strip()
+                       or len(item[1]) > 2000 for item in conflicts)):
+            raise ReportFactEditorError('Invalid repairable conflict contract')
+        self._conflicts = conflicts
+        if (not isinstance(evidence_sections, tuple)
+                or (evidence_sections and len(evidence_sections) != len(conflicts))
+                or any(not isinstance(source, str) or source not in CONFLICT_EVIDENCE_SECTIONS
+                       for source in evidence_sections)):
+            raise ReportFactEditorError('Invalid conflict evidence pointers')
+        self._evidence_sections = evidence_sections
+        super().__init__('Final editor left unresolved base-section conflicts')
+
+    @property
+    def conflicts(self):
+        return self._conflicts
+
+    @property
+    def targets(self):
+        return tuple(section for section in REPAIRABLE_SECTIONS
+                     if any(target == section for target, _ in self._conflicts))
+
+    @property
+    def evidence_sections(self):
+        return self._evidence_sections
+
+
 EDITABLE_SECTIONS = frozenset({
     'company_status', 'company_overview',
 })
@@ -109,8 +149,8 @@ def _validate_and_apply(reports, payload, calendar_context=None):
     if not isinstance(payload, dict) or set(payload) != {'summary', 'edits', 'unresolved'}:
         raise ReportFactEditorError('Invalid final editor schema')
     summary, edits, unresolved = payload['summary'], payload['edits'], payload['unresolved']
-    if not isinstance(unresolved, list) or unresolved:
-        raise ReportFactEditorError('Final editor left unresolved conflicts')
+    if not isinstance(unresolved, list) or len(unresolved) > 8:
+        raise ReportFactEditorError('Invalid final editor unresolved schema')
     if not isinstance(edits, list) or len(edits) > 8:
         raise ReportFactEditorError('Invalid final editor edit count')
     if not isinstance(summary, str) or not 200 <= len(summary.strip()) <= 6000:
@@ -155,6 +195,26 @@ def _validate_and_apply(reports, payload, calendar_context=None):
             raise ReportFactEditorError('Overlapping edits')
         spans.setdefault(section, []).append((start, end))
         checked.append((section, start, end, replacement))
+    # No edits are applied when unresolved remains. Validate normal edit/summary
+    # guards first so an unsafe transaction cannot masquerade as a repair request.
+    conflicts = []
+    evidence_sections = []
+    for conflict in unresolved:
+        if (not isinstance(conflict, dict) or set(conflict) != {'section', 'issue', 'evidence_section'}
+                or not isinstance(conflict['section'], str)
+                or conflict['section'] not in REPAIRABLE_SECTIONS
+                or conflict['section'] not in reports
+                or not isinstance(conflict['issue'], str) or not conflict['issue'].strip()
+                or len(conflict['issue']) > 2000
+                or not isinstance(conflict['evidence_section'], str)
+                or conflict['evidence_section'] not in CONFLICT_EVIDENCE_SECTIONS
+                or not isinstance(reports.get(conflict['evidence_section']), str)
+                or not reports[conflict['evidence_section']].strip()):
+            raise ReportFactEditorError('Unknown, immutable or invalid unresolved conflict')
+        conflicts.append((conflict['section'], conflict['issue']))
+        evidence_sections.append(conflict['evidence_section'])
+    if conflicts:
+        raise ReportFactConflictError(tuple(conflicts), evidence_sections=tuple(evidence_sections))
     # Validate every patch first, then splice original offsets backwards.
     patched = dict(reports)
     for section, start, end, replacement in sorted(checked, key=lambda item: (item[0], -item[1])):
@@ -198,6 +258,12 @@ async def edit_and_summarize(section_reports, company_name, company_code, refere
         '일반 허용 섹션: ' + ', '.join(sorted(EDITABLE_SECTIONS))
         + '. news_analysis는 session_timing 사유만 허용하며 그 외 섹션은 읽기 전용입니다.\n'
         '읽기 전용 섹션도 충돌을 검사하고 수정이 필요한 충돌이 있으면 unresolved에 기록하세요. '
+        'unresolved는 최대 8개의 {"section":"입력 sections의 정확한 키", "issue":"충돌 설명", '
+        '"evidence_section":"대조 근거의 입력 섹션 키"} '
+        '객체 배열입니다. issue는 공백이 아닌 2000자 이내 설명이며 문자열 배열은 금지합니다. '
+        '충돌이 발생한 실제 섹션 키를 쓰고 다른 섹션으로 돌려 기록하지 마세요. '
+        'evidence_section은 shared_reference, dart_deep_analysis, peer_comparison 중 실제 제공된 '
+        '비어 있지 않은 대조 근거의 키입니다. 근거가 없는 충돌은 임의로 근거를 지정하지 마세요. '
         '최대 8개 수정만 반환하고 original은 원본의 한 문단 안에서 정확히 한 번 나오는 연속 문자열로 '
         '복사하세요. 수정이 필요 없으면 edits는 빈 배열입니다. 해결 불가능한 충돌은 unresolved에 '
         '기록하고 감추지 마세요. summary는 수정 후 전체 보고서를 대표하는 자연스러운 합쇼체 '

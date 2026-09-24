@@ -154,13 +154,20 @@ def main():
     if args.run_model:
         backend = report_generation._get_report_backend()
         original_run = backend.run
+        editor_calls = 0
 
         async def capture_editor_reply(spec, message):
+            nonlocal editor_calls
             if spec.name == 'report_final_fact_editor':
+                editor_calls += 1
                 (output / 'final_editor_request.json').write_text(message, encoding='utf-8')
+                (output / f'final_editor_request_{editor_calls}.json').write_text(message, encoding='utf-8')
             result = await original_run(spec, message)
             if spec.name == 'report_final_fact_editor':
                 (output / 'final_editor_reply.json').write_text(result.text, encoding='utf-8')
+                (output / f'final_editor_reply_{editor_calls}.json').write_text(result.text, encoding='utf-8')
+            if spec.name.endswith('_fact_recovery') and re.fullmatch(r'[a-z_]+', spec.name):
+                (output / f'{spec.name}.md').write_text(result.text, encoding='utf-8')
             return result
 
         backend.run = capture_editor_reply
