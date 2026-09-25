@@ -9,11 +9,10 @@ REPORT_MODEL = os.environ.get("REPORT_MODEL", "gpt-5.6-luna")
 REPORT_EFFORT = os.environ.get("REPORT_EFFORT", "medium")
 REPORT_AUX_MODEL = os.environ.get("REPORT_AUX_MODEL", REPORT_MODEL)
 REPORT_AUX_EFFORT = os.environ.get("REPORT_AUX_EFFORT", "low")
-# Filing tables mix comparative periods and hierarchical accounting scopes.
-# Keep the number of general report stages unchanged; specialize only the
-# three tool-free filing writers and existing final factual-summary stage after
-# the documented small-model failures. This does not add a twelfth model stage.
-DART_REPORT_MODEL = os.environ.get("DART_REPORT_MODEL", "gpt-6-astra")
+# Filing tables mix comparative periods and hierarchical accounting scopes, so
+# only the three tool-free DART writers use a larger model than the sections.
+# Cost ceiling is gpt-6-sol (astra is ~5x the price); tune via A/B replay.
+DART_REPORT_MODEL = os.environ.get("DART_REPORT_MODEL", "gpt-6-sol")
 DART_REPORT_EFFORT = os.environ.get("DART_REPORT_EFFORT", "low")
 
 
