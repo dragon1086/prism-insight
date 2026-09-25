@@ -1,7 +1,7 @@
 """Real US batch regressions: provider column shape must not abort selection.
 
 Subprocess isolation is intentional: KR and US both own a ``cores`` package.
-Only market-data/network boundaries are mocked, never trigger/scoring functions.
+Only market-data/network/clock boundaries are mocked, never trigger/scoring functions.
 """
 
 import json
@@ -15,6 +15,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 RUN_BATCH = r'''
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import os
 import socket
@@ -33,6 +34,13 @@ if os.getenv("TEST_QUALITY_CAPTURE_FAIL") == "true":
     def broken_capture(*a, **kw):
         raise ValueError("fixture capture failure")
     quality.build_screening_quality_context = broken_capture
+from prism_core import market_intelligence
+
+class FixedCaptureClock(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        value = datetime(2026, 9, 14, 15, 0, tzinfo=timezone.utc)
+        return value.astimezone(tz) if tz else value.replace(tzinfo=None)
 
 mode, shape, output = sys.argv[1:4]
 watch = len(sys.argv) > 4 and sys.argv[4] == "watch"
@@ -88,6 +96,7 @@ def no_network(*args, **kwargs):
     raise AssertionError("Unexpected real network access in batch regression")
 
 with patch.object(socket.socket, "connect", no_network), \
+     patch.object(market_intelligence, "datetime", FixedCaptureClock), \
      patch.object(batch, "get_major_tickers", return_value=tickers), \
      patch.object(batch, "get_snapshot", return_value=snapshot), \
      patch.object(batch, "get_previous_snapshot", return_value=(previous, "20260911")), \
@@ -114,6 +123,7 @@ def _run_batch(tmp_path, mode, shape, watch=False, quality=False, capture_fail=F
     output = tmp_path / f"{mode}-{shape}-{watch}.json"
     env = dict(os.environ, PYTHONHASHSEED="0", PRISM_DISABLE_SIGNAL_PUBLISH="1",
                PRISM_OBSERVABILITY_SPOOL=str(tmp_path / "isolated-events.jsonl"),
+               REPORT_MARKET_CONTEXT_ENABLED="true",
                REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED="false")
     env.update(US_SCREENING_QUALITY_CAPTURE_ENABLED=str(quality).lower(),
                TEST_QUALITY_CAPTURE_FAIL=str(capture_fail).lower())
@@ -123,6 +133,7 @@ def _run_batch(tmp_path, mode, shape, watch=False, quality=False, capture_fail=F
     )
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(output.read_text())
+    assert payload["metadata"]["market_participation"]["captured_at"] == "2026-09-14T15:00:00+00:00"
     payload["metadata"].pop("run_time")
     if capture_requests:
         payload["metadata"]["_test_download_calls"] = json.loads(result.stdout.splitlines()[-1])

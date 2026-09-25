@@ -53,7 +53,7 @@ def _mask_fences(text: str) -> tuple[str, bool]:
     return "".join(masked), fence is not None
 
 
-def attach_competitive_evidence(
+def _attach_competitive_evidence(
     section_reports: Mapping[str, str],
     market: str,
     symbol: str,
@@ -120,3 +120,49 @@ def attach_competitive_evidence(
         "evidence_id": evidence_id,
         "record_chars": len(record),
     }
+
+
+class CompetitiveEvidenceIntegrityError(ValueError):
+    """Derived evidence text does not match its deterministic source record."""
+
+
+def detach_competitive_evidence(section_reports, market, symbol, reference_date, language='ko'):
+    """Remove only byte-exact verified derived ID/copy; never certify source facts."""
+    reports = dict(section_reports)
+    news, overview = reports.get('news_analysis', ''), reports.get('company_overview', '')
+    visible_news, _ = _mask_fences(news)
+    visible_overview, _ = _mask_fences(overview)
+    handoffs = list(re.finditer(r'^#### Competitive Evidence Handoff[ \t]*$', visible_overview, re.M))
+    ids = list(re.finditer(r'^Evidence ID: CE-[^\n]*', visible_news, re.M))
+    if not handoffs and not ids:
+        return reports, {'attached': False}
+    if len(handoffs) != 1 or len(ids) > 1:
+        raise CompetitiveEvidenceIntegrityError('Ambiguous derived competitive evidence')
+    start = handoffs[0].start()
+    if start < 2 or overview[start-2:start] != '\n\n':
+        raise CompetitiveEvidenceIntegrityError('Invalid derived handoff boundary')
+    reports['company_overview'] = overview[:start-2]
+    if ids:
+        match = ids[0]
+        if (not re.fullmatch(r'Evidence ID: CE-[0-9a-f]{20}', match[0])
+                or match.start() == 0 or news[match.start()-1] != '\n'):
+            raise CompetitiveEvidenceIntegrityError('Invalid derived evidence identifier')
+        reports['news_analysis'] = news[:match.start()-1] + news[match.end():]
+    expected, receipt = _attach_competitive_evidence(reports, market, symbol, reference_date, language)
+    if expected.get('news_analysis', '') != news or expected['company_overview'] != overview:
+        raise CompetitiveEvidenceIntegrityError('Derived competitive evidence does not match canonical record')
+    return reports, dict(receipt, attached=True)
+
+
+def competitive_evidence_review_view(section_reports, market, symbol, reference_date, language='ko'):
+    """Deduplicate a verified overview copy only; keep canonical news for review."""
+    canonical, receipt = detach_competitive_evidence(section_reports, market, symbol, reference_date, language)
+    if receipt['attached'] and 'news_analysis' in section_reports:
+        canonical['news_analysis'] = section_reports['news_analysis']
+    return canonical
+
+
+def attach_competitive_evidence(section_reports, market, symbol, reference_date, language='ko'):
+    """Idempotently rebuild code-owned metadata from canonical model evidence."""
+    canonical, _ = detach_competitive_evidence(section_reports, market, symbol, reference_date, language)
+    return _attach_competitive_evidence(canonical, market, symbol, reference_date, language)

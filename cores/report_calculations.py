@@ -172,6 +172,16 @@ def compute_report_metrics(captures, *, ticker, reference_date, asof_utc):
         for n in (1, 5, 20, 60, 120):
             add(f'return.{n}', f'{n}관측일 전 대비 등락률', float((close.iloc[-1] / close.iloc[-n-1] - 1) * 100) if len(close) > n else None,
                 '%', f'(close[t]/close[t-{n}]-1)*100', n + 1)
+            # N observed price-to-price intervals require N+1 input prices.
+            # Keep the legacy period as the full input span, not a return horizon.
+            # These are observed row labels, never an inferred exchange calendar.
+            result['facts'][-1].update(
+                horizon_intervals=n,
+                input_price_count=min(len(close), n + 1),
+                baseline_price_date=str(close.index[-n-1]) if len(close) > n else None,
+                window_start_date=str(close.index[-n]) if len(close) > n else None,
+                end_date=str(close.index[-1]) if len(close) else None,
+            )
         enough = len(close) >= 20
         ranges = {key: float(getattr(frame.tail(20)[column], op)()) for key, column, op in [
             ('ohlc_high', 'High', 'max'), ('ohlc_low', 'Low', 'min'),
@@ -242,7 +252,9 @@ def render_report_metrics(result, *, scope='all'):
     lines = ['## 시장 지표 기준값' if scope == 'market' else '## 주가·수급 지표 기준값',
              f"기준일: {result['reference_date']} / 조회 기준 시각(UTC): {result['asof_utc']}",
              '- 가격은 조회 시점에 제공된 일별 시세입니다. 최근 거래일의 수치는 최종 마감 자료와 차이가 있을 수 있습니다.',
-             '- 이동평균과 등락률은 확보한 일별 관측값을 기준으로 계산했습니다.']
+             '- 이동평균과 등락률은 확보한 일별 관측값을 기준으로 계산했습니다.',
+             '- N관측구간 등락률에는 기준가격을 포함한 N+1개 가격이 필요합니다. 가격 입력 개수는 수익률 구간 수가 아닙니다.',
+             '- 수익률과 수급의 시작일·종료일은 각각 확인해야 합니다. 같은 기간 수라도 당일 포함 여부나 관측 누락 때문에 날짜가 다를 수 있습니다.']
     labels = {'Open': '시가', 'High': '고가', 'Low': '저가', 'Close': '종가', 'Volume': '거래량',
               'ohlc_high': '장중 최고가', 'ohlc_low': '장중 최저가', 'close_high': '최고 종가', 'close_low': '최저 종가',
               'middle': '중심', 'upper': '상단', 'lower': '하단', 'position_pct': '밴드 내 위치(%)',
@@ -257,7 +269,13 @@ def render_report_metrics(result, *, scope='all'):
         rendered = ', '.join(f'{labels[key]} {number(v)}' for key, v in value.items() if key in labels) if isinstance(value, dict) else number(value)
         span = item['period']
         label = item['label'].replace('최근 관측 OHLCV', '최근 일별 시세')
-        lines.append(f"- {label}: {rendered} [{item['unit']}; {span['start']}~{span['end']}, {span['observations']}관측일]")
+        if 'horizon_intervals' in item:
+            period_text = (f"{span['start']}~{span['end']}, 수익률 {item['horizon_intervals']}관측구간, "
+                           f"가격 입력 {item['input_price_count']}개; 기준가격일 {item['baseline_price_date']}; "
+                           f"수익률 구간 관측일 {item['window_start_date']}~{item['end_date']}")
+        else:
+            period_text = f"{span['start']}~{span['end']}, {span['observations']}관측일"
+        lines.append(f"- {label}: {rendered} [{item['unit']}; {period_text}]")
     lines.append('- 필요한 관측 기간과 입력값이 충족된 지표만 제시했습니다.')
     if scope != 'market':
         lines.append('- 수급은 당일을 제외한 완료 관측일의 원시 주식 수입니다. 기관+외국인 합계와 개인을 포함한 3주체 합계는 다릅니다.')

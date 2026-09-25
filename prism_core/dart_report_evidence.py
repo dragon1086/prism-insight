@@ -213,6 +213,9 @@ async def collect_latest(symbol, company, decision_at, scope, progress, *, clien
     selection = result['selection']
     progress['filing_selection'].update(selection=selection, coverage=result['coverage'],
         observed_at=result['observed_at'], limitations=result['limitations'], errors=result['errors'])
+    progress['filing_selection']['scope_absence_evidence'] = {
+        row['receipt_id']: row['scope_absence_evidence'] for row in result.get('filings', [])
+        if row.get('scope_absence_evidence')}
     fragment_states = {row['receipt_id']: _fragment_selection_receipt(row['note_fragment_selection'])
                        for row in result.get('filings', []) if 'note_fragment_selection' in row}
     if fragment_states:

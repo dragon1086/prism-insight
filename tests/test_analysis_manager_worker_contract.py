@@ -53,10 +53,12 @@ def run_request(bot):
 class Recorder:
     def __init__(self, return_value=None):
         self.calls: list[tuple] = []
+        self.keyword_calls: list[dict] = []
         self._return_value = return_value
 
-    def __call__(self, *args):
+    def __call__(self, *args, **kwargs):
         self.calls.append(args)
+        self.keyword_calls.append(kwargs)
         if isinstance(self._return_value, Exception):
             raise self._return_value
         return self._return_value
@@ -87,6 +89,7 @@ def test_kr_cached_report_short_circuits_generation(monkeypatch, run_request):
     assert request.report_path == "cached.md"
     assert request.pdf_path == "cached.pdf"
     assert rec["get_cached_report"].calls == [("005930",)]
+    assert rec["get_cached_report"].keyword_calls == [{"require_dart_depth": True}]
     assert rec["generate_report_response_sync"].calls == []
     assert rec["save_report"].calls == []
     assert rec["save_pdf_report"].calls == []
@@ -109,6 +112,7 @@ def test_kr_uncached_report_generates_then_saves_markdown_then_pdf(
     assert request.result == "fresh body"
     assert request.report_path == "report.md"
     assert request.pdf_path == "report.pdf"
+    assert rec["get_cached_report"].keyword_calls == [{"require_dart_depth": True}]
     assert rec["generate_report_response_sync"].calls == [("005930", "삼성전자")]
     assert rec["save_report"].calls == [("005930", "삼성전자", "fresh body")]
     # PDF is derived from the markdown path returned by save_report.
@@ -132,6 +136,7 @@ def test_kr_empty_generation_result_fails_without_writing_files(
     assert request.result == report_service.KR_FAILURE_MESSAGE
     assert request.report_path is None
     assert request.pdf_path is None
+    assert rec["get_cached_report"].keyword_calls == [{"require_dart_depth": True}]
     assert rec["save_report"].calls == []
     assert rec["save_pdf_report"].calls == []
 
@@ -149,6 +154,7 @@ def test_evaluate_request_is_skipped_by_the_worker(monkeypatch, run_request):
 
     assert request.status == "skipped"
     assert request.result is None
+    assert rec["get_cached_report"].keyword_calls == [{}]
     assert rec["generate_report_response_sync"].calls == []
 
 
@@ -171,6 +177,7 @@ def test_evaluate_request_still_receives_a_cached_report(monkeypatch, run_reques
     assert request.status == "completed"
     assert request.result == "cached body"
     assert request.pdf_path == "cached.pdf"
+    assert rec["get_cached_report"].keyword_calls == [{}]
     assert rec["generate_report_response_sync"].calls == []
 
 
@@ -191,6 +198,7 @@ def test_us_market_uses_the_us_report_functions(monkeypatch, run_request):
     assert request.report_path == "us.md"
     assert request.pdf_path == "us.pdf"
     assert rec["get_cached_us_report"].calls == [("AAPL",)]
+    assert rec["get_cached_us_report"].keyword_calls == [{}]
     assert rec["save_us_report"].calls == [("AAPL", "Apple", "us body")]
     assert rec["save_us_pdf_report"].calls == [("AAPL", "Apple", "us.md")]
     assert rec["get_cached_report"].calls == []
@@ -209,13 +217,14 @@ def test_us_cached_report_short_circuits_generation(monkeypatch, run_request):
     assert request.result == "us cached"
     assert request.report_path == "us_cached.md"
     assert request.pdf_path == "us_cached.pdf"
+    assert rec["get_cached_us_report"].keyword_calls == [{}]
     assert rec["generate_us_report_response_sync"].calls == []
 
 
 def test_generation_exception_is_reported_and_still_enqueued(
     monkeypatch, run_request
 ):
-    _patch(
+    rec = _patch(
         monkeypatch,
         get_cached_report=(False, None, None, None),
         generate_report_response_sync=RuntimeError("upstream exploded"),
@@ -226,6 +235,7 @@ def test_generation_exception_is_reported_and_still_enqueued(
     assert request.status == "failed"
     assert request.result == report_service.KR_FAILURE_MESSAGE
     assert "upstream exploded" not in request.result
+    assert rec["get_cached_report"].keyword_calls == [{"require_dart_depth": True}]
 
 
 def test_analysis_request_exposes_the_fields_the_worker_contract_depends_on():

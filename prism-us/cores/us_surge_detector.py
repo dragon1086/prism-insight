@@ -9,8 +9,9 @@ Uses yfinance for market data access.
 
 import datetime
 import logging
+import os
 import time
-from threading import Lock
+from threading import local
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import numpy as np
@@ -136,12 +137,159 @@ def get_major_tickers() -> List[str]:
     return list(combined)
 
 
-# A single detached response can serve the immediately following prior-session
+# A per-thread detached response serves the immediately following prior-session
 # request. Keep frames out of attrs (pandas compares attrs during concatenation).
 _SNAPSHOT_HISTORY_TTL_SECONDS = 60.0
-_snapshot_history = None
-_snapshot_history_lock = Lock()
+_snapshot_history = local()
 _SNAPSHOT_FIELDS = ['Open', 'High', 'Low', 'Close', 'Volume']
+_DAILY_OPTIONS = dict(auto_adjust=True, back_adjust=False, repair=False,
+                      keepna=True, interval='1d', prepost=False, actions=False)
+
+
+def _daily_recovery_enabled():
+    return os.getenv('US_DAILY_CACHE_ENABLED', 'true').strip().lower() == 'true'
+
+
+def _download_daily(*args, **kwargs):
+    # Public download() swallows per-symbol exceptions and logs a summary.
+    # Capture only a boolean, never raw provider text. Concurrent overlapping
+    # rate-limit logs may conservatively suppress a retry, never enable one.
+    class RateLimitCapture(logging.Handler):
+        limited = False
+
+        def emit(self, record):
+            message = record.getMessage().lower()
+            if any(marker in message for marker in ('ratelimit', 'too many requests', '429')):
+                self.limited = True
+
+    handler = RateLimitCapture()
+    yf_logger = logging.getLogger('yfinance')
+    from yfinance.utils import YFLogFormatter
+    unobservable = (not yf_logger.isEnabledFor(logging.ERROR)
+                    or any(type(f) is not YFLogFormatter for f in yf_logger.filters))
+    yf_logger.addHandler(handler)
+    try:
+        data = yf.download(*args, **kwargs)
+    finally:
+        yf_logger.removeHandler(handler)
+    if isinstance(data, pd.DataFrame):
+        data.attrs['recovery_retry_suppressed'] = handler.limited or unobservable
+    return data
+
+
+def _recover_daily_snapshot(data, requested_date, tickers, captured_at, reference_data=None):
+    """Fresh -> same-basis completed cache -> bounded exact-date retry.
+
+    Recovery never fills from repaired/intraday/different-date observations.
+    The recorded clock is request start, not a later persistence/read time.
+    """
+    snapshot = _snapshot_from_history(data, requested_date, tickers)
+    if not _daily_recovery_enabled():
+        return snapshot
+    try:
+        from prism_core.us_daily_cache import DailyBarCache, histories_share_basis
+    except ImportError:
+        logger.warning('Optional daily cache unavailable; keeping original provider result')
+        return snapshot
+    root = Path(os.getenv('PRISM_US_DAILY_CACHE_DIR') or
+                str(Path(__file__).resolve().parents[2] / 'runtime/us_daily_ohlcv_cache')).expanduser()
+    cache = DailyBarCache(root, now=captured_at)
+    original = dict(snapshot.attrs['snapshot_coverage'])
+    sources = {ticker: 'provider' for ticker in snapshot.index}
+    captures = {}
+    normalized = {}
+    cache_saved = 0
+
+    def frame_for(raw, ticker):
+        if (not isinstance(raw, pd.DataFrame) or raw.empty or
+                (not isinstance(raw.columns, pd.MultiIndex) and len(tickers) != 1)):
+            return pd.DataFrame()
+        return normalize_single_ticker_ohlcv(raw, ticker)
+
+    # Preserve the originating current response as basis when the 60s reuse
+    # expires and a new previous-response download is necessary.
+    for ticker in tickers:
+        frame = frame_for(data, ticker)
+        normalized[ticker] = frame
+        if reference_data is not None and ticker in snapshot.index:
+            reference = frame_for(reference_data, ticker)
+            if not histories_share_basis(reference, frame, requested_date):
+                snapshot = snapshot.drop(index=ticker)
+                sources.pop(ticker, None)
+        if ticker not in snapshot.index:
+            reference = frame_for(reference_data, ticker) if reference_data is not None else frame
+            try:
+                cached = cache.load_row(ticker, requested_date, reference)
+            except Exception:
+                cached = None
+            if cached is not None:
+                snapshot.loc[ticker, _SNAPSHOT_FIELDS] = [cached[k] for k in _SNAPSHOT_FIELDS]
+                snapshot.loc[ticker, 'Amount'] = cached['Close'] * cached['Volume']
+                sources[ticker] = 'cache'
+                captures[ticker] = cached['captured_at']
+        # Read old target+anchors before saving a new response generation.
+        try:
+            cache_saved += cache.save_history(ticker, frame)
+        except Exception:
+            logger.debug('Completed-day cache write unavailable; provider result retained')
+
+    missing = [ticker for ticker in tickers if ticker not in snapshot.index]
+    started = time.monotonic()
+    retries = 0
+    stop_reason = ('bulk_error_or_unobservable' if isinstance(data, pd.DataFrame)
+                   and data.attrs.get('recovery_retry_suppressed') else None)
+    for ticker in missing:
+        if retries >= 10:
+            stop_reason = 'retry_count_budget'
+            break
+        if stop_reason:
+            break
+        reference = frame_for(reference_data, ticker) if reference_data is not None else normalized[ticker]
+        if not histories_share_basis(reference, reference, requested_date):
+            continue
+        if time.monotonic() - started >= 15:
+            stop_reason = 'retry_time_budget'
+            break
+        retries += 1
+        request_time = datetime.datetime.now(datetime.timezone.utc)
+        target = datetime.datetime.strptime(requested_date, '%Y%m%d').date()
+        try:
+            retry = yf.Ticker(ticker).history(
+                start=(target-datetime.timedelta(days=7)).isoformat(),
+                end=(target+datetime.timedelta(days=1)).isoformat(), timeout=5,
+                raise_errors=True, **_DAILY_OPTIONS)
+        except Exception as exc:
+            from yfinance.exceptions import YFRateLimitError
+            if isinstance(exc, YFRateLimitError):
+                stop_reason = 'rate_limit'
+                break
+            continue
+        if time.monotonic() - started >= 15:
+            stop_reason = 'retry_time_budget'
+            break  # A late response is not accepted merely because it arrived.
+        candidate = _snapshot_from_history(retry, requested_date, [ticker])
+        reference = frame_for(reference_data, ticker) if reference_data is not None else normalized[ticker]
+        if not candidate.empty and histories_share_basis(reference, retry, requested_date):
+            snapshot.loc[ticker, candidate.columns] = candidate.loc[ticker]
+            sources[ticker] = 'retry'
+            try:
+                cache_saved += DailyBarCache(root, now=request_time).save_history(ticker, retry)
+            except Exception:
+                logger.debug('Completed-day retry cache write unavailable; retry result retained')
+    snapshot = snapshot.reindex([t for t in tickers if t in snapshot.index])
+    count = len(tickers)
+    remaining = count-len(snapshot)
+    snapshot.attrs['snapshot_coverage'] = {
+        'requested_date': requested_date, 'requested_count': count,
+        'valid_count': len(snapshot), 'missing_count': remaining,
+        'status': ('COMPLETE' if count and not remaining else 'PARTIAL' if len(snapshot) else 'UNAVAILABLE'),
+        'reason_counts': {'unresolved_after_recovery': remaining} if remaining else {},
+        'provider_reason_counts': original['reason_counts'],
+        'sources': sources, 'cache_captured_at': captures,
+        'cache_saved_count': cache_saved, 'retry_attempts': retries,
+        'retry_stop_reason': stop_reason,
+    }
+    return snapshot
 
 
 def _snapshot_from_history(data: pd.DataFrame, requested_date: str,
@@ -171,6 +319,11 @@ def _snapshot_from_history(data: pd.DataFrame, requested_date: str,
         if int(matching.sum()) != 1:
             missing('missing_exact_date' if not matching.any() else 'duplicate_exact_date')
             continue
+        if 'Repaired?' in frame.columns:
+            repaired = frame.loc[matching, 'Repaired?'].iloc[0]
+            if pd.isna(repaired) or repaired != False:
+                missing('repaired_ohlcv_rejected')
+                continue
         values = pd.to_numeric(frame.loc[matching, _SNAPSHOT_FIELDS].iloc[0],
                                errors='coerce').to_numpy(dtype=float)
         with np.errstate(over='ignore', invalid='ignore'):
@@ -197,23 +350,21 @@ def _snapshot_from_history(data: pd.DataFrame, requested_date: str,
 
 def get_snapshot(trade_date: str, tickers: List[str] = None) -> pd.DataFrame:
     """Get exact-date OHLCV with explicit coverage; never relabel an older bar."""
-    global _snapshot_history
     tickers = list(tickers) if tickers is not None else get_sp500_tickers()
     end_date = datetime.datetime.strptime(trade_date, '%Y%m%d')
     start_date = end_date - datetime.timedelta(days=5)
     # Invalidate an earlier invocation even if this download fails.
-    with _snapshot_history_lock:
-        _snapshot_history = None
+    _snapshot_history.value = None
     try:
-        data = yf.download(
+        captured_at = datetime.datetime.now(datetime.timezone.utc)
+        data = _download_daily(
             tickers, start=start_date.strftime('%Y-%m-%d'),
             end=(end_date + datetime.timedelta(days=1)).strftime('%Y-%m-%d'),
-            progress=False, threads=True)
-        snapshot = _snapshot_from_history(data, trade_date, tickers)
+            progress=False, threads=True, **_DAILY_OPTIONS)
+        snapshot = _recover_daily_snapshot(data, trade_date, tickers, captured_at)
         if isinstance(data, pd.DataFrame):
-            with _snapshot_history_lock:
-                _snapshot_history = ((trade_date, tuple(tickers)),
-                                     time.monotonic(), data.copy(deep=True))
+            _snapshot_history.value = ((trade_date, tuple(tickers)),
+                                       time.monotonic(), data.copy(deep=True), captured_at)
         logger.info("Retrieved current snapshot: %s", snapshot.attrs['snapshot_coverage'])
         return snapshot
     except Exception as exc:
@@ -287,31 +438,33 @@ def get_batched_snapshot_pair(trade_date: str, tickers: List[str], *,
 
 def get_previous_snapshot(trade_date: str, tickers: List[str] = None) -> Tuple[pd.DataFrame, str]:
     """Get the exact preceding NYSE session, reusing matching fresh history once."""
-    global _snapshot_history
     tickers = list(tickers) if tickers is not None else get_sp500_tickers()
     date_obj = datetime.datetime.strptime(trade_date, '%Y%m%d').date()
     prev_date_obj = get_last_trading_day(date_obj - datetime.timedelta(days=1))
     prev_date = prev_date_obj.strftime('%Y%m%d')
     data = None
-    with _snapshot_history_lock:
-        cached = _snapshot_history
-        if cached is not None:
-            key, captured_at, cached_data = cached
-            age = time.monotonic() - captured_at
-            if key == (trade_date, tuple(tickers)):
-                _snapshot_history = None
-                if 0 <= age <= _SNAPSHOT_HISTORY_TTL_SECONDS:
-                    data = cached_data.copy(deep=True)
-            elif age < 0 or age > _SNAPSHOT_HISTORY_TTL_SECONDS:
-                _snapshot_history = None
+    reference_data = None
+    cached = getattr(_snapshot_history, 'value', None)
+    if cached is not None:
+        key, stored_at, cached_data, capture_time = cached
+        age = time.monotonic() - stored_at
+        if key == (trade_date, tuple(tickers)):
+            _snapshot_history.value = None
+            if 0 <= age <= _SNAPSHOT_HISTORY_TTL_SECONDS:
+                data = cached_data.copy(deep=True)
+            else:
+                reference_data = cached_data
+        elif age < 0 or age > _SNAPSHOT_HISTORY_TTL_SECONDS:
+            _snapshot_history.value = None
     try:
         if data is None:
-            data = yf.download(
+            capture_time = datetime.datetime.now(datetime.timezone.utc)
+            data = _download_daily(
                 tickers,
                 start=(prev_date_obj - datetime.timedelta(days=7)).strftime('%Y-%m-%d'),
                 end=(prev_date_obj + datetime.timedelta(days=1)).strftime('%Y-%m-%d'),
-                progress=False, threads=True)
-        snapshot = _snapshot_from_history(data, prev_date, tickers)
+                progress=False, threads=True, **_DAILY_OPTIONS)
+        snapshot = _recover_daily_snapshot(data, prev_date, tickers, capture_time, reference_data)
         logger.info("Retrieved previous snapshot: %s", snapshot.attrs['snapshot_coverage'])
         return snapshot, prev_date
     except Exception as exc:

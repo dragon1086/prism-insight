@@ -50,6 +50,13 @@ def test_real_prefetch_reuses_four_calls_and_separates_market(monkeypatch):
     facts = {item['id']: item for item in result['report_calculations']['facts']}
     assert facts['stock.sma.5']['value'] == 317
     assert facts['flow.5']['value']['institution_foreign'] == 25
+    assert facts['stock.return.5']['horizon_intervals'] == 5
+    assert facts['stock.return.5']['input_price_count'] == 6
+    assert facts['stock.return.20']['input_price_count'] == 21
+    assert facts['stock.return.5']['end_date'] == '2026-09-21'
+    assert facts['flow.5']['period']['end'] == '2026-09-18'
+    assert '수익률 20관측구간, 가격 입력 21개' in result['report_calculation_reference']
+    assert '수익률 5관측구간, 가격 입력 6개' in result['market_calculation_reference']
     assert '코스피' not in result['report_calculation_reference']
     assert '코스피' in result['market_calculation_reference']
     assert '기관' not in result['market_calculation_reference']

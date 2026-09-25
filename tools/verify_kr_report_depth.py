@@ -18,6 +18,77 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _validation_reply_text(result):
+    """Capture the actual schema response instead of an empty text projection."""
+    structured = getattr(result, 'structured', None)
+    return structured.model_dump_json() if structured is not None else result.text
+
+
+def _reviewed_failed_full_run(directory, packet, *, company_code, reference_date, peer_context=''):
+    """Recover observed writer artifacts only for explicit staged validation.
+
+    Historical full runs did not capture the chapter receipt. Do not invent the
+    missing writer configuration or certify financial accuracy from file presence.
+    """
+    from cores.dart_deep_analysis import CHAPTER_END, CHAPTER_START, ROLES, _checked_prose, _source_urls
+
+    def read(name):
+        return json.loads((directory / name).read_text(encoding='utf-8'))
+
+    prior = read('dart_inputs.json')
+    invocation = read('validation_invocation.json')
+    request = read('final_editor_request_1.json')
+    sections = request.get('sections', {})
+    source_hash = packet.get('receipt', {}).get('core_union_sha256')
+    if (peer_context or not isinstance(sections, dict) or 'peer_comparison' in sections
+            or invocation.get('ticker') != company_code or invocation.get('reference_date') != reference_date
+            or request.get('company_code') != company_code or request.get('reference_date') != reference_date
+            or not isinstance(source_hash, str) or not re.fullmatch(r'[0-9a-f]{64}', source_hash)
+            or source_hash != prior.get('receipt', {}).get('core_union_sha256')):
+        raise ValueError('Staged chapter source, company, date or peer basis is unverified')
+    for candidate in (prior, packet):
+        receipt = candidate.get('receipt', {})
+        if (candidate.get('ready') is not True or receipt.get('core_conserved') is not True
+                or receipt.get('capacity_ok') is not True or set(candidate.get('contexts', {})) != set(ROLES)):
+            raise ValueError('Staged chapter requires complete conserved source inputs')
+    chapter = sections.get('dart_deep_analysis')
+    if (not isinstance(chapter, str) or not chapter.startswith(CHAPTER_START)
+            or not chapter.rstrip().endswith(CHAPTER_END)
+            or chapter.count(CHAPTER_START) != 1 or chapter.count(CHAPTER_END) != 1):
+        raise ValueError('Staged chapter markers are missing or ambiguous')
+    artifacts, drafts = {}, []
+    for role in ROLES:
+        urls = _source_urls(packet['contexts'][role])
+        if urls != _source_urls(prior['contexts'][role]):
+            raise ValueError('Staged chapter attribution basis changed')
+        text = (directory / f'dart_depth_{role}.md').read_text(encoding='utf-8')
+        checked = _checked_prose(text, urls)
+        usage_path = directory / f'dart_depth_{role}_usage.json'
+        usage = read(usage_path.name)
+        if (not isinstance(usage, dict) or type(usage.get('output_chars')) is not int
+                or usage['output_chars'] != len(text) or type(usage.get('input_bytes')) is not int
+                or usage['input_bytes'] <= 0 or 'usage' not in usage):
+            raise ValueError('Staged writer capture metadata does not match the prose')
+        drafts.append(checked)
+        artifacts[role] = {'prose_sha256': hashlib.sha256(text.encode()).hexdigest(),
+                           'capture_receipt_sha256': hashlib.sha256(usage_path.read_bytes()).hexdigest(),
+                           'characters': len(text)}
+    # Exact ordered writer text, not a substring in unrelated edited prose.
+    titles = ('## 5. DART 주요 재무·사업 위험 분석', '## 5. In-depth filing analysis')
+    if not any(chapter == CHAPTER_START + '\n\n' + title + '\n\n'
+               + '\n\n'.join(drafts) + '\n\n' + CHAPTER_END for title in titles):
+        raise ValueError('Staged chapter differs from the three captured writer outputs')
+    return chapter, {
+        'status': 'validation_only_reused_failed_full_run_source_chapter', 'calls': 0,
+        'reused_from': str(directory), 'chapter_sha256': hashlib.sha256(chapter.encode()).hexdigest(),
+        'source_receipt': prior['receipt'], 'writer_artifacts': artifacts,
+        'input_identity': {'company_code': company_code, 'reference_date': reference_date,
+                           'peer_context_sha256': hashlib.sha256(b'').hexdigest()},
+        'original_writer_configuration': 'not_recorded_in_prior_full_run_capture',
+        'note': 'Explicit reviewed staged reuse; not fresh end-to-end generation or independent factual verification.',
+    }
+
+
 def reviewed_chapter(directory, packet, *, company_code, reference_date, peer_context='', **_kwargs):
     """Validation-only reuse after human review; never a normal report cache.
 
@@ -32,6 +103,9 @@ def reviewed_chapter(directory, packet, *, company_code, reference_date, peer_co
     )
     from report_model_config import DART_REPORT_EFFORT, DART_REPORT_MODEL
 
+    if not (directory / 'generation_receipt.json').exists():
+        return _reviewed_failed_full_run(directory, packet, company_code=company_code,
+                                        reference_date=reference_date, peer_context=peer_context)
     receipt = json.loads((directory / 'generation_receipt.json').read_text(encoding='utf-8'))['receipt']
     source_hash = packet.get('receipt', {}).get('core_union_sha256')
     identity = {'company_code': company_code, 'reference_date': reference_date,
@@ -102,6 +176,7 @@ def main():
             or not args.resume_sections.resolve().is_relative_to(operational / 'runtime' / 'report_validation')):
         parser.error('Section resume is restricted to full isolated validation')
     output.mkdir(parents=True, exist_ok=False)
+    os.environ['PRISM_REPORT_DIAGNOSTICS_DIR'] = str(output / 'diagnostics')
 
     from dotenv import load_dotenv
     load_dotenv(operational / '.env')
@@ -147,6 +222,7 @@ def main():
     original_write = dart_deep_analysis._write
     original_peers = kr_peer_comparison.collect_peer_comparison
     original_editor = report_fact_editor.edit_and_summarize
+    original_chapter = dart_deep_analysis.generate_dart_chapter
 
     def save_json(name, value):
         (output / name).write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -154,13 +230,32 @@ def main():
     if args.run_model:
         backend = report_generation._get_report_backend()
         original_run = backend.run
+        review_calls = {}
 
         async def capture_editor_reply(spec, message):
-            if spec.name == 'report_final_fact_editor':
-                (output / 'final_editor_request.json').write_text(message, encoding='utf-8')
+            review_name = {'report_final_fact_editor': 'final_editor',
+                           'report_fact_assessor': 'report_fact_assessor'}.get(spec.name)
+            recovery = spec.name.endswith('_fact_recovery') and re.fullmatch(r'[a-z_]+', spec.name)
+            capture_name = review_name or (spec.name if recovery else None)
+            if capture_name:
+                review_calls[capture_name] = review_calls.get(capture_name, 0) + 1
+                call = review_calls[capture_name]
+            if spec.name.endswith('_fact_recovery') and re.fullmatch(r'[a-z_]+', spec.name):
+                request = {'instructions': spec.instructions, 'message': message, 'model': spec.model}
+                save_json(spec.name + '_request.json', request)
+                save_json(f'{spec.name}_request_{call}.json', request)
+            if review_name:
+                (output / f'{review_name}_request.json').write_text(message, encoding='utf-8')
+                (output / f'{review_name}_request_{call}.json').write_text(message, encoding='utf-8')
             result = await original_run(spec, message)
-            if spec.name == 'report_final_fact_editor':
-                (output / 'final_editor_reply.json').write_text(result.text, encoding='utf-8')
+            if review_name:
+                reply = _validation_reply_text(result)
+                (output / f'{review_name}_reply.json').write_text(reply, encoding='utf-8')
+                (output / f'{review_name}_reply_{call}.json').write_text(reply, encoding='utf-8')
+            if recovery:
+                reply = _validation_reply_text(result)
+                (output / f'{spec.name}.md').write_text(reply, encoding='utf-8')
+                (output / f'{spec.name}_{call}.md').write_text(reply, encoding='utf-8')
             return result
 
         backend.run = capture_editor_reply
@@ -181,6 +276,7 @@ def main():
         'ticker': args.ticker, 'company': args.company, 'reference_date': args.date,
         'started_at': datetime.now(ZoneInfo('Asia/Seoul')).isoformat(),
         'resume_sections': str(args.resume_sections) if args.resume_sections else None,
+        'reuse_reviewed_chapter': str(args.reuse_reviewed_chapter) if args.reuse_reviewed_chapter else None,
         'note': 'Staged drafts are explicitly selected by the operator; this is not a same-input A/B claim.'})
 
     # Preserve each generated section for source/contradiction review. Never
@@ -238,12 +334,17 @@ def main():
     kr_official_report_inputs.collect_kr_official_report_inputs = collect
     dart_deep_analysis._write = write
     kr_peer_comparison.collect_peer_comparison = peers
-    if args.reuse_reviewed_chapter:
-        async def reuse(packet, **kwargs):
+    async def capture_chapter(packet, **kwargs):
+        if args.reuse_reviewed_chapter:
             chapter, receipt = reviewed_chapter(args.reuse_reviewed_chapter, packet, **kwargs)
             save_json('reviewed_chapter_reuse.json', receipt)
-            return chapter, receipt
-        dart_deep_analysis.generate_dart_chapter = reuse
+        else:
+            chapter, receipt = await original_chapter(packet, **kwargs)
+        if chapter:
+            (output / 'dart_chapter.md').write_text(chapter, encoding='utf-8')
+            save_json('dart_chapter_receipt.json', receipt)
+        return chapter, receipt
+    dart_deep_analysis.generate_dart_chapter = capture_chapter
     started = time.monotonic()
     if args.render_source_report:
         from prism_core.report_presentation import humanize_report_status
