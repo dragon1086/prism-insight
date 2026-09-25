@@ -282,11 +282,16 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         from cores.dart_deep_analysis import CHAPTER_INCOMPLETE, generate_dart_chapter
         dart_packet = prefetched.get('official_dart', {})
         chapter_inputs = dart_packet.get('dart_chapter_inputs', {}) if isinstance(dart_packet, dict) else {}
+        # Completed WiseReport-based sections tell writers what the report already covers.
+        covered_sections = '\n\n'.join(
+            section_reports[key] for key in ('company_status', 'company_overview')
+            if isinstance(section_reports.get(key), str) and section_reports[key].strip()
+            and not section_reports[key].startswith('Analysis failed:'))
         try:
             dart_chapter, dart_receipt = await generate_dart_chapter(
                 chapter_inputs, company_name=company_name, company_code=company_code,
                 reference_date=reference_date, language=language, shared_reference=shared_reference,
-                peer_context=peer_context,
+                peer_context=peer_context, report_context=covered_sections,
                 concurrency=min(3, _report_parallel_limit(3)) if parallel_enabled else 1)
         except Exception:
             if require_dart_depth:

@@ -149,6 +149,7 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
         model_calls.append(role)
         assert 'WHOLE_SOURCE_' + role in message
         assert ('PEER 9.23배' in message) is (role == 'business')
+        assert '<already_covered_report_sections>\n### 기본 분석\n기본 사실' in message
         text = f'### 상세 분석 {role}\n\n' + (f'{role}의 금액 987.65와 이행 요청 조건 및 남은 약정 한도와 기간을 설명합니다.\n\n' * 180)
         text += '\n\n출처: https://dart.fss.or.kr/report/viewer.do?rcpNo=20260813001728'
         authored[role] = text.strip()
@@ -255,3 +256,16 @@ def test_real_kr_assembly_reaches_synthesis_and_publication_without_extra_models
     assert '12345.67원' in report and '3000.00포인트' in report
     assert ('공시 확인' in report) is (not dart_fails)
     assert 'BAR_FINALITY_UNKNOWN' not in report and 'private transport error' not in report
+
+
+def test_filing_excerpts_stay_with_the_dart_chapter_when_it_can_be_written():
+    packet = inputs()
+    packet['official_dart']['dart_chapter_inputs'] = {'ready': True}
+    agent = ReportAgent('test', 'BASE', ('dart',))
+    for section in ('company_status', 'company_overview', 'news_analysis'):
+        instruction = apply_kr_report_context(agent, section, packet).instruction
+        assert '<provided_filing_evidence>' not in instruction
+        assert packet['official_dart']['section_contexts'][section] not in instruction
+    # Basic reports without a chapter keep the section excerpts.
+    packet['official_dart']['dart_chapter_inputs'] = {'ready': False}
+    assert '123456천원' in apply_kr_report_context(agent, 'company_status', packet).instruction
