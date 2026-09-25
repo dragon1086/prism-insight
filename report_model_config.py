@@ -10,10 +10,13 @@ REPORT_EFFORT = os.environ.get("REPORT_EFFORT", "medium")
 REPORT_AUX_MODEL = os.environ.get("REPORT_AUX_MODEL", REPORT_MODEL)
 REPORT_AUX_EFFORT = os.environ.get("REPORT_AUX_EFFORT", "low")
 # Filing tables mix comparative periods and hierarchical accounting scopes, so
-# only the three tool-free DART writers use a larger model than the sections.
-# Cost ceiling is gpt-6-sol (astra is ~5x the price); tune via A/B replay.
-DART_REPORT_MODEL = os.environ.get("DART_REPORT_MODEL", "gpt-6-sol")
-DART_REPORT_EFFORT = os.environ.get("DART_REPORT_EFFORT", "low")
+# only the three tool-free DART writers use a different model than the sections.
+# Blind A/B 2026-09-26 on frozen 252990 + 017670 DART packets: gpt-6-luna/medium
+# produced 3 HIGH numeric errors; gpt-6-luna/high, gpt-6-sol/low and
+# gpt-6-sol/medium produced 0 HIGH. luna/high chosen at ~1/20 the cost of sol.
+# Report stages never use astra.
+DART_REPORT_MODEL = os.environ.get("DART_REPORT_MODEL", "gpt-6-luna")
+DART_REPORT_EFFORT = os.environ.get("DART_REPORT_EFFORT", "high")
 
 
 def report_model_slug(model: str | None = None) -> str:

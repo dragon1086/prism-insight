@@ -17,6 +17,8 @@ def test_report_model_defaults_to_luna_medium_with_low_auxiliary(monkeypatch):
     monkeypatch.delenv("REPORT_EFFORT", raising=False)
     monkeypatch.delenv("REPORT_AUX_MODEL", raising=False)
     monkeypatch.delenv("REPORT_AUX_EFFORT", raising=False)
+    monkeypatch.delenv("DART_REPORT_MODEL", raising=False)
+    monkeypatch.delenv("DART_REPORT_EFFORT", raising=False)
     module = importlib.reload(report_model_config)
 
     assert module.REPORT_MODEL == "gpt-5.6-luna"
@@ -24,6 +26,9 @@ def test_report_model_defaults_to_luna_medium_with_low_auxiliary(monkeypatch):
     assert module.REPORT_AUX_MODEL == "gpt-5.6-luna"
     assert module.REPORT_AUX_EFFORT == "low"
     assert module.report_model_slug() == "gpt-5.6-luna"
+    # Blind A/B 2026-09-26: luna/high had 0 HIGH numeric errors at ~1/20 of sol's cost.
+    assert module.DART_REPORT_MODEL == "gpt-6-luna"
+    assert module.DART_REPORT_EFFORT == "high"
 
 
 def test_regime_labels_expose_enum_and_swing_timeframe():

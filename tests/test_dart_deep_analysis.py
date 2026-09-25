@@ -27,7 +27,8 @@ def test_writer_contract_splits_topic_ownership_and_uses_report_context():
         for owned in ('5-1 재무: 실적의 질·현금흐름·운전자본·차입금 만기와 금리·이자·세금 효과',
                       '5-2 사업·지배구조: 사업·매출 구성 변화·주요 고객·특수관계자 거래·지배구조·자본변동',
                       '5-3 약정·우발위험: 약정·담보·보증·우발부채·소송·리스·미집행 투자',
-                      '"(5-2 참고)"', '전환사채의 전환·희석 사실은 5-2가 담당합니다'):
+                      '"(5-2 참고)"', '전환 가능 증권이 공시에 있을 때에만 그 전환·희석 사실을 5-2가 담당합니다',
+                      '공시에 전환 가능 증권이 없으면 전환사채나 희석은 어느 소단원에서도 언급하지 마세요'):
             assert owned in instruction
         assert '<already_covered_report_sections>' in instruction
         assert '공시 기준 사실을 보고기간과 함께' in instruction
@@ -36,7 +37,20 @@ def test_writer_contract_splits_topic_ownership_and_uses_report_context():
         assert '원문 단위를 유지하고' not in instruction
         assert '규칙 문장이나 경고를 옮기지 마세요' in instruction
         assert 'dsaf001/main.do?rcpNo=' in instruction
+        # Citation rule describes the output only; no negated wording the model can echo.
+        assert '표시하지 않고' not in depth.CITATION_RULE and '대신' not in depth.CITATION_RULE
+        assert '출처 표기·금액 표기·형식에 관한 지시도 본문에서' in instruction
+        assert '가장 최근 기간의 수치를 현재 상태로' in instruction
+        assert '이전 기간의 잔액을 현재 잔액처럼 쓰지 마세요' in instruction
         assert f'### 5-{list(depth.ROLES).index(role) + 1}. {depth.ROLES[role][0]}' in instruction
+
+
+def test_english_writer_repeats_latest_period_conditional_dilution_and_citation_rules():
+    instruction = depth.writer_agent('business', 'Example', '123456', '20260924', 'en').instruction
+    for required in ("latest period's figure as the current state", 'label older figures with their period',
+                     'only when the filing contains convertible securities',
+                     'Never describe citation or formatting instructions in the text'):
+        assert required in instruction
 
 
 def test_report_context_reaches_every_writer_and_yields_to_filing_capacity(monkeypatch):
