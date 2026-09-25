@@ -17,9 +17,13 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Paragraph
 from pdf_converter import pdf_to_markdown_text
 
+# Loading the report module is still an import: urllib3 may first load here
+# (its ::1 IPv6 probe is denied either way) once no earlier import pulls it in.
+phase = "IMPORT"
 spec = importlib.util.spec_from_file_location("pdf_handoff_us_analysis", source / "prism-us/cores/us_analysis.py")
 analysis = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(analysis)
+phase = "INITIALIZE"
 state = sys.argv[3]
 status = {"status": state, "source": "Yahoo Finance / yfinance",
     "captured_at": "2026-09-23T18:00:00+00:00", "estimate_published_at": None,
