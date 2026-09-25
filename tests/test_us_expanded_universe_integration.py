@@ -79,7 +79,9 @@ with patch.object(socket.socket, "connect", forbidden), patch("dotenv.load_doten
             assert "오류" in message
         elif shape not in {"empty","ambiguous"}:
             assert selected, "Must exercise real candidate selection, not just empty output"
-            assert payload["metadata"]["universe_eligibility"]["eligible_count"] == 3
+            expected_eligible = 2 if shape == "low_turnover" else 3
+            assert payload["metadata"]["universe_eligibility"]["eligible_count"] == expected_eligible
+            assert payload["metadata"]["universe_eligibility"]["liquidity_floor_usd"] == 50000000
             assert payload["metadata"]["snapshot_coverage"]["comparable_count"] == 7
             assert payload["metadata"]["universe_eligibility"]["metadata_status"] == "PARTIAL"
             assert {"trigger":"Universe Eligibility", "error_type":"IncompleteMetadata"} in payload["metadata"]["trigger_errors"]
@@ -106,19 +108,18 @@ def test_real_expanded_batch(tmp_path, mode, shape):
     assert data['metadata']['min_market_cap_usd'] == 500000000
 
 
-def test_expanded_requires_explicit_cap_before_any_network(tmp_path):
+def test_expanded_defaults_to_approved_one_billion_cap_before_network(tmp_path):
     code = '''
 import sys, socket
 from unittest.mock import patch
 sys.path.insert(0, "prism-us")
 with patch("dotenv.load_dotenv", return_value=False), patch.object(socket.socket,"connect",side_effect=AssertionError("network")):
  import us_trigger_batch as batch
- try:
-  batch._load_screening_inputs("20260914")
- except ValueError as exc:
-  assert "explicit USD market-cap" in str(exc)
- else:
-  raise AssertionError("Missing configuration must fail")
+ assert batch.DEFAULT_US_SCREENING_UNIVERSE == "listed_common"
+ assert batch.DEFAULT_US_MIN_MARKET_CAP_USD == 1000000000
+ try: batch._load_screening_inputs("20260914")
+ except AssertionError as exc: assert "network" in str(exc)
+ else: raise AssertionError("Default expanded mode must reach the directory boundary")
 '''
     env = dict(os.environ, US_SCREENING_UNIVERSE='listed_common')
     env.pop('US_SCREENING_MIN_MARKET_CAP_USD', None)

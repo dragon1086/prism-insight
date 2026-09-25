@@ -73,8 +73,10 @@ TRIGGER_CRITERIA = {
     "default": {"rr_target": 1.5, "sl_max": 0.07}
 }
 
-# Market cap filter disabled - let trigger scoring handle quality filtering
-# MIN_MARKET_CAP = 20_000_000_000
+# Expanded common-stock universe baseline. The user approved $1B as the
+# quality floor; environment overrides remain explicit and observable.
+DEFAULT_US_SCREENING_UNIVERSE = "listed_common"
+DEFAULT_US_MIN_MARKET_CAP_USD = 1_000_000_000
 
 # Trading value filter: $100M USD
 MIN_TRADING_VALUE = 100_000_000
@@ -1454,8 +1456,8 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
 # === Batch Execution ===
 
 def _load_screening_inputs(trade_date):
-    """Keep legacy behavior exact; expanded eligibility has one input boundary."""
-    mode = os.getenv('US_SCREENING_UNIVERSE', 'major_indices')
+    """Apply one common-stock/cap/liquidity boundary before every US trigger."""
+    mode = os.getenv('US_SCREENING_UNIVERSE', DEFAULT_US_SCREENING_UNIVERSE)
     if mode == 'major_indices':
         tickers = get_major_tickers()
         current = get_snapshot(trade_date, tickers)
@@ -1470,11 +1472,11 @@ def _load_screening_inputs(trade_date):
     import yfinance as yf
     from prism_core.us_stock_universe import fetch_universe, eligibility_reason
 
-    # Deliberately no unapproved economic default in expanded mode.
     try:
-        minimum = float(os.environ['US_SCREENING_MIN_MARKET_CAP_USD'])
-    except (KeyError, ValueError) as exc:
-        raise ValueError('Expanded universe requires explicit USD market-cap threshold') from exc
+        minimum = float(os.getenv(
+            'US_SCREENING_MIN_MARKET_CAP_USD', str(DEFAULT_US_MIN_MARKET_CAP_USD)))
+    except ValueError as exc:
+        raise ValueError('Invalid expanded-universe market-cap threshold') from exc
     if not math.isfinite(minimum) or minimum <= 0:
         raise ValueError('Invalid expanded-universe market-cap threshold')
     universe = fetch_universe()
@@ -1488,12 +1490,17 @@ def _load_screening_inputs(trade_date):
     reasons = Counter()
     checked = 0
     started = time.monotonic()
-    for ticker in tickers:
-        if ticker not in current.index or ticker not in previous.index:
-            reasons['missing_snapshot_pair'] += 1
-            continue
-        # Do not prefilter by turnover: even ineligible low-turnover rows
-        # contribute to existing triggers' mean-volume reference population.
+    paired = [ticker for ticker in tickers
+              if ticker in current.index and ticker in previous.index]
+    # Every existing trigger already requires at least this dollar turnover.
+    # Applying the same absolute floor before metadata avoids thousands of
+    # unnecessary free-provider profile requests without introducing a new
+    # volume-surge rule or changing relative-volume scoring.
+    liquidity_eligible = [ticker for ticker in paired
+                          if float(current.at[ticker, 'Amount']) >= EMERGING_LIQUIDITY_MIN_TRADING_VALUE]
+    reasons['missing_snapshot_pair'] += len(tickers) - len(paired)
+    reasons['below_liquidity_floor'] += len(paired) - len(liquidity_eligible)
+    for ticker in liquidity_eligible:
         if time.monotonic() - started >= 300:
             reasons['metadata_budget_exhausted'] += 1
             continue
@@ -1515,6 +1522,8 @@ def _load_screening_inputs(trade_date):
         'directory_counts': universe.counts,
         'price_coverage': raw_coverage, 'collection': collection,
         'market_participation': raw_participation,
+        'liquidity_floor_usd': EMERGING_LIQUIDITY_MIN_TRADING_VALUE,
+        'liquidity_eligible_count': len(liquidity_eligible),
         'metadata_checked_count': checked, 'eligible_count': len(kept),
         'exclusion_reasons': dict(reasons),
         'metadata_status': ('PARTIAL' if any(reasons[key] for key in (

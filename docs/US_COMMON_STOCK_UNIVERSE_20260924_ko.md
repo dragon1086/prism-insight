@@ -50,3 +50,19 @@ US run_batch → us_stock_analysis_orchestrator.py의 선정 JSON·보고서 →
 - Ruff 치명적 오류 규칙 E9/F63/F7/F82, 변경 Python 6개 구문 검사, git diff --check 통과. 전체 리포지터리 lint/typecheck·원격 CI는 미실행이다.
 - 변경 파일: prism_core/us_stock_universe.py, prism-us/cores/us_surge_detector.py, prism-us/us_trigger_batch.py, 신규 테스트 3개, .env.example, .github/workflows/ci.yml, 이 문서.
 - 단순화: 확대 적격성을 입력 경계 한 곳에서 적용하고 기존 트리거·보고서·BUY/SELL 로직을 재사용한다. 새 의존성·상주 서비스·스케줄은 없다.
+
+## 2026-09-25 운영 승인 갱신
+
+사용자가 약 5,000개 상장 종목 확대와 함께 한국식 우량주 기본 필터를 운영에 적용하도록
+승인했다. 따라서 기본 모드는 `listed_common`, 시총 하한은 **10억 USD**로 확정한다.
+기존 `major_indices`는 명시적 rollback 모드로 유지한다.
+
+적용 순서는 공개 디렉터리의 개별 기업 보통주·ADR·기업형 REIT 분류, 당일·전일 시세
+쌍 확인, **당일 거래대금 5천만 USD 이상**, 무료 Yahoo metadata 확인, **시총 10억 USD
+이상**이다. ETF·ETN·펀드·우선주·워런트·권리·유닛은 제외한다. 5천만 USD는 기존
+트리거 중 가장 낮은 보조 유동성 레인과 같은 절대 하한이다. 표준 레인의 1억 USD 및
+거래량 급증·전일 대비 증가 조건은 기존 트리거별 의미를 유지한다.
+
+이 변경은 BUY 점수·손익비·손절·주문 예산·SELL 정책을 완화하지 않는다. 무료 원천의
+전시장 처리 시간과 결측률, KIS 주문 가능 종목 대조, 첫 정규 배치 결과는 구현·CI·배포
+smoke와 별도로 관측한다. 결측 metadata나 시총은 우량 판정으로 통과시키지 않는다.

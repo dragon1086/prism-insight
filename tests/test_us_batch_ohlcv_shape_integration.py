@@ -122,6 +122,7 @@ print(json.dumps(download_calls))
 def _run_batch(tmp_path, mode, shape, watch=False, quality=False, capture_fail=False, capture_requests=False):
     output = tmp_path / f"{mode}-{shape}-{watch}.json"
     env = dict(os.environ, PYTHONHASHSEED="0", PRISM_DISABLE_SIGNAL_PUBLISH="1",
+               US_SCREENING_UNIVERSE="major_indices",
                PRISM_OBSERVABILITY_SPOOL=str(tmp_path / "isolated-events.jsonl"),
                REPORT_MARKET_CONTEXT_ENABLED="true",
                REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED="false")
