@@ -11,6 +11,7 @@ from test_us_evidence_pipeline_contract import isolated_imports_and_effects  # n
 def pipeline(monkeypatch, tmp_path):
     import cores.data_prefetch as prefetch
     import cores.report_generation as generation
+    import cores.report_fact_editor as review
     from cores import analysis, dart_deep_analysis
     from cores.llm import capabilities
     from cores.report_fact_editor import ReportFactConflictError
@@ -68,6 +69,8 @@ def pipeline(monkeypatch, tmp_path):
         return result
 
     monkeypatch.setattr(generation, 'regenerate_conflicting_sections', repair)
+    async def assessed(reports, *args, **kwargs): return dict(reports), None, {'calls': 0}
+    monkeypatch.setattr(review, 'assess_report_facts', assessed)
     return analysis, ReportFactConflictError, calls, snapshots
 
 
@@ -91,7 +94,7 @@ def test_actual_assembly_one_failure_only_repair_round(pipeline, monkeypatch, ou
             return '\\n\\n### 5-1. 투자 전략\nRECOVERED_STRATEGY'
         return '### 5-1. 투자 전략\nINITIAL_STRATEGY'
 
-    async def summary(reports, *args):
+    async def summary(reports, *args, **kwargs):
         nth = calls.count('summary')
         calls.append('summary')
         if outcome == 'other_error': raise ValueError('unrelated validation error')

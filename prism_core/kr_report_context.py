@@ -1,12 +1,39 @@
 """Report-only shared KR evidence, without trade decisions or extra collection."""
 import hashlib
 import json
+from datetime import date
 
 from prism_core.report_research_context import _replace_agent
 
 
+def render_calendar_reference(context, language='ko'):
+    """Render the same local XKRX fact used by review, without date inference."""
+    context = context if isinstance(context, dict) else {}
+    day = context.get('reference_date')
+    try:
+        valid_day = isinstance(day, str) and date.fromisoformat(day).isoformat() == day
+    except ValueError:
+        valid_day = False
+    verified = valid_day and context.get('calendar') == 'XKRX' and type(context.get('is_session')) is bool
+    session = context.get('is_session') if verified else None
+    if language == 'ko':
+        status = '거래일로 확인' if session is True else '휴장으로 확인' if session is False else '거래 여부 미확인'
+        return (f"한국 거래소 로컬 달력(XKRX): 기준일 {day if valid_day else '미확인'}, {status}. "
+                '휴장으로 확인된 기준일에는 한국 대상 종목의 당일 거래량·확정 종가가 생긴다고 쓰지 마세요. '
+                '미확인을 휴장이나 거래일로 바꾸지 말고 다음 거래일 날짜를 추정하지 마세요. '
+                '한국 휴장 때문에 해외시장 거래·공시·뉴스의 사건 날짜를 변경하지 마세요. '
+                '거래일 여부는 일별 가격의 최종 마감 여부를 인증하지 않습니다.')
+    status = 'confirmed trading session' if session is True else 'confirmed closed' if session is False else 'session status unverified'
+    return (f"Local Korean exchange calendar (XKRX): reference date {day if valid_day else 'unverified'}, {status}. "
+            'Do not describe same-day Korean volume or a confirmed close as observable on a confirmed closed date. '
+            'Unknown is neither closed nor open; do not infer the next session date. '
+            'A Korean closure does not change foreign-market trading, filing or news event dates. '
+            'Session status does not certify daily price-bar finality.')
+
+
 def reference_context(prefetched, language='ko', *, market_only=False):
     from prism_core.report_presentation import report_narrative_contract
+    from prism_core.report_evidence_contract import financial_evidence_contract
 
     rules = (
         '공통 숫자 기준: 아래 코드 계산값의 수치·단위·기준일을 유지하세요. 없는 값을 추정하지 마세요. '
@@ -14,19 +41,25 @@ def reference_context(prefetched, language='ko', *, market_only=False):
         '열의 의미가 불명확하면 특정 금액으로 단정하지 마세요. 현금흐름 순증감과 환율·매각예정 현금을 '
         '포함한 잔액 변동은 별개입니다. 과거 공시의 지분 변동을 이번 분기의 사건으로 바꾸지 마세요. '
         '자신의 자료에 없는 사실을 회사 전체에 없는 사실로 확대하지 마세요. '
+        '이동평균 최신값의 크기·배열만으로 각 이동평균선의 기울기가 모두 상승 중이라고 단정하지 마세요. '
+        '기울기 판단에는 해당 이동평균의 시점별 변화 근거가 필요하며 없으면 미확인으로 남기세요. '
         '이 자료는 기존 매매 점수·위험 한도·주문 조건을 바꾸지 않습니다.\n'
         if language == 'ko' else
         'Shared numerical basis: preserve calculated values, units and observation dates. Do not estimate missing facts. '
         'Keep consolidated/standalone, interim/annual, current/comparative periods distinct. Read merged headers and units '
         'with table rows; do not assert amounts when column meaning is ambiguous. Net cash flow differs from the cash '
         'balance change including FX and held-for-sale cash. Past ownership transactions are not current-period events. '
-        'Missing evidence in one section is not issuer-wide absence. Preserve existing trading scores, risk limits and orders.\n'
+        'Missing evidence in one section is not issuer-wide absence. Latest moving-average levels or alignment '
+        'do not prove that every moving-average slope is rising. Slope claims require each average\'s changes '
+        'over time; otherwise leave them unverified. Preserve existing trading scores, risk limits and orders.\n'
     )
     key = 'market_calculation_reference' if market_only else 'report_calculation_reference'
     reference = prefetched.get(key, '')
     dart = prefetched.get('official_dart', {})
     receipt = dart.get('public_receipt', '') if isinstance(dart, dict) and not market_only else ''
-    return report_narrative_contract(language) + '\n' + rules + '\n' + reference + '\n' + receipt
+    return (report_narrative_contract(language) + financial_evidence_contract(language)
+            + '\n' + rules + '\n' + render_calendar_reference(prefetched.get('report_calendar_context'), language)
+            + '\n' + reference + '\n' + receipt)
 
 
 def synthesis_reference_context(prefetched, language='ko'):
@@ -71,6 +104,7 @@ def market_cache_key(prefetched, reference_date, language):
     index_facts = [f for f in facts if isinstance(f, dict) and str(f.get('id', '')).startswith('index.')]
     parts.append(json.dumps(index_facts, sort_keys=True, ensure_ascii=False, default=str))
     parts.extend(str(prefetched.get(key, '')) for key in ('kospi_index', 'kosdaq_index'))
+    parts.append(render_calendar_reference(prefetched.get('report_calendar_context'), language))
     return hashlib.sha256('\n'.join(parts).encode()).hexdigest()
 
 

@@ -26,13 +26,16 @@ async def regenerate_conflicting_sections(section_reports, agents, prefetched, c
 
 def synthesis_evidence_contract(language='ko'):
     """All supplied chapters inform synthesis, without adding trading rules."""
+    from prism_core.report_evidence_contract import financial_evidence_contract
     if language == 'ko':
-        return ('\n종합 입력 계약: 제공된 공시 심층 분석·비교기업·공식 실적/가이던스·정량 수급·'
+        return (financial_evidence_contract(language)
+                + '\n종합 입력 계약: 제공된 공시 심층 분석·비교기업·공식 실적/가이던스·정량 수급·'
                 '시장 계산값·거시 위험을 기존 기술·기업·뉴스 분석과 함께 검토하세요. '
                 '중요한 변화와 위험이 결론에 미치는 영향을 반영하되 요약에 모든 문장을 반복하지 마세요. '
                 '연결/별도·실적/예상·기간·단위·관측시점을 섞지 말고, 누락 자료를 만들어내지 마세요. '
                 '부록에 표시될 근거도 같은 입력입니다. 자료 범위의 한계를 유지하고 기존 매매 정책을 바꾸지 마세요.\n')
-    return ('\nSynthesis evidence contract: consider all supplied filing-depth, peer, official results/guidance, '
+    return (financial_evidence_contract(language)
+            + '\nSynthesis evidence contract: consider all supplied filing-depth, peer, official results/guidance, '
             'quantified flow, market calculations and macro-risk evidence alongside technical, company and news sections. '
             'Reflect material changes and risks, not every sentence. Preserve consolidated/standalone, actual/forecast, '
             'period, unit and observation-time distinctions. Do not invent missing evidence or alter trading policy. '
@@ -268,7 +271,7 @@ async def generate_market_report(agent, section, reference_date, logger, languag
     return report
 
 
-async def generate_summary(section_reports, company_name, company_code, reference_date, logger, language="ko"):
+async def generate_summary(section_reports, company_name, company_code, reference_date, logger, language="ko", *, calendar_context=None):
     """
     Generate executive summary based on section reports
 
@@ -286,7 +289,8 @@ async def generate_summary(section_reports, company_name, company_code, referenc
         # must not become a successfully published report.
         from cores.report_fact_editor import edit_and_summarize
         edited, summary, receipt = await edit_and_summarize(
-            section_reports, company_name, company_code, reference_date, language)
+            section_reports, company_name, company_code, reference_date, language,
+            calendar_context=calendar_context)
         section_reports.update(edited)
         logger.info(f'Report factual-summary stage completed: {receipt}')
         if not summary.startswith('## '):

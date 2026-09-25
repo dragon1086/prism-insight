@@ -35,11 +35,18 @@ def _unresolved_numeric_citations(prose):
     return False
 
 
-def public_market_analysis(prose, context, language="ko"):
+def public_market_analysis(prose, context, language="ko", *, require_citation_integrity=False):
     """Guard market prose before strategy/summary; source data needs no invented URL."""
-    if not isinstance(context, dict) or not isinstance(context.get("market_intelligence"), dict):
+    shared_evidence = isinstance(context, dict) and isinstance(context.get("market_intelligence"), dict)
+    if not require_citation_integrity and not shared_evidence:
         return prose
     if not isinstance(prose, str) or _unresolved_numeric_citations(prose):
+        if not shared_evidence:
+            return ("### 4. 시장 분석\n\n공개 URL과 연결되지 않은 출처 번호가 포함된 시장 서술을 제외했습니다. "
+                    "검증되지 않은 거시경제 사건·수치를 판단 근거로 사용하지 않습니다."
+                    if language == "ko" else
+                    "### 4. Market Analysis\n\nMarket narrative with citation numbers not linked to public URLs was omitted. "
+                    "Unverified macroeconomic events and figures must not be used as decision evidence.")
         return ("### 4. 시장 분석\n\n출처 번호를 확인할 수 없는 시장 서술은 제외했습니다. 아래 공통 시장 근거를 확인하십시오."
                 if language == "ko" else
                 "### 4. Market Analysis\n\nMarket narrative with unresolved citations was omitted. Consult the shared market evidence below.")
