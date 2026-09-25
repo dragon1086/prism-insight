@@ -75,8 +75,13 @@ def add_shared_context(agent, reference, news, language="ko"):
                           (boundary + '<shared_news>\n' + news + '\n</shared_news>' if news else ''))
 
 
-def evidence_appendix(section_reports, language="ko", technical_reference="", financial_reference=""):
-    """Move complete evidence blocks after the prose, without deleting or rewriting them."""
+def evidence_appendix(section_reports, language="ko", technical_reference="", financial_reference="",
+                      competitive_records=True):
+    """Move complete evidence blocks after the prose, without deleting or rewriting them.
+
+    ``competitive_records=False`` (US) leaves model Competitive Evidence records alone:
+    that market publishes a deterministic peer table instead of the model records.
+    """
     public = dict(section_reports)
     blocks = []
     if financial_reference:
@@ -88,7 +93,7 @@ def evidence_appendix(section_reports, language="ko", technical_reference="", fi
         public['price_volume_analysis'] = price[:-len(technical_reference)].rstrip()
         blocks.append(technical_reference)
     heading = re.compile(r'^(#{3,4})[ \t]+Competitive Evidence(?: Handoff)?[ \t]*$', re.MULTILINE)
-    for section in ('company_overview', 'news_analysis'):
+    for section in (('company_overview', 'news_analysis') if competitive_records else ()):
         if section not in public:
             continue
         source = public.get(section, '')
@@ -107,5 +112,8 @@ def evidence_appendix(section_reports, language="ko", technical_reference="", fi
         for start, end in reversed(ranges):
             source = source[:start] + source[end:]
         public[section] = source
-    title = '## 부록: 출처와 비교 근거 기록' if language == 'ko' else '## Appendix: source and comparison records'
+    if competitive_records:
+        title = '## 부록: 출처와 비교 근거 기록' if language == 'ko' else '## Appendix: source and comparison records'
+    else:
+        title = '## 부록: 출처와 계산 근거 기록' if language == 'ko' else '## Appendix: source and calculation records'
     return public, ('\n\n---\n\n' + title + '\n\n' + '\n\n'.join(blocks) if blocks else '')

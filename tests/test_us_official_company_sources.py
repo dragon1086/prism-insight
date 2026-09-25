@@ -371,3 +371,29 @@ def test_sec_contact_header_not_sent_to_company_websites(monkeypatch):
     sources._fetch('https://newsroom.issuer.test/', company_domains=('issuer.test',))
     sources._fetch('https://data.sec.gov/submissions/CIK0001022079.json')
     assert 'SEC-only' not in captured[0] and captured[1] == 'SEC-only configured fixture contact'
+
+
+def _release_site(dates):
+    """Listing page linking to one results release per date (newest-first link priority)."""
+    base = 'https://issuer.test/'
+    links = ''.join(f'<a href="{base}{d}-results">Company Reports Quarter Financial Results</a>' for d in dates)
+    pages = {base: links}
+    for d in dates:
+        pages[f'{base}{d}-results'] = RELEASE.replace('July 23, 2026', d)
+    return base, pages
+
+
+def test_stale_issuer_release_older_than_400_days_is_not_current_evidence():
+    base, pages = _release_site(['2022-05-05'])
+    fetch = lambda url: (pages[url].encode(), url)
+    assert sources._discover_company_release(base, date(2026, 9, 25), fetch, ('issuer.test',)) is None
+
+
+def test_most_recent_qualifying_issuer_release_wins():
+    base, pages = _release_site(['2025-12-01', '2025-11-02', '2022-05-05'])
+    fetch = lambda url: (pages[url].encode(), url)
+    found = sources._discover_company_release(base, date(2026, 9, 25), fetch, ('issuer.test',))
+    assert found['publication_date'] == '2025-12-01'
+    base, pages = _release_site(['2026-08-06'])
+    fetch = lambda url: (pages[url].encode(), url)
+    assert sources._discover_company_release(base, date(2026, 9, 25), fetch, ('issuer.test',))['publication_date'] == '2026-08-06'

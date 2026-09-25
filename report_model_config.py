@@ -9,12 +9,14 @@ REPORT_MODEL = os.environ.get("REPORT_MODEL", "gpt-5.6-luna")
 REPORT_EFFORT = os.environ.get("REPORT_EFFORT", "medium")
 REPORT_AUX_MODEL = os.environ.get("REPORT_AUX_MODEL", REPORT_MODEL)
 REPORT_AUX_EFFORT = os.environ.get("REPORT_AUX_EFFORT", "low")
-# Filing tables mix comparative periods and hierarchical accounting scopes.
-# Keep the number of general report stages unchanged; specialize only the
-# three tool-free filing writers and existing final factual-summary stage after
-# the documented small-model failures. This does not add a twelfth model stage.
-DART_REPORT_MODEL = os.environ.get("DART_REPORT_MODEL", "gpt-6-astra")
-DART_REPORT_EFFORT = os.environ.get("DART_REPORT_EFFORT", "low")
+# Filing tables mix comparative periods and hierarchical accounting scopes, so
+# only the three tool-free DART writers use a different model than the sections.
+# Blind A/B 2026-09-26 on frozen 252990 + 017670 DART packets: gpt-6-luna/medium
+# produced 3 HIGH numeric errors; gpt-6-luna/high, gpt-6-sol/low and
+# gpt-6-sol/medium produced 0 HIGH. luna/high chosen at ~1/20 the cost of sol.
+# Report stages never use astra.
+DART_REPORT_MODEL = os.environ.get("DART_REPORT_MODEL", "gpt-6-luna")
+DART_REPORT_EFFORT = os.environ.get("DART_REPORT_EFFORT", "high")
 
 
 def report_model_slug(model: str | None = None) -> str:

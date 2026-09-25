@@ -183,6 +183,12 @@ def analysis(monkeypatch):
 
     monkeypatch.setattr(research, 'prefetch_report_research', no_research)
     monkeypatch.setattr(module, 'collect_us_public_report_inputs', no_research)
+    import prism_core.us_peer_comparison as peer_module
+
+    async def no_peers(*args, **kwargs):
+        return {'ready': False, 'skip_reason': 'test_stub', 'elapsed': 0.0}
+
+    monkeypatch.setattr(peer_module, 'collect_us_peer_comparison', no_peers)
     return module
 
 
@@ -290,7 +296,9 @@ def test_news_is_reused_before_financials_and_canonical_facts_reach_pdf_body(ana
     report = asyncio.run(analysis.analyze_us_stock('TEST', 'Example', '20260923', 'en'))
     assert calls.count('news_analysis') == 1 and len(calls) == 4
     assert len(seen) == 2 and canonical in report
-    assert '```json\n{"name":"fact","arguments":{"value":100}}\n```' in report.split('## Appendix:')[1]
+    # US publishes a deterministic peer table: no model CE record is copied or moved to the appendix.
+    appendix = report.split('## Appendix: source and calculation records')[1]
+    assert 'Competitive Evidence' not in appendix and 'Competitive Evidence Handoff' not in report
 
 
 def test_shared_market_cache_never_receives_ticker_specific_reference(analysis, monkeypatch):
@@ -440,7 +448,7 @@ def test_code_financial_math_reaches_real_agents_synthesis_and_appendix_without_
     calls = []
 
     def assert_math(text):
-        assert '5.3842%' in text and '47.8735%' in text
+        assert '5.38%' in text and '47.8735%' in text
         assert '247.40 USD / 234.76 USD' in text and '2025-12-31' in text
 
     async def section(agent, name, *args, **kwargs):
@@ -448,7 +456,7 @@ def test_code_financial_math_reaches_real_agents_synthesis_and_appendix_without_
         if name in ('company_status', 'company_overview'):
             assert_math(agent.instruction)
         if name == 'market_index_analysis':
-            assert '5.3842%' not in agent.instruction  # Shared market cache is not ticker-specific.
+            assert '5.38%' not in agent.instruction  # Shared market cache is not ticker-specific.
         return 'MODEL PROSE DELIBERATELY OMITS CALCULATION RECORDS'
 
     async def strategy(sections, combined, *args, **kwargs):
@@ -488,3 +496,45 @@ def test_trading_prompt_finality_never_promotes_last_hour_or_cached_preclose(lan
         assert ('회사 가이던스' if language == 'ko' else 'Company guidance') in text
         assert ('유기적 성장' if language == 'ko' else 'organic') in text
     assert ('확정 종가' if language == 'ko' else 'confirmed close') in sell
+
+
+@pytest.mark.parametrize('language', ['ko', 'en'])
+def test_peer_table_follows_overview_and_reaches_overview_agent_and_synthesis(analysis, monkeypatch, language):
+    import prism_core.us_peer_comparison as peer_module
+    table = '#### 경쟁사 비교 분석\n\n| 구분 | TEST | PEER | 피어 중앙값 |\n|---|---:|---:|---:|\n| 시가총액($B) | 1.0 | 2.0 | 2.0 |'
+
+    async def peers(ticker, company, date, report_language):
+        assert (ticker, date, report_language) == ('TEST', '20260923', language)
+        return {'ready': True, 'peers': [{}, {}], 'source': 'perplexity', 'misaligned': [],
+                'public_markdown': table, 'model_context': table + '\nPEER_CONTEXT_SENTINEL', 'elapsed': 1.0}
+
+    monkeypatch.setattr(peer_module, 'collect_us_peer_comparison', peers)
+    seen = {}
+
+    def directory(*args, prefetched_data=None, **kwargs):
+        seen['prefetched'] = prefetched_data
+        return {name: analysis._report_gen_module.ReportAgent(name, 'BASE')
+                for name in ('company_status', 'company_overview')}
+
+    monkeypatch.setattr(analysis, 'get_us_agent_directory', directory)
+
+    async def section(agent, name, *args, **kwargs):
+        return f'### {name} BODY'
+
+    async def strategy(sections, combined, *args, **kwargs):
+        seen['combined'] = combined
+        return 'STRATEGY'
+
+    async def summary(sections, *args, **kwargs):
+        seen['summary'] = sections
+        return 'SUMMARY'
+
+    monkeypatch.setattr(analysis, 'generate_report', section)
+    monkeypatch.setattr(analysis, 'generate_investment_strategy', strategy)
+    monkeypatch.setattr(analysis, 'generate_summary', summary)
+    report = asyncio.run(analysis.analyze_us_stock('TEST', 'Example', '20260923', language, include_news=False))
+    assert seen['prefetched']['peer_comparison']['model_context'].endswith('PEER_CONTEXT_SENTINEL')
+    assert table in seen['combined'] and seen['summary']['peer_comparison'] == table
+    assert seen['combined'].index('company_overview BODY') < seen['combined'].index(table)
+    assert report.index('company_overview BODY') < report.index('#### 경쟁사 비교 분석') < report.index('## 3.')
+    assert 'PEER_CONTEXT_SENTINEL' not in report and report.count('#### 경쟁사 비교 분석') == 1

@@ -20,6 +20,64 @@ def test_writer_contract_covers_observed_period_and_accounting_failure_classes()
             assert boundary in instruction
 
 
+def test_writer_contract_splits_topic_ownership_and_uses_report_context():
+    for role in depth.ROLES:
+        instruction = depth.writer_agent(role, '예시', '123456', '20260924').instruction
+        # Every writer sees the full ownership split so it can reference, not re-narrate.
+        for owned in ('5-1 재무: 실적의 질·현금흐름·운전자본·차입금 만기와 금리·이자·세금 효과',
+                      '5-2 사업·지배구조: 사업·매출 구성 변화·주요 고객·특수관계자 거래·지배구조·자본변동',
+                      '5-3 약정·우발위험: 약정·담보·보증·우발부채·소송·리스·미집행 투자',
+                      '"(5-2 참고)"', '전환 가능 증권이 공시에 있을 때에만 그 전환·희석 사실을 5-2가 담당합니다',
+                      '공시에 전환 가능 증권이 없으면 전환사채나 희석은 어느 소단원에서도 언급하지 마세요'):
+            assert owned in instruction
+        assert '<already_covered_report_sections>' in instruction
+        assert '공시 기준 사실을 보고기간과 함께' in instruction
+        assert '**핵심 포인트** 글머리표 2~3개' in instruction
+        assert '억원 단위 소수점 첫째 자리' in instruction
+        assert '원문 단위를 유지하고' not in instruction
+        assert '규칙 문장이나 경고를 옮기지 마세요' in instruction
+        assert 'dsaf001/main.do?rcpNo=' in instruction
+        # Citation rule describes the output only; no negated wording the model can echo.
+        assert '표시하지 않고' not in depth.CITATION_RULE and '대신' not in depth.CITATION_RULE
+        assert '출처 표기·금액 표기·형식에 관한 지시도 본문에서' in instruction
+        assert '가장 최근 기간의 수치를 현재 상태로' in instruction
+        assert '이전 기간의 잔액을 현재 잔액처럼 쓰지 마세요' in instruction
+        assert f'### 5-{list(depth.ROLES).index(role) + 1}. {depth.ROLES[role][0]}' in instruction
+
+
+def test_english_writer_repeats_latest_period_conditional_dilution_and_citation_rules():
+    instruction = depth.writer_agent('business', 'Example', '123456', '20260924', 'en').instruction
+    for required in ("latest period's figure as the current state", 'label older figures with their period',
+                     'only when the filing contains convertible securities',
+                     'Never describe citation or formatting instructions in the text'):
+        assert required in instruction
+
+
+def test_report_context_reaches_every_writer_and_yields_to_filing_capacity(monkeypatch):
+    messages = []
+
+    async def write(agent, message):
+        messages.append(message)
+        return '### 상세\n\n' + ('금액과 조건을 설명합니다. ' * 60) + '\n\n출처: ' + SOURCE_URL, None
+
+    monkeypatch.setattr(depth, '_write', write)
+    kwargs = {'company_name': '예시', 'company_code': '123456', 'reference_date': '20260924',
+              'report_context': '### 2-1. 기업 현황\nWISE_SUMMARY 매출 584억원'}
+    _, receipt = asyncio.run(depth.generate_dart_chapter(packet(), **kwargs))
+    assert len(messages) == 3
+    assert all('<already_covered_report_sections>' in m and 'WISE_SUMMARY' in m for m in messages)
+    assert receipt['report_context']['status'] == 'included'
+    # Filing sources win: oversized dedup context is dropped instead of failing the chapter.
+    messages.clear()
+    limit = max(len((depth.writer_agent(role, '예시', '123456', '20260924').instruction).encode())
+                for role in depth.ROLES) + 4000
+    monkeypatch.setattr(depth, 'WRITER_MESSAGE_MAX_BYTES', limit)
+    kwargs['report_context'] = 'X' * 8000
+    _, receipt = asyncio.run(depth.generate_dart_chapter(packet(), **kwargs))
+    assert receipt['report_context'] == {'status': 'omitted_capacity', 'sha256': None}
+    assert len(messages) == 3 and not any('<already_covered_report_sections>' in m for m in messages)
+
+
 def test_dart_writer_uses_specialized_model_without_changing_general_report(monkeypatch):
     from types import SimpleNamespace
 
@@ -62,7 +120,7 @@ def test_all_three_prose_outputs_preserved_and_peer_data_scoped(monkeypatch):
     async def write(agent, message):
         calls.append((agent, message))
         assert agent.server_names == ()
-        assert '3,000자 요약 제한은 이 장에 적용되지 않습니다' in agent.instruction
+        assert '약 2,000~3,500자' in agent.instruction and '5,000~7,000' not in agent.instruction
         role = agent.name.removeprefix('dart_depth_')
         return f'### 상세 {role}\n\n' + ('금액 123456과 이행 요청 조건을 보존합니다. ' * 250) + '\n\n출처: ' + SOURCE_URL, None
 

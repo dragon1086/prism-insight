@@ -7,64 +7,43 @@ from types import SimpleNamespace
 import pytest
 
 
-@pytest.fixture(params=["kr", "us"])
-def market_factory(request):
+def _factory(market):
     root = Path(__file__).resolve().parents[1]
-    path = root / ("prism-us/" if request.param == "us" else "") / "cores/agents/news_strategy_agents.py"
+    path = root / ("prism-us/" if market == "us" else "") / "cores/agents/news_strategy_agents.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     tree.body = [node for node in tree.body if not isinstance(node, (ast.Import, ast.ImportFrom))]
     namespace = {"Agent": SimpleNamespace}
     exec(compile(tree, str(path), "exec"), namespace)
-    name = "create_us_news_analysis_agent" if request.param == "us" else "create_news_analysis_agent"
-    return request.param, namespace[name]
+    return namespace["create_us_news_analysis_agent" if market == "us" else "create_news_analysis_agent"]
+
+
+# Neither market asks the news agent for Competitive Evidence records: KR and US competitor
+# figures come from the deterministic peer tables (kr_peer_comparison / us_peer_comparison).
+@pytest.fixture(params=["kr", "us"])
+def market_factory(request):
+    return request.param, _factory(request.param)
 
 
 @pytest.mark.parametrize("language", ["ko", "en"])
-def test_news_preserves_listing_cache_shape_and_bounded_source_reuse(market_factory, language):
-    market, factory = market_factory
-    agent = factory("Example", "TEST", "20260910", language=language)
+def test_kr_news_has_no_competitive_evidence_contract(language):
+    agent = _factory("kr")("Example", "TEST", "20260910", language=language)
     prompt = agent.instruction
     assert agent.server_names == ["perplexity", "firecrawl"]
-    assert "maxAge: 7200000" in prompt
-    assert ("finance.yahoo.com/quote/TEST/news" if market == "us" else "finance.naver.com/item/news.naver?code=TEST") in prompt
+    assert "maxAge: 7200000" in prompt and "finance.naver.com/item/news.naver?code=TEST" in prompt
     assert "### 3." in prompt and "#### " in prompt
-    for required in ("at most 2 consolidated", "at most 2 additional", "Reuse", "public primary", "never invent URLs", "only if", "publication_date"):
-        assert required in prompt
-
-
-@pytest.mark.parametrize("language", ["ko", "en"])
-def test_competitive_records_separate_claims_and_missingness(market_factory, language):
-    _, factory = market_factory
-    prompt = factory("Example", "TEST", "20260910", language=language).instruction
-    for required in ("#### Competitive Evidence", "sector_tailwind", "price_leadership", "business_competitive_position", "field", "type", "entity", "peer_universe", "metric", "value", "period", "geography", "unit", "source", "status", "excerpt", "SOURCE_CHECKED", "SEARCH_ONLY", "NOT_FOUND", "INCOMPARABLE", "not a guarantee", "subsidiary", "decision timestamp"):
-        assert required in prompt
-
-
-@pytest.mark.parametrize("language", ["ko", "en"])
-def test_company_growth_and_price_rallies_do_not_prove_sector_demand(market_factory, language):
-    _, factory = market_factory
-    prompt = factory("Example", "TEST", "20260910", language=language).instruction
-    for required in ("sector-wide demand/supply", "company's revenue growth or revenue mix",
-                     "company operating fact", "without forcing", "Peer share-price rallies",
-                     "not evidence of customer demand", "sector_tailwind UNKNOWN",
-                     "check every record's metric against its type"):
-        assert required in prompt
-
-
-@pytest.mark.parametrize("language", ["ko", "en"])
-def test_trend_conclusion_preserves_segment_directions_and_resolvable_citations(market_factory, language):
-    _, factory = market_factory
-    prompt = factory("Micron", "MU", "20260918", language=language).instruction
-    for required in ("same segment, metric and pair", "for the same entity",
-                     "start/end values", "do not assume the directions are opposite", "common denominator",
-                     "summaries and conclusions", "exact public source URLs",
-                     "Never emit undefined symbolic", "may accompany, not replace, URLs"):
-        assert required in prompt
-    for forbidden in ("[YahooFinance:", "[Perplexity:", "[NaverFinance:", "[네이버금융:",
-                      "rising DRAM share and falling HBM share"):
+    for forbidden in ("Competitive Evidence", "SOURCE_CHECKED", "SEARCH_ONLY", "NOT_FOUND", "INCOMPARABLE",
+                      "peer_universe", "sector_tailwind", "price_leadership", "business_competitive_position",
+                      "Query 1 is REQUIRED"):
         assert forbidden not in prompt
-
-
+    for required in (("경쟁사 수치 비교는 별도 경쟁사 비교 표가 담당", "최대 2회", "최대 2개", "20260910",
+                      "URL을 만들지", "정의되지 않은 기호형 출처 별칭")
+                     if language == "ko" else
+                     ("separate competitor comparison table", "at most 2 consolidated", "at most 2 cited",
+                      "20260910", "Never invent URLs", "undefined symbolic citation aliases")):
+        assert required in prompt
+    for forbidden in ("firecrawl 1회만", "추가 스크랩 금지", "Perplexity 답변만으로", "필수 - Perplexity 사용",
+                      "firecrawl 1 call only", "Mandatory - Use Perplexity"):
+        assert forbidden not in prompt
 @pytest.mark.parametrize("language", ["ko", "en"])
 def test_no_old_verification_prohibitions_remain(market_factory, language):
     _, factory = market_factory
@@ -81,27 +60,17 @@ def test_us_social_prefetch_still_does_not_trigger_duplicate_calls(market_factor
         assert "do not make extra tool calls for social sentiment" in prompt
 
 
-@pytest.mark.parametrize("language", ["ko", "en"])
-def test_required_discovery_is_not_waived_by_listing_profile_or_social(market_factory, language):
-    market, factory = market_factory
-    kwargs = {"prefetched_social_sentiment": "positive social snapshot"} if market == "us" else {}
-    prompt = factory("Holding Example", "TEST", "20260910", language=language, **kwargs).instruction
-    for required in ("Query 1 is REQUIRED", "at invocation", "complete, comparable", "news listing", "basic company profile", "social sentiment", "does not waive", "target business scope", "appropriate peer_universe", "business_competitive_position", "holding-company peers", "subsidiary business"):
-        assert required in prompt
-    assert "No blanket mandatory search" not in prompt
-
 
 @pytest.mark.parametrize("language", ["ko", "en"])
-def test_source_status_requires_relevant_original_content_and_audit_reason(market_factory, language):
-    _, factory = market_factory
-    prompt = factory("Example", "TEST", "20260910", language=language).instruction
-    for required in ("exact cited page", "actually opened", "Perplexity answer", "unrelated listing", "NOT_FOUND", "attempted", "unqueried", "not a runtime proof", "unresolved material"):
-        assert required in prompt
-
-
-@pytest.mark.parametrize("language", ["ko", "en"])
-def test_price_leadership_is_stock_rs_and_peer_rank_requires_comparability(market_factory, language):
-    _, factory = market_factory
-    prompt = factory("Example", "TEST", "20260910", language=language).instruction
-    for required in ("share-price relative return or RS", "window and peer_universe", "not product pricing or cost leadership", "business_competitive_position", "rank or strongest", "comparable metric", "covered peers", "different fiscal periods", "company strength", "comparison INCOMPARABLE"):
-        assert required in prompt
+def test_us_news_has_no_competitive_evidence_contract(language):
+    factory = _factory("us")
+    agent = factory("Example", "TEST", "20260910", language=language)
+    prompt = agent.instruction
+    assert agent.server_names == ["perplexity", "firecrawl"]
+    assert "finance.yahoo.com/quote/TEST/news" in prompt and "maxAge: 7200000" in prompt
+    assert "### 3." in prompt and "#### " in prompt
+    for forbidden in ("Competitive Evidence", "SOURCE_CHECKED", "SEARCH_ONLY", "peer_universe",
+                      "at most 2 consolidated", "COMPETITIVE_EVIDENCE"):
+        assert forbidden not in prompt
+    assert ("최대 2개" if language == "ko" else "at most 2 original article URLs") in prompt
+    assert ("경쟁사 비교표" if language == "ko" else "peer comparison table") in prompt

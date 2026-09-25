@@ -210,8 +210,9 @@ def _registration(registration, state_root):
             or case["codex"]["revision"] != reg.revision
             or case["codex"]["settings_sha256"] != hashlib.sha256(reg.settings_json.encode()).hexdigest()
             or case["codex"]["expected_request"] != {**settings, "timeout": reg.model_deadline}
-            or inputs["controls"] != {"market": case["market"], "model": settings["model"],
-                                       "effort": settings["reasoning_effort"], "timeout": reg.model_deadline}):
+            or {k: v for k, v in inputs["controls"].items() if k != "report_depth"} != {
+                "market": case["market"], "model": settings["model"],
+                "effort": settings["reasoning_effort"], "timeout": reg.model_deadline}):
         raise CaseRejected("case_registration_mismatch")
     if state_root.is_relative_to(reg.binding.model_root) or reg.binding.model_root.is_relative_to(state_root):
         raise CaseRejected("supervisor_state_must_remain_private")

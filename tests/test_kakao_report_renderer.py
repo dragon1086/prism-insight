@@ -105,6 +105,29 @@ def test_list_structure_survives_as_a_bullet_character():
     assert "· 둘째 항목" in text
 
 
+def test_bold_lead_in_summary_stays_inside_the_lifted_section():
+    """The executive summary uses bold lead-ins, not headings, so it is lifted whole."""
+
+    summary = (
+        "## 핵심 요약\n\n"
+        "**한 줄 결론** 실적 개선 기대가 주가에 먼저 반영되고 있습니다.\n\n"
+        "**숫자 뒤에 숨은 이야기**\n"
+        "- 겉으로 보면 부채가 줄었지만, 전환사채 전환으로 주식 수가 늘었습니다.\n\n"
+        "**앞으로 확인할 것** 다음 분기 실적 발표를 확인할 필요가 있습니다.\n\n"
+        "## 1. 기술적 분석\n\n"
+        "여기는 카드에 나오면 안 되는 본문입니다.\n"
+    )
+    response = render_report_delivery(
+        delivery("analysis_result", result_payload(summary=summary))
+    )
+
+    text = outputs(response)[0]["simpleText"]["text"]
+    assert "한 줄 결론 실적 개선 기대가" in text
+    assert "· 겉으로 보면 부채가 줄었지만" in text
+    assert "앞으로 확인할 것 다음 분기" in text
+    assert "**" not in text and "나오면 안 되는" not in text
+
+
 def test_summary_is_truncated_within_the_simple_text_limit():
     long_summary = "가" * 5_000
     response = render_report_delivery(

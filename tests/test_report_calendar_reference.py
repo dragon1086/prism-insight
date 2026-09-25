@@ -13,8 +13,8 @@ from prism_core.kr_report_context import (
 
 @pytest.mark.parametrize('language', ['ko', 'en'])
 def test_local_calendar_fact_reaches_each_writer_and_synthesis_unchanged(language):
-    from cores.report_fact_editor import _calendar_context
-    calendar = _calendar_context('20260925')
+    from cores.report_calendar import calendar_context
+    calendar = calendar_context('20260925')
     assert calendar == {'reference_date': '2026-09-25', 'calendar': 'XKRX', 'is_session': False}
     packet = {'report_calendar_context': calendar}
     expected = render_calendar_reference(calendar, language)
@@ -60,14 +60,28 @@ def test_latest_ma_alignment_is_not_evidence_that_all_slopes_rise(market):
     assert '기울기가 모두 상승' in text
 
 
-def test_actual_recovery_uses_same_calendar_reference_for_market_and_stock(monkeypatch):
-    from test_report_specialist_recovery import setup_case, execute
-    calendar = {'calendar': 'XKRX', 'reference_date': '2026-09-25', 'is_session': False}
-    case = setup_case(monkeypatch, ('company_status', 'market_index_analysis'))
-    case[2]['report_calendar_context'] = calendar
-    execute(case)
-    for _, message in case[-1]:
-        assert render_calendar_reference(calendar) in message['frozen_evidence']
+def test_existing_local_calendar_recognizes_closed_and_open_dates():
+    from cores.report_calendar import calendar_context
+    assert calendar_context('20260924') == {
+        'reference_date': '2026-09-24', 'calendar': 'XKRX', 'is_session': False}
+    assert calendar_context('2026-09-23')['is_session'] is True
+
+
+@pytest.mark.parametrize('date', ['invalid', '20260230', '2026-9-24', None])
+def test_invalid_calendar_date_remains_unavailable(date):
+    from cores.report_calendar import calendar_context
+    assert calendar_context(date)['is_session'] is None
+
+
+def test_calendar_failure_is_unknown_not_closed(monkeypatch):
+    import pandas_market_calendars as mcal
+    from cores.report_calendar import calendar_context
+
+    def unavailable(*args, **kwargs):
+        raise RuntimeError('local calendar unavailable')
+
+    monkeypatch.setattr(mcal, 'get_calendar', unavailable)
+    assert calendar_context('20260924')['is_session'] is None
 
 
 def test_actual_orchestrator_collects_local_calendar_before_agent_creation(monkeypatch):

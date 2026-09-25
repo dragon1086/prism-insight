@@ -210,7 +210,8 @@ def create_company_status_agent(company_name, company_code, reference_date, urls
     )
 
 
-def create_company_overview_agent(company_name, company_code, reference_date, urls, language: str = "ko"):
+def create_company_overview_agent(company_name, company_code, reference_date, urls, language: str = "ko",
+                                  peer_table: str = ""):
     """Create company overview analysis agent
 
     Args:
@@ -219,6 +220,7 @@ def create_company_overview_agent(company_name, company_code, reference_date, ur
         reference_date: Analysis reference date (YYYYMMDD)
         urls: WiseReport URL dictionary
         language: Language code ("ko" or "en")
+        peer_table: Pre-collected WiseFn competitor table (markdown), or "" when unavailable
 
     Returns:
         Agent: Company overview analysis agent
@@ -373,13 +375,12 @@ def create_company_overview_agent(company_name, company_code, reference_date, ur
                         ##분석일: {reference_date}(YYYYMMDD 형식)
                         """
 
-    competitors_url = urls.get("경쟁사분석") or "URL_UNAVAILABLE"
     industry_url = urls.get("업종분석") or "URL_UNAVAILABLE"
     if language == "en":
         instruction += f"""
                         ## CAN SLIM Leadership Evidence and Bounded Supplement
                         - Prioritize business competitiveness and comparable peer evidence over address/contact/personnel detail; preserve existing sections.
-                        - Supplement only if missing: when the overview lacks peer comparison or leadership evidence, read the provided competitor URL {competitors_url}, then industry URL {industry_url} only if evidence is still missing. Read at most 2 supplemental pages, once each, for missing facts only. Stop when sufficient; no recursive searches or new providers.
+                        - Supplement only if missing: when the overview lacks leadership evidence, read the industry URL {industry_url}. Read at most 1 supplemental page, once, for missing facts only. Stop when sufficient; no recursive searches or new providers. Competitor comparison comes only from the pre-collected peer section below; do not crawl a competitor page.
                         - URL_UNAVAILABLE means skip that page; do not invent URLs. If evidence remains absent or inaccessible, record UNKNOWN and the missing evidence, not a confident conclusion.
                         - Report industry_leadership (business/earnings/market-share leadership), price_RS (relative price strength), and sector_tailwind (sector environment) separately. One does not establish another. UNKNOWN is neither a leader pass nor a non-leader fail; do not manufacture a trading verdict or score.
                         - Before claiming a rank/leader position, state the peer universe, comparable metric and units, period, data/publication date and source URL. Small selected peer lists do not establish a whole-market rank. No comparable peer evidence means leadership UNKNOWN.
@@ -390,12 +391,49 @@ def create_company_overview_agent(company_name, company_code, reference_date, ur
         instruction += f"""
                         ## CAN SLIM 리더 근거와 제한적 보완
                         - 주소·연락처·인원 세부 설명보다 사업 경쟁력과 비교 가능한 동종 기업 근거를 우선 확보하고 기존 섹션을 유지하세요.
-                        - 기업개요에서 비교군 또는 리더 근거가 누락된 경우에만 제공된 경쟁사분석 URL {competitors_url}을 조회하고, 여전히 근거가 부족할 때 업종분석 URL {industry_url}을 조회하세요. 누락 항목에 한해 최대 2개 보완 페이지를 각각 1회 조회하세요. 근거가 충분하면 중단하고 재귀 검색이나 새 제공자는 사용하지 마세요.
+                        - 기업개요에서 리더 근거가 누락된 경우에만 업종분석 URL {industry_url}을 조회하세요. 누락 항목에 한해 최대 1개 보완 페이지를 1회 조회하세요. 근거가 충분하면 중단하고 재귀 검색이나 새 제공자는 사용하지 마세요. 경쟁사 비교는 아래 사전 수집된 경쟁사 자료만 사용하고 경쟁사 페이지를 따로 조회하지 마세요.
                         - URL_UNAVAILABLE인 페이지는 건너뛰고 URL을 추측하지 마세요. 접근 실패 또는 근거가 여전히 없으면 UNKNOWN과 부족한 근거를 명시하고 단정하지 마세요.
                         - 사업·실적·시장점유율 기준 산업 리더(industry_leadership), 주가 상대강도(price_RS), 업종 환경(sector_tailwind)을 각각 구분하세요. 하나로 다른 항목을 입증할 수 없습니다. UNKNOWN을 리더 통과나 비리더 탈락으로 해석하지 말고 매매 판정·점수를 임의로 만들지 마세요.
                         - 순위나 리더 위치를 주장하려면 비교군, 비교 가능한 지표·단위, 기간, 데이터 기준일·공시일, 출처 URL을 명시하세요. 일부 선택된 경쟁사 목록만으로 전체 시장 순위를 주장하지 마세요. 비교 가능한 근거가 없으면 리더 여부는 UNKNOWN입니다.
                         - 재무 비교는 분기/연간/누적, 실적/추정(actual/estimate), 연결/별도(consolidated/separate)를 구분하세요. {reference_date}까지 알려진 근거만 사용하고 날짜나 기준이 없으면 UNKNOWN으로 남기세요.
                         - 근거의 대상은 {company_name} ({company_code})이어야 합니다. 모회사·자회사·별도 상장 법인을 구분하세요. 자회사의 산업 리더 지위나 수익률로 모회사의 리더 여부·price_RS를 입증하지 말고 보고 법인·회계 범위와 그룹 사업 노출을 구분해서 설명하세요.
+                        """
+
+    if peer_table and language == "en":
+        instruction += f"""
+                        ## Pre-collected Data (Competitor Comparison)
+                        The table below was pre-collected from WiseReport competitor analysis (WiseFn-selected peers). Use it directly; do not make tool calls for competitor data.
+
+{peer_table}
+
+                        ## Position vs Competitors (required)
+                        - Under a "#### Competitive Position Analysis" subheading, write exactly 1 paragraph interpreting {company_name}'s position against these named peers in terms of margins (operating/net), ROE, valuation (PER/PBR) and scale (market cap/revenue).
+                        - Cite only numbers that appear in the table above; do not create or compute new numbers. Do not copy the table itself; it is published separately in the report.
+                        - Note the comparison limit when consolidated and separate bases are mixed. These are selected peers, not a whole-industry ranking or leadership proof.
+                        """
+    elif peer_table:
+        instruction += f"""
+                        ## 사전 수집된 데이터 (경쟁사 비교)
+                        다음 표는 WiseReport 경쟁사분석(WiseFn 선정 비교기업)에서 사전 수집되었습니다. 이 데이터를 직접 사용하세요 - 경쟁사 비교 데이터를 위한 도구 호출을 하지 마세요.
+
+{peer_table}
+
+                        ## 경쟁사 대비 위치 해석 (필수)
+                        - "#### 경쟁사 대비 위치 분석" 소제목 아래 1개 문단으로, 위 표의 비교기업 이름을 직접 언급하며 수익성(영업이익률·순이익률), ROE, 밸류에이션(PER·PBR), 규모(시가총액·매출액) 측면에서 {company_name}의 위치를 해석하세요.
+                        - 수치는 위 표에 있는 값만 인용하고 새로운 수치를 만들거나 계산하지 마세요. 표 자체는 보고서에 별도로 실리므로 다시 옮겨 적지 마세요.
+                        - 연결과 별도 재무기준이 섞여 있으면 직접 비교의 한계를 밝히세요. 선정된 비교기업 기준이므로 전체 업종 순위나 리더 지위로 단정하지 마세요.
+                        """
+    elif language == "en":
+        instruction += """
+                        ## Competitor Comparison Unavailable
+                        - No verified competitor table was collected for this report. Do not crawl competitor pages.
+                        - Describe the competitive landscape only qualitatively from sources you read; never state peer financial figures or ranks.
+                        """
+    else:
+        instruction += """
+                        ## 경쟁사 비교 자료 부재
+                        - 이번 보고서에서는 검증된 경쟁사 비교표를 확보하지 못했습니다. 경쟁사 페이지를 추가로 조회하지 마세요.
+                        - 경쟁 구도는 조회한 자료의 정성적 설명으로만 다루고, 비교기업의 재무 수치나 순위를 만들어내지 마세요.
                         """
 
     return Agent(

@@ -762,6 +762,10 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
     instruction += buy_scenario_prompt_contract(language)
     from prism_core.kr_flow_evidence import kr_flow_interpretation_contract
     instruction += kr_flow_interpretation_contract(language)
+    from prism_core.buy_report_depth_evidence import apply_buy_report_depth_evidence
+    instruction = apply_buy_report_depth_evidence(
+        instruction, market="KR", language="en" if language == "en" else "ko"
+    )
 
     return Agent(
         name="trading_scenario_agent",

@@ -1472,6 +1472,9 @@ class USStockTrackingAgent:
             ticker_tag = ticker or "?"
             from prism_core.report_research_context import market_context_for_buy
             prompt_message += market_context_for_buy(getattr(self, "_pipeline_market_context", None))
+            from prism_core.buy_report_depth_evidence import report_depth_evidence_active
+            depth_on = report_depth_evidence_active(getattr(self.trading_agent, "instruction", ""))
+            logger.info(f"[BUY_REPORT_DEPTH] enabled={str(depth_on).lower()} ticker={ticker_tag}")
             scenario_json = None
             codex_enabled = os.environ.get(
                 "PRISM_US_CODEX_FAST_TRADING", "0"

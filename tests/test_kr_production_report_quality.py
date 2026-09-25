@@ -124,7 +124,6 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
         return None
     monkeypatch.setattr(official, 'collect_kr_official_report_inputs', collect)
     monkeypatch.setattr(research, 'prefetch_report_research', no_research)
-    monkeypatch.setattr(analysis, '_report_stock_names', lambda: {'111111': '비교기업'})
     monkeypatch.setattr(analysis, 'get_chart_as_base64_html', lambda *a, **k: '')
     monkeypatch.setattr(capabilities, 'vision_available', lambda: False)
     monkeypatch.setattr(capabilities, 'vision_buy_quality_active', lambda: False)
@@ -134,21 +133,25 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
     monkeypatch.chdir(work)
     analysis._market_analysis_cache.clear()
     model_calls, peer_calls = [], []
-    evidence = ('#### Competitive Evidence\n'
-                '- **peer_universe:** 비교기업 / **source:** https://example.com/source')
     async def base(agent, section, *args):
         model_calls.append(section)
-        return '### 기본 분석\n' + (evidence if section == 'news_analysis' else '기본 사실')
-    async def peer_collect(ticker, company, candidates, reference_date):
-        peer_calls.append(candidates)
-        return {'public_markdown': '### 동종기업 비교\nPEER 9.23배', 'model_context': 'PEER 9.23배'}
-    monkeypatch.setattr(peers, 'collect_peer_comparison', peer_collect)
+        # The Industry Analyst receives the pre-collected peer table; others do not.
+        assert ('PEER 9.23배' in agent.instruction) is (section == 'company_overview')
+        # KR news no longer carries the model Competitive Evidence record contract.
+        assert 'Competitive Evidence' not in agent.instruction
+        return '### 기본 분석\n기본 사실'
+    async def peer_collect(ticker, company, reference_date):
+        peer_calls.append((ticker, company, reference_date))
+        return {'ready': True, 'peers': [{}, {}], 'period': '2025/12', 'skip_reason': None,
+                'public_markdown': '#### 경쟁사 비교 분석\n\nPEER 9.23배', 'model_context': 'PEER 9.23배'}
+    monkeypatch.setattr(peers, 'collect_wisereport_peers', peer_collect)
     authored = {}
     async def write(agent, message):
         role = agent.name.removeprefix('dart_depth_')
         model_calls.append(role)
         assert 'WHOLE_SOURCE_' + role in message
         assert ('PEER 9.23배' in message) is (role == 'business')
+        assert '<already_covered_report_sections>\n### 기본 분석\n기본 사실' in message
         text = f'### 상세 분석 {role}\n\n' + (f'{role}의 금액 987.65와 이행 요청 조건 및 남은 약정 한도와 기간을 설명합니다.\n\n' * 180)
         text += '\n\n출처: https://dart.fss.or.kr/report/viewer.do?rcpNo=20260813001728'
         authored[role] = text.strip()
@@ -158,17 +161,12 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
         model_calls.append('strategy')
         assert all(text in combined for text in authored.values())
         assert 'PEER 9.23배' in combined
+        assert 'Competitive Evidence' not in combined
         assert reports['dart_deep_analysis'] in combined
         assert '코스피 20일 평균 3000.00포인트' in combined
         assert '수급 기준 2026-09-22: 외국인 987주' in combined
         assert 'INTERNAL_FLOW_NOT_FOR_PUBLIC_SYNTHESIS' not in combined
         return '\\n\\n### 5-1. 투자 전략\n조건부 의무를 고려한 전략'
-    async def assessed(reports, *args, **kwargs):
-        model_calls.append('assessment')
-        assert all(text in reports['dart_deep_analysis'] for text in authored.values())
-        return dict(reports), None, {'calls': 0}
-    from cores import report_fact_editor
-    monkeypatch.setattr(report_fact_editor, 'assess_report_facts', assessed)
     async def summary(reports, *args, **kwargs):
         model_calls.append('summary')
         if summary_fails:
@@ -182,13 +180,15 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
     monkeypatch.setattr(analysis, 'generate_market_report', base)
     monkeypatch.setattr(analysis, 'generate_investment_strategy', strategy)
     monkeypatch.setattr(analysis, 'generate_summary', summary)
-    if summary_fails:
-        with pytest.raises(ValueError, match='unresolved_fact_conflict'):
-            asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923', require_dart_depth=True))
-        return
     report = asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923', require_dart_depth=True))
-    assert len(model_calls) == 12 and len(peer_calls) == 1
-    assert model_calls.index('assessment') < model_calls.index('strategy')
+    # Summary failure uses the ordinary fallback instead of aborting the report.
+    assert ('요약 생성 중 오류가 발생했습니다.' in report) is summary_fails
+    assert len(model_calls) == 11 and peer_calls == [('017670', 'SK텔레콤', '20260923')]
+    assert report.index('## 2. 펀더멘털 분석') < report.index('#### 경쟁사 비교 분석\n\nPEER 9.23배') < report.index('## 3. 뉴스 분석')
+    # No competitive evidence record, handoff or appendix in the public KR report.
+    for token in ('Competitive Evidence', '경쟁력 비교 근거', 'SEARCH_ONLY', 'sector_tailwind', 'peer_universe',
+                  'Evidence ID', '근거 식별자', '부록: 출처와 비교 근거'):
+        assert token not in report
     assert all(text in report for text in authored.values())
     assert report.index('## 5. DART') < report.index('## 6. 투자 전략')
     assert '### 6-1. 투자 전략' in report and '### 5-1. 투자 전략' not in report
@@ -264,3 +264,16 @@ def test_real_kr_assembly_reaches_synthesis_and_publication_without_extra_models
     assert '12345.67원' in report and '3000.00포인트' in report
     assert ('공시 확인' in report) is (not dart_fails)
     assert 'BAR_FINALITY_UNKNOWN' not in report and 'private transport error' not in report
+
+
+def test_filing_excerpts_stay_with_the_dart_chapter_when_it_can_be_written():
+    packet = inputs()
+    packet['official_dart']['dart_chapter_inputs'] = {'ready': True}
+    agent = ReportAgent('test', 'BASE', ('dart',))
+    for section in ('company_status', 'company_overview', 'news_analysis'):
+        instruction = apply_kr_report_context(agent, section, packet).instruction
+        assert '<provided_filing_evidence>' not in instruction
+        assert packet['official_dart']['section_contexts'][section] not in instruction
+    # Basic reports without a chapter keep the section excerpts.
+    packet['official_dart']['dart_chapter_inputs'] = {'ready': False}
+    assert '123456천원' in apply_kr_report_context(agent, 'company_status', packet).instruction

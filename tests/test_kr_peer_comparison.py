@@ -1,299 +1,250 @@
 import asyncio
+import json
+import re
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from prism_core.kr_peer_comparison import (
-    _day,
-    _plain_fields,
-    collect_peer_comparison,
-    parse_wisereport,
-    render_peer_comparison,
-    select_report_peer_candidates,
+    PEER_LIST_URL,
+    PEER_TABLE_URL,
+    build_peers,
+    collect_wisereport_peers,
+    parse_peer_header,
+    parse_peer_table,
+    render_peer_markdown,
+    select_comparable_peers,
 )
 
-
-def page(code="030200", name="KT", day="2026.09.22", scope="연결"):
-    return f'''<table id="comInfo"><tr><td><span class="cd">{code}</span>
-    <span class="nm_k">{name}</span></td></tr></table>
-    <div><div class="header">시세 [기준:{day}]</div><div class="body">
-    <table id="cTB11"><tr><td>가격</td></tr></table></div></div>
-    <p>주주 기준:2099.01.01</p><div><table>
-    <caption>기업 펀더멘털 실적, 컨센서스</caption><thead><tr>
-    <th>주요지표</th><th>2025/12(A)</th><th>2026/12(E)</th></tr></thead><tbody>
-    <tr><th>PER</th><td>7.73</td><td>9.23</td></tr>
-    <tr><th>EPS</th><td>6,869원</td><td>5,750원</td></tr>
-    <tr><th>PBR</th><td>N/A</td><td></td></tr>
-    <tr><th>현금배당수익률</th><td>4.52%</td><td>4.56%</td></tr>
-    <tr><th>회계기준</th><td colspan="2">{scope}</td></tr></tbody></table>
-    <dl class="annotation"><li>지표 계산 시 주가 : 전 영업일 보통주 수정주가</li>
-    <li>연결 기업의 당기순이익 및 자본총계는 지배주주 기준</li>
-    <li>컨센서스 : 최근 3개월간 증권사에서 발표한 추정치의 평균</li></dl></div>'''
+FIXTURES = Path(__file__).parent / "fixtures" / "wisereport"
+HEADER = (FIXTURES / "cF6001_252990.json").read_text(encoding="utf-8")
+TABLE = (FIXTURES / "cF6002_252990.html").read_text(encoding="utf-8")
+TODAY = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
 
 
-def parsed(**kwargs):
-    return parse_wisereport(page(**kwargs), kwargs.get("code", "030200"),
-                            kwargs.get("name", "KT"), "2026-09-23")
+def peers():
+    companies = parse_peer_header(HEADER)
+    return build_peers(companies, parse_peer_table(TABLE, len(companies)))
 
 
-def test_column_period_unit_and_negative_eps_preserved():
-    result = parsed()
-    assert result["price_date"] == "2026-09-22"
-    assert result["fundamentals_asof"] == ""
-    assert result["facts"][0]["period"] == "2025/12(A)"
-    assert result["facts"][1]["value"] == 9.23
-    eps = next(f for f in result["facts"] if f["metric"] == "EPS")
-    assert eps["value"] == 6869 and eps["unit"] == "원"
-    assert not any(f["metric"] == "PBR" for f in result["facts"])
+def collect(header=HEADER, table=TABLE, code="252990", date=TODAY):
+    async def fetch(url):
+        return header if "cF6001" in url else table
+    return asyncio.run(collect_wisereport_peers(code, "샘씨엔에스", date, fetch=fetch))
 
 
-@pytest.mark.parametrize("change", [
-    lambda s: s.replace('class="cd">030200', 'class="cd">000001'),
-    lambda s: s.replace('class="nm_k">KT', 'class="nm_k">Other'),
-    lambda s: s.replace("2026.09.22", "2026.09.24"),
-    lambda s: s.replace("2026/12(E)", "미상"),
-    lambda s: s.replace('<td>9.23</td>', ''),
+def test_parse_joins_columns_in_seq_order():
+    result = peers()
+    assert [p["code"] for p in result] == ["252990", "058470", "166090", "101160", "036810"]
+    assert [p["name"] for p in result][1:] == ["리노공업", "하나머티리얼즈", "월덱스", "에프에스티"]
+    assert result[1]["op_margin"] == 47.51 and result[1]["per"] == 30.24
+    assert result[0]["market_cap"] == 10797.1 and result[0]["period"] == "2025/12"
+    assert result[4]["per"] is None  # provider N/A
+    assert [p["basis"] for p in result] == ["별도", "별도", "연결", "연결", "연결"]
+
+
+def test_seq_order_not_payload_order():
+    data = json.loads(HEADER)
+    data["oDt_header"].reverse()
+    assert [c["code"] for c in parse_peer_header(data)][0] == "252990"
+
+
+def test_market_cap_mismatch_rejects_whole_packet():
+    tampered = TABLE.replace("56,625.4", "11,609.5", 1)
+    result = collect(table=tampered)
+    assert result["ready"] is False and result["skip_reason"] == "market_cap_mismatch"
+    assert result["public_markdown"] == "" and result["model_context"] == ""
+
+
+def test_swapped_header_order_rejected():
+    data = json.loads(HEADER)
+    rows = data["oDt_header"]
+    rows[1]["SEQ"], rows[2]["SEQ"] = rows[2]["SEQ"], rows[1]["SEQ"]
+    assert collect(header=json.dumps(data))["skip_reason"] == "market_cap_mismatch"
+
+
+def test_column_count_mismatch_rejected():
+    data = json.loads(HEADER)
+    data["oDt_header"].pop()
+    assert collect(header=json.dumps(data))["skip_reason"] == "column_count"
+
+
+@pytest.mark.parametrize("header,table,code,date,reason", [
+    ("not json", TABLE, "252990", TODAY, "peer_list_json"),
+    (HEADER, "<html></html>", "252990", TODAY, "table_missing"),
+    (HEADER, TABLE, "017670", TODAY, "target_mismatch"),
+    (HEADER, TABLE, "252990", "20200101", "reference_date_not_today"),
+    (HEADER, TABLE, "25299", TODAY, "invalid_code"),
 ])
-def test_identity_future_date_and_broken_table_rejected(change):
-    with pytest.raises(ValueError):
-        parse_wisereport(change(page()), "030200", "KT", "2026-09-23")
+def test_failures_skip_with_reason(header, table, code, date, reason):
+    result = collect(header=header, table=table, code=code, date=date)
+    assert result["ready"] is False and result["skip_reason"] == reason
 
 
-def test_missing_quote_date_not_borrowed_from_shareholder_date():
-    result = parse_wisereport(page().replace("시세 [기준:2026.09.22]", "시세"),
-                              "030200", "KT", "2026-09-23")
-    assert not result["price_date"]
+def test_company_shell_page_has_no_peer_table():
+    shell = (FIXTURES / "c106_252990.html").read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="table_missing"):
+        parse_peer_table(shell, 5)
 
 
-def test_same_basis_comparison_but_no_business_leader_signal():
-    out = render_peer_comparison([parsed(), parsed(code="032640", name="LG유플러스")])
-    assert "| PER | 2025/12(A) · 연결 | 7.73 | 7.73 | 배 |" in out
-    assert "전체 업종 평균이나 순위는 아닙니다" in out
-    assert "자동 매수 조건 충족을 판단하지 않습니다" in out
-    assert "UNKNOWN" not in out
+def test_network_error_is_skip_not_exception():
+    async def fetch(url):
+        raise asyncio.TimeoutError()
+    result = asyncio.run(collect_wisereport_peers("252990", "샘씨엔에스", TODAY, fetch=fetch))
+    assert result["ready"] is False and result["skip_reason"] == "timeout"
 
 
-@pytest.mark.parametrize("kwargs", [{"day": "2026.09.21"}, {"scope": "별도"}])
-def test_mismatched_date_or_scope_no_comparison(kwargs):
-    out = render_peer_comparison([parsed(), parsed(code="032640", name="LG유플러스", **kwargs)])
-    assert "직접적인 배수 비교를 하지 않았습니다" in out
-    assert "| 7.73 | 7.73 |" not in out
-    assert "KT에서 확인한 지표" in out
+def test_fixed_urls_use_annual_curated_set():
+    assert "sec_cd=FG000" in PEER_LIST_URL and "frq=Y" in PEER_LIST_URL
+    assert "sec_cd=FG000" in PEER_TABLE_URL and "frq=Y" in PEER_TABLE_URL
 
 
-def test_collector_bounded_fixed_urls_and_partial_failure():
-    calls = []
-    today = datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
-
-    async def transport(server, tool, args):
-        calls.append(args)
-        code = args["url"].split("=")[-1]
-        if code == "032640":
-            raise RuntimeError("must not leak sensitive provider diagnostics")
-        name = {"030200": "KT", "017670": "SK텔레콤"}[code]
-        return {"data": {"html": page(code, name, today.replace("-", "."))}}
-
-    candidate = lambda ticker, name: {"ticker": ticker, "name": name,
-                                     "rationale": "사업이 중첩됨", "source": "공식 보고서"}
-    result = asyncio.run(collect_peer_comparison("030200", "KT", [
-        candidate("https://localhost", "Bad"), candidate("030200", "KT"),
-        candidate("017670", "SK텔레콤"), candidate("032640", "LG유플러스"),
-        candidate("005930", "추가기업"),
-    ], today, transport=transport))
-    assert len(calls) == 3
-    assert all(c["url"].startswith("https://comp.wisereport.co.kr/company/") for c in calls)
-    assert result["private_receipt"]["received"] == 2
-    assert "sensitive" not in str(result)
-    assert "SK텔레콤" in result["public_markdown"]
-    assert "LG유플러스의 비교 지표는 이번 조회에서 확보하지 못해" in result["public_markdown"]
+def test_render_table_median_and_sentences():
+    out = render_peer_markdown(peers())
+    assert out.startswith("#### 경쟁사 비교 분석\n")
+    assert "| 구분 | 샘씨엔에스 | 리노공업 | 하나머티리얼즈 | 월덱스 | 에프에스티 | 피어 중앙값 |" in out
+    assert "| 영업이익률(%) | 18.8 | 47.5 | 18.3 | 20.1 | -0.2 | 19.2 |" in out
+    # Loss-making PER is not a number and is excluded from the peer median.
+    assert "| PER(배) | 26.09 | 30.24 | 22.21 | 8.68 | 적자 | 22.21 |" in out
+    assert "| 재무기준 | 별도 | 별도 | 연결 | 연결 | 연결 | - |" in out
+    assert "영업이익률은 18.8%로 비교기업 중앙값(19.2%)보다 0.4%p 낮습니다." in out
+    assert "ROE는 9.7%로 비교기업 중앙값(11.0%)보다 1.3%p 낮습니다." in out
+    assert "| ROE(%) | 9.7 | 22.5 | 9.4 | 12.5 | -5.1 | 11.0 |" in out
+    assert "PER은 26.09배로 비교기업 중앙값(22.21배) 대비 약 17% 할증된 수준입니다." in out
+    assert "매출액 기준으로는 비교 대상 5개사 중 5위입니다." in out
+    assert "재무 기준 2025/12 연간 실적" in out and "전일종가" in out and "WiseFn 선정 비교기업" in out
+    assert "연결과 별도 재무기준이 섞여" in out
 
 
-def test_historical_snapshot_never_fetches_current_consensus():
-    async def forbidden(*args):
-        raise AssertionError("must not call")
-
-    result = asyncio.run(collect_peer_comparison("030200", "KT", [], "2000-01-01",
-                                              transport=forbidden))
-    assert result["public_markdown"] == ""
+def test_half_up_rounding_matches_provider_text():
+    out = render_peer_markdown(peers())
+    # 22.45 / -5.05 must not be binary-float rounded to 22.4 / -5.0.
+    assert "| ROE(%) | 9.7 | 22.5 | 9.4 | 12.5 | -5.1 |" in out
 
 
-def test_negative_eps_preserved_without_positive_per():
-    result = parse_wisereport(page().replace("6,869원", "-6,869원"),
-                              "030200", "KT", "2026-09-23")
-    assert any(f["metric"] == "EPS" and f["value"] == -6869 for f in result["facts"])
-    assert not any(f["metric"] == "PER" and f["period"] == "2025/12(A)" for f in result["facts"])
+def test_negative_target_per_falls_back_to_pbr_sentence():
+    items = peers()
+    items[0]["per"], items[0]["net_income_controlling"] = -3.0, -10.0
+    out = render_peer_markdown(items)
+    assert "| PER(배) | 적자 |" in out
+    assert "PER은" not in out and "PBR은 2.35배로 비교기업 중앙값(2.21배) 대비" in out
 
 
-def test_explicit_peer_candidates_only_exact_unique_names():
-    mapping = {"017670": "SK텔레콤", "030200": "KT", "032640": "LG유플러스", "033780": "KT&G"}
-    reports = {"news": "Mention KT&G\n#### Competitive Evidence\n"
-               "**peer_universe:** SK텔레콤·KT·LG유플러스(032640) / **source:** https://example.com/report\n"
-               "#### Other\n**peer_universe:** KT&G / **source:** https://example.com/other"}
-    result = select_report_peer_candidates(reports, "017670", mapping)
-    assert [r["ticker"] for r in result] == ["030200", "032640"]
-    assert all("독립적 경쟁관계 검증 아님" in r["rationale"] for r in result)
+def test_uniform_basis_has_no_mixed_note_and_no_loss_note():
+    items = peers()[:4]
+    for item in items:
+        item["basis"] = "연결"
+    out = render_peer_markdown(items)
+    assert "섞여" not in out and "적자" not in out
+    assert "비교기업 3개사 기준" in out
 
 
-def test_ambiguous_mismatched_or_unattributed_proposals_rejected():
-    mapping = {"030200": "KT", "000001": "KT", "032640": "LG유플러스"}
-    report = "#### Competitive Evidence\n**peer_universe:** KT·LG유플러스(030200) / **source:** https://example.com/a"
-    assert select_report_peer_candidates([report], "017670", mapping) == []
-    assert select_report_peer_candidates([report.replace("https://example.com/a", "UNKNOWN")],
-                                         "017670", mapping) == []
+def test_public_text_has_no_internal_tokens():
+    result = collect()
+    assert result["ready"] is True and result["skip_reason"] is None
+    assert result["period"] == "2025/12" and result["price_basis"] == "전일종가"
+    public = result["public_markdown"]
+    for token in ("N/A", "UNKNOWN", "IFRS", "FIN_GUBUN", "MKT_VAL", "CMP_CD", "ready", "skipped",
+                  "EPS", "BPS", "DPS", "http"):
+        assert token not in public
+    assert not re.search(r"\b[a-z_]{4,}\b", public)
+    assert "058470" in result["model_context"] and "058470" not in public
 
 
-def test_compact_day_supported_explicitly():
-    assert _day("20260923").isoformat() == "2026-09-23"
-    with pytest.raises(ValueError):
-        _day("20260230")
+def test_rendered_block_survives_report_publication_formatting():
+    from cores.utils import clean_markdown
+    from prism_core.report_presentation import humanize_report_status
+    out = render_peer_markdown(peers())
+    published = humanize_report_status(clean_markdown(out), "ko")
+    assert published.startswith("#### 경쟁사 비교 분석\n")
+    for line in out.splitlines():
+        if line.strip():
+            assert line in published
 
 
-def test_fences_excluded_bold_heading_supported():
-    record = "#### **Competitive Evidence**\n**peer_universe:** KT / **source:** https://example.com/a"
-    mapping = {"030200": "KT"}
-    assert len(select_report_peer_candidates([record], "017670", mapping)) == 1
-    assert select_report_peer_candidates(["```md\n" + record + "\n```"], "017670", mapping) == []
-    assert select_report_peer_candidates(["```md\n" + record], "017670", mapping) == []
+SKT_HEADER = (FIXTURES / "cF6001_017670.json").read_text(encoding="utf-8")
+SKT_TABLE = (FIXTURES / "cF6002_017670.html").read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("source", ["https://user:pass@example.com/a", "https://127.0.0.1/a",
-                                    "https://host.internal/a", "https://host.local/a"])
-def test_nonpublic_or_credentialed_proposal_sources_rejected(source):
-    record = f"#### Competitive Evidence\n**peer_universe:** KT / **source:** {source}"
-    assert select_report_peer_candidates([record], "017670", {"030200": "KT"}) == []
+def test_size_filter_drops_tiny_peers_from_table_and_median():
+    async def fetch(url):
+        return SKT_HEADER if "cF6001" in url else SKT_TABLE
+    result = asyncio.run(collect_wisereport_peers("017670", "SK텔레콤", TODAY, fetch=fetch))
+    assert result["ready"] is True
+    assert [p["code"] for p in result["peers"]] == ["017670", "030200", "032640"]
+    assert [p["name"] for p in result["excluded_peers"]] == ["와이어블", "프리티"]
+    out = result["public_markdown"]
+    assert "| 구분 | SK텔레콤 | KT | LG유플러스 | 피어 중앙값 |" in out
+    assert "와이어블 |" not in out and "| 적자 |" not in out
+    # Median of KT/LGU+ only: PER (7.66 + 12.19) / 2.
+    assert "| PER(배) | 28.14 | 7.66 | 12.19 | 9.93 |" in out
+    assert ("시가총액이 분석 대상의 10% 미만인 와이어블·프리티는 규모 차이가 커서 "
+            "비교표와 중앙값에서 제외했습니다.") in out
+    assert "비교기업 2개사 기준" in out and "비교 대상 3개사 중 2위" in out
+    assert "065530" not in result["model_context"] and "030200" in result["model_context"]
 
 
-@pytest.mark.parametrize("period", ["2099/99(A)", "2025/00(A)", "2026/12(A)", "2099/13(E)"])
-def test_invalid_calendar_or_future_actual_period_rejected(period):
-    with pytest.raises(ValueError):
-        parse_wisereport(page().replace("2025/12(A)", period), "030200", "KT", "20260923")
+def test_size_filter_keeps_all_comparable_peers():
+    kept, excluded = select_comparable_peers(peers())
+    assert len(kept) == 5 and excluded == []
+    assert "10% 미만" not in collect()["public_markdown"]
 
 
-def test_valid_future_estimate_period_allowed():
-    result = parse_wisereport(page().replace("2026/12(E)", "2027/12(E)"),
-                              "030200", "KT", "20260923")
-    assert any(f["period"] == "2027/12(E)" for f in result["facts"])
+def test_size_filter_keeps_two_largest_when_all_peers_are_tiny():
+    items = peers()
+    items[0]["market_cap"] = 10_000_000.0
+    kept, excluded = select_comparable_peers(items)
+    assert [p["code"] for p in kept] == ["252990", "058470", "166090"]  # SEQ order kept
+    assert [p["code"] for p in excluded] == ["101160", "036810"]
+    out = render_peer_markdown(kept, excluded)
+    assert "월덱스·에프에스티는 규모 차이가 커서" in out
 
 
-@pytest.mark.parametrize("day", ["2026.09.16", "2026.08.22"])
-def test_equally_stale_quotes_not_current_valuation_comparison(day):
-    first, second = parsed(day=day), parsed(code="032640", name="LG유플러스", day=day)
-    assert first["price_is_recent"] is False
-    out = render_peer_comparison([first, second])
-    assert "직접적인 배수 비교를 하지 않았습니다" in out
-    assert "| 7.73 | 7.73 |" not in out
+def test_size_filter_keeps_one_passing_peer_plus_next_largest():
+    items = peers()
+    items[0]["market_cap"] = 200_000.0  # only 리노공업 (56,625) passes the 10% floor
+    kept, _ = select_comparable_peers(items)
+    assert [p["code"] for p in kept] == ["252990", "058470", "166090"]
 
 
-def test_render_retains_large_integer_and_decimal_provider_precision():
-    html = page().replace("6,869원", "1,234,567원").replace("9.23", "9.23456789")
-    first = parse_wisereport(html, "030200", "KT", "20260923")
-    second = parse_wisereport(html.replace("030200", "032640").replace(">KT<", ">LG유플러스<"),
-                              "032640", "LG유플러스", "20260923")
-    comparison = render_peer_comparison([first, second])
-    assert "| 1,234,567 | 1,234,567 | 원 |" in comparison
-    assert "| 9.23456789 | 9.23456789 | 배 |" in comparison
-    standalone = render_peer_comparison([first])
-    assert "1,234,567원" in standalone
-    assert "9.23456789배" in standalone
-    assert "e+06" not in comparison + standalone
+def test_size_filter_runs_after_full_packet_validation():
+    # A mismatch in a column that would be filtered out still rejects the packet.
+    async def fetch(url):
+        return SKT_HEADER if "cF6001" in url else SKT_TABLE.replace("240.5", "999.9", 1)
+    result = asyncio.run(collect_wisereport_peers("017670", "SK텔레콤", TODAY, fetch=fetch))
+    assert result["ready"] is False and result["skip_reason"] == "market_cap_mismatch"
 
 
-def peer_table(heading="Competitive Evidence"):
-    return (f"#### {heading}\n"
-            "| field | type | entity / peer_universe | metric·value·period | source | publication_date | status |\n"
-            "|---|---|---|---|---|---|---|\n"
-            "| AI 사업 | business_competitive_position | SK텔레콤 / KT·LG유플러스 | 매출 성장 | "
-            "[공식 자료](https://example.com/release) | 2026-08-05 | SOURCE_CHECKED |")
+def test_fetch_text_waits_before_single_retry(monkeypatch):
+    import aiohttp
+    from prism_core import kr_peer_comparison as peer
 
+    calls, sleeps = [], []
 
-@pytest.mark.parametrize("heading", ["Competitive Evidence", "**Competitive Evidence**", "경쟁력 비교 근거"])
-def test_real_shape_peer_table(heading):
-    result = select_report_peer_candidates([peer_table(heading)], "017670",
-        {"017670": "SK텔레콤", "030200": "KT", "032640": "LG유플러스"})
-    assert [r["ticker"] for r in result] == ["030200", "032640"]
-    assert result[0]["source"] == "https://example.com/release"
+    class Response:
+        status = 200
 
+        async def __aenter__(self):
+            return self
 
-@pytest.mark.parametrize("transform", [
-    lambda s: "```\n" + s + "\n```",
-    lambda s: s.replace("Competitive Evidence", "Other section"),
-    lambda s: s.replace("| 매출 성장 |", "| extra | 매출 성장 |"),
-    lambda s: s.replace("entity / peer_universe", "any_company"),
-    lambda s: s.replace("|---|---|---|---|---|---|---|", "|---|---|"),
-    lambda s: s.replace("SK텔레콤 / KT·LG유플러스", "KT·LG유플러스"),
-    lambda s: s.replace("https://example.com/release", "https://secret@host.internal/a"),
-])
-def test_malformed_or_unscoped_peer_table_not_guessed(transform):
-    assert select_report_peer_candidates([transform(peer_table())], "017670",
-        {"030200": "KT", "032640": "LG유플러스"}) == []
+        async def __aexit__(self, *exc):
+            return False
 
+        async def read(self):
+            return "ok".encode()
 
-def test_bold_label_colon_outside_with_source_link():
-    report = ("#### Competitive Evidence\n**peer_universe**: KT / "
-              "**source**: [자료](https://example.com/a)")
-    result = select_report_peer_candidates([report], "017670", {"030200": "KT"})
-    assert result[0]["ticker"] == "030200"
+    class Session:
+        def get(self, url):
+            calls.append(url)
+            if len(calls) == 1:
+                raise aiohttp.ClientConnectionError("reset")
+            return Response()
 
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
 
-def plain_proposal(source="UNKNOWN", status="INCOMPARABLE"):
-    return ("#### Competitive Evidence\n"
-            "- field: 상대 주가 리더십, type: price_leadership, entity: SK텔레콤(017670), "
-            "peer_universe: SK텔레콤·KT·LG유플러스, metric: 동일 기간 상대수익률, "
-            "value: UNKNOWN, unit: %, period: 2026년 9월 17~23일, geography: 한국, "
-            f"source: {source}, publication_date: UNKNOWN, status: {status}, supporting excerpt: 비교자료 미확보")
-
-
-def test_plain_actual_proposals_without_comparison_sources_trigger_bounded_lookup():
-    result = select_report_peer_candidates([plain_proposal()], "017670",
-        {"017670": "SK텔레콤", "030200": "KT", "032640": "LG유플러스"})
-    assert [r["ticker"] for r in result] == ["030200", "032640"]
-    assert all(r["source"] == "report_peer_proposal" for r in result)
-    assert all("독립적 경쟁관계 검증 아님" in r["rationale"] for r in result)
-
-
-def test_plain_numeric_and_peer_commas_are_not_field_boundaries():
-    line = ("- field: 비교, type: business_competitive_position, peer_universe: KT, LG유플러스, "
-            "metric: 매출, 영업이익, value: 1,362.5, unit: 억원, source: UNKNOWN, status: NOT_FOUND")
-    fields = _plain_fields(line)
-    assert fields["metric"] == "매출, 영업이익"
-    assert fields["value"] == "1,362.5"
-    assert fields["peer_universe"] == "KT, LG유플러스"
-    result = select_report_peer_candidates(["#### Competitive Evidence\n" + line], "017670",
-                                          {"030200": "KT", "032640": "LG유플러스"})
-    assert len(result) == 2
-
-
-def test_plain_sector_combined_metric_field_and_unmapped_suffix():
-    text = ("#### Competitive Evidence\n- field: 섹터 수요, type: sector_tailwind, entity: 국내 통신, "
-            "peer_universe: SK텔레콤·KT·LG유플러스 및 관련 산업, metric/value/unit/period/geography: UNKNOWN, "
-            "source: UNKNOWN, publication_date: UNKNOWN, status: NOT_FOUND, supporting excerpt: 부족")
-    result = select_report_peer_candidates([text], "017670",
-        {"017670": "SK텔레콤", "030200": "KT", "032640": "LG유플러스"})
-    assert [r["ticker"] for r in result] == ["030200", "032640"]
-
-
-@pytest.mark.parametrize("source,status", [
-    ("UNKNOWN", ""), ("UNKNOWN", "SOURCE_CHECKED"), ("", "NOT_FOUND"),
-    ("https://user:password@example.com/a", "NOT_FOUND"),
-    ("https://host.internal/a", "UNKNOWN"), ("broken URL", "INCOMPARABLE"),
-])
-def test_missing_proposal_source_needs_explicit_missing_status_and_never_allows_unsafe_urls(source, status):
-    assert select_report_peer_candidates([plain_proposal(source, status)], "017670",
-                                         {"030200": "KT", "032640": "LG유플러스"}) == []
-
-
-@pytest.mark.parametrize("wrap", [lambda s: "```\n" + s + "\n```",
-                                lambda s: s.replace("Competitive Evidence", "General commentary")])
-def test_plain_proposals_keep_existing_scope_and_fence_guards(wrap):
-    assert select_report_peer_candidates([wrap(plain_proposal())], "017670",
-                                         {"030200": "KT", "032640": "LG유플러스"}) == []
-
-
-def test_same_peer_facts_have_stable_presentation_without_mutating_inputs():
-    target = parsed(code='017670', name='SK텔레콤')
-    kt = parsed(code='030200', name='KT')
-    lg = parsed(code='032640', name='LG유플러스')
-    reversed_order = [target, lg, kt]
-    assert render_peer_comparison(reversed_order) == render_peer_comparison([target, kt, lg])
-    assert [item['ticker'] for item in reversed_order] == ['017670', '032640', '030200']
+    monkeypatch.setattr(peer.asyncio, "sleep", fake_sleep)
+    assert asyncio.run(peer._fetch_text(Session(), "https://example.test")) == "ok"
+    assert len(calls) == 2 and sleeps == [0.5]
