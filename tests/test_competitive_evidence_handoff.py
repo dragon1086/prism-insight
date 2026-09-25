@@ -109,21 +109,12 @@ def test_context_and_content_are_bound_to_id():
     assert len({ident(), ident(market="KR"), ident(symbol="OTHER"), ident(date="20260910"), ident(news=NEWS.replace("12%", "13%"))}) == 5
 
 
-def test_kr_pipeline_has_no_competitive_evidence_handoff():
-    # KR peer comparison is the deterministic WiseReport table; no model record handoff.
-    source = (Path(__file__).resolve().parents[1] / "cores/analysis.py").read_text()
-    assert "attach_competitive_evidence" not in source and "[COMPETITIVE_EVIDENCE]" not in source
-
-
-@pytest.mark.parametrize("file", ["prism-us/cores/us_analysis.py"])
-def test_us_pipeline_handoff_before_strategy_and_summary(file):
+@pytest.mark.parametrize("file", ["cores/analysis.py", "prism-us/cores/us_analysis.py"])
+def test_pipelines_have_no_competitive_evidence_handoff(file):
+    # Both markets publish a deterministic peer comparison table; no model record handoff.
     source = (Path(__file__).resolve().parents[1] / file).read_text()
-    calls = [n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
-    handoff = [n.lineno for n in calls if n.func.id == "attach_competitive_evidence"]
-    assert len(handoff) == 1
-    downstream = [n.lineno for n in calls if n.func.id in {"generate_investment_strategy", "generate_summary"}]
-    assert downstream and all(handoff[0] < line for line in downstream)
-    assert re.search(r"section_reports(?:\.get\(|\[)['\"]company_overview['\"]", source)
+    names = {n.func.id for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "attach_competitive_evidence" not in names and "[COMPETITIVE_EVIDENCE]" not in source
 
 
 @pytest.mark.asyncio
@@ -170,14 +161,15 @@ def test_id_and_source_survive_actual_pdf_text_input(tmp_path):
     assert "SEARCH_ONLY" in extracted
 
 
-@pytest.mark.parametrize("file", ["prism-us/cores/us_analysis.py"])
-def test_handoff_logger_is_compatible_with_mcp_logger_signature(file):
+def test_us_pipeline_publishes_peer_table_instead_of_model_evidence():
     import inspect
     from mcp_agent.logging.logger import Logger
 
-    source = (Path(__file__).resolve().parents[1] / file).read_text()
-    calls = [n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "info"]
-    calls = [n for n in calls if "[COMPETITIVE_EVIDENCE]" in ast.get_source_segment(source, n)]
-    assert len(calls) == 1
-    assert len(calls[0].args) == 1
+    source = (Path(__file__).resolve().parents[1] / "prism-us/cores/us_analysis.py").read_text()
+    tree = ast.parse(source)
+    names = {n.func.id for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "attach_competitive_evidence" not in names and "[COMPETITIVE_EVIDENCE]" not in source
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr == "info" and "[PEER_COMPARISON]" in ast.get_source_segment(source, n)]
+    assert len(calls) == 1 and len(calls[0].args) == 1
     inspect.signature(Logger.info).bind(None, "safe metadata")

@@ -19,24 +19,23 @@ def test_usable_news_is_source_only_without_claiming_complete_competition():
     out = apply_section_research(agent, 'news_analysis', data, '20260918', 'ko')
     assert out.server_names == ()
     assert 'Query 1 is REQUIRED' not in out.instruction
-    assert 'RE-test' in out.instruction and 'Competitive Evidence' in out.instruction
-    assert 'INCOMPARABLE' in out.instruction and 'NOT_FOUND' in out.instruction
+    assert 'RE-test' in out.instruction
     assert 'does not establish competitive superiority' in out.instruction
 
 
+@pytest.mark.parametrize('market', ['KR', 'US'])
 @pytest.mark.parametrize('language', ['ko', 'en'])
-def test_kr_tool_free_news_has_no_competitive_evidence_contract(language):
+def test_tool_free_news_has_no_competitive_evidence_contract(market, language):
     agent = ReportAgent('news', 'Query 1 is REQUIRED; call external tools', ['perplexity'])
     data = {'report_research': {'evidence_id': 'RE-test', 'news_usable': True,
+                              'receipt': {'market': market, 'usable_sources': 1},
                               'section_notes': {'news_analysis': 'Source S1, public facts; peer unknown'}}}
-    out = apply_section_research(agent, 'news_analysis', data, '20260918', language, competitive_evidence=False)
+    out = apply_section_research(agent, 'news_analysis', data, '20260918', language)
     assert out.server_names == () and 'RE-test' in out.instruction
     for forbidden in ('Competitive Evidence', 'competitive-evidence', 'SOURCE_CHECKED', 'SEARCH_ONLY',
                       'INCOMPARABLE', 'peer_universe', 'sector_tailwind', 'price_leadership'):
         assert forbidden not in out.instruction
-    assert 'separate competitor comparison table' in out.instruction
-    default = apply_section_research(agent, 'news_analysis', data, '20260918', language)
-    assert 'Competitive Evidence' in default.instruction
+    assert 'separate code-computed competitor comparison table' in out.instruction
 
 
 def test_unusable_news_leaves_original_fallback_unchanged():

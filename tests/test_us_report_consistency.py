@@ -25,7 +25,7 @@ def test_reference_context_carries_only_exact_financial_calculation_blocks():
                   'analysis_estimates': '| Mean target from another snapshot | 248 |'}
     for language in ('ko', 'en'):
         context = reference_context(prefetched, language)
-        assert '5.3842%' in context and '247.40 USD / 234.76 USD' in context
+        assert '5.38%' in context and '247.40 USD / 234.76 USD' in context
         assert 'RAW PROFILE NOT SHARED' not in context and 'RAW INCOME NOT SHARED' not in context
         assert '248' not in context
     english = reference_context(prefetched, 'en')
@@ -95,3 +95,12 @@ def test_existing_korean_preferred_share_code_is_preserved():
     from pdf_converter import _extract_report_info
     info = _extract_report_info('# CJ4우(전환) (00104K) 분석 보고서')
     assert info['company_name'] == 'CJ4우(전환)' and info['company_code'] == '00104K'
+
+
+def test_us_appendix_does_not_move_competitive_records():
+    record = '#### Competitive Evidence\n- field: margin; value: 12%\n'
+    original = {'news_analysis': 'NEWS\n' + record}
+    public, appendix = evidence_appendix(original, 'ko', financial_reference='### 연간 레버리지 계산',
+                                         competitive_records=False)
+    assert public == original and 'field: margin' not in appendix
+    assert appendix.startswith('\n\n---\n\n## 부록: 출처와 계산 근거 기록')

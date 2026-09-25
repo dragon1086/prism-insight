@@ -120,7 +120,8 @@ def get_us_agent_directory(
         ),
         "company_overview": lambda: create_us_company_overview_agent(
             company_name, ticker, reference_date, urls, language,
-            prefetched_data={"company_profile": pf.get("company_profile", ""), "holder_info": pf.get("holder_info", ""), "segment_revenue": pf.get("segment_revenue", "")} if pf.get("company_profile") else None
+            prefetched_data={"company_profile": pf.get("company_profile", ""), "holder_info": pf.get("holder_info", ""), "segment_revenue": pf.get("segment_revenue", "")} if pf.get("company_profile") else None,
+            peer_table=(pf.get("peer_comparison") or {}).get("model_context", "")
         ),
         "news_analysis": lambda: create_us_news_analysis_agent(
             company_name,

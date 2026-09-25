@@ -94,8 +94,8 @@ def apply_public_report_inputs(agent, section, prefetched, language='ko'):
     return _replace_agent(agent, instruction=agent.instruction + rule + '\n<official_sources>\n' + context + '\n</official_sources>')
 
 
-def _plain(value):
-    return ' '.join(str(value or '').replace('<', '').replace('>', '').split())[:180]
+def _plain(value, limit=180):
+    return ' '.join(str(value or '').replace('<', '').replace('>', '').split())[:limit]
 
 
 def _url(value):
@@ -116,8 +116,10 @@ def render_public_source_receipt(packet, kind, language='ko'):
             fields = [label for key, label in (('guidance', '가이던스' if ko else 'guidance'),
                       ('segments', '사업부 자료' if ko else 'segments'), ('financials', '재무자료' if ko else 'financials'))
                       if item.get(key)]
-            publication_label = ('발표일 ' if ko else 'published ') if item.get('filing_type') == 'Issuer release' else ('공시일 ' if ko else 'filed ')
-            lines.append(f"- [{_plain(item.get('filing_type'))}]({item['url']}): "
+            release = item.get('filing_type') == 'Issuer release'
+            publication_label = ('발표일 ' if ko else 'published ') if release else ('공시일 ' if ko else 'filed ')
+            link_label = '회사 실적 발표문' if release and ko else _plain(item.get('filing_type'))
+            lines.append(f"- [{link_label}]({item['url']}): "
                          + publication_label + _plain(item.get('publication_date'))
                          + ('; 원문 기간 ' if ko else '; source period ') + _plain(item.get('fiscal_period') or item.get('report_date'))
                          + '; ' + ', '.join(fields))
@@ -140,7 +142,13 @@ def render_public_source_receipt(packet, kind, language='ko'):
             if key == 'treasury':
                 values = [item.get(k) for k in ('yield_2y_percent', 'yield_10y_percent', 'spread_10y_minus_2y_pp')]
                 if all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in values):
-                    lines.append(f"  2Y {values[0]:.2f}%, 10Y {values[1]:.2f}%; 10Y−2Y {values[2]:+.2f}%p. " + _plain(item.get('definition')))
+                    if ko:
+                        lines.append(f"  2년물 {values[0]:.2f}%, 10년물 {values[1]:.2f}%; 10년물−2년물 {values[2]:+.2f}%p. "
+                                     "연방준비제도 H.15 기반 FRED 국채 고정만기 시장수익률(%, 비계절조정)이며 "
+                                     "스프레드는 퍼센트포인트입니다. 재무부 par-curve 원자료와는 다른 계열입니다.")
+                    else:
+                        lines.append(f"  2Y {values[0]:.2f}%, 10Y {values[1]:.2f}%; 10Y−2Y {values[2]:+.2f}%p. "
+                                     + _plain(item.get('definition'), 400))
             upcoming = item.get('next_release')
             if isinstance(upcoming, dict) and upcoming.get('status') == 'not_yet_released':
                 lines.append(('  다음 발표 예정: ' if ko else '  Next scheduled release: ') + _plain(upcoming.get('date'))

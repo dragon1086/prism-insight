@@ -137,3 +137,20 @@ def test_collectors_run_off_event_loop_and_isolate_failure(monkeypatch, tmp_path
     assert calls == [('DGX', '20260923', ['FILINGS'], 'https://example.com')]
     assert result['official_company']['status'] == 'collection_unavailable'
     assert result['official_macro'] == macro_packet() and 'PRIVATE_ERROR' not in str(result)
+
+
+def test_korean_receipt_labels_issuer_release_and_treasury_in_korean():
+    packet = company_packet()
+    packet['sources'][0]['filing_type'] = 'Issuer release'
+    long_definition = ('Federal Reserve H.15 via FRED; Treasury constant maturity market yields, investment basis, '
+                       'percent, not seasonally adjusted; 10Y minus 2Y in percentage points. '
+                       'Not the fetched Treasury par-curve source.')
+    macro = macro_packet()
+    macro['sources']['treasury']['definition'] = long_definition
+    company_ko = render_public_source_receipt(packet, 'company', 'ko')
+    macro_ko = render_public_source_receipt(macro, 'macro', 'ko')
+    assert '[회사 실적 발표문](' in company_ko and 'Issuer release' not in company_ko
+    assert '2년물 4.76%, 10년물 4.96%; 10년물−2년물 +0.20%p.' in macro_ko
+    assert 'Federal Reserve' not in macro_ko and 'Trea' not in macro_ko
+    assert '[Issuer release](' in render_public_source_receipt(packet, 'company', 'en')
+    assert long_definition in render_public_source_receipt(macro, 'macro', 'en')  # not truncated
