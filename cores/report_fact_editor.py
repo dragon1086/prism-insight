@@ -108,6 +108,10 @@ _NET_SHARE_PATTERNS = (
                r'(?P<signed>[+-]?' + _SHARE_INTEGER + r')\s*주'
                r'(?:\s+및\s+[+-]' + _SHARE_INTEGER + r'\s*주)*'),
 )
+_APPROX_NET_SHARE = re.compile(
+    r'(?<![\w.,+\-~–—])약\s*(?P<sign>[+-]?)'
+    r'(?P<major>' + _SHARE_INTEGER + r')\s*만\s*주(?:를|을|의)?\s*'
+    r'(?P<direction>순매수|순매도)')
 
 
 def _net_share_inventory(text):
@@ -117,7 +121,19 @@ def _net_share_inventory(text):
     retain their prior numeric inventory for source compatibility. No actor,
     period, coordinated direction, approximation or currency is inferred.
     """
-    spans, quantities, plain_values = [], set(), set()
+    spans, quantities, approximate, plain_values = [], set(), set(), set()
+    for match in _APPROX_NET_SHARE.finditer(text):
+        sign, direction = match['sign'], match['direction']
+        # A signed "순매도" is a double-direction expression and therefore
+        # ambiguous. Signed values are accepted only as explicit net purchases.
+        if sign and direction != '순매수':
+            continue
+        major = int(match['major'].replace(',', ''))
+        value = (-major if sign == '-' else major)
+        if not sign and direction == '순매도':
+            value = -value
+        approximate.add(value)
+        spans.append((match.start(), match.end()))
     for pattern in _NET_SHARE_PATTERNS:
         for match in pattern.finditer(text):
             before = re.sub(r'[*_`()\[\]{}]', '', text[max(0, match.start() - 32):match.start()])
@@ -150,16 +166,18 @@ def _net_share_inventory(text):
     masked = text
     for start, end in sorted(spans, reverse=True):
         masked = masked[:start] + ' ' * (end - start) + masked[end:]
-    return _numeric_literals(masked), quantities, plain_values
+    return _numeric_literals(masked), quantities, approximate, plain_values
 
 
 def _unsupported_numeric_literals(output, source):
     """Accept exact typed share notation without licensing the value elsewhere."""
-    source_numbers, source_shares, source_plain = _net_share_inventory(source)
-    output_numbers, output_shares, _ = _net_share_inventory(output)
+    source_numbers, source_shares, source_approx, source_plain = _net_share_inventory(source)
+    output_numbers, output_shares, output_approx, _ = _net_share_inventory(output)
     missing = output_numbers - (source_numbers | source_plain)
     missing.update(('net_shares', value) for value in output_shares
                    if value not in source_shares and Decimal(value) not in source_numbers)
+    missing.update(('approx_net_shares_10k', value) for value in output_approx
+                   if value not in source_approx)
     return missing
 
 
