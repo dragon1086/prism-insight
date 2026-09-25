@@ -252,3 +252,26 @@ def test_holder_dates_use_us_civil_day_and_count_undated_major_rows():
     assert result["unknown_report_date_rows"] == 1
     assert result["report_dates"] == []
     assert flow.holdings_asof_frame(holders["institutional_holders"], asof_utc=asof).empty
+
+
+def test_prefetch_holder_percents_are_rounded_not_raw_fractions(monkeypatch):
+    prefetch = load_file("prism-us/cores/data_prefetch.py")
+    major = pd.DataFrame({"Value": [0.0123456, 0.92794997, 0.95123456, 1234.0]},
+                         index=pd.Index(["insidersPercentHeld", "institutionsPercentHeld",
+                                         "institutionsFloatPercentHeld", "institutionsCount"],
+                                        name="Breakdown"))
+    institutional = pd.DataFrame({"Date Reported": ["2025-12-31"], "Holder": ["Old Fund"],
+                                  "pctHeld": [0.08231234], "Shares": [10], "pctChange": [-0.01234]})
+
+    class Client:
+        def get_institutional_holders(self, ticker):
+            return {"major_holders": major, "institutional_holders": institutional}
+
+    monkeypatch.setattr(prefetch, "_get_us_data_client", Client)
+    text = prefetch.prefetch_us_holder_info("DDOG")
+    for shown in ("| institutionsPercentHeld | 92.79% |", "| insidersPercentHeld | 1.23% |",
+                  "95.12%", "8.23%", "-1.23%", "| institutionsCount | 1234.0 |"):
+        assert shown in text, shown
+    for raw in ("0.92794997", "92.794997", "0.08231234", "0.0123456"):
+        assert raw not in text, raw
+    assert "source_hashes" in text  # provenance still hashes the original provider frames

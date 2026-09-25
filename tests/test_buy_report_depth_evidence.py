@@ -93,7 +93,27 @@ def test_pinned_perplexity_strings_survive_flag_on(monkeypatch):
     assert "major peer competitors valuation comparison" in _build("US", "en", monkeypatch, "1")
 
 
-def test_anchor_drift_fails_loudly():
+def test_anchor_drift_is_strict_internally():
+    # CI loud failure: the strict path still raises; the flag-on tests above prove real anchors match.
     with pytest.raises(ValueError):
-        depth.apply_buy_report_depth_evidence("no anchors here", market="KR", language="ko", enabled=True)
+        depth._apply_depth_edits("no anchors here", market="KR", language="ko")
     assert depth.apply_buy_report_depth_evidence("x", market="KR", language="ko", enabled=False) == "x"
+
+
+def test_anchor_drift_returns_base_instruction_and_logs_critical(caplog):
+    with caplog.at_level("CRITICAL", logger=depth.__name__):
+        out = depth.apply_buy_report_depth_evidence("no anchors here", market="KR", language="ko", enabled=True)
+    assert out == "no anchors here" and not depth.report_depth_evidence_active(out)
+    assert any(r.levelname == "CRITICAL" and "[BUY_REPORT_DEPTH] anchor drift; using base instruction"
+               in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("market,lang", CASES)
+def test_forced_drift_does_not_break_buy_agent_construction(market, lang, monkeypatch, caplog):
+    base = _build(market, lang, monkeypatch)
+    monkeypatch.setitem(depth._F4, lang, ("| anchor that no longer exists |", "| x |"))
+    with caplog.at_level("CRITICAL", logger=depth.__name__):
+        drifted = _build(market, lang, monkeypatch, "1")
+    assert drifted == base
+    assert not depth.report_depth_evidence_active(drifted)  # enabled= log reports false
+    assert any("anchor drift" in r.getMessage() for r in caplog.records)

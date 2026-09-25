@@ -215,3 +215,36 @@ def test_size_filter_runs_after_full_packet_validation():
         return SKT_HEADER if "cF6001" in url else SKT_TABLE.replace("240.5", "999.9", 1)
     result = asyncio.run(collect_wisereport_peers("017670", "SK텔레콤", TODAY, fetch=fetch))
     assert result["ready"] is False and result["skip_reason"] == "market_cap_mismatch"
+
+
+def test_fetch_text_waits_before_single_retry(monkeypatch):
+    import aiohttp
+    from prism_core import kr_peer_comparison as peer
+
+    calls, sleeps = [], []
+
+    class Response:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def read(self):
+            return "ok".encode()
+
+    class Session:
+        def get(self, url):
+            calls.append(url)
+            if len(calls) == 1:
+                raise aiohttp.ClientConnectionError("reset")
+            return Response()
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(peer.asyncio, "sleep", fake_sleep)
+    assert asyncio.run(peer._fetch_text(Session(), "https://example.test")) == "ok"
+    assert len(calls) == 2 and sleeps == [0.5]

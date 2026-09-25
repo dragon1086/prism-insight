@@ -7,8 +7,11 @@ sources. No threshold, gate, score or schema changes.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
+
+logger = logging.getLogger(__name__)
 
 ENV_FLAG = "PRISM_BUY_REPORT_DEPTH_EVIDENCE"
 MARKER = "REPORT_DEPTH_EVIDENCE:"
@@ -132,9 +135,23 @@ def _replace_once(text: str, old: str, new: str) -> str:
 def apply_buy_report_depth_evidence(
     instruction: str, *, market: str, language: str, enabled: bool | None = None
 ) -> str:
-    """Return ``instruction`` unchanged unless the flag is on; ``language`` is ko|en."""
+    """Return ``instruction`` unchanged unless the flag is on; ``language`` is ko|en.
+
+    Anchor drift never propagates into BUY agent construction: it is logged as
+    critical and the unmodified base instruction is used (the marker is absent,
+    so the ``[BUY_REPORT_DEPTH] enabled=`` log reports false).
+    """
     if not (buy_report_depth_evidence_enabled() if enabled is None else enabled):
         return instruction
+    try:
+        return _apply_depth_edits(instruction, market=market, language=language)
+    except ValueError as error:
+        logger.critical('[BUY_REPORT_DEPTH] anchor drift; using base instruction: %s', error)
+        return instruction
+
+
+def _apply_depth_edits(instruction: str, *, market: str, language: str) -> str:
+    """Strict edit application; raises ValueError on anchor drift."""
     lang = "ko" if language == "ko" else "en"
     per = "PER" if market == "KR" else ("P/E" if lang == "ko" else "PE")
     peer = (_PEER_KO if lang == "ko" else _PEER_EN).format(per=per)

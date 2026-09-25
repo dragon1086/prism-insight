@@ -255,7 +255,9 @@ def render_peer_markdown(peers, excluded=()):
 
 async def _fetch_text(session, url):
     last_error = None
-    for _ in range(2):  # one retry
+    for attempt in range(2):  # one retry
+        if attempt:
+            await asyncio.sleep(0.5)
         try:
             async with session.get(url) as response:
                 if response.status != 200:

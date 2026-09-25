@@ -147,6 +147,29 @@ def prefetch_us_stock_ohlcv(ticker: str, period: str = "1y", metadata: dict | No
         return ""
 
 
+# yfinance reports these holder shares as fractions (0.92794997 = 92.79%).
+_HOLDER_PERCENT_COLUMNS = {"pctheld", "pctchange"}
+
+
+def _holder_percent_display(frame: pd.DataFrame) -> pd.DataFrame:
+    """Render fractional holder percents as rounded percent text so raw floats cannot be copied."""
+    def percent(value):
+        if isinstance(value, bool) or not isinstance(value, Real) or not np.isfinite(value):
+            return value
+        return f"{float(value) * 100:.2f}%"
+
+    result = frame.copy()
+    for column in result.columns:
+        if str(column).strip().lower() in _HOLDER_PERCENT_COLUMNS:
+            result[column] = result[column].map(percent).astype(object)
+    rows = [idx for idx in result.index if "percent" in str(idx).lower()]
+    if rows and "Value" in result.columns:
+        result["Value"] = result["Value"].astype(object)
+        for idx in rows:
+            result.at[idx, "Value"] = percent(result.at[idx, "Value"])
+    return result
+
+
 def prefetch_us_holder_info(ticker: str) -> str:
     """Prefetch US institutional holder data using yfinance.
 
@@ -172,19 +195,19 @@ def prefetch_us_holder_info(ticker: str) -> str:
         # Major holders
         major = holders.get("major_holders")
         if major is not None and not major.empty:
-            result += _df_to_markdown(holdings_asof_frame(major, asof_utc=fetched_at), f"Major Holders: {ticker}")
+            result += _df_to_markdown(_holder_percent_display(holdings_asof_frame(major, asof_utc=fetched_at)), f"Major Holders: {ticker}")
             result += "\n"
 
         # Institutional holders
         institutional = holders.get("institutional_holders")
         if institutional is not None and not institutional.empty:
-            result += _df_to_markdown(holdings_asof_frame(institutional, asof_utc=fetched_at), f"Top Institutional Holders: {ticker}")
+            result += _df_to_markdown(_holder_percent_display(holdings_asof_frame(institutional, asof_utc=fetched_at)), f"Top Institutional Holders: {ticker}")
             result += "\n"
 
         # Mutual fund holders
         mutualfund = holders.get("mutualfund_holders")
         if mutualfund is not None and not mutualfund.empty:
-            result += _df_to_markdown(holdings_asof_frame(mutualfund, asof_utc=fetched_at), f"Top Mutual Fund Holders: {ticker}")
+            result += _df_to_markdown(_holder_percent_display(holdings_asof_frame(mutualfund, asof_utc=fetched_at)), f"Top Mutual Fund Holders: {ticker}")
             result += "\n"
 
         return result if result else ""
