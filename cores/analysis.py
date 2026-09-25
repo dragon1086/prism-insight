@@ -1,6 +1,5 @@
 import os
 import asyncio
-import json
 import re
 from collections.abc import Mapping
 from datetime import datetime
@@ -46,19 +45,6 @@ from prism_core.report_presentation import humanize_report_status
 
 # Market analysis cache storage (global variable)
 _market_analysis_cache = {}
-
-
-def _report_stock_names():
-    """Read the existing identity map, never discover peers by substring or score."""
-    from prism_core.runtime_paths import resolve_stock_map_read_path
-    try:
-        path = resolve_stock_map_read_path()
-        if path.stat().st_size > 2_000_000:
-            return {}
-        data = json.loads(path.read_text(encoding='utf-8')).get('code_to_name', {})
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError, TypeError, AttributeError):
-        return {}
 
 
 def _report_parallel_limit(
@@ -150,6 +136,19 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                            receipt.get('source_count'), receipt.get('capacity_ok'),
                            receipt.get('failure_type'), diagnostics.get('gaps', []))
             raise ValueError('공시 심층분석 입력을 확보하지 못해 완성본 생성을 중단했습니다.')
+        # WiseFn-selected competitor table, collected before the Industry Analyst
+        # so it interprets real peer numbers. Optional data, never a trading gate.
+        try:
+            from prism_core.kr_peer_comparison import collect_wisereport_peers
+            peer_packet = await collect_wisereport_peers(company_code, company_name, reference_date)
+        except Exception as e:
+            peer_packet = {'ready': False, 'skip_reason': f'error_{type(e).__name__}'}
+        logger.info(
+            f"[PEER_COMPARISON] symbol={company_code} status={'ready' if peer_packet.get('ready') else 'skipped'} "
+            f"peers={max(0, len(peer_packet.get('peers') or []) - 1)} period={peer_packet.get('period') or '-'} "
+            f"reason={peer_packet.get('skip_reason') or '-'}")
+        if peer_packet.get('ready'):
+            prefetched['peer_comparison'] = peer_packet
         cache_key = market_cache_key(prefetched, reference_date, language)
         # 5. Get agents (with prefetched data)
         agents = get_agent_directory(company_name, company_code, reference_date, base_sections, language, prefetched_data=prefetched)
@@ -262,20 +261,11 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         if shared_market:
             section_reports["market_index_analysis"] = section_reports.get("market_index_analysis", "") + shared_market
 
-        # Compare explicitly proposed peers, not every same-sector stock. This is
-        # optional source data, never an industry-rank or score override.
+        # Pre-collected competitor table: published after 2-2 and fed to synthesis/DART.
         peer_context = ''
-        try:
-            from prism_core.kr_peer_comparison import collect_peer_comparison, select_report_peer_candidates
-            stock_names = await asyncio.to_thread(_report_stock_names)
-            candidates = select_report_peer_candidates(section_reports, company_code, stock_names)
-            if candidates:
-                peer_packet = await collect_peer_comparison(company_code, company_name, candidates, reference_date)
-                peer_context = peer_packet.get('model_context', '')
-                if peer_packet.get('public_markdown'):
-                    section_reports['peer_comparison'] = peer_packet['public_markdown']
-        except Exception:
-            logger.warning('Optional peer comparison unavailable; no new trading condition applied')
+        if peer_packet.get('ready'):
+            peer_context = peer_packet.get('model_context', '')
+            section_reports['peer_comparison'] = peer_packet['public_markdown']
 
         # This chapter bypasses the legacy 3,000-character summary contract and
         # is preserved as written, before strategy and executive synthesis.

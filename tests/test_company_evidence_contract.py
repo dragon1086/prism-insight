@@ -75,11 +75,11 @@ def test_eps_formula_and_numeric_denominator_are_separate_evidence(factories, la
 @pytest.mark.parametrize("language", ["ko", "en"])
 def test_overview_separates_leadership_from_price_and_sector(factories, language):
     prompt = factories["create_company_overview_agent"]("HDC", "012630", "20260910", URLS, language).instruction
-    assert URLS["경쟁사분석"] in prompt and URLS["업종분석"] in prompt
+    assert URLS["업종분석"] in prompt and URLS["경쟁사분석"] not in prompt
     assert "Page Only" not in prompt and "페이지에서만" not in prompt
     for term in ("industry_leadership", "price_RS", "sector_tailwind", "UNKNOWN", "012630", "CAN SLIM"):
         assert term in prompt
-    assert ("최대 2개" if language == "ko" else "at most 2") in prompt
+    assert ("최대 1개" if language == "ko" else "at most 1") in prompt
     assert ("누락된 경우에만" if language == "ko" else "only if missing") in prompt
     for term in (("비교군", "기간", "출처") if language == "ko" else ("peer universe", "period", "source")):
         assert term in prompt
@@ -104,3 +104,17 @@ def test_entity_scope_is_generic_and_does_not_leak_another_company(factories, la
         assert unrelated not in prompt
     for term in (("모회사", "자회사", "별도 상장") if language == "ko" else ("parent", "subsidiary", "separately listed")):
         assert term in prompt
+
+
+@pytest.mark.parametrize("language", ["ko", "en"])
+def test_overview_uses_precollected_peer_table_or_bounded_fallback(factories, language):
+    table = "#### 경쟁사 비교\n| 구분 | HDC | 비교기업 |\n비교기업 종목코드: 비교기업(111111)"
+    prompt = factories["create_company_overview_agent"](
+        "HDC", "012630", "20260910", URLS, language, peer_table=table).instruction
+    assert table in prompt
+    assert ("#### 경쟁사 대비 위치 분석" if language == "ko" else "#### Competitive Position Analysis") in prompt
+    assert ("1개 문단" if language == "ko" else "1 paragraph") in prompt
+    assert ("표에 있는 값만" if language == "ko" else "only numbers that appear in the table") in prompt
+    fallback = factories["create_company_overview_agent"]("HDC", "012630", "20260910", URLS, language).instruction
+    assert "#### 경쟁사 비교" not in fallback
+    assert ("재무 수치나 순위를 만들어내지" if language == "ko" else "never state peer financial figures") in fallback
