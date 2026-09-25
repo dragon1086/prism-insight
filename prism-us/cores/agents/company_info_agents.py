@@ -113,6 +113,8 @@ URL 접근 시 firecrawl_scrape 도구를 사용하고 formats 파라미터를 [
 - 불확실한 내용은 "~로 보인다", "가능성이 있다" 등의 표현 사용
 - 과도하게 확정적인 투자 권유 지양, 객관적 정보 제공에 집중
 - 'company overview' 에이전트와 중복 방지를 위해 사업 개요는 핵심 요약만 제공
+- 애널리스트 투자의견(Recommendation) 원값은 한국어로 표기: strong_buy→강력 매수, buy→매수, hold→보유, underperform→비중 축소, sell→매도, none→의견 없음. 영문 코드(strong_buy 등)를 본문·표에 그대로 쓰지 마세요.
+- 목표가 상승여력 등 비율은 소수점 둘째 자리까지만 표기하세요.
 
 ## 출력 형식 주의사항
 - 최종 보고서에 도구 사용 언급 포함 금지
@@ -373,7 +375,8 @@ def create_us_company_overview_agent(
     reference_date: str,
     urls: Dict[str, str],
     language: str = "ko",
-    prefetched_data: dict = None
+    prefetched_data: dict = None,
+    peer_table: str = ""
 ):
     """Create US company overview analysis agent
 
@@ -574,27 +577,60 @@ Profile, Holders 페이지 firecrawl 스크랩 금지. MCP 도구 호출 금지.
             if start_idx != -1 and end_idx != -1:
                 instruction = instruction[:start_idx] + prefetch_block + "\n" + instruction[end_idx:]
 
-    # Basic profile coverage does not establish competitive evidence. The news
-    # section owns that research; the report pipeline attaches its record later.
+    # Basic profile coverage does not establish competitive evidence. Competitor
+    # numbers come only from the deterministic peer table collected before this agent.
     if language == "ko":
         instruction += """
-## 경쟁 근거의 책임 범위
-COMPETITIVE_EVIDENCE_OWNER: news
-- 기본정보·주주·사업부 자료는 사업 구조 분석에 사용하지만, 그 존재 자체는 경쟁우위의 증거가 아닙니다. profile 사전 수집 성공을 경쟁 근거 수집 완료나 리더 판정으로 해석하지 마세요.
-- 경쟁사 비교와 원문 검증은 뉴스 섹션이 담당합니다. 같은 경쟁사를 다시 조사하지 마세요. 뉴스의 Competitive Evidence 기록은 보고서 통합 단계에서 이 기업 개요에 별도로 연결됩니다. 아직 전달되지 않은 기록을 읽거나 검증한 것처럼 쓰지 마세요.
-- 이 입력에서 비교 가능한 출처·기준 기간·시장 범위·법인이 확인되지 않으면 industry_leadership은 UNKNOWN으로 두고, 뉴스 경쟁 근거와의 통합 전에는 시장 지위가 미확인임을 명시하세요. UNKNOWN은 부정적인 투자 판정이 아닙니다.
+## 경쟁 근거의 범위
+- 기본정보·주주·사업부 자료는 사업 구조 분석에 사용하지만, 그 존재 자체는 경쟁우위의 증거가 아닙니다. profile 사전 수집 성공을 리더 판정으로 해석하지 마세요.
+- 비교 가능한 출처·기준 기간·시장 범위·법인이 확인되지 않으면 industry_leadership은 UNKNOWN으로 두세요. UNKNOWN은 부정적인 투자 판정이 아닙니다.
 - 경쟁사나 점유율을 만들어 내지 마세요. 회사의 자기 소개, 시가총액, 기관 보유율, 사업부 매출만으로 시장 지배력을 단정하지 마세요. 자회사 경쟁력을 모회사 전체의 우위로 확대하지 마세요.
 - industry_leadership, price_RS, sector_tailwind는 별개입니다. 주가 강세나 업종 호재를 사업 경쟁우위로 대체하지 마세요. 기존 데이터에서 확인한 주주·사업부 정보는 그대로 활용하고, 빠진 항목은 숨기지 마세요.
 """
     else:
         instruction += """
-## Competitive evidence ownership
-COMPETITIVE_EVIDENCE_OWNER: news
-- Use profile, holders, and segment data for business structure analysis; their presence is not evidence of competitive advantage. Successful profile prefetch does not mean competitive coverage is complete or leadership is established.
-- The news section owns peer research and primary-source verification. Do not research the same peers again. The report pipeline separately attaches the news Competitive Evidence record to this overview. Do not imply that you have read or verified a record not yet supplied.
-- If comparable sources, period, market scope, and entity are absent from this input, keep industry_leadership UNKNOWN and identify market position as unconfirmed before the news evidence is integrated. UNKNOWN is not a negative investment verdict.
+## Competitive evidence scope
+- Use profile, holders, and segment data for business structure analysis; their presence is not evidence of competitive advantage. Successful profile prefetch does not establish leadership.
+- If comparable sources, period, market scope, and entity are absent, keep industry_leadership UNKNOWN. UNKNOWN is not a negative investment verdict.
 - Do not invent competitors or market shares. A company's self-description, market capitalization, institutional ownership, or segment revenue alone does not establish market dominance. Do not extrapolate a subsidiary's advantage to its parent as a whole.
 - Keep industry_leadership, price_RS, and sector_tailwind separate. Price strength or sector news is not a substitute for business advantage. Retain available holder and segment facts and disclose missing fields rather than concealing them.
+"""
+
+    if peer_table and language == "ko":
+        instruction += f"""
+## 사전 수집된 데이터 (경쟁사 비교)
+다음 표는 yfinance 재무·주가 자료로 코드가 계산한 경쟁사 비교표입니다. 이 데이터를 직접 사용하세요 - 경쟁사 비교 데이터를 위한 도구 호출을 하지 마세요.
+
+{peer_table}
+
+## 경쟁사 대비 위치 해석 (필수)
+- "#### 경쟁사 대비 위치 분석" 소제목 아래 1개 문단으로, 위 표의 비교기업을 직접 언급하며 성장률, 수익성(매출총이익률·영업이익률·FCF 마진), 밸류에이션(EV/Sales·Forward PER), 주가 수익률, 규모 측면에서 {company_name}의 위치를 해석하세요.
+- 수치는 위 표에 있는 값만 인용하고 새로운 수치를 만들거나 계산하지 마세요. 표 자체는 보고서에 별도로 실리므로 다시 옮겨 적지 마세요.
+- 최근 분기 말이 서로 다르면 비교 기간의 한계를 밝히세요. 선정된 비교기업 기준이므로 전체 업종 순위나 리더 지위로 단정하지 마세요.
+"""
+    elif peer_table:
+        instruction += f"""
+## Pre-collected Data (Competitor Comparison)
+The table below is a code-computed competitor comparison from yfinance financials and prices. Use it directly; do not make tool calls for competitor data.
+
+{peer_table}
+
+## Position vs Competitors (required)
+- Under a "#### Competitive Position Analysis" subheading, write exactly 1 paragraph interpreting {company_name}'s position against these named peers in terms of growth, profitability (gross/operating/FCF margin), valuation (EV/Sales, forward P/E), share-price return and scale.
+- Cite only numbers that appear in the table above; do not create or compute new numbers. Do not copy the table itself; it is published separately in the report.
+- Note the comparison limit when latest quarter ends differ. These are selected peers, not a whole-industry ranking or leadership proof.
+"""
+    elif language == "ko":
+        instruction += """
+## 경쟁사 비교 자료 부재
+- 이번 보고서에서는 검증된 경쟁사 비교표를 확보하지 못했습니다. 경쟁사 수치를 따로 조사하지 마세요.
+- 경쟁 구도는 제공된 자료의 정성적 설명으로만 다루고, 비교기업의 재무 수치나 순위를 만들어내지 마세요.
+"""
+    else:
+        instruction += """
+## Competitor Comparison Unavailable
+- No verified competitor table was collected for this report. Do not research peer figures.
+- Describe the competitive landscape only qualitatively from supplied sources; never state peer financial figures or ranks.
 """
 
     # When prefetched: no MCP servers needed for this basic-profile section.

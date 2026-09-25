@@ -8,7 +8,6 @@ import os
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
-from prism_core.competitive_evidence import attach_competitive_evidence
 from prism_core.report_technical_facts import extract_report_technical_facts
 from prism_core.us_report_consistency import add_shared_context, reference_context, evidence_appendix
 from prism_core.us_report_public_inputs import collect_us_public_report_inputs, has_macro_evidence, public_macro_identity, render_public_source_receipt
@@ -268,6 +267,17 @@ async def analyze_us_stock(
             logger.warning(f"US data prefetch failed, falling back to MCP: {e}")
             prefetched = {}
 
+        # Deterministic competitor table (one Perplexity candidate call + yfinance
+        # numbers), overlapped with the non-yfinance collection below. Optional
+        # report data, never a trading gate.
+        async def collect_peers():
+            try:
+                from prism_core.us_peer_comparison import collect_us_peer_comparison
+                return await collect_us_peer_comparison(ticker, company_name, reference_date, language)
+            except Exception as e:
+                return {'ready': False, 'skip_reason': f'error_{type(e).__name__}'}
+        peer_task = asyncio.create_task(collect_peers())
+
         public_inputs = await collect_us_public_report_inputs(
             ticker, reference_date, prefetched.pop('_sec_filings', []),
             _project_root / 'runtime' / 'us_official_macro',
@@ -298,6 +308,15 @@ async def analyze_us_stock(
                     logger.info(f"Prefetched social sentiment for {ticker}")
             except Exception as e:
                 logger.warning(f"US social sentiment prefetch failed, continuing without it: {e}")
+
+        peer_packet = await peer_task
+        logger.info(
+            f"[PEER_COMPARISON] market=US symbol={ticker} status={'ready' if peer_packet.get('ready') else 'skipped'} "
+            f"peers={max(0, len(peer_packet.get('peers') or []) - 1)} source={peer_packet.get('source') or '-'} "
+            f"misaligned={','.join(peer_packet.get('misaligned') or []) or '-'} "
+            f"reason={peer_packet.get('skip_reason') or '-'} elapsed={peer_packet.get('elapsed', '-')}s")
+        if peer_packet.get('ready'):
+            prefetched['peer_comparison'] = peer_packet
 
         # 5. Get US-specific agents (with prefetched data)
         prefetched["shared_macro_available"] = bool(macro_context) or has_macro_evidence(prefetched.get('official_macro'))
@@ -388,10 +407,9 @@ async def analyze_us_stock(
             if result and result[1] is not None:
                 section_reports[result[0]] = result[1]
 
-        # Both hybrid branches are complete: reuse news without another model call.
-        section_reports, evidence_receipt = attach_competitive_evidence(
-            section_reports, "US", ticker, reference_date, language
-        )
+        # Pre-collected competitor table: published after 2-2 and fed to synthesis.
+        if peer_packet.get('ready'):
+            section_reports['peer_comparison'] = peer_packet['public_markdown']
         section_reports['company_status'] = section_reports.get('company_status', '') + '\n\n' + render_us_analyst_receipt(
             prefetched.get('analysis_estimates_status'), language)
         section_reports['company_status'] += '\n\n' + render_public_source_receipt(
@@ -399,11 +417,6 @@ async def analyze_us_stock(
         if prefetched['report_technical_reference']:
             section_reports['price_volume_analysis'] = section_reports.get('price_volume_analysis', '') + '\n\n' + prefetched['report_technical_reference']
         section_reports['shared_reference'] = shared_reference
-        logger.info(
-            f"[COMPETITIVE_EVIDENCE] market=US symbol={ticker} date={reference_date} "
-            f"status={evidence_receipt['status']} evidence_id={evidence_receipt['evidence_id']} "
-            f"record_chars={evidence_receipt['record_chars']}"
-        )
 
         from prism_core.market_report_context import market_report_context, public_market_analysis
         section_reports["market_index_analysis"] = public_market_analysis(
@@ -423,7 +436,12 @@ async def analyze_us_stock(
 
         # 6. Integrate content from other reports
         combined_reports = shared_reference
+        synthesis_sections = []
         for section in base_sections + ['macro_context']:
+            synthesis_sections.append(section)
+            if section == 'company_overview':
+                synthesis_sections.append('peer_comparison')
+        for section in synthesis_sections:
             if section in section_reports:
                 combined_reports += f"\n\n--- {section.upper()} ---\n\n"
                 combined_reports += section_reports[section]
@@ -531,15 +549,15 @@ async def analyze_us_stock(
         # Build chart sections with fallback messages
         price_chart_section = ""
         if price_chart_html:
-            price_chart_section = f"\n\n#### Price Chart\n\n{price_chart_html}\n"
+            price_chart_section = f"\n\n#### {'주가 차트' if language == 'ko' else 'Price Chart'}\n\n{price_chart_html}\n"
 
         institutional_chart_section = ""
         if institutional_chart_html:
-            institutional_chart_section = f"\n\n#### Institutional Holdings Chart\n\n{institutional_chart_html}\n"
+            institutional_chart_section = f"\n\n#### {'기관 보유 현황 차트' if language == 'ko' else 'Institutional Holdings Chart'}\n\n{institutional_chart_html}\n"
 
         technical_chart_section = ""
         if technical_chart_html:
-            technical_chart_section = f"\n\n#### Technical Indicators (RSI & MACD)\n\n{technical_chart_html}\n"
+            technical_chart_section = f"\n\n#### {'기술적 지표 차트 (RSI·MACD)' if language == 'ko' else 'Technical Indicators (RSI & MACD)'}\n\n{technical_chart_html}\n"
 
         # Reuse the same macro block already supplied to strategy and summary.
 
@@ -567,12 +585,13 @@ async def analyze_us_stock(
                 "strategy": "## 5. Investment Strategy and Opinion",
             }
 
-        from prism_core.report_financial_math import extract_report_financial_math
+        from prism_core.report_financial_math import extract_report_financial_math, public_financial_math
 
         section_reports, source_appendix = evidence_appendix(
             section_reports, language, prefetched['report_technical_reference'],
-            financial_reference=extract_report_financial_math(
-                prefetched.get('stock_info', ''), prefetched.get('financial_statements', '')))
+            financial_reference=public_financial_math(extract_report_financial_math(
+                prefetched.get('stock_info', ''), prefetched.get('financial_statements', '')), language),
+            competitive_records=False)
         if prefetched.get('_report_ohlcv_frame') is not None and prefetched['report_technical_reference']:
             from prism_core.report_technical_facts import render_public_technical_facts
             source_appendix = source_appendix.replace(
@@ -601,6 +620,8 @@ async def analyze_us_stock(
 {section_reports.get("company_status", "Analysis not available")}
 
 {section_reports.get("company_overview", "Analysis not available")}
+
+{section_reports.get("peer_comparison", "")}
 
 ---
 

@@ -130,3 +130,14 @@ def test_real_kr_us_factories_reuse_source_packet_and_off_is_identical():
                 assert 'UNKNOWN' in enabled[section].instruction
                 if section != 'news_analysis':
                     assert enabled[section].server_names == original[section].server_names
+
+
+def test_us_tool_free_news_does_not_request_competitive_evidence_records():
+    agent = ReportAgent('news', 'original', ['perplexity'])
+    data = {'report_research': {'evidence_id': 'RE-us', 'news_usable': True,
+                               'receipt': {'market': 'US', 'usable_sources': 1},
+                               'section_notes': {'news_analysis': 'Source S1'}}}
+    out = apply_section_research(agent, 'news_analysis', data, '20260918', 'ko')
+    assert out.server_names == () and 'RE-us' in out.instruction
+    assert '#### Competitive Evidence' not in out.instruction and 'SOURCE_CHECKED' not in out.instruction
+    assert 'peer comparison table' in out.instruction

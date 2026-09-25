@@ -62,12 +62,23 @@ def apply_section_research(agent, section, prefetched, reference_date, language)
         'Price leadership requires a named universe and comparable price window, not product pricing power. '
         'Separate a parent/subsidiary, competitor/customer, geography, unit and fiscal period. '
         'A company fact or selected peer subset never establishes an industry rank. '
-        'Include the exact heading #### Competitive Evidence with compact records: field, type, entity, '
-        'peer_universe, metric, value, unit, period, geography, source, publication_date, status and supporting excerpt. '
-        'Use SOURCE_CHECKED only for a specific claim supported by an actual supplied source excerpt; '
-        'this remains a model-reported assessment, not independent validation. '
-        'Use SEARCH_ONLY for discovery snippets, NOT_FOUND for unresolved questions in the inspected scope, '
-        'and INCOMPARABLE for mismatched entities/periods/units. Missing stays UNKNOWN. '
+    )
+    if isinstance(receipt, dict) and receipt.get('market') == 'US':
+        # US reports publish a deterministic peer table; no model evidence records.
+        instruction += (
+            'Do not write a competitive evidence record section or peer financial figures; '
+            'the report publishes a separate code-computed peer comparison table. Missing stays UNKNOWN. '
+        )
+    else:
+        instruction += (
+            'Include the exact heading #### Competitive Evidence with compact records: field, type, entity, '
+            'peer_universe, metric, value, unit, period, geography, source, publication_date, status and supporting excerpt. '
+            'Use SOURCE_CHECKED only for a specific claim supported by an actual supplied source excerpt; '
+            'this remains a model-reported assessment, not independent validation. '
+            'Use SEARCH_ONLY for discovery snippets, NOT_FOUND for unresolved questions in the inspected scope, '
+            'and INCOMPARABLE for mismatched entities/periods/units. Missing stays UNKNOWN. '
+        )
+    instruction += (
         'An undated currently accessible page does not prove availability at a historical decision. '
         'Source-ID references and essential limitations must survive the final summary. '
         'Do not mention internal tooling or implementation paths in the public prose. '

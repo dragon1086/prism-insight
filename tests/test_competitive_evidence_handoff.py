@@ -109,7 +109,7 @@ def test_context_and_content_are_bound_to_id():
     assert len({ident(), ident(market="KR"), ident(symbol="OTHER"), ident(date="20260910"), ident(news=NEWS.replace("12%", "13%"))}) == 5
 
 
-@pytest.mark.parametrize("file", ["cores/analysis.py", "prism-us/cores/us_analysis.py"])
+@pytest.mark.parametrize("file", ["cores/analysis.py"])
 def test_both_pipelines_handoff_before_strategy_and_summary(file):
     source = (Path(__file__).resolve().parents[1] / file).read_text()
     calls = [n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
@@ -164,7 +164,7 @@ def test_id_and_source_survive_actual_pdf_text_input(tmp_path):
     assert "SEARCH_ONLY" in extracted
 
 
-@pytest.mark.parametrize("file", ["cores/analysis.py", "prism-us/cores/us_analysis.py"])
+@pytest.mark.parametrize("file", ["cores/analysis.py"])
 def test_handoff_logger_is_compatible_with_mcp_logger_signature(file):
     import inspect
     from mcp_agent.logging.logger import Logger
@@ -174,4 +174,18 @@ def test_handoff_logger_is_compatible_with_mcp_logger_signature(file):
     calls = [n for n in calls if "[COMPETITIVE_EVIDENCE]" in ast.get_source_segment(source, n)]
     assert len(calls) == 1
     assert len(calls[0].args) == 1
+    inspect.signature(Logger.info).bind(None, "safe metadata")
+
+
+def test_us_pipeline_publishes_peer_table_instead_of_model_evidence():
+    import inspect
+    from mcp_agent.logging.logger import Logger
+
+    source = (Path(__file__).resolve().parents[1] / "prism-us/cores/us_analysis.py").read_text()
+    tree = ast.parse(source)
+    names = {n.func.id for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "attach_competitive_evidence" not in names and "[COMPETITIVE_EVIDENCE]" not in source
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr == "info" and "[PEER_COMPARISON]" in ast.get_source_segment(source, n)]
+    assert len(calls) == 1 and len(calls[0].args) == 1
     inspect.signature(Logger.info).bind(None, "safe metadata")
