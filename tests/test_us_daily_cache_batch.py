@@ -67,6 +67,7 @@ def test_cached_pair_preserves_real_batch_candidates(tmp_path,mode,shape):
     for case in ['fresh','cached']:
         output=tmp_path/f'{case}.json'
         env=dict(os.environ,US_DAILY_CACHE_ENABLED='true',
+                 US_SCREENING_UNIVERSE='major_indices',
                  PRISM_US_DAILY_CACHE_DIR=str(tmp_path/case),
                  PRISM_DISABLE_SIGNAL_PUBLISH='1',REPORT_MARKET_CONTEXT_ENABLED='false',
                  PRISM_OBSERVABILITY_SPOOL=str(tmp_path/'events.jsonl'),

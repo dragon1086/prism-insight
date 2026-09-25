@@ -2196,6 +2196,9 @@ class USStockTrackingAgent:
                 stored_decision_context = scenario.get("_decision_context")
                 if isinstance(stored_decision_context, dict):
                     decision_context.update(stored_decision_context)
+                quality = getattr(self, '_screening_quality_contexts', {}).get(ticker)
+                if quality is not None:
+                    decision_context['screening_quality_context'] = quality
                 observe_or_emit(self, emit_trading_context,
                     "candidate.evaluated",
                     market="US",
@@ -4394,6 +4397,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 **scenario["_decision_context"],
                                 "selected_for_entry": True,
                                 "price": current_price,
+                                **({'screening_quality_context': self._screening_quality_contexts[ticker]}
+                                   if ticker in getattr(self, '_screening_quality_contexts', {}) else {}),
                             },
                             portfolio_context={
                                 "slots_used": current_slots,
@@ -5113,11 +5118,18 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
             # Load trigger type mapping
             self.trigger_info_map = {}
+            self._screening_quality_contexts = {}
             if trigger_results_file:
                 try:
                     if os.path.exists(trigger_results_file):
                         with open(trigger_results_file, 'r', encoding='utf-8') as f:
                             trigger_data = json.load(f)
+                        if os.getenv('US_SCREENING_QUALITY_CAPTURE_ENABLED', '').lower() == 'true':
+                            try:
+                                from prism_core.screening_quality import load_quality_candidates
+                                self._screening_quality_contexts = load_quality_candidates(trigger_data.get('metadata'))
+                            except Exception:
+                                logger.warning('Optional screening quality observations unavailable')
                         for trigger_type, stocks in trigger_data.items():
                             if trigger_type == 'metadata':
                                 self.trigger_mode = trigger_data.get('metadata', {}).get('trigger_mode', '')

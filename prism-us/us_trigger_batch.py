@@ -8,7 +8,7 @@ Adapted from Korean trigger_batch.py for US market characteristics.
 
 Key Differences from Korean Version:
 - Data source: yfinance (vs pykrx)
-- Market cap filter: $20B USD (vs 5000억 KRW)
+- Market cap: disabled for legacy indices; explicit threshold for opt-in listed stocks
 - Trading value filter: $100M USD (vs 100억 KRW)
 - Change rate filter: 20% max (same)
 - Market hours: 09:30-16:00 EST (vs 09:00-15:30 KST)
@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cores.us_surge_detector import (
     get_snapshot,
     get_previous_snapshot,
+    get_batched_snapshot_pair,
     get_multi_day_ohlcv,
     get_market_cap_df,
     get_major_tickers,
@@ -72,8 +73,10 @@ TRIGGER_CRITERIA = {
     "default": {"rr_target": 1.5, "sl_max": 0.07}
 }
 
-# Market cap filter disabled - let trigger scoring handle quality filtering
-# MIN_MARKET_CAP = 20_000_000_000
+# Expanded common-stock universe baseline. The user approved $1B as the
+# quality floor; environment overrides remain explicit and observable.
+DEFAULT_US_SCREENING_UNIVERSE = "listed_common"
+DEFAULT_US_MIN_MARKET_CAP_USD = 1_000_000_000
 
 # Trading value filter: $100M USD
 MIN_TRADING_VALUE = 100_000_000
@@ -196,7 +199,9 @@ def _compute_extension_score(extension_in_adr: float) -> float:
 
 
 def calculate_screening_signals(ticker: str, current_price: float, trade_date: str,
-                                lookback_days: int = SCREENING_SIGNAL_LOOKBACK_DAYS) -> dict:
+                                lookback_days: int = SCREENING_SIGNAL_LOOKBACK_DAYS,
+                                quality_capture: dict = None,
+                                expected_completed_session: str = None) -> dict:
     """#289: Compute O'Neil-style screening signals from a single multi-week OHLCV fetch.
 
     Intentionally independent of calculate_agent_fit_metrics so the agent's 10-day
@@ -219,6 +224,19 @@ def calculate_screening_signals(ticker: str, current_price: float, trade_date: s
     # 최적화(B): 260일 1회 fetch 후 60일 슬라이싱 → fetch 2→1 절감.
     # df260.tail(lookback_days) == 독립 60일 fetch의 tail(60)과 동일한 마지막 행.
     df260 = get_multi_day_ohlcv(ticker, trade_date, RS_RATING_LOOKBACK_DAYS)
+    if quality_capture is not None:
+        try:
+            from prism_core.screening_quality import build_screening_quality_context
+            quality_capture[ticker] = build_screening_quality_context(
+                df260, trade_date, expected_completed_session=expected_completed_session)
+        except Exception:
+            # Optional observation must never affect scores or abort selection.
+            quality_capture[ticker] = {
+                'schema_version': 'screening_quality_context_v1', 'status': 'MISSING',
+                'requested_trade_date': f'{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}',
+                'reason': 'capture_error', 'scoring_applied': False,
+                'compatibility_status': 'NEEDS_SCENARIO',
+            }
     if df260.empty:
         return result
 
@@ -1185,7 +1203,8 @@ def get_us_sector_map(tickers: list) -> dict:
 
 
 def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: bool = True,
-                         lookback_days: int = 10, macro_context: dict = None) -> dict:
+                         lookback_days: int = 10, macro_context: dict = None,
+                         quality_capture: dict = None, expected_completed_session: str = None) -> dict:
     """
     Aggregate selected stocks from all triggers and make final selection.
 
@@ -1237,7 +1256,10 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
                 if _ticker in screening_signals:
                     continue
                 _cp = float(_cdf.loc[_ticker, "Close"]) if "Close" in _cdf.columns else 0.0
-                screening_signals[_ticker] = calculate_screening_signals(_ticker, _cp, trade_date)
+                capture_args = ({'quality_capture': quality_capture,
+                                 'expected_completed_session': expected_completed_session}
+                                if quality_capture is not None else {})
+                screening_signals[_ticker] = calculate_screening_signals(_ticker, _cp, trade_date, **capture_args)
 
         rs_score_map = {}
         if screening_signals:
@@ -1433,6 +1455,85 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
 
 # === Batch Execution ===
 
+def _load_screening_inputs(trade_date):
+    """Apply one common-stock/cap/liquidity boundary before every US trigger."""
+    mode = os.getenv('US_SCREENING_UNIVERSE', DEFAULT_US_SCREENING_UNIVERSE)
+    if mode == 'major_indices':
+        tickers = get_major_tickers()
+        current = get_snapshot(trade_date, tickers)
+        previous, date = get_previous_snapshot(trade_date, tickers)
+        return tickers, current, previous, date, None
+    if mode != 'listed_common':
+        raise ValueError('Unknown US_SCREENING_UNIVERSE')
+
+    import math
+    import time
+    from collections import Counter
+    import yfinance as yf
+    from prism_core.us_stock_universe import fetch_universe, eligibility_reason
+
+    try:
+        minimum = float(os.getenv(
+            'US_SCREENING_MIN_MARKET_CAP_USD', str(DEFAULT_US_MIN_MARKET_CAP_USD)))
+    except ValueError as exc:
+        raise ValueError('Invalid expanded-universe market-cap threshold') from exc
+    if not math.isfinite(minimum) or minimum <= 0:
+        raise ValueError('Invalid expanded-universe market-cap threshold')
+    universe = fetch_universe()
+    tickers = [record.symbol for record in universe.records]
+    current, previous, date, collection = get_batched_snapshot_pair(trade_date, tickers)
+    from prism_core.batch_run_status import snapshot_coverage
+    raw_coverage = snapshot_coverage(current, previous, tickers, trade_date, date)
+    from prism_core.market_intelligence import optional_participation
+    raw_participation = optional_participation(current, previous, 'US', trade_date, len(tickers))
+    kept = []
+    reasons = Counter()
+    checked = 0
+    started = time.monotonic()
+    paired = [ticker for ticker in tickers
+              if ticker in current.index and ticker in previous.index]
+    # Every existing trigger already requires at least this dollar turnover.
+    # Applying the same absolute floor before metadata avoids thousands of
+    # unnecessary free-provider profile requests without introducing a new
+    # volume-surge rule or changing relative-volume scoring.
+    liquidity_eligible = [ticker for ticker in paired
+                          if float(current.at[ticker, 'Amount']) >= EMERGING_LIQUIDITY_MIN_TRADING_VALUE]
+    reasons['missing_snapshot_pair'] += len(tickers) - len(paired)
+    reasons['below_liquidity_floor'] += len(paired) - len(liquidity_eligible)
+    for ticker in liquidity_eligible:
+        if time.monotonic() - started >= 300:
+            reasons['metadata_budget_exhausted'] += 1
+            continue
+        checked += 1
+        try:
+            info = yf.Ticker(ticker).info
+            reason = eligibility_reason(info, minimum)
+            if isinstance(info, dict) and any(info.get(key) is None for key in (
+                    'quoteType', 'exchange', 'currency', 'marketCap')):
+                reason = 'missing_metadata'
+        except Exception:
+            reason = 'metadata_unavailable'
+        if reason:
+            reasons[reason] += 1
+        else:
+            kept.append(ticker)
+    diagnostic = {
+        'mode': mode, 'min_market_cap_usd': minimum,
+        'directory_counts': universe.counts,
+        'price_coverage': raw_coverage, 'collection': collection,
+        'market_participation': raw_participation,
+        'liquidity_floor_usd': EMERGING_LIQUIDITY_MIN_TRADING_VALUE,
+        'liquidity_eligible_count': len(liquidity_eligible),
+        'metadata_checked_count': checked, 'eligible_count': len(kept),
+        'exclusion_reasons': dict(reasons),
+        'metadata_status': ('PARTIAL' if any(reasons[key] for key in (
+            'metadata_unavailable', 'metadata_budget_exhausted', 'missing_metadata',
+            'missing_market_cap', 'unknown_company_classification')) else 'COMPLETE'),
+    }
+    logger.info('US expanded universe eligibility: %s', diagnostic)
+    return tickers, current.loc[kept].copy(), previous.loc[kept].copy(), date, diagnostic
+
+
 def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = None, macro_context: dict = None, override_date: str = None, watch_batch_ref: str = None):
     """
     Execute trigger batch.
@@ -1458,19 +1559,17 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
         trade_date = get_nearest_business_day(today_str, prev=True)
         logger.info(f"Batch reference date: {trade_date} (US Eastern Time)")
 
-    # Get S&P 500 + NASDAQ-100 tickers (combined, deduplicated)
-    tickers = get_major_tickers()
-
-    # A failed current-session read is not yesterday's screening opportunity.
-    # Let the caller report the data failure rather than silently relabel dates.
-    snapshot = get_snapshot(trade_date, tickers)
-    prev_snapshot, prev_date = get_previous_snapshot(trade_date, tickers)
+    tickers, snapshot, prev_snapshot, prev_date, universe_diagnostic = _load_screening_inputs(trade_date)
     from prism_core.batch_run_status import snapshot_coverage
-    coverage = snapshot_coverage(snapshot, prev_snapshot, tickers, trade_date, prev_date)
+    coverage = (universe_diagnostic['price_coverage'] if universe_diagnostic else
+                snapshot_coverage(snapshot, prev_snapshot, tickers, trade_date, prev_date))
     trigger_errors = []
+    if universe_diagnostic and universe_diagnostic['metadata_status'] != 'COMPLETE':
+        trigger_errors.append({'trigger': 'Universe Eligibility', 'error_type': 'IncompleteMetadata'})
     logger.info('US snapshot coverage: %s', coverage)
     from prism_core.market_intelligence import optional_participation
-    market_participation = optional_participation(snapshot, prev_snapshot, "US", trade_date, len(tickers))
+    market_participation = (universe_diagnostic['market_participation'] if universe_diagnostic else
+                            optional_participation(snapshot, prev_snapshot, "US", trade_date, len(tickers)))
     logger.debug(f"Previous trading day: {prev_date}")
 
     # Market cap is not a hard universe filter. It is loaded on demand only
@@ -1659,7 +1758,10 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
                 logger.info(f"  - {ticker} ({company})")
 
     # Final selection
-    final_results = select_final_tickers(triggers, trade_date=trade_date, macro_context=macro_context)
+    quality_capture = ({} if os.getenv('US_SCREENING_QUALITY_CAPTURE_ENABLED', '').lower() == 'true' else None)
+    capture_args = ({'quality_capture': quality_capture, 'expected_completed_session': prev_date}
+                    if quality_capture is not None else {})
+    final_results = select_final_tickers(triggers, trade_date=trade_date, macro_context=macro_context, **capture_args)
 
     # Research observes a copy boundary, never modifies ranking, JSON or BUY inputs.
     if watch_batch_ref:
@@ -1751,6 +1853,8 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
         # Metadata
         output_data["metadata"] = {
             "snapshot_coverage": coverage,
+            **({'screening_quality_candidates': quality_capture} if quality_capture is not None else {}),
+            **({'universe_eligibility': universe_diagnostic} if universe_diagnostic else {}),
             "trigger_errors": trigger_errors,
             **({"market_participation": market_participation} if market_participation else {}),
             "run_time": datetime.datetime.now().isoformat(),
@@ -1759,7 +1863,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             "selection_mode": "hybrid",
             "lookback_days": 10,
             "market": "US",
-            "min_market_cap_usd": None,  # Market cap filter disabled
+            "min_market_cap_usd": universe_diagnostic['min_market_cap_usd'] if universe_diagnostic else None,
             "min_trading_value_usd": MIN_TRADING_VALUE,
             "selection_strategy": "hybrid_topdown_bottomup" if macro_context else "pure_bottomup",
             "market_regime": _market_regime,

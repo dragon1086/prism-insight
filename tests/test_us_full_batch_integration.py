@@ -348,6 +348,8 @@ def test_real_us_trigger_empty_liquidity_and_failure_metadata(tmp_path, mode, sc
     result = subprocess.run(
         [sys.executable, "-c", RUN_TRIGGER_EDGES, str(ROOT), mode, scenario, str(output)],
         cwd=tmp_path, text=True, capture_output=True, timeout=35, check=False,
-        env=dict(os.environ, PRISM_DISABLE_SIGNAL_PUBLISH="1", PRISM_OBSERVABILITY_SPOOL=str(tmp_path / "events.jsonl")),
+        env=dict(os.environ, PRISM_DISABLE_SIGNAL_PUBLISH="1",
+                 US_SCREENING_UNIVERSE="major_indices",
+                 PRISM_OBSERVABILITY_SPOOL=str(tmp_path / "events.jsonl")),
     )
     assert result.returncode == 0, result.stdout + result.stderr
