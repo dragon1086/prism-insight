@@ -38,7 +38,6 @@ from cores.stock_chart import (
     get_chart_as_base64_html
 )
 from cores.utils import clean_markdown
-from prism_core.competitive_evidence import attach_competitive_evidence
 from prism_core.kr_report_context import reference_context, market_cache_key
 from prism_core.report_presentation import humanize_report_status
 
@@ -242,16 +241,6 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                                or section_reports[section].startswith('Analysis failed:')]
             if failed_sections:
                 raise RuntimeError('Required report section failed before depth generation')
-
-        # Reuse completed news evidence; do not rerun company/news agents.
-        section_reports, evidence_receipt = attach_competitive_evidence(
-            section_reports, "KR", company_code, reference_date, language
-        )
-        logger.info(
-            f"[COMPETITIVE_EVIDENCE] market=KR symbol={company_code} date={reference_date} "
-            f"status={evidence_receipt['status']} evidence_id={evidence_receipt['evidence_id']} "
-            f"record_chars={evidence_receipt['record_chars']}"
-        )
 
         from prism_core.market_report_context import market_report_context, public_market_analysis
         section_reports['market_index_analysis'] = public_market_analysis(
@@ -494,10 +483,6 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
 
         # 12. Compose final report with proper heading hierarchy
         disclaimer = get_disclaimer(language)
-        # The raw competitive evidence records already reached synthesis. The public
-        # KR report shows the deterministic peer table instead of the model records.
-        from prism_core.kr_report_context import strip_public_competitive_evidence
-        section_reports = strip_public_competitive_evidence(section_reports)
 
         # Format reference date for display
         formatted_date = f"{reference_date[:4]}.{reference_date[4:6]}.{reference_date[6:]}"

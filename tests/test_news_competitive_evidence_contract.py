@@ -7,16 +7,43 @@ from types import SimpleNamespace
 import pytest
 
 
-@pytest.fixture(params=["kr", "us"])
-def market_factory(request):
+def _factory(market):
     root = Path(__file__).resolve().parents[1]
-    path = root / ("prism-us/" if request.param == "us" else "") / "cores/agents/news_strategy_agents.py"
+    path = root / ("prism-us/" if market == "us" else "") / "cores/agents/news_strategy_agents.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     tree.body = [node for node in tree.body if not isinstance(node, (ast.Import, ast.ImportFrom))]
     namespace = {"Agent": SimpleNamespace}
     exec(compile(tree, str(path), "exec"), namespace)
-    name = "create_us_news_analysis_agent" if request.param == "us" else "create_news_analysis_agent"
-    return request.param, namespace[name]
+    return namespace["create_us_news_analysis_agent" if market == "us" else "create_news_analysis_agent"]
+
+
+# The Competitive Evidence record contract is US-only. KR competitor figures come
+# from the deterministic WiseReport peer table (prism_core/kr_peer_comparison.py).
+@pytest.fixture(params=["us"])
+def market_factory(request):
+    return request.param, _factory(request.param)
+
+
+@pytest.mark.parametrize("language", ["ko", "en"])
+def test_kr_news_has_no_competitive_evidence_contract(language):
+    agent = _factory("kr")("Example", "TEST", "20260910", language=language)
+    prompt = agent.instruction
+    assert agent.server_names == ["perplexity", "firecrawl"]
+    assert "maxAge: 7200000" in prompt and "finance.naver.com/item/news.naver?code=TEST" in prompt
+    assert "### 3." in prompt and "#### " in prompt
+    for forbidden in ("Competitive Evidence", "SOURCE_CHECKED", "SEARCH_ONLY", "NOT_FOUND", "INCOMPARABLE",
+                      "peer_universe", "sector_tailwind", "price_leadership", "business_competitive_position",
+                      "Query 1 is REQUIRED"):
+        assert forbidden not in prompt
+    for required in (("경쟁사 수치 비교는 별도 경쟁사 비교 표가 담당", "최대 2회", "최대 2개", "20260910",
+                      "URL을 만들지", "정의되지 않은 기호형 출처 별칭")
+                     if language == "ko" else
+                     ("separate competitor comparison table", "at most 2 consolidated", "at most 2 cited",
+                      "20260910", "Never invent URLs", "undefined symbolic citation aliases")):
+        assert required in prompt
+    for forbidden in ("firecrawl 1회만", "추가 스크랩 금지", "Perplexity 답변만으로", "필수 - Perplexity 사용",
+                      "firecrawl 1 call only", "Mandatory - Use Perplexity"):
+        assert forbidden not in prompt
 
 
 @pytest.mark.parametrize("language", ["ko", "en"])

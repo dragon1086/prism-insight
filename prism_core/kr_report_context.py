@@ -1,10 +1,8 @@
 """Report-only shared KR evidence, without trade decisions or extra collection."""
 import hashlib
 import json
-import re
 from datetime import date
 
-from prism_core.competitive_evidence import _NEXT_SECTION, _mask_fences
 from prism_core.report_research_context import _replace_agent
 
 
@@ -144,45 +142,3 @@ def render_flow_reference(evidence):
     lines.append('기업행위로 수량을 조정하지 않은 관측값입니다. 누적 순매수와 연속 순매수는 다르며, '
                  '서로 겹치는 기간을 별도 매수 근거로 중복 계산하지 않습니다.')
     return '\n\n'.join(lines)
-
-
-_CE_HEADING = re.compile(
-    r"^(#{3,4})[ \t]+(?:\*\*)?Competitive Evidence( Handoff)?(?:\*\*)?[ \t]*$", re.MULTILINE | re.IGNORECASE)
-_CE_RECORD_LINE = re.compile(
-    r"^\s*(?:\||Evidence ID:|Handoff status:|[-*]\s.*\b(?:field|status|source|peer_universe)\b)", re.IGNORECASE)
-
-
-def _prose_after_record(block):
-    """Keep reader prose a model wrote after its evidence table, never the record itself."""
-    paragraphs = [p for p in re.split(r"\n[ \t]*\n", block) if p.strip()]
-    last = max((i for i, p in enumerate(paragraphs)
-                if any(_CE_RECORD_LINE.match(line) for line in p.splitlines())), default=len(paragraphs) - 1)
-    tail = paragraphs[last + 1:]
-    return "\n\n" + "\n\n".join(p.strip("\n") for p in tail) + "\n\n" if tail else "\n\n"
-
-
-def strip_public_competitive_evidence(section_reports):
-    """KR publication only: drop model-facing Competitive Evidence records and handoffs.
-
-    Synthesis already consumed the records; the public report shows the deterministic
-    peer table instead. Fenced text is left untouched. Overview handoffs are copies of
-    the news record, so nothing after them is kept.
-    """
-    public = dict(section_reports)
-    for section, source in section_reports.items():
-        if not isinstance(source, str) or "competitive evidence" not in source.lower():
-            continue
-        visible, _ = _mask_fences(source)
-        pieces, cursor = [], 0
-        for match in _CE_HEADING.finditer(visible):
-            if match.start() < cursor:
-                continue
-            following = next((h for h in _NEXT_SECTION.finditer(visible, match.end())
-                              if len(h.group(1)) <= len(match.group(1))
-                              and not _CE_HEADING.match(visible, h.start())), None)
-            end = following.start() if following else len(source)
-            keep = "" if section == "company_overview" else _prose_after_record(source[match.end():end])
-            pieces.append(source[cursor:match.start()].rstrip("\n") + (keep or "\n\n"))
-            cursor = end
-        public[section] = "".join(pieces) + source[cursor:]
-    return public

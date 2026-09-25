@@ -82,7 +82,9 @@ def get_agent_directory(company_name, company_code, reference_date, base_section
             agent = agent_creators[section]()
             if pf.get("report_research"):
                 from prism_core.report_research_context import apply_section_research
-                agent = apply_section_research(agent, section, pf, reference_date, language)
+                # KR competitor figures come from the deterministic peer table, not news records.
+                agent = apply_section_research(agent, section, pf, reference_date, language,
+                                               competitive_evidence=False)
             from prism_core.kr_report_context import apply_kr_report_context
             agent = apply_kr_report_context(agent, section, pf, language)
             agents[section] = replace(agent, instruction=agent.instruction + report_time_contract(reference_date, language))

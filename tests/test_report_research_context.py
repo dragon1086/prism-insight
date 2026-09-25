@@ -1,6 +1,8 @@
 """Report enrichment must be optional, bounded and never a new trade authority."""
 from types import SimpleNamespace
 
+import pytest
+
 from cores.agents.report_agent import ReportAgent
 from prism_core.report_research_context import apply_section_research, market_context_for_buy
 
@@ -20,6 +22,21 @@ def test_usable_news_is_source_only_without_claiming_complete_competition():
     assert 'RE-test' in out.instruction and 'Competitive Evidence' in out.instruction
     assert 'INCOMPARABLE' in out.instruction and 'NOT_FOUND' in out.instruction
     assert 'does not establish competitive superiority' in out.instruction
+
+
+@pytest.mark.parametrize('language', ['ko', 'en'])
+def test_kr_tool_free_news_has_no_competitive_evidence_contract(language):
+    agent = ReportAgent('news', 'Query 1 is REQUIRED; call external tools', ['perplexity'])
+    data = {'report_research': {'evidence_id': 'RE-test', 'news_usable': True,
+                              'section_notes': {'news_analysis': 'Source S1, public facts; peer unknown'}}}
+    out = apply_section_research(agent, 'news_analysis', data, '20260918', language, competitive_evidence=False)
+    assert out.server_names == () and 'RE-test' in out.instruction
+    for forbidden in ('Competitive Evidence', 'competitive-evidence', 'SOURCE_CHECKED', 'SEARCH_ONLY',
+                      'INCOMPARABLE', 'peer_universe', 'sector_tailwind', 'price_leadership'):
+        assert forbidden not in out.instruction
+    assert 'separate competitor comparison table' in out.instruction
+    default = apply_section_research(agent, 'news_analysis', data, '20260918', language)
+    assert 'Competitive Evidence' in default.instruction
 
 
 def test_unusable_news_leaves_original_fallback_unchanged():
