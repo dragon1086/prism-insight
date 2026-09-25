@@ -124,7 +124,9 @@ def command(*, source_root, runtime_root, evidence_root, arm_root, sockets, scri
     if len(set(socket_paths.values())) != len(required):
         raise NamespaceRejected("socket_alias")
     allowed_controls = {"market", "model", "effort", "timeout"}
-    if (not isinstance(controls, dict) or set(controls) != allowed_controls
+    # Optional BUY prompt arm (PRISM_BUY_REPORT_DEPTH_EVIDENCE); absent == OFF.
+    if (not isinstance(controls, dict) or set(controls) - {"report_depth"} != allowed_controls
+            or type(controls.get("report_depth", False)) is not bool
             or any(not isinstance(controls[key], str) for key in ("market", "model", "effort"))
             or controls["market"] not in {"KR", "US"}
             or controls["model"] not in {"gpt-6-astra", "gpt-5.6-sol"}
@@ -155,6 +157,8 @@ def command(*, source_root, runtime_root, evidence_root, arm_root, sockets, scri
     for side in ("BUY", "SELL"):
         env.update({f"PRISM_{side}_CODEX_MODEL": controls["model"], f"PRISM_{side}_CODEX_EFFORT": controls["effort"],
                     f"PRISM_{side}_CODEX_TIMEOUT": str(controls["timeout"])})
+    if controls.get("report_depth") is True:
+        env["PRISM_BUY_REPORT_DEPTH_EVIDENCE"] = "1"
     for key, value in sorted(env.items()):
         args += ["--setenv", key, value]
     args += ["--chdir", "/arm", "--remount-ro", "/", "--", "/app/runtime/bin/python3.11",

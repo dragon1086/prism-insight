@@ -218,3 +218,19 @@ Path("/arm/result.json").write_text(json.dumps({"mount_canary": True}))
     finally:
         for listener in listeners:
             listener.close()
+
+
+def test_report_depth_control_is_optional_bool_and_only_sets_buy_flag(setup):
+    base = ns.command(**setup)
+    assert "PRISM_BUY_REPORT_DEPTH_EVIDENCE" not in base
+    setup["controls"]["report_depth"] = False
+    assert ns.command(**setup) == base
+    setup["controls"]["report_depth"] = True
+    enabled = ns.command(**setup)
+    at = enabled.index("PRISM_BUY_REPORT_DEPTH_EVIDENCE")
+    assert enabled[at - 1:at + 2] == ["--setenv", "PRISM_BUY_REPORT_DEPTH_EVIDENCE", "1"]
+    assert enabled[:at - 1] + enabled[at + 2:] == base
+    for invalid in ("1", 1, "true", None):
+        setup["controls"]["report_depth"] = invalid
+        with pytest.raises(ns.NamespaceRejected):
+            ns.command(**setup)

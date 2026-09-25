@@ -779,6 +779,10 @@ Prohibited: `"$170"`, `"about $170"`, `"minimum 170"`.
     from prism_core.flow_evidence import us_flow_interpretation_contract
     instruction += us_flow_interpretation_contract(language)
     instruction += _analyst_interpretation_contract(language)
+    from prism_core.buy_report_depth_evidence import apply_buy_report_depth_evidence
+    instruction = apply_buy_report_depth_evidence(
+        instruction, market="US", language="ko" if language == "ko" else "en"
+    )
 
     return Agent(
         name="us_trading_scenario_agent",
