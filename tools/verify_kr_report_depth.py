@@ -18,12 +18,6 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _validation_reply_text(result):
-    """Capture the actual schema response instead of an empty text projection."""
-    structured = getattr(result, 'structured', None)
-    return structured.model_dump_json() if structured is not None else result.text
-
-
 def _reviewed_failed_full_run(directory, packet, *, company_code, reference_date, peer_context=''):
     """Recover observed writer artifacts only for explicit staged validation.
 
@@ -207,12 +201,7 @@ def main():
         if value and not os.environ.get(key):
             os.environ[key] = value
 
-    from cores import (
-        analysis,
-        dart_deep_analysis,
-        report_fact_editor,
-        report_generation,
-    )
+    from cores import analysis, dart_deep_analysis
     from cores.analysis import analyze_stock
     from cores.market_data import default_chain
     from prism_core import kr_official_report_inputs, kr_peer_comparison
@@ -221,54 +210,10 @@ def main():
     original_collect = kr_official_report_inputs.collect_kr_official_report_inputs
     original_write = dart_deep_analysis._write
     original_peers = kr_peer_comparison.collect_peer_comparison
-    original_editor = report_fact_editor.edit_and_summarize
     original_chapter = dart_deep_analysis.generate_dart_chapter
 
     def save_json(name, value):
         (output / name).write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
-
-    if args.run_model:
-        backend = report_generation._get_report_backend()
-        original_run = backend.run
-        review_calls = {}
-
-        async def capture_editor_reply(spec, message):
-            review_name = {'report_final_fact_editor': 'final_editor',
-                           'report_fact_assessor': 'report_fact_assessor'}.get(spec.name)
-            recovery = spec.name.endswith('_fact_recovery') and re.fullmatch(r'[a-z_]+', spec.name)
-            capture_name = review_name or (spec.name if recovery else None)
-            if capture_name:
-                review_calls[capture_name] = review_calls.get(capture_name, 0) + 1
-                call = review_calls[capture_name]
-            if spec.name.endswith('_fact_recovery') and re.fullmatch(r'[a-z_]+', spec.name):
-                request = {'instructions': spec.instructions, 'message': message, 'model': spec.model}
-                save_json(spec.name + '_request.json', request)
-                save_json(f'{spec.name}_request_{call}.json', request)
-            if review_name:
-                (output / f'{review_name}_request.json').write_text(message, encoding='utf-8')
-                (output / f'{review_name}_request_{call}.json').write_text(message, encoding='utf-8')
-            result = await original_run(spec, message)
-            if review_name:
-                reply = _validation_reply_text(result)
-                (output / f'{review_name}_reply.json').write_text(reply, encoding='utf-8')
-                (output / f'{review_name}_reply_{call}.json').write_text(reply, encoding='utf-8')
-            if recovery:
-                reply = _validation_reply_text(result)
-                (output / f'{spec.name}.md').write_text(reply, encoding='utf-8')
-                (output / f'{spec.name}_{call}.md').write_text(reply, encoding='utf-8')
-            return result
-
-        backend.run = capture_editor_reply
-
-    async def capture_editor(*a, **kw):
-        edited, summary, receipt = await original_editor(*a, **kw)
-        save_json('final_editor_receipt.json', receipt)
-        for section in ('company_status', 'company_overview', 'news_analysis'):
-            (output / f'edited_{section}.md').write_text(edited.get(section, ''), encoding='utf-8')
-        (output / 'edited_summary.md').write_text(summary, encoding='utf-8')
-        return edited, summary, receipt
-
-    report_fact_editor.edit_and_summarize = capture_editor
 
     resumed = {}
     source_checked = False

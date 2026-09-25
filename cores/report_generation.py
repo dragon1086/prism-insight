@@ -16,14 +16,6 @@ from prism_core.report_presentation import report_narrative_contract
 _report_backend = None
 
 
-async def regenerate_conflicting_sections(section_reports, agents, prefetched, conflicts,
-                                          company_name, company_code, reference_date,
-                                          logger, language='ko'):
-    from cores.report_conflict_recovery import regenerate_conflicting_sections as regenerate
-    return await regenerate(section_reports, agents, prefetched, conflicts, company_name,
-                            company_code, reference_date, logger, language)
-
-
 def synthesis_evidence_contract(language='ko'):
     """All supplied chapters inform synthesis, without adding trading rules."""
     from prism_core.report_evidence_contract import financial_evidence_contract
@@ -271,7 +263,7 @@ async def generate_market_report(agent, section, reference_date, logger, languag
     return report
 
 
-async def generate_summary(section_reports, company_name, company_code, reference_date, logger, language="ko", *, calendar_context=None):
+async def generate_summary(section_reports, company_name, company_code, reference_date, logger, language="ko"):
     """
     Generate executive summary based on section reports
 
@@ -283,19 +275,6 @@ async def generate_summary(section_reports, company_name, company_code, referenc
         logger: Logger
         language: Report language code (default: "ko")
     """
-    if section_reports.get('dart_deep_analysis'):
-        # Replace this existing final stage, not add another model call. Keep
-        # errors outside the legacy optional-summary fallback: unsafe edits
-        # must not become a successfully published report.
-        from cores.report_fact_editor import edit_and_summarize
-        edited, summary, receipt = await edit_and_summarize(
-            section_reports, company_name, company_code, reference_date, language,
-            calendar_context=calendar_context)
-        section_reports.update(edited)
-        logger.info(f'Report factual-summary stage completed: {receipt}')
-        if not summary.startswith('## '):
-            summary = ('## 핵심 요약\n\n' if language == 'ko' else '## Executive Summary\n\n') + summary
-        return summary
     try:
         language_name = LANGUAGE_NAMES.get(language, language.upper())
 
