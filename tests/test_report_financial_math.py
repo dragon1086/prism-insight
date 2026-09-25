@@ -26,7 +26,7 @@ def test_exact_target_upside_uses_report_reference_not_current_quote():
     text = render_target_upside_calculations({'target_mean': 247.4, 'target_median': 250,
                                             'target_high': 260, 'target_low': 220, 'price': 236.1},
                                            234.76, 'regularMarketPrice', '2026-09-22T20:00:00Z', 'dated_recent')
-    assert '5.3842%' in text and '5.6000%' not in text
+    assert '5.38%' in text and '4.79%' not in text
     assert '234.76' in text and '247.40' in text and 'not a final session Close' in text
 
 
@@ -102,7 +102,7 @@ def test_financial_appendix_is_a_renderable_markdown_table():
         render_annual_leverage_calculations(income, balance))
     html = markdown.markdown(blocks, extensions=['tables'])
     assert html.count('<table>') == 2
-    assert '<td>5.3842%</td>' in html and '<td>47.8735%</td>' in html
+    assert '<td>5.38%</td>' in html and '<td>47.8735%</td>' in html
 
 
 def load_prefetch():
@@ -136,8 +136,25 @@ def test_real_prefetch_uses_existing_snapshots_without_more_calls(monkeypatch):
             'regular_market_price': 234.76, 'regular_market_time': timestamp, 'target_mean': 247.4}
     monkeypatch.setattr(module, '_get_us_data_client', lambda: SimpleNamespace(get_company_info=lambda ticker: info))
     quote_text = module.prefetch_stock_info('TEST')
-    assert '5.3842%' in quote_text
+    assert '5.38%' in quote_text
     blocks = extract_report_financial_math(quote_text, text)
-    assert '5.3842%' in blocks and '47.8735%' in blocks and 'Annual Income Statement' not in blocks
+    assert '5.38%' in blocks and '47.8735%' in blocks and 'Annual Income Statement' not in blocks
     info.update(price_field_source='regularMarketPrice', regular_market_time=1)
-    assert '5.3842%' not in module.prefetch_stock_info('TEST')
+    assert '5.38%' not in module.prefetch_stock_info('TEST')
+
+
+def test_public_financial_math_is_korean_two_decimal_and_has_no_model_directions():
+    from prism_core.report_financial_math import public_financial_math
+
+    income, balance = frames()
+    blocks = extract_report_financial_math(
+        render_target_upside_calculations({'target_mean': 247.4}, 234.76, 'regularMarketPrice',
+                                          '2026-09-22T20:00:00Z', 'dated_recent_within_7_calendar_days'),
+        render_annual_leverage_calculations(income, balance))
+    ko = public_financial_math(blocks, 'ko')
+    assert '### 애널리스트 목표가 상승여력 계산' in ko and '### 연간 레버리지 계산' in ko
+    assert '| 평균 목표가 상승여력 | 5.38% |' in ko and '정규장 관측가' in ko and '2025-12-31' in ko
+    assert 'Code-calculated' not in ko and 'Use these values' not in ko and 'Report reference' not in ko
+    en = public_financial_math(blocks, 'en')
+    assert 'Code-calculated analyst target upside' in en and 'Use these values' not in en
+    assert '5.38%' in en and public_financial_math('', 'ko') == ''

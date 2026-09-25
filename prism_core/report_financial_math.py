@@ -43,7 +43,7 @@ def render_target_upside_calculations(info, reference_price, reference_basis='un
         if reference is None or target is None or target <= 0:
             value, basis = 'N/A', 'missing/invalid positive target or report reference price'
         else:
-            value = f'{(target / reference - 1) * 100:.4f}%'
+            value = f'{(target / reference - 1) * 100:.2f}%'
             basis = f'({_operand(target, 2)} USD / {_operand(reference, 2)} USD - 1) × 100'
         rows.append((f'{label} target upside', value, basis))
     note = (f'Report reference: {reference_basis}; market time: {reference_time or "unknown"}; '
@@ -121,3 +121,60 @@ def extract_report_financial_math(*texts):
             if block not in blocks:
                 blocks.append(block)
     return '\n\n'.join(blocks)
+
+
+_MODEL_ONLY = ' Use these values rather than recalculating against another quote.'
+_PUBLIC_KO_LINES = {
+    '### Code-calculated analyst target upside': '### 애널리스트 목표가 상승여력 계산',
+    '### Code-calculated annual leverage': '### 연간 레버리지 계산',
+    '| Calculation | Value | Input basis / formula |': '| 계산 항목 | 값 | 입력값·계산식 |',
+}
+_PUBLIC_KO_CELLS = {
+    'Mean target upside': '평균 목표가 상승여력', 'Median target upside': '중간값 목표가 상승여력',
+    'High target upside': '최고 목표가 상승여력', 'Low target upside': '최저 목표가 상승여력',
+    'Debt / Equity': '부채/자본', 'Debt / (Debt + Equity)': '부채/(부채+자본)',
+    'Net debt / annual EBITDA': '순부채/연간 EBITDA',
+    'missing/invalid positive target or report reference price': '양수 목표가 또는 보고서 기준 가격 없음',
+    'missing/invalid same-period debt or positive equity': '같은 기간 차입금 또는 양수 자본 없음',
+    'missing/invalid same-period capital inputs': '같은 기간 자본 입력값 없음',
+    'missing/invalid exact same-period net debt or positive annual EBITDA': '같은 기간 순부채 또는 양수 연간 EBITDA 없음',
+}
+_KO_PRICE_BASIS = {'regularMarketPrice': '정규장 관측가', 'currentPrice': '현재가 필드', 'unknown': '확인되지 않음'}
+_KO_FRESHNESS = {'dated_recent_within_7_calendar_days': '최근 7일 이내 관측',
+                 'UNKNOWN_or_unavailable': '시각 확인 불가'}
+
+
+def public_financial_math(text, language='ko'):
+    """Reader version of the calculation blocks: no model directions; Korean labels for ko."""
+    if not isinstance(text, str) or not text:
+        return ''
+    text = text.replace(_MODEL_ONLY, '')
+    if language != 'ko':
+        return text
+    lines = []
+    for line in text.split('\n'):
+        if line in _PUBLIC_KO_LINES:
+            lines.append(_PUBLIC_KO_LINES[line])
+            continue
+        if line.startswith('|') and not line.startswith('|---'):
+            cells = line.strip('|').split('|')
+            lines.append('| ' + ' | '.join(_PUBLIC_KO_CELLS.get(c.strip(), c.strip()) for c in cells) + ' |')
+            continue
+        quote = re.fullmatch(r'Report reference: (.*?); market time: (.*?); freshness: (.*?)\. This is arithmetic, '
+                             r'not a final session Close or a price forecast\. Analyst target publication time '
+                             r'is unverified; no return guarantee\.', line)
+        if quote:
+            basis, when, fresh = quote.groups()
+            line = (f'보고서 기준 가격: {_KO_PRICE_BASIS.get(basis, basis)}, 시장 시각 '
+                    f'{"확인되지 않음" if when == "unknown" else when} ({_KO_FRESHNESS.get(fresh, fresh)}). '
+                    '단순 산술 계산이며 확정 종가나 주가 전망이 아닙니다. '
+                    '애널리스트 목표가 발표 시각은 확인되지 않았고 수익을 보장하지 않습니다.')
+        annual = re.match(r'Annual statement period ended: (.*?)\. Source: existing yfinance annual statements', line)
+        if annual:
+            period = '확인되지 않음' if annual.group(1) == 'unavailable' else annual.group(1)
+            line = (f'연간 재무제표 기준 기간 종료일: {period}. 출처: yfinance 연간 재무제표(같은 통화 기준, 비율은 무차원). '
+                    '부채는 이자부 총차입금(Total Debt)으로 총부채와 다르며, 자본은 지배주주 자본(Stockholders Equity)입니다. '
+                    '순부채는 음수(순현금)일 수 있고 분기 EBITDA를 연환산하지 않았습니다. '
+                    '과거 연간 기준 계산이며 현재 시점 값이나 공시 시점 값을 보증하지 않습니다.')
+        lines.append(line)
+    return '\n'.join(lines)

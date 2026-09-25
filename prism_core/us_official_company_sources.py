@@ -313,10 +313,18 @@ def _release_date(root, url):
     return publication['date'] if publication else None
 
 
+_RELEASE_MAX_AGE_DAYS = 400  # older results releases are not current issuer evidence
+_RELEASE_RECENT_DAYS = 120   # a release this fresh is the latest quarter; stop crawling
+
+
 def _discover_company_release(website, asof, fetch, domains):
-    """Follow at most five discovered company links; never invent a vendor URL."""
+    """Follow at most five discovered company links; never invent a vendor URL.
+
+    Only releases published within 400 days of ``asof`` qualify; the most recent wins.
+    """
     queue = [(0, 0, website)]
     seen = set()
+    best = None
     while queue and len(seen) < 5:
         _, depth, url = heapq.heappop(queue)
         if url in seen:
@@ -333,14 +341,17 @@ def _discover_company_release(website, asof, fetch, domains):
         published = publication['date'] if publication else None
         is_release = (re.search(r'\b(?:reports?|announces?)\b.*(?:financial|earnings|quarter|year).*results', title, re.IGNORECASE)
                       and not re.search(r'to release|will report|to report|schedule', title, re.IGNORECASE))
-        if is_release and published and published <= asof:
+        if (is_release and published and 0 <= (asof - published).days <= _RELEASE_MAX_AGE_DAYS
+                and (best is None or published > date.fromisoformat(best['publication_date']))):
             sections = _extract_sections(body.decode('utf-8', errors='replace'))
             if sections['guidance'] or sections['financials']:
-                return {'filing_type': 'Issuer release', 'publication_date': str(published),
+                best = {'filing_type': 'Issuer release', 'publication_date': str(published),
                         **{key: value for key, value in publication.items() if key != 'date'},
                         'publication_date_basis': 'official release URL/structured publication metadata',
                         'report_date': 'see source fiscal period', 'url': url, 'retrieval_url': retrieved,
                         'evidence_kind': 'source_excerpt_not_normalized_fact', **sections}
+                if (asof - published).days <= _RELEASE_RECENT_DAYS:
+                    return best
         links = []
         for node in root.xpath('//a[@href]'):
             target = urljoin(url, node.get('href')).split('#', 1)[0]
@@ -380,7 +391,7 @@ def _discover_company_release(website, asof, fetch, domains):
         for item in sorted(links)[:4]:
             if not any(item[2] == entry[2] for entry in queue):
                 heapq.heappush(queue, item)
-    return None
+    return best
 
 
 def collect_official_company_sources(ticker, reference_date=None, *, filings=None,
