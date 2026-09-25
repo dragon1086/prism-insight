@@ -124,7 +124,6 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
         return None
     monkeypatch.setattr(official, 'collect_kr_official_report_inputs', collect)
     monkeypatch.setattr(research, 'prefetch_report_research', no_research)
-    monkeypatch.setattr(analysis, '_report_stock_names', lambda: {'111111': '비교기업'})
     monkeypatch.setattr(analysis, 'get_chart_as_base64_html', lambda *a, **k: '')
     monkeypatch.setattr(capabilities, 'vision_available', lambda: False)
     monkeypatch.setattr(capabilities, 'vision_buy_quality_active', lambda: False)
@@ -134,15 +133,18 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
     monkeypatch.chdir(work)
     analysis._market_analysis_cache.clear()
     model_calls, peer_calls = [], []
-    evidence = ('#### Competitive Evidence\n'
-                '- **peer_universe:** 비교기업 / **source:** https://example.com/source')
     async def base(agent, section, *args):
         model_calls.append(section)
-        return '### 기본 분석\n' + (evidence if section == 'news_analysis' else '기본 사실')
-    async def peer_collect(ticker, company, candidates, reference_date):
-        peer_calls.append(candidates)
-        return {'public_markdown': '### 동종기업 비교\nPEER 9.23배', 'model_context': 'PEER 9.23배'}
-    monkeypatch.setattr(peers, 'collect_peer_comparison', peer_collect)
+        # The Industry Analyst receives the pre-collected peer table; others do not.
+        assert ('PEER 9.23배' in agent.instruction) is (section == 'company_overview')
+        # KR news no longer carries the model Competitive Evidence record contract.
+        assert 'Competitive Evidence' not in agent.instruction
+        return '### 기본 분석\n기본 사실'
+    async def peer_collect(ticker, company, reference_date):
+        peer_calls.append((ticker, company, reference_date))
+        return {'ready': True, 'peers': [{}, {}], 'period': '2025/12', 'skip_reason': None,
+                'public_markdown': '#### 경쟁사 비교 분석\n\nPEER 9.23배', 'model_context': 'PEER 9.23배'}
+    monkeypatch.setattr(peers, 'collect_wisereport_peers', peer_collect)
     authored = {}
     async def write(agent, message):
         role = agent.name.removeprefix('dart_depth_')
@@ -159,6 +161,7 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
         model_calls.append('strategy')
         assert all(text in combined for text in authored.values())
         assert 'PEER 9.23배' in combined
+        assert 'Competitive Evidence' not in combined
         assert reports['dart_deep_analysis'] in combined
         assert '코스피 20일 평균 3000.00포인트' in combined
         assert '수급 기준 2026-09-22: 외국인 987주' in combined
@@ -180,7 +183,12 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
     report = asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923', require_dart_depth=True))
     # Summary failure uses the ordinary fallback instead of aborting the report.
     assert ('요약 생성 중 오류가 발생했습니다.' in report) is summary_fails
-    assert len(model_calls) == 11 and len(peer_calls) == 1
+    assert len(model_calls) == 11 and peer_calls == [('017670', 'SK텔레콤', '20260923')]
+    assert report.index('## 2. 펀더멘털 분석') < report.index('#### 경쟁사 비교 분석\n\nPEER 9.23배') < report.index('## 3. 뉴스 분석')
+    # No competitive evidence record, handoff or appendix in the public KR report.
+    for token in ('Competitive Evidence', '경쟁력 비교 근거', 'SEARCH_ONLY', 'sector_tailwind', 'peer_universe',
+                  'Evidence ID', '근거 식별자', '부록: 출처와 비교 근거'):
+        assert token not in report
     assert all(text in report for text in authored.values())
     assert report.index('## 5. DART') < report.index('## 6. 투자 전략')
     assert '### 6-1. 투자 전략' in report and '### 5-1. 투자 전략' not in report

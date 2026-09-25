@@ -12,7 +12,8 @@ def _replace_agent(agent, **updates):
     return agent.model_copy(update=updates)
 
 
-def apply_section_research(agent, section, prefetched, reference_date, language):
+def apply_section_research(agent, section, prefetched, reference_date, language, *, competitive_evidence=True):
+    """``competitive_evidence=False`` (KR) drops the news Competitive Evidence record contract."""
     packet = prefetched.get('report_research') if isinstance(prefetched, dict) else None
     if not isinstance(packet, dict) or not isinstance(packet.get('section_notes'), dict):
         return agent
@@ -52,23 +53,29 @@ def apply_section_research(agent, section, prefetched, reference_date, language)
         return _replace_agent(agent, instruction=agent.instruction + boundary)
     # This is a genuinely tool-free path, not a prompt-only request quota.
     instruction = (
-        'Write the existing news/competitive-evidence report section from the supplied prefetch only. '
-        'No tools are available. Collection completion does not mean every research question was answered. '
+        ('Write the existing news/competitive-evidence report section from the supplied prefetch only. '
+         if competitive_evidence else 'Write the existing news report section from the supplied prefetch only. ')
+        + 'No tools are available. Collection completion does not mean every research question was answered. '
         'Do not claim an additional search, original source read or completed peer comparison. '
         'Explain new material events, counterevidence, thesis implications and next verification events. '
         'Deduplicate the same announcement, and do not invent a cause for a price move. '
         'Separate actual facts, estimates, company claims and interpretations. '
-        'Separate sector_tailwind, price_leadership and business_competitive_position. '
-        'Price leadership requires a named universe and comparable price window, not product pricing power. '
-        'Separate a parent/subsidiary, competitor/customer, geography, unit and fiscal period. '
+        + ('Separate sector_tailwind, price_leadership and business_competitive_position. '
+           'Price leadership requires a named universe and comparable price window, not product pricing power. '
+           if competitive_evidence else '')
+        + 'Separate a parent/subsidiary, competitor/customer, geography, unit and fiscal period. '
         'A company fact or selected peer subset never establishes an industry rank. '
-        'Include the exact heading #### Competitive Evidence with compact records: field, type, entity, '
-        'peer_universe, metric, value, unit, period, geography, source, publication_date, status and supporting excerpt. '
-        'Use SOURCE_CHECKED only for a specific claim supported by an actual supplied source excerpt; '
-        'this remains a model-reported assessment, not independent validation. '
-        'Use SEARCH_ONLY for discovery snippets, NOT_FOUND for unresolved questions in the inspected scope, '
-        'and INCOMPARABLE for mismatched entities/periods/units. Missing stays UNKNOWN. '
-        'An undated currently accessible page does not prove availability at a historical decision. '
+        + ('Include the exact heading #### Competitive Evidence with compact records: field, type, entity, '
+           'peer_universe, metric, value, unit, period, geography, source, publication_date, status and supporting excerpt. '
+           'Use SOURCE_CHECKED only for a specific claim supported by an actual supplied source excerpt; '
+           'this remains a model-reported assessment, not independent validation. '
+           'Use SEARCH_ONLY for discovery snippets, NOT_FOUND for unresolved questions in the inspected scope, '
+           'and INCOMPARABLE for mismatched entities/periods/units. Missing stays UNKNOWN. '
+           if competitive_evidence else
+           'Competitor figures are covered by a separate competitor comparison table; do not build a competitor '
+           'numeric comparison table or evidence record table in the news chapter. Mention competitors only '
+           'qualitatively as they appear in the sources. ')
+        + 'An undated currently accessible page does not prove availability at a historical decision. '
         'Source-ID references and essential limitations must survive the final summary. '
         'Do not mention internal tooling or implementation paths in the public prose. '
     )

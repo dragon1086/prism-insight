@@ -133,7 +133,7 @@ def main():
     parser.add_argument('--date', default=datetime.now(ZoneInfo('Asia/Seoul')).strftime('%Y%m%d'))
     parser.add_argument('--run-model', action='store_true')
     parser.add_argument('--peer-source-report', type=Path,
-                        help='Read-only peer smoke from an existing report, without model calls')
+                        help='Read-only WiseReport peer smoke (isolated validation path), without model calls')
     parser.add_argument('--render-source-report', type=Path,
                         help='Reapply publication formatting and PDF rendering, without model calls')
     parser.add_argument('--replay-inputs', type=Path,
@@ -209,7 +209,7 @@ def main():
         raise RuntimeError('Validation must not use local broker credentials')
     original_collect = kr_official_report_inputs.collect_kr_official_report_inputs
     original_write = dart_deep_analysis._write
-    original_peers = kr_peer_comparison.collect_peer_comparison
+    original_peers = kr_peer_comparison.collect_wisereport_peers
     original_chapter = dart_deep_analysis.generate_dart_chapter
 
     def save_json(name, value):
@@ -273,12 +273,12 @@ def main():
 
     async def peers(*a, **kw):
         value = await original_peers(*a, **kw)
-        save_json('peer_receipt.json', value.get('private_receipt', {}))
+        save_json('peer_receipt.json', {k: v for k, v in value.items() if k != 'public_markdown'})
         return value
 
     kr_official_report_inputs.collect_kr_official_report_inputs = collect
     dart_deep_analysis._write = write
-    kr_peer_comparison.collect_peer_comparison = peers
+    kr_peer_comparison.collect_wisereport_peers = peers
     async def capture_chapter(packet, **kwargs):
         if args.reuse_reviewed_chapter:
             chapter, receipt = reviewed_chapter(args.reuse_reviewed_chapter, packet, **kwargs)
@@ -309,22 +309,17 @@ def main():
         print(json.dumps(receipt, ensure_ascii=False))
         return
     if args.peer_source_report:
-        from cores.analysis import _report_stock_names
-        candidates = kr_peer_comparison.select_report_peer_candidates(
-            [args.peer_source_report.read_text(encoding='utf-8')], args.ticker, _report_stock_names())
-        packet = asyncio.run(original_peers(args.ticker, args.company, candidates, args.date))
-        save_json('peer_receipt.json', {**packet['private_receipt'], 'probe': {
+        packet = asyncio.run(original_peers(args.ticker, args.company, args.date))
+        save_json('peer_receipt.json', {**{k: v for k, v in packet.items() if k != 'public_markdown'}, 'probe': {
             'reference_date': datetime.strptime(args.date, '%Y%m%d').replace(tzinfo=ZoneInfo('Asia/Seoul')).date().isoformat(),
             'observed_at': datetime.now(ZoneInfo('Asia/Seoul')).isoformat(),
-            'provider': 'native Firecrawl MCP', 'source_report': str(args.peer_source_report),
-            'candidates': candidates}})
+            'provider': 'WiseReport cF6001/cF6002', 'source_report': str(args.peer_source_report)}})
         (output / 'peer_comparison.md').write_text(packet['public_markdown'], encoding='utf-8')
-        print(json.dumps({'status': packet['private_receipt']['status'], 'candidates': len(candidates),
-                          'requested': packet['private_receipt'].get('requested', 0),
-                          'received': packet['private_receipt'].get('received', 0),
+        print(json.dumps({'status': 'ready' if packet['ready'] else 'skipped',
+                          'peers': max(0, len(packet['peers']) - 1), 'reason': packet['skip_reason'],
                           'model_calls': 0, 'elapsed_seconds': round(time.monotonic() - started, 2)}))
-        if packet['private_receipt']['status'] != 'available':
-            raise RuntimeError('Native peer smoke did not produce a comparable peer snapshot')
+        if not packet['ready']:
+            raise RuntimeError('WiseReport peer smoke did not produce a comparable peer table')
         return
     if args.replay_inputs:
         from prism_core.dart_chapter_sources import enrich_dart_chapter_inputs
@@ -333,10 +328,10 @@ def main():
         peer_context = ''
         if args.peer_receipt:
             peers = json.loads(args.peer_receipt.read_text(encoding='utf-8'))
-            if (peers.get('status') != 'available'
+            if (not peers.get('ready')
                     or peers.get('probe', {}).get('reference_date', '').replace('-', '') != args.date):
                 raise RuntimeError('Peer replay must use a successful same-day probe')
-            peer_context = kr_peer_comparison.render_peer_comparison(peers['snapshots'])
+            peer_context = peers['model_context']
             (output / 'peer_comparison.md').write_text(peer_context, encoding='utf-8')
         chapter, receipt = asyncio.run(dart_deep_analysis.generate_dart_chapter(
             packet, company_name=args.company, company_code=args.ticker,

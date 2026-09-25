@@ -109,8 +109,14 @@ def test_context_and_content_are_bound_to_id():
     assert len({ident(), ident(market="KR"), ident(symbol="OTHER"), ident(date="20260910"), ident(news=NEWS.replace("12%", "13%"))}) == 5
 
 
-@pytest.mark.parametrize("file", ["cores/analysis.py", "prism-us/cores/us_analysis.py"])
-def test_both_pipelines_handoff_before_strategy_and_summary(file):
+def test_kr_pipeline_has_no_competitive_evidence_handoff():
+    # KR peer comparison is the deterministic WiseReport table; no model record handoff.
+    source = (Path(__file__).resolve().parents[1] / "cores/analysis.py").read_text()
+    assert "attach_competitive_evidence" not in source and "[COMPETITIVE_EVIDENCE]" not in source
+
+
+@pytest.mark.parametrize("file", ["prism-us/cores/us_analysis.py"])
+def test_us_pipeline_handoff_before_strategy_and_summary(file):
     source = (Path(__file__).resolve().parents[1] / file).read_text()
     calls = [n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
     handoff = [n.lineno for n in calls if n.func.id == "attach_competitive_evidence"]
@@ -164,7 +170,7 @@ def test_id_and_source_survive_actual_pdf_text_input(tmp_path):
     assert "SEARCH_ONLY" in extracted
 
 
-@pytest.mark.parametrize("file", ["cores/analysis.py", "prism-us/cores/us_analysis.py"])
+@pytest.mark.parametrize("file", ["prism-us/cores/us_analysis.py"])
 def test_handoff_logger_is_compatible_with_mcp_logger_signature(file):
     import inspect
     from mcp_agent.logging.logger import Logger

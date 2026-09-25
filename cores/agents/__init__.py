@@ -38,7 +38,7 @@ def get_agent_directory(company_name, company_code, reference_date, base_section
     # Create URL mapping
     urls = {k: get_wise_report_url(k, company_code) for k in [
         "기업현황", "기업개요", "재무분석", "투자지표",
-        "컨센서스", "경쟁사분석", "지분현황", "업종분석", "최근리포트"
+        "컨센서스", "지분현황", "업종분석", "최근리포트"
     ]}
 
     # Date calculation (limited to 1 year to reduce input tokens - sufficient for trading analysis)
@@ -63,7 +63,8 @@ def get_agent_directory(company_name, company_code, reference_date, base_section
             company_name, company_code, reference_date, urls, language
         ),
         "company_overview": lambda: create_company_overview_agent(
-            company_name, company_code, reference_date, urls, language
+            company_name, company_code, reference_date, urls, language,
+            peer_table=(pf.get("peer_comparison") or {}).get("model_context", "")
         ),
         "news_analysis": lambda: create_news_analysis_agent(
             company_name, company_code, reference_date, language
@@ -81,7 +82,9 @@ def get_agent_directory(company_name, company_code, reference_date, base_section
             agent = agent_creators[section]()
             if pf.get("report_research"):
                 from prism_core.report_research_context import apply_section_research
-                agent = apply_section_research(agent, section, pf, reference_date, language)
+                # KR competitor figures come from the deterministic peer table, not news records.
+                agent = apply_section_research(agent, section, pf, reference_date, language,
+                                               competitive_evidence=False)
             from prism_core.kr_report_context import apply_kr_report_context
             agent = apply_kr_report_context(agent, section, pf, language)
             agents[section] = replace(agent, instruction=agent.instruction + report_time_contract(reference_date, language))

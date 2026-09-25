@@ -11,7 +11,6 @@ URLS = {
     "재무분석": "c1030001.aspx?cmp_cd={}",  # Financial analysis (Korean key for API)
     "투자지표": "c1040001.aspx?cmp_cd={}",  # Investment indicators (Korean key for API)
     "컨센서스": "c1050001.aspx?cmp_cd={}",  # Consensus (Korean key for API)
-    "경쟁사분석": "c1060001.aspx?cmp_cd={}",  # Competitor analysis (Korean key for API)
     "지분현황": "c1070001.aspx?cmp_cd={}",  # Shareholding status (Korean key for API)
     "업종분석": "c1090001.aspx?cmp_cd={}",  # Industry analysis (Korean key for API)
     "최근리포트": "c1080001.aspx?cmp_cd={}"  # Recent reports (Korean key for API)

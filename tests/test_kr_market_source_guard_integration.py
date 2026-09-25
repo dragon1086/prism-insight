@@ -39,7 +39,6 @@ def pipeline(monkeypatch, tmp_path):
     monkeypatch.setattr(official, 'collect_kr_official_report_inputs', official_collect)
     monkeypatch.setattr(research, 'prefetch_report_research', research_collect)
     monkeypatch.setattr(dart_deep_analysis, 'generate_dart_chapter', chapter)
-    monkeypatch.setattr(analysis, '_report_stock_names', lambda: {})
     monkeypatch.setattr(analysis, 'generate_report', draft)
     monkeypatch.setattr(analysis, 'generate_market_report', draft)
     monkeypatch.setattr(analysis, 'get_chart_as_base64_html', lambda *args, **kwargs: '')

@@ -1,87 +1,35 @@
 from cores.agents.report_agent import ReportAgent as Agent
 
 
-def _competitive_evidence_contract(reference_date):
-    """Shared ko/en prompt contract; query limits are instructions, not runtime quotas."""
-    return f"""## Competitive evidence collection and reporting contract
-- Reuse already obtained input facts and source excerpts before any new search. Do not
-  repeat a query or re-read a URL whose relevant evidence is already available.
-- Query 1 is REQUIRED using perplexity_ask unless complete, comparable, cited competitive
-  evidence records were already supplied at invocation. Only those explicit input records
-  can waive discovery; a news listing fetched later, basic company profile, or social sentiment
-  does not waive it. Reuse qualifying input records without duplicate searches or source reads.
-  Make at most 2 consolidated queries total, not two queries per company or field.
-  Query 1 MUST cover the target business scope, appropriate peer_universe, and
-  business_competitive_position together with sector/price leaders (2-3 peers), trends,
-  metrics, and cited public primary source URLs. Merely asking which stocks are rising
-  is insufficient. For holding companies, seek comparable holding-company peers or
-  explicitly scoped subsidiary business comparisons; do not stop at an inappropriate
-  holding-company versus operating-company comparison or infer parent dominance.
-  Query 2 is optional and covers only unresolved material competitive-position gaps.
-  Specify entity/ticker, market, and reference date {reference_date} in every query.
-- In addition to the cached target-news listing, use firecrawl_scrape for at most 2 additional
-  cited public primary URLs, only if material competitive claims remain unverified.
-  Prefer company filings/IR, regulators, exchanges, or industry statistics over marketing
-  summaries. Choose URLs actually supplied in input or discovered in search; never invent URLs.
-  Reuse source text already read. Do not recursively scrape peer news or all articles.
-  A search answer/citation or HTTP success without the relevant source content is not
-  source verification. On access/parsing failure preserve that reason without retry loops.
-- Separate sector_tailwind, price_leadership, and business_competitive_position. Price
-  momentum, sector membership, company size, or positive news alone proves no market dominance.
-  sector_tailwind requires evidence of sector-wide demand/supply, spending, orders, or policy;
-  an individual company's revenue growth or revenue mix is a company operating fact,
-  not sector demand evidence. Keep such facts in the company/news narrative without forcing
-  them into a competitive evidence type. Peer share-price rallies are price observations,
-  not evidence of customer demand; without a comparable return window they do not establish
-  price_leadership either. If only these observations exist, leave sector_tailwind UNKNOWN.
-  price_leadership means share-price relative return or RS with an explicit window and peer_universe,
-  not product pricing or cost leadership; those belong to business_competitive_position.
-  Separate the listed parent entity from each subsidiary or separately listed affiliate;
-  a subsidiary's advantage is not automatically the parent's leadership. Identify the
-  parent's ownership/contribution if available, otherwise keep that linkage unknown.
-- Compare the same period, geography, business scope, metric definition, and unit across
-  an explicit peer_universe. Disclose partial peer coverage; do not infer an industry rank
-  from a screened subset. Separate actual and forecast values.
-  Support any rank or strongest claim with a comparable metric across the covered peers;
-  partial coverage or different fiscal periods may describe company strength but cannot
-  prove a competitive ranking: mark that comparison INCOMPARABLE. Check publication_date and
-  information availability against the decision timestamp, not just today's access date:
-  a currently available source does not prove it was available at a historical decision.
-  Older official competitive statistics may be used with their period and staleness stated;
-  the recent-news window does not justify discarding the latest available annual statistics.
-- Include the exact standalone markdown heading below in the news output (keep the English
-  heading and field keys in both languages; write explanations in the requested language):
-#### Competitive Evidence
-- Write compact records with field, type, entity, peer_universe, metric, value, unit,
-  period, geography, source (exact URL or UNKNOWN), publication_date, status, and a short
-  supporting excerpt. Use one record per material claim, including unresolved claims.
-  field names the question being assessed; type is one of sector_tailwind,
-  price_leadership, business_competitive_position. Missing values remain UNKNOWN.
-- status must be SOURCE_CHECKED, SEARCH_ONLY, NOT_FOUND, or INCOMPARABLE.
-  SOURCE_CHECKED requires the exact cited page to have been actually opened and its relevant
-  original content read, or that original excerpt with its source was supplied at invocation.
-  A Perplexity answer, citation alone, unrelated listing, or mere HTTP success never qualifies.
-  This status is a model-reported assessment, not a runtime proof and not a guarantee
-  that the claim is true, comparable, or leadership proven.
-  SEARCH_ONLY means only discovery/search material supports it. NOT_FOUND means evidence
-  was not found in the inspected scope, not that no public data exists; state whether
-  attempted searches/source reads versus unqueried, access failed, parsing failed,
-  or searched without a result. Never describe all sources as exhausted when only a
-  listing was read. If required discovery was unavailable, record NOT_FOUND and the
-  attempted/unqueried reason instead of implying successful investigation. INCOMPARABLE
-  means entity/period/scope/metric mismatches prevent comparison despite available data.
-  Do not fabricate quotations, peers, values, dates, URLs, or positive leadership. Preserve
-  source qualifiers and unknowns in conclusions; absence of evidence is not negative proof.
-  Before finishing, check every record's metric against its type and ensure the narrative
-  and final conclusion do not upgrade company-only facts or price observations into sector demand.
-  Check every trend claim against the actual values for that same segment, metric and pair
-  of periods for the same entity. Calculate the direction from each segment's selected
-  start/end values; do not assume the directions are opposite. Describe each actual
-  increase, decrease or unchanged value separately before drawing a trend conclusion.
-  Do not average incomparable segment shares or infer a combined market share/rank without
-  an explicitly sourced common denominator. This applies to summaries and conclusions too.
-  Cite exact public source URLs supplied or actually read. Never emit undefined symbolic
-  citation aliases; source IDs may accompany, not replace, URLs.
+def _news_source_contract(reference_date, language):
+    """Bounded news research and citation rules; competitor figures belong to the peer table."""
+    if language == "en":
+        return f"""## News research and citation rules
+- Reuse the news listing and source text already obtained before any new search; do not repeat a
+  query or re-read a URL. Use at most 2 consolidated perplexity_ask queries, each naming the company,
+  stock code and reference date {reference_date}.
+- Besides the news listing, use firecrawl_scrape for at most 2 cited public primary URLs, only to
+  confirm material claims. Never invent URLs; on access failure state it without retry loops.
+- Competitor figures are covered by the separate competitor comparison table, so do not build a
+  competitor numeric comparison table or evidence record table in the news chapter. Mention
+  competitors only qualitatively as they appear in the news.
+- Claim sector demand only with sector-wide demand, supply, spending, order or policy evidence. A
+  company's own revenue growth or peers' share-price rallies are not sector demand evidence.
+- Describe a trend only from the same entity, metric and pair of periods, computing the direction
+  from the actual start/end values.
+- Cite exact public source URLs supplied or actually read. Never emit undefined symbolic citation aliases.
+"""
+    return f"""## 뉴스 조사와 인용 규칙
+- 새 검색 전에 이미 확보한 뉴스 목록과 원문을 먼저 재사용하고, 같은 검색이나 URL 조회를 반복하지 마세요.
+  perplexity_ask는 최대 2회의 통합 질의로 제한하고, 매 질의에 종목명·종목코드와 기준일 {reference_date}을 명시하세요.
+- 뉴스 목록 외에 중요한 주장을 확인할 때만 firecrawl_scrape로 공개 원문을 최대 2개까지 조회하세요.
+  URL을 만들지 말고, 접근에 실패하면 반복 시도 없이 그 사실을 밝히세요.
+- 경쟁사 수치 비교는 별도 경쟁사 비교 표가 담당하므로 뉴스 장에서는 경쟁사 수치 비교표나 근거 기록표를 만들지 마세요.
+  경쟁사는 뉴스에 등장한 동향만 정성적으로 언급하세요.
+- 업종 수요 증가는 업종 전체의 수요·공급·투자·수주·정책 근거가 있을 때만 주장하세요. 개별 기업의 매출 성장이나
+  동종 종목의 주가 상승은 업종 수요의 근거가 아닙니다.
+- 추세는 같은 기업·같은 지표·같은 두 기간의 실제 시작값과 종료값으로 방향을 계산해 설명하세요.
+- 실제로 제공받았거나 읽은 공개 출처의 정확한 URL을 인용하고, 정의되지 않은 기호형 출처 별칭을 쓰지 마세요.
 """
 
 
@@ -110,10 +58,10 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
                            - formats: ["markdown"], onlyMainContent: true, maxAge: 7200000 (2-hour cache)
                            - If no news from target date ({reference_date}), collect news from past week
                         
-                        2. Start with news list page titles and summaries; material competitive claims follow the bounded source verification contract below.
+                        2. Start with news list page titles and summaries; confirm material claims under the rules below.
                         
 
-{_competitive_evidence_contract(reference_date)}
+{_news_source_contract(reference_date, 'en')}
 
                         ## News Classification and Analysis
                         
@@ -152,7 +100,7 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
                         - Specify stock codes for accurate news
                         - Provide deep analysis and insights
                         - Cite actual public source URLs as Markdown links, or numbered references with an exact URL mapping. Preserve source dates; do not invent URLs or use undefined provider aliases.
-                        - For news, prioritize the month up to the analysis date; dated structural competitive statistics follow the contract above
+                        - For news, prioritize the month up to the analysis date; older structural statistics must state their period and publication date
 
                         ## Output Format
                         
@@ -176,10 +124,10 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
                            - formats: ["markdown"], onlyMainContent: true, maxAge: 7200000 (2시간 캐시)
                            - 당일({reference_date}) 뉴스가 없으면 최근 1주일 이내 뉴스 수집
                         
-                        2. 뉴스 목록의 제목과 요약을 우선 활용하되, 중요한 경쟁우위 주장은 아래의 제한적 원문 확인 규칙을 따릅니다.
+                        2. 뉴스 목록의 제목과 요약을 우선 활용하되, 중요한 주장은 아래 규칙에 따라 원문을 확인합니다.
                         
 
-{_competitive_evidence_contract(reference_date)}
+{_news_source_contract(reference_date, 'ko')}
 
                         ## 뉴스 구분 및 분류
                         검색된 뉴스를 다음 카테고리로 명확히 구분하여 분석:
@@ -221,7 +169,7 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
 
                         ## 주의사항
                         - perplexity로 섹터 주도주를 찾을 때 반드시 기준일({reference_date})을 명시하여 최신 정보 요청
-                        - 최근 뉴스·가격 동향은 기준일과의 시차를 확인하세요. 경쟁우위의 공식 통계는 더 오래된 기준기간일 수 있으므로 기간과 공시일을 명시하고 당일 동향과 구분하세요.
+                        - 최근 뉴스·가격 동향은 기준일과의 시차를 확인하세요. 공식 통계는 더 오래된 기준기간일 수 있으므로 기간과 공시일을 명시하고 당일 동향과 구분하세요.
                         - 당일 주가 변동 원인 파악을 최우선으로 하고, 반드시 보고서 첫 부분에 상세히 분석할 것
                         - 검색할 때 반드시 종목코드를 함께 명시하여 정확한 기업의 뉴스만 수집할 것
                         - 유사한 기업명(예: 신풍제약 vs 신풍)의 뉴스를 혼동하지 말 것
