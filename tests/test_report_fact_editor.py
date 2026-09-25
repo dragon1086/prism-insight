@@ -144,6 +144,23 @@ def test_approximate_or_range_share_counts_are_not_exact_aliases(source):
     assert editor._unsupported_numeric_literals('순매수 수량 -1,219,730주', source)
 
 
+@pytest.mark.parametrize('source,output', [
+    ('약 79만 주를 순매도', '약 -79만 주의 순매수'),
+    ('약 31만 주 순매도', '약 -31만 주의 순매수, 즉 순매도'),
+    ('약 31만 주 순매수', '약 +31만 주의 순매수'),
+])
+def test_approximate_ten_thousand_share_notation_preserves_scale_and_direction(source, output):
+    assert not editor._unsupported_numeric_literals(output, source)
+
+
+@pytest.mark.parametrize('output', [
+    '약 79만 주 순매수', '약 -78만 주의 순매수', '약 -79만 원의 순매수',
+    '-790,000주 순매수', '79만 주 순매도', '약 -79만 주 순매도',
+])
+def test_approximate_share_alias_cannot_change_direction_scale_unit_or_precision(output):
+    assert editor._unsupported_numeric_literals(output, '약 79만 주 순매도')
+
+
 def install_backend(monkeypatch, text):
     import report_model_config
     from cores import report_generation
