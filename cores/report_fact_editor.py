@@ -108,10 +108,13 @@ _NET_SHARE_PATTERNS = (
                r'(?P<signed>[+-]?' + _SHARE_INTEGER + r')\s*주'
                r'(?:\s+및\s+[+-]' + _SHARE_INTEGER + r'\s*주)*'),
 )
-_APPROX_NET_SHARE = re.compile(
-    r'(?<![\w.,+\-~–—])약\s*(?P<sign>[+-]?)'
-    r'(?P<major>' + _SHARE_INTEGER + r')\s*만\s*주(?:를|을|의)?\s*'
-    r'(?P<direction>순매수|순매도)')
+_APPROX_NET_SHARE_PATTERNS = (
+    re.compile(r'(?<![\w.,+\-~–—])약\s*(?P<sign>[+-]?)'
+               r'(?P<major>' + _SHARE_INTEGER + r')\s*만\s*주(?:를|을|의)?\s*'
+               r'(?P<direction>순매수|순매도)'),
+    re.compile(r'(?P<direction>순매수)\s*(?:수량|주식\s*수량)(?:은|는|이|가)?\s*[:：]?\s*'
+               r'약\s*(?P<sign>[+-]?)(?P<major>' + _SHARE_INTEGER + r')\s*만\s*주'),
+)
 
 
 def _net_share_inventory(text):
@@ -122,18 +125,21 @@ def _net_share_inventory(text):
     period, coordinated direction, approximation or currency is inferred.
     """
     spans, quantities, approximate, plain_values = [], set(), set(), set()
-    for match in _APPROX_NET_SHARE.finditer(text):
-        sign, direction = match['sign'], match['direction']
-        # A signed "순매도" is a double-direction expression and therefore
-        # ambiguous. Signed values are accepted only as explicit net purchases.
-        if sign and direction != '순매수':
-            continue
-        major = int(match['major'].replace(',', ''))
-        value = (-major if sign == '-' else major)
-        if not sign and direction == '순매도':
-            value = -value
-        approximate.add(value)
-        spans.append((match.start(), match.end()))
+    for pattern in _APPROX_NET_SHARE_PATTERNS:
+        for match in pattern.finditer(text):
+            if any(match.start() < end and match.end() > start for start, end in spans):
+                continue
+            sign, direction = match['sign'], match['direction']
+            # A signed "순매도" is a double-direction expression and therefore
+            # ambiguous. Signed values are accepted only as explicit net purchases.
+            if sign and direction != '순매수':
+                continue
+            major = int(match['major'].replace(',', ''))
+            value = (-major if sign == '-' else major)
+            if not sign and direction == '순매도':
+                value = -value
+            approximate.add(value)
+            spans.append((match.start(), match.end()))
     for pattern in _NET_SHARE_PATTERNS:
         for match in pattern.finditer(text):
             before = re.sub(r'[*_`()\[\]{}]', '', text[max(0, match.start() - 32):match.start()])
