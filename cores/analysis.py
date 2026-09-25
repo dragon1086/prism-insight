@@ -494,10 +494,10 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
 
         # 12. Compose final report with proper heading hierarchy
         disclaimer = get_disclaimer(language)
-        # The raw comparison records already reached synthesis. Keep the reader's
-        # main chapters focused on analysis, while retaining every record below.
-        from prism_core.us_report_consistency import evidence_appendix
-        section_reports, comparison_appendix = evidence_appendix(section_reports, language)
+        # The raw competitive evidence records already reached synthesis. The public
+        # KR report shows the deterministic peer table instead of the model records.
+        from prism_core.kr_report_context import strip_public_competitive_evidence
+        section_reports = strip_public_competitive_evidence(section_reports)
 
         # Format reference date for display
         formatted_date = f"{reference_date[:4]}.{reference_date[4:6]}.{reference_date[6:]}"
@@ -607,7 +607,6 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         # The existing PDF-to-BUY path carries this same block without a refetch.
         if prefetched.get("flow_evidence"):
             final_report += prefetched.get('flow_evidence_public', prefetched["flow_evidence"]) + "\n"
-        final_report += comparison_appendix
         references = [prefetched.get('report_calculation_reference', ''),
                       prefetched.get('market_calculation_reference', '')]
         dart = prefetched.get('official_dart', {})

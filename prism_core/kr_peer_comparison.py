@@ -23,6 +23,7 @@ PEER_TABLE_URL = _HOST + "cF6002.aspx?cmp_cd={code}&finGubun=MAIN&sec_cd=FG000&f
 _TIMEOUT_SECONDS = 8
 _MAX_BYTES = 500_000
 _CODE = re.compile(r"[0-9A-Z]{6}")
+_MIN_PEER_CAP_RATIO = 0.1  # peers below 10% of the target's market cap are not comparable
 
 # Provider row label -> field. Absolute per-share rows are intentionally not read.
 _ROWS = {
@@ -122,6 +123,28 @@ def build_peers(companies, rows):
     return peers
 
 
+def select_comparable_peers(peers):
+    """Drop peers far smaller than the target, always keeping the 2 largest peers.
+
+    Runs after the full-packet join validation. Returns ([target, *kept], excluded),
+    both in provider (SEQ) order.
+    """
+    target, others = peers[0], peers[1:]
+    floor = target["market_cap"] * _MIN_PEER_CAP_RATIO
+    kept = [p for p in others if p["market_cap"] >= floor]
+    if len(kept) < 2:
+        largest = sorted(others, key=lambda p: p["market_cap"], reverse=True)[:2]
+        kept = [p for p in others if p in largest]
+    return [target, *kept], [p for p in others if p not in kept]
+
+
+def _topic_particle(word):
+    last = word[-1:]
+    if "가" <= last <= "힣":
+        return "은" if (ord(last) - 0xAC00) % 28 else "는"
+    return "은(는)"
+
+
 def _fmt(value, digits):
     return "-" if value is None else f"{value:,.{digits}f}"
 
@@ -192,7 +215,7 @@ def _comparison_sentences(peers, values):
     return [s for s in sentences if s]
 
 
-def render_peer_markdown(peers):
+def render_peer_markdown(peers, excluded=()):
     """Deterministic Korean table + comparison sentences; no internal tokens."""
     values = _display_values(peers)
     lines = ["#### 경쟁사 비교 분석", "",
@@ -216,6 +239,10 @@ def render_peer_markdown(peers):
     period_text = periods[0] if len(periods) == 1 else "기업별 상이(표 참고)"
     lines.append(f"출처: WiseReport 경쟁사분석(WiseFn 선정 비교기업) · 재무 기준 {period_text} 연간 실적 · "
                  "가격 기준 전일종가(시가총액·PER·PBR)")
+    if excluded:
+        names = "·".join(p["name"] for p in excluded)
+        lines += ["", f"시가총액이 분석 대상의 10% 미만인 {names}{_topic_particle(names)} "
+                      "규모 차이가 커서 비교표와 중앙값에서 제외했습니다."]
     notes = [f"피어 중앙값은 분석 대상을 제외한 비교기업 {len(peers) - 1}개사 기준입니다."]
     if len({p["basis"] for p in peers}) > 1:
         notes.append("연결과 별도 재무기준이 섞여 있어 직접 비교에는 한계가 있습니다.")
@@ -282,9 +309,11 @@ async def collect_wisereport_peers(company_code, company_name, reference_date, *
         peers = build_peers(companies, parse_peer_table(table_html, len(companies)))
     except Exception as error:  # noqa: BLE001 - optional data never blocks a report
         return _skip(_reason(error))
-    public = render_peer_markdown(peers)
+    peers, excluded = select_comparable_peers(peers)
+    public = render_peer_markdown(peers, excluded)
     codes = ", ".join(f"{p['name']}({p['code']})" for p in peers[1:])
     periods = sorted({p["period"] for p in peers})
-    return {"ready": True, "peers": peers, "period": periods[0] if len(periods) == 1 else "mixed",
+    return {"ready": True, "peers": peers, "excluded_peers": excluded,
+            "period": periods[0] if len(periods) == 1 else "mixed",
             "price_basis": "전일종가", "public_markdown": public,
             "model_context": public + f"\n\n비교기업 종목코드: {codes}", "skip_reason": None}

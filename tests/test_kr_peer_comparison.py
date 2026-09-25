@@ -15,6 +15,7 @@ from prism_core.kr_peer_comparison import (
     parse_peer_header,
     parse_peer_table,
     render_peer_markdown,
+    select_comparable_peers,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "wisereport"
@@ -161,3 +162,56 @@ def test_rendered_block_survives_report_publication_formatting():
     for line in out.splitlines():
         if line.strip():
             assert line in published
+
+
+SKT_HEADER = (FIXTURES / "cF6001_017670.json").read_text(encoding="utf-8")
+SKT_TABLE = (FIXTURES / "cF6002_017670.html").read_text(encoding="utf-8")
+
+
+def test_size_filter_drops_tiny_peers_from_table_and_median():
+    async def fetch(url):
+        return SKT_HEADER if "cF6001" in url else SKT_TABLE
+    result = asyncio.run(collect_wisereport_peers("017670", "SK텔레콤", TODAY, fetch=fetch))
+    assert result["ready"] is True
+    assert [p["code"] for p in result["peers"]] == ["017670", "030200", "032640"]
+    assert [p["name"] for p in result["excluded_peers"]] == ["와이어블", "프리티"]
+    out = result["public_markdown"]
+    assert "| 구분 | SK텔레콤 | KT | LG유플러스 | 피어 중앙값 |" in out
+    assert "와이어블 |" not in out and "| 적자 |" not in out
+    # Median of KT/LGU+ only: PER (7.66 + 12.19) / 2.
+    assert "| PER(배) | 28.14 | 7.66 | 12.19 | 9.93 |" in out
+    assert ("시가총액이 분석 대상의 10% 미만인 와이어블·프리티는 규모 차이가 커서 "
+            "비교표와 중앙값에서 제외했습니다.") in out
+    assert "비교기업 2개사 기준" in out and "비교 대상 3개사 중 2위" in out
+    assert "065530" not in result["model_context"] and "030200" in result["model_context"]
+
+
+def test_size_filter_keeps_all_comparable_peers():
+    kept, excluded = select_comparable_peers(peers())
+    assert len(kept) == 5 and excluded == []
+    assert "10% 미만" not in collect()["public_markdown"]
+
+
+def test_size_filter_keeps_two_largest_when_all_peers_are_tiny():
+    items = peers()
+    items[0]["market_cap"] = 10_000_000.0
+    kept, excluded = select_comparable_peers(items)
+    assert [p["code"] for p in kept] == ["252990", "058470", "166090"]  # SEQ order kept
+    assert [p["code"] for p in excluded] == ["101160", "036810"]
+    out = render_peer_markdown(kept, excluded)
+    assert "월덱스·에프에스티는 규모 차이가 커서" in out
+
+
+def test_size_filter_keeps_one_passing_peer_plus_next_largest():
+    items = peers()
+    items[0]["market_cap"] = 200_000.0  # only 리노공업 (56,625) passes the 10% floor
+    kept, _ = select_comparable_peers(items)
+    assert [p["code"] for p in kept] == ["252990", "058470", "166090"]
+
+
+def test_size_filter_runs_after_full_packet_validation():
+    # A mismatch in a column that would be filtered out still rejects the packet.
+    async def fetch(url):
+        return SKT_HEADER if "cF6001" in url else SKT_TABLE.replace("240.5", "999.9", 1)
+    result = asyncio.run(collect_wisereport_peers("017670", "SK텔레콤", TODAY, fetch=fetch))
+    assert result["ready"] is False and result["skip_reason"] == "market_cap_mismatch"
