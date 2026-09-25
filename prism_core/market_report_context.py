@@ -1,5 +1,6 @@
 """Deterministic public rendering of the same descriptive batch evidence."""
 import ipaddress
+import math
 import re
 from urllib.parse import urlsplit
 
@@ -64,6 +65,13 @@ def public_macro_prose(context, language="ko"):
             "Macro narrative without connected public sources was omitted. Consult the shared market evidence below.")
 
 
+def _measured_return(value):
+    try:
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def market_report_context(context, language="ko"):
     if not isinstance(context, dict) or not isinstance(context.get("market_intelligence"), dict):
         return ""
@@ -82,15 +90,34 @@ def market_report_context(context, language="ko"):
         lines.append(("완료 일봉 기준: " if ko else "Completed price date: ")
                      + str(packet.get("price_asof") or "UNKNOWN") + "; "
                      + str(packet.get("source") or "UNKNOWN"))
-        lines.append("5/20/60거래일 수익률(%) · SPY 대비 초과수익률(%p)" if ko
-                     else "5/20/60-session returns (%) · excess over SPY (pp)")
+        rendered_rows = []
+        unmeasured_optional = []
         for row in rows[:16]:
             if not isinstance(row, dict):
                 continue
-            def values(key, row=row):
-                data = row.get(key) or {}
-                return "/".join(str(data.get(str(day), "?")) for day in (5, 20, 60))
-            lines.append(f"- {row.get('symbol', '?')}: {values('returns_pct')} · {values('relative_spy_pp')}")
+            measurements = {key: row.get(key) if isinstance(row.get(key), dict) else {}
+                            for key in ('returns_pct', 'relative_spy_pp')}
+            measured = any(_measured_return(data.get(str(day)))
+                           for data in measurements.values() for day in (5, 20, 60))
+            # SPY defines the comparison basis. Its unknown state must remain
+            # visible, unlike entirely unmeasured optional style/sector proxies.
+            if not measured and row.get('symbol') != 'SPY' and row.get('label') != 'benchmark':
+                unmeasured_optional.append(str(row.get('symbol') or '?'))
+                continue
+            def values(key):
+                data = measurements[key]
+                return "/".join(str(data[str(day)]) if _measured_return(data.get(str(day))) else "?"
+                                for day in (5, 20, 60))
+            rendered_rows.append(f"- {row.get('symbol', '?')}: {values('returns_pct')} · {values('relative_spy_pp')}")
+        if rendered_rows:
+            lines.append("5/20/60거래일 수익률(%) · SPY 대비 초과수익률(%p)" if ko
+                         else "5/20/60-session returns (%) · excess over SPY (pp)")
+            lines.extend(rendered_rows)
+        if unmeasured_optional:
+            symbols = ', '.join(unmeasured_optional)
+            count = len(unmeasured_optional)
+            lines.append(f"미측정 선택 지표 {count}개(표시 생략): {symbols}." if ko else
+                         f"{count} unmeasured optional indicator{'s' if count != 1 else ''} omitted: {symbols}.")
         if packet.get("input_sha256"):
             lines.append("Evidence ID: MI-" + str(packet["input_sha256"])[:16])
     participation = packet.get("participation") or context.get("market_participation")
