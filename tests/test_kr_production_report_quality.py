@@ -256,3 +256,16 @@ def test_real_kr_assembly_reaches_synthesis_and_publication_without_extra_models
     assert '12345.67원' in report and '3000.00포인트' in report
     assert ('공시 확인' in report) is (not dart_fails)
     assert 'BAR_FINALITY_UNKNOWN' not in report and 'private transport error' not in report
+
+
+def test_filing_excerpts_stay_with_the_dart_chapter_when_it_can_be_written():
+    packet = inputs()
+    packet['official_dart']['dart_chapter_inputs'] = {'ready': True}
+    agent = ReportAgent('test', 'BASE', ('dart',))
+    for section in ('company_status', 'company_overview', 'news_analysis'):
+        instruction = apply_kr_report_context(agent, section, packet).instruction
+        assert '<provided_filing_evidence>' not in instruction
+        assert packet['official_dart']['section_contexts'][section] not in instruction
+    # Basic reports without a chapter keep the section excerpts.
+    packet['official_dart']['dart_chapter_inputs'] = {'ready': False}
+    assert '123456천원' in apply_kr_report_context(agent, 'company_status', packet).instruction
