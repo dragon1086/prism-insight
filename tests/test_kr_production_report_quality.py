@@ -149,6 +149,7 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
         model_calls.append(role)
         assert 'WHOLE_SOURCE_' + role in message
         assert ('PEER 9.23배' in message) is (role == 'business')
+        assert '<already_covered_report_sections>\n### 기본 분석\n기본 사실' in message
         text = f'### 상세 분석 {role}\n\n' + (f'{role}의 금액 987.65와 이행 요청 조건 및 남은 약정 한도와 기간을 설명합니다.\n\n' * 180)
         text += '\n\n출처: https://dart.fss.or.kr/report/viewer.do?rcpNo=20260813001728'
         authored[role] = text.strip()
