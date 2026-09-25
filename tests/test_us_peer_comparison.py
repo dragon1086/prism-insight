@@ -58,28 +58,47 @@ def test_listing_validation(override, issue):
     assert peers.listing_issue(info("X", 1e9, **override)) == issue
 
 
-def test_size_filter_keeps_two_largest_and_prefers_same_sector():
-    target = info("T", 100e9)
-    candidates = [{"ticker": t, "name": t, "overlap": ""} for t in ("A", "B", "C", "D", "E", "F")]
-    infos = {"A": info("A", 5e9), "B": info("B", 50e9, sector="Industrials"), "C": info("C", 20e9),
-             "D": info("D", 30e9), "E": info("E", 11e9), "F": info("F", 12e9, quoteType="ETF")}
-    kept, excluded = peers.select_peers(target, candidates, infos)
-    assert [p["ticker"] for p in kept] == ["C", "D", "E", "B"]  # same sector first, cap 4
-    reasons = {p["ticker"]: p["reason"] for p in excluded}
-    assert reasons == {"A": "too_small", "F": "not_equity"}
-
-    tiny = {t: info(t, cap) for t, cap in (("A", 1e9), ("B", 3e9), ("C", 2e9))}
-    kept, excluded = peers.select_peers(target, candidates[:3], tiny)
-    assert [p["ticker"] for p in kept] == ["B", "C"]
-    assert [p["ticker"] for p in excluded] == ["A"]
+def _select(target_cap, caps, **overrides):
+    candidates = [{"ticker": t, "name": t, "overlap": ""} for t in caps]
+    infos = {t: info(t, cap, **overrides.get(t, {})) for t, cap in caps.items()}
+    kept, excluded = peers.select_peers(info("T", target_cap), candidates, infos)
+    return [p["ticker"] for p in kept], {p["ticker"]: p["reason"] for p in excluded}
 
 
-def test_fallback_ceiling_drops_giant_peers():
-    target = info("T", 10e9)
-    candidates = [{"ticker": t, "name": "", "overlap": ""} for t in ("A", "B")]
-    kept, excluded = peers.select_peers(target, candidates, {"A": info("A", 500e9), "B": info("B", 9e9)},
-                                        cap_ceiling=10)
-    assert [p["ticker"] for p in kept] == ["B"] and excluded[0]["reason"] == "too_large"
+def test_ddog_like_small_direct_rival_is_kept():
+    # DDOG ~97B: ESTC ~9B is ~9% of the target, dropped by the KR 10% rule but kept in the US window.
+    kept, excluded = _select(97e9, {"DT": 17e9, "ESTC": 9e9, "CSCO": 424e9, "NEWR": 5e9},
+                             NEWR={"quoteType": "NONE"})
+    assert kept == ["DT", "ESTC", "CSCO"] and excluded == {"NEWR": "not_equity"}
+
+
+def test_crwd_like_mega_cap_is_too_large_and_small_rival_kept():
+    # CRWD ~262B: MSFT ~3.8T is >10x (excluded); S ~8B is ~3.1% (kept).
+    kept, excluded = _select(262e9, {"PANW": 309e9, "MSFT": 3822e9, "FTNT": 128e9, "S": 8e9})
+    assert kept == ["PANW", "FTNT", "S"] and excluded == {"MSFT": "too_large"}
+
+
+def test_nvda_like_qcom_kept_and_sub_three_percent_peer_excluded():
+    # NVDA ~5.4T: QCOM ~180B is ~3.3% (kept); MRVL ~100B is ~1.8% (excluded).
+    kept, excluded = _select(5420e9, {"AMD": 1026e9, "INTC": 655e9, "AVGO": 1682e9, "QCOM": 180e9, "MRVL": 100e9})
+    assert kept == ["AMD", "INTC", "AVGO", "QCOM"] and excluded == {"MRVL": "too_small"}
+
+
+def test_window_boundaries_are_inclusive():
+    kept, excluded = _select(100e9, {"LOW": 3e9, "HIGH": 1000e9, "UNDER": 2.99e9, "OVER": 1000.1e9})
+    assert kept == ["LOW", "HIGH"] and excluded == {"UNDER": "too_small", "OVER": "too_large"}
+
+
+def test_fewer_than_two_in_window_keeps_two_closest_by_log_ratio_in_relevance_order():
+    # Ratios: A 0.01 (|log|=4.6), B 20x (3.0), C 1.0 (0), D 50x (3.9) -> keep C and B, proposer order B, C.
+    kept, excluded = _select(100e9, {"A": 1e9, "B": 2000e9, "C": 100e9, "D": 5000e9})
+    assert kept == ["B", "C"] and excluded == {"A": "too_small", "D": "too_large"}
+
+
+def test_cap_at_four_keeps_proposer_relevance_order_not_market_cap_or_sector():
+    kept, excluded = _select(100e9, {"A": 5e9, "B": 900e9, "C": 20e9, "D": 30e9, "E": 400e9},
+                             B={"sector": "Industrials"})
+    assert kept == ["A", "B", "C", "D"] and excluded == {"E": "cap_limit"}
 
 
 def test_ttm_growth_from_eight_consecutive_quarters():
@@ -144,7 +163,8 @@ def _rows():
 
 def test_render_table_sentences_and_flags():
     text, misaligned = peers.render_peer_markdown(_rows(), source="perplexity", asof=ASOF,
-                                                   excluded=[{"ticker": "SML", "reason": "too_small"}])
+                                                   excluded=[{"ticker": "SML", "reason": "too_small"},
+                                                             {"ticker": "GIANT", "reason": "too_large"}])
     lines = text.splitlines()
     assert lines[0] == "#### 경쟁사 비교 분석"
     assert lines[2] == "| 구분 | TGT | AAA | BBB | CCC | 피어 중앙값 |"
@@ -157,6 +177,7 @@ def test_render_table_sentences_and_flags():
     assert "EV/Sales는 22.3배로 피어 중앙값(7.6배) 대비 약 193% 할증된 수준입니다." in text
     assert "피어 중앙값(50.0%)을 48.0%p 상회했습니다." in text
     assert misaligned == ["BBB"] and "BBB의 최근 분기 말은 분석 대상과 60일 넘게" in text
+    assert "시가총액이 분석 대상의 3% 미만인 SML 및 10배 초과인 GIANT의 경우 규모 차이가 커서 제외했습니다." in text
     assert "SML" in text and "적자" in text and "Perplexity 후보 + yfinance 검증" in text
     assert "기준일 2026-09-25" in text and "N/A" not in text
 
@@ -216,6 +237,8 @@ def test_collect_falls_back_to_industry_leaders_when_proposer_fails():
         "TGT", "Target", "20260925", **_fake_fns(infos, fail_candidates=True, industry=("TGT", "BIG", "AAA", "BBB"))))
     assert packet["ready"] and packet["source"] == "industry" and packet["proposer_error"] == "ValueError"
     assert [p["ticker"] for p in packet["peers"]] == ["TGT", "AAA", "BBB"]
+    assert {p["ticker"]: p["reason"] for p in packet["excluded_peers"]} == {"BIG": "too_large"}
+    assert "10배 초과인 BIG" in packet["public_markdown"]
 
 
 def test_collect_skips_without_blocking():
@@ -236,7 +259,11 @@ def test_collect_skips_without_blocking():
 
 
 def test_english_rendering_for_en_reports():
-    text, _ = peers.render_peer_markdown(_rows(), source="perplexity", asof=ASOF, language="en")
+    text, _ = peers.render_peer_markdown(_rows(), source="perplexity", asof=ASOF, language="en",
+                                         excluded=[{"ticker": "SML", "reason": "too_small"},
+                                                   {"ticker": "GIANT", "reason": "too_large"}])
+    assert ("Excluded for size: SML (below 3% of the target's market cap); "
+            "GIANT (above 10x the target's market cap).") in text
     assert text.startswith("#### Peer Comparison Analysis")
     assert "| Metric | TGT | AAA | BBB | CCC | Peer median |" in text
     assert "| Forward P/E (x) | 30.0 | Loss | 30.0 | 30.0 | 30.0 |" in text

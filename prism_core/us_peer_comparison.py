@@ -26,8 +26,10 @@ _BUDGET_SECONDS = 40
 _CONCURRENCY = 3
 _MAX_PEERS = 4
 _MAX_CANDIDATES = 6
-_MIN_PEER_CAP_RATIO = 0.1   # same size rule as KR: peers below 10% of the target are not comparable
-_MAX_FALLBACK_CAP_RATIO = 10.0
+# US size window (differs from KR's 10% floor): real US rivals are often far smaller than
+# the target, while mega-caps several times larger are rarely like-for-like.
+_MIN_PEER_CAP_RATIO = 0.03
+_MAX_PEER_CAP_RATIO = 10.0
 _MISALIGNED_DAYS = 60
 # yfinance exchange codes for US venues (Nasdaq tiers, NYSE, NYSE American/Arca, Cboe BZX).
 US_EXCHANGES = frozenset({"NMS", "NGM", "NCM", "NYQ", "ASE", "PCX", "BTS"})
@@ -129,33 +131,33 @@ def listing_issue(info):
     return None
 
 
-def select_peers(target_info, candidates, infos, *, cap_ceiling=None):
-    """Validate, size-filter and order candidates. Returns (kept, excluded).
+def select_peers(target_info, candidates, infos):
+    """Validate, size-filter and cap candidates. Returns (kept, excluded).
 
-    ``candidates`` keeps the proposer's order; ``infos`` maps ticker -> yfinance info.
-    Peers below 10% of the target's market cap are dropped, always keeping the two
-    largest valid peers. Same-sector peers are preferred, then capped at 4.
+    ``candidates`` is in the proposer's relevance order; ``infos`` maps ticker -> yfinance
+    info. Peers whose market cap is outside 3%-10x of the target are dropped; when fewer
+    than two remain, the two valid peers closest in size (|log cap ratio|) are kept. The
+    result keeps relevance order and is capped at 4.
     """
     target_cap = _finite(target_info.get("marketCap")) or 0
     valid, excluded = [], []
     for candidate in candidates:
         info = infos.get(candidate["ticker"]) or {}
         issue = listing_issue(info)
-        cap = _finite(info.get("marketCap")) or 0
-        if issue is None and cap_ceiling and target_cap and cap > target_cap * cap_ceiling:
-            issue = "too_large"
         if issue:
             excluded.append({**candidate, "reason": issue})
             continue
-        valid.append({**candidate, "market_cap": cap, "sector": info.get("sector")})
-    floor = target_cap * _MIN_PEER_CAP_RATIO
-    kept = [p for p in valid if p["market_cap"] >= floor]
+        valid.append({**candidate, "market_cap": _finite(info.get("marketCap")), "sector": info.get("sector")})
+    if target_cap <= 0:
+        return [], excluded + [{**p, "reason": "no_target_cap"} for p in valid]
+    ratio = {p["ticker"]: p["market_cap"] / target_cap for p in valid}
+    kept = [p for p in valid if _MIN_PEER_CAP_RATIO <= ratio[p["ticker"]] <= _MAX_PEER_CAP_RATIO]
     if len(kept) < 2:
-        largest = sorted(valid, key=lambda p: p["market_cap"], reverse=True)[:2]
-        kept = [p for p in valid if p in largest]
-    excluded += [{**p, "reason": "too_small"} for p in valid if p not in kept]
-    sector = target_info.get("sector")
-    kept.sort(key=lambda p: bool(sector) and p.get("sector") != sector)  # stable: proposer order within
+        closest = sorted(valid, key=lambda p: abs(math.log(ratio[p["ticker"]])))[:2]
+        kept = [p for p in valid if p in closest]
+    for p in valid:
+        if p not in kept:
+            excluded.append({**p, "reason": "too_small" if ratio[p["ticker"]] < 1 else "too_large"})
     excluded += [{**p, "reason": "cap_limit"} for p in kept[_MAX_PEERS:]]
     return kept[:_MAX_PEERS], excluded
 
@@ -397,10 +399,11 @@ def render_peer_markdown(rows, *, source, asof, excluded=(), language="ko"):
     misaligned = [r["ticker"] for r in rows[1:] if target_end and r.get("quarter_end")
                   and abs((r["quarter_end"] - target_end).days) > _MISALIGNED_DAYS]
     small = [p["ticker"] for p in excluded if p.get("reason") == "too_small"]
+    large = [p["ticker"] for p in excluded if p.get("reason") == "too_large"]
     names = " · ".join(f"{r['name']}({r['ticker']})" for r in rows[1:])
     if ko:
-        selection = ("Perplexity 후보 + yfinance 검증(미국 상장 보통주·시가총액 기준)" if source == "perplexity"
-                     else "yfinance 업종 상위 기업(시가총액 0.1~10배)")
+        selection = ("Perplexity 후보 + yfinance 검증(미국 상장 보통주·시가총액 3%~10배)" if source == "perplexity"
+                     else "yfinance 업종 상위 기업")
         lines.append(f"출처: 비교기업 선정 {selection} · 재무·밸류에이션·주가 yfinance · 기준일 {asof.isoformat()}")
         notes = [f"비교 기업: {names}.",
                  f"피어 중앙값은 분석 대상을 제외한 비교기업 {len(rows) - 1}개사 기준입니다.",
@@ -410,14 +413,15 @@ def render_peer_markdown(rows, *, source, asof, excluded=(), language="ko"):
         if misaligned:
             notes.append(f"{', '.join(misaligned)}의 최근 분기 말은 분석 대상과 {_MISALIGNED_DAYS}일 넘게 차이 나므로 "
                          "같은 기간 비교가 아닙니다.")
-        if small:
-            notes.append(f"시가총액이 분석 대상의 10% 미만인 {', '.join(small)}의 경우 규모 차이가 커서 제외했습니다.")
+        if small or large:
+            parts = ([f"3% 미만인 {', '.join(small)}"] if small else []) + ([f"10배 초과인 {', '.join(large)}"] if large else [])
+            notes.append(f"시가총액이 분석 대상의 {' 및 '.join(parts)}의 경우 규모 차이가 커서 제외했습니다.")
         if loss_marked:
             notes.append("Forward PER의 '적자'는 예상 이익이 음수여서 배수를 산출하지 않은 경우입니다.")
         notes.append("선정된 비교기업 기준의 참고 자료이며 전체 업종 순위나 매매 조건이 아닙니다.")
     else:
-        selection = ("Perplexity candidates validated with yfinance (US-listed common stock, market-cap rule)"
-                     if source == "perplexity" else "yfinance industry leaders (0.1-10x market cap)")
+        selection = ("Perplexity candidates validated with yfinance (US-listed common stock, 3%-10x market cap)"
+                     if source == "perplexity" else "yfinance industry leaders")
         lines.append(f"Source: peer selection by {selection} · financials, valuation and prices from yfinance · "
                      f"as of {asof.isoformat()}")
         notes = [f"Peers: {names}.",
@@ -429,8 +433,10 @@ def render_peer_markdown(rows, *, source, asof, excluded=(), language="ko"):
         if misaligned:
             notes.append(f"Latest quarter end of {', '.join(misaligned)} differs from the target by more than "
                          f"{_MISALIGNED_DAYS} days, so periods are not aligned.")
-        if small:
-            notes.append(f"{', '.join(small)} excluded: market cap below 10% of the target.")
+        if small or large:
+            parts = ([f"{', '.join(small)} (below 3% of the target's market cap)"] if small else []) + \
+                    ([f"{', '.join(large)} (above 10x the target's market cap)"] if large else [])
+            notes.append(f"Excluded for size: {'; '.join(parts)}.")
         if loss_marked:
             notes.append("'Loss' means forward earnings are negative, so no P/E multiple is shown.")
         notes.append("Reference comparison against selected peers only; not an industry ranking or a trading condition.")
@@ -541,10 +547,8 @@ async def _collect(ticker, company, asof, language, *, candidates_fn, info_fn, s
         known = {ticker, *(p["ticker"] for p in kept)}
         extra = [{"ticker": s, "name": "", "overlap": ""} for s in symbols if s not in known][:8]
         infos.update(await _gather_map(semaphore, info_fn, [c["ticker"] for c in extra]))
-        more, more_excluded = select_peers(target_info, extra, infos, cap_ceiling=_MAX_FALLBACK_CAP_RATIO)
-        more = [p for p in more if p["market_cap"] >= (_finite(target_info.get("marketCap")) or 0) * _MIN_PEER_CAP_RATIO]
-        kept = (kept + more)[:_MAX_PEERS]
-        excluded += [p for p in more_excluded if p.get("reason") == "too_small"]
+        # Proposer candidates first (relevance order), then industry leaders.
+        kept, excluded = select_peers(target_info, candidates + extra, infos)
     if len(kept) < 2:
         return _skip("insufficient_peers", proposer_error=proposer_error)
     tickers = [ticker] + [p["ticker"] for p in kept]
