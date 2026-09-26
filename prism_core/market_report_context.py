@@ -21,36 +21,76 @@ def _public_https(url):
         return False
 
 
-def _unresolved_numeric_citations(prose):
-    definitions = {
-        number for number, url in re.findall(r"(?m)^\s*\[(\d+)\]:\s*(https://\S+)", prose)
-        if _public_https(url)
-    }
-    for match in re.finditer(r"\[(\d+(?:\s*[,;-]\s*\d+)*)\]", prose):
-        inline = re.match(r"\((https://[^\s)]+)\)", prose[match.end():])
+_DEFINITION = re.compile(r"(?m)^\s*\[(\d+)\]:?\s*<?(https://[^\s>]+)>?")
+_CITATION = re.compile(r"\[(\d+(?:\s*[,;-]\s*\d+)*)\]")
+_INLINE_URL = re.compile(r"\(<?(https://[^\s)>]+)>?\)")
+
+
+def _citation_definitions(prose):
+    return {number for number, url in _DEFINITION.findall(prose) if _public_https(url)}
+
+
+def _unresolved_in(text, definitions):
+    for match in _CITATION.finditer(text):
+        if re.match(r"\s*:", text[match.end():]):
+            continue  # A definition line, not a citation.
+        inline = _INLINE_URL.match(text, match.end())
         if inline and _public_https(inline.group(1)):
             continue
-        if match.group(1) not in definitions:
+        group = match.group(1)
+        numbers = set(re.findall(r"\d+", group))
+        if "-" in group:
+            bounds = [int(n) for n in re.findall(r"\d+", group)]
+            if len(bounds) == 2 and 0 < bounds[1] - bounds[0] < 50:
+                numbers = {str(n) for n in range(bounds[0], bounds[1] + 1)}
+        if not numbers <= definitions:
             return True
     return False
 
 
+def _unresolved_numeric_citations(prose):
+    return _unresolved_in(prose, _citation_definitions(prose))
+
+
+def _without_unresolved_blocks(prose):
+    """Drop only the paragraphs/tables whose citations cannot be resolved."""
+    definitions = _citation_definitions(prose)
+    blocks = re.split(r"\n\s*\n", prose)
+    return "\n\n".join(block for block in blocks if not _unresolved_in(block, definitions))
+
+
+def _substantive(text):
+    body = "\n".join(line for line in text.splitlines()
+                     if line.strip() and not line.lstrip().startswith("#") and not _DEFINITION.match(line))
+    return len(body.strip()) >= 200
+
+
 def public_market_analysis(prose, context, language="ko", *, require_citation_integrity=False):
-    """Guard market prose before strategy/summary; source data needs no invented URL."""
+    """Guard market prose before strategy/summary; source data needs no invented URL.
+
+    Only paragraphs with unresolved citations are removed; the section is
+    replaced by a notice only when nothing substantive remains.
+    """
     shared_evidence = isinstance(context, dict) and isinstance(context.get("market_intelligence"), dict)
     if not require_citation_integrity and not shared_evidence:
         return prose
-    if not isinstance(prose, str) or _unresolved_numeric_citations(prose):
-        if not shared_evidence:
-            return ("### 4. 시장 분석\n\n공개 URL과 연결되지 않은 출처 번호가 포함된 시장 서술을 제외했습니다. "
-                    "검증되지 않은 거시경제 사건·수치를 판단 근거로 사용하지 않습니다."
-                    if language == "ko" else
-                    "### 4. Market Analysis\n\nMarket narrative with citation numbers not linked to public URLs was omitted. "
-                    "Unverified macroeconomic events and figures must not be used as decision evidence.")
-        return ("### 4. 시장 분석\n\n출처 번호를 확인할 수 없는 시장 서술은 제외했습니다. 아래 공통 시장 근거를 확인하십시오."
+    if isinstance(prose, str) and not _unresolved_numeric_citations(prose):
+        return prose
+    if isinstance(prose, str):
+        kept = _without_unresolved_blocks(prose)
+        if _substantive(kept):
+            return kept.rstrip() + ("\n\n출처 연결이 확인되지 않은 일부 시장 서술은 제외했습니다."
+                                    if language == "ko" else
+                                    "\n\nSome market statements without connected public sources were omitted.")
+    if not shared_evidence:
+        return ("### 4. 시장 분석\n\n공개 URL과 연결되지 않은 출처 번호가 포함된 시장 서술을 제외했습니다. "
+                "검증되지 않은 거시경제 사건·수치를 판단 근거로 사용하지 않습니다."
                 if language == "ko" else
-                "### 4. Market Analysis\n\nMarket narrative with unresolved citations was omitted. Consult the shared market evidence below.")
-    return prose
+                "### 4. Market Analysis\n\nMarket narrative with citation numbers not linked to public URLs was omitted. "
+                "Unverified macroeconomic events and figures must not be used as decision evidence.")
+    return ("### 4. 시장 분석\n\n출처 번호를 확인할 수 없는 시장 서술은 제외했습니다. 아래 공통 시장 근거를 확인하십시오."
+            if language == "ko" else
+            "### 4. Market Analysis\n\nMarket narrative with unresolved citations was omitted. Consult the shared market evidence below.")
 
 
 def public_macro_prose(context, language="ko"):
