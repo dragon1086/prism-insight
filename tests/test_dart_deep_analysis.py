@@ -236,3 +236,14 @@ def test_split_writer_revises_one_subsection_sequentially(monkeypatch):
     assert text.count('### dart_depth_risks') == 1 and '### dart_depth_risks DRAFT2' in text
     assert receipt['writers']['risks']['source_parts'] == 2
     assert len(receipt['writers']['risks']['part_calls']) == 2
+
+
+def test_writers_gloss_filing_jargon_for_retail_readers():
+    from cores.dart_deep_analysis import PLAIN_LANGUAGE_RULE, ROLES, writer_agent
+
+    for role in ROLES:
+        for sector in (None, {'kind': 'financial', 'subtype': 'bank'}, {'kind': 'loss_biotech'}):
+            ko = writer_agent(role, '예시', '000000', '20260926', 'ko', sector).instruction
+            assert PLAIN_LANGUAGE_RULE in ko and '괄호 안에 한 줄 이내의 쉬운 풀이' in ko
+            en = writer_agent(role, 'Example', '000000', '20260926', 'en', sector).instruction
+            assert 'Write for retail investors unfamiliar with accounting terms' in en
