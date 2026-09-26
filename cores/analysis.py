@@ -37,6 +37,7 @@ from cores.stock_chart import (
     create_fundamentals_chart,
     create_annual_earnings_chart,
     create_annual_fundamentals_chart,
+    create_dart_balance_sheet_chart,
     get_chart_as_base64_html
 )
 from cores.utils import clean_markdown
@@ -62,6 +63,18 @@ def _report_parallel_limit(
         return min(section_count, max(1, int(raw_limit)))
     except ValueError:
         return section_count
+
+def _with_balance_chart(chapter_text, chart_html, language):
+    """Close subsection 5-1 (finance) with the balance-sheet chart, inside the chapter."""
+    if not chart_html:
+        return chapter_text
+    from cores.dart_deep_analysis import CHAPTER_END
+    block = ('#### 재무구조 추이 (DART 재무상태표)\n\n' if language == 'ko'
+             else '#### Balance Sheet Structure (DART)\n\n') + chart_html + '\n\n'
+    match = re.search(r'(?m)^### 5-2\b', chapter_text)
+    cut = match.start() if match else chapter_text.rindex(CHAPTER_END)
+    return chapter_text[:cut] + block + chapter_text[cut:]
+
 
 async def _alert_dart_depth_missing(company_code, company_name, reference_date, stage, detail):
     from prism_core.ops_alert import send_ops_alert
@@ -429,6 +442,22 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             market_cap_chart_html = None
             fundamentals_chart_html = None
 
+        # Filing-chapter chart: only balance-sheet totals that pass exact checks;
+        # anything unverifiable is omitted rather than approximated.
+        dart_balance_chart_html = None
+        if dart_chapter:
+            try:
+                from prism_core.dart_balance_sheet import balance_sheet_series
+                balance_series = balance_sheet_series(chapter_inputs)
+                if balance_series:
+                    dart_balance_chart_html = get_chart_as_base64_html(
+                        company_code, company_name, create_dart_balance_sheet_chart, 'Balance Sheet Structure',
+                        width=900, dpi=80, image_format='jpg', compress=True, series=balance_series)
+                else:
+                    logger.info('DART balance-sheet chart omitted: totals not verifiable')
+            except Exception as e:  # noqa: BLE001 - optional chart
+                logger.warning(f"DART balance-sheet chart unavailable: {type(e).__name__}")
+
         # 10b. Render QA (Phase 6 S2) — OFF by default, non-blocking
         from cores.llm.capabilities import (
             vision_available,
@@ -629,7 +658,9 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
 
         # Investment Strategy section
         if dart_chapter:
-            final_report += section_reports['dart_deep_analysis'] + '\n\n'
+            # Images join only the published report, never the synthesis inputs.
+            final_report += _with_balance_chart(section_reports['dart_deep_analysis'],
+                                                dart_balance_chart_html, language) + '\n\n'
             main_headers['strategy'] = main_headers['strategy'].replace('## 5.', '## 6.', 1)
         elif section_reports.get('dart_depth_limit'):
             final_report += section_reports['dart_depth_limit'] + '\n\n'

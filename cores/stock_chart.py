@@ -1535,6 +1535,62 @@ def create_annual_earnings_chart(ticker, company_name=None, financial_summary=No
                           save_path, footnote=_annual_footnote(frame))
 
 
+def create_dart_balance_sheet_chart(ticker, company_name=None, series=None, save_path=None):
+    """Assets / liabilities / equity and debt ratio from DART balance-sheet totals.
+
+    ``series`` comes from prism_core.dart_balance_sheet.balance_sheet_series;
+    every point already balances (assets = liabilities + equity).
+    """
+    points = (series or {}).get('points') or []
+    if len(points) < 2:
+        return None
+    company_name = company_name or ticker
+    largest = max(p['assets'] for p in points)
+    divisor, unit = (1e12, 'Trillion KRW') if largest >= 1e12 else (1e8, '100M KRW')
+    fig, ax = plt.subplots(figsize=(12, 6))
+    x = np.arange(len(points))
+    width = 0.26
+    for offset, key, color, label in ((-width, 'assets', PRIMARY_COLORS[0], 'Total assets'),
+                                      (0, 'liabilities', PRIMARY_COLORS[3], 'Total liabilities'),
+                                      (width, 'equity', PRIMARY_COLORS[2], 'Total equity')):
+        values = [p[key] / divisor for p in points]
+        bars = ax.bar(x + offset, values, width, color=color, alpha=0.85, label=label)
+        for bar, value in zip(bars, values):
+            ax.annotate(f"{value:,.1f}", xy=(bar.get_x() + bar.get_width() / 2, value),
+                        xytext=(0, 3 if value >= 0 else -10), textcoords='offset points',
+                        ha='center', fontsize=8)
+    ax.axhline(0, color='black', alpha=0.3)
+    # Bars use the lower ~60% of the panel so the ratio line above never covers their labels.
+    low = min(0, min(p['equity'] for p in points) / divisor)
+    ax.set_ylim(low * 1.2, largest / divisor * 1.65)
+    ax.set_ylabel(unit, fontsize=11)
+    ax.set_xticks(x)
+    ax.set_xticklabels([p['date'] for p in points], fontsize=9)
+    ax.grid(axis='y', linestyle='--', alpha=0.7)
+    ax.set_title("Balance sheet totals by period end", fontsize=12, loc='left')
+    handles, labels = ax.get_legend_handles_labels()
+    # Debt ratio is meaningless when equity is zero or negative.
+    if all(p['equity'] > 0 for p in points):
+        ratio = [p['liabilities'] / p['equity'] * 100 for p in points]
+        ax2 = ax.twinx()
+        ax2.plot(x, ratio, color=PRIMARY_COLORS[4], marker='o', linewidth=2, label='Debt-to-equity (%)')
+        for xi, value in zip(x, ratio):
+            ax2.annotate(f"{value:,.0f}%", xy=(xi, value), xytext=(0, 6), textcoords='offset points',
+                         ha='center', fontsize=8, color=PRIMARY_COLORS[4])
+        top = max(ratio) * 1.25
+        ax2.set_ylim(-top * 2.2, top)  # Line sits in the top band, above the bars.
+        ax2.set_yticks([])  # Each point is labelled; a partial axis would mislead.
+        h2, l2 = ax2.get_legend_handles_labels()
+        handles, labels = handles + h2, labels + l2
+    ax.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, -0.08), ncol=4,
+              fontsize=9, frameon=False)
+    scope = 'consolidated' if series.get('scope') == 'consolidated' else 'separate'
+    footnote = (f"Source: DART {scope} statements of financial position (latest interim report and "
+                "prior annual report). Each period balances: assets = liabilities + equity.")
+    return _finish_figure(fig, f"{company_name} ({ticker}) - Balance Sheet Structure (DART)",
+                          save_path, footnote=footnote)
+
+
 def create_comprehensive_report(ticker, company_name=None, days=730, output_dir='charts'):
     """
     Generate comprehensive stock analysis report with multiple charts
