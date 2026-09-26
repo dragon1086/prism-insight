@@ -20,7 +20,7 @@ def _target():
 async def send_ops_alert(text: str) -> bool:
     chat_id, token = _target()
     if not chat_id or not token:
-        logger.warning('Ops alert not sent (OPS_ALERT_CHAT_ID/OPS_ALERT_BOT_TOKEN unset): %s', text[:300])
+        logger.warning('Ops alert not sent (maintenance chat not configured): %s', text[:300])
         return False
     try:
         import httpx
