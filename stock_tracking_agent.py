@@ -54,6 +54,7 @@ from prism_core.isolated_agent_runtime import (
     virtual_account_label, require_execution_runtime,
 )
 from prism_core.trading_scenario_contract import apply_buy_scenario_contract
+from prism_core.sector_trading_criteria import buy_sector_block, f2_rule, sector_f2_mode, sector_profile_stamp
 from prism_core.isolated_strategy_effects import effects_for, EffectsFailure, observe_or_emit  # noqa: E402 - existing agent path bootstrap
 
 # Core agent imports
@@ -1053,7 +1054,8 @@ class StockTrackingAgent:
         sector: str = None,
         trigger_type: str = "",
         trigger_mode: str = "",
-        db_lock: "asyncio.Lock" = None
+        db_lock: "asyncio.Lock" = None,
+        sector_profile: Dict[str, Any] = None,
     ) -> Dict[str, Any]:
         """
         Extract trading scenario from report
@@ -1065,6 +1067,7 @@ class StockTrackingAgent:
             sector: Stock sector (for journal context lookup)
             trigger_type: Trigger type that activated this analysis (e.g., 'Volume Surge Top Stocks')
             trigger_mode: Trigger mode ('morning' or 'afternoon')
+            sector_profile: Issuer profile from report generation (None = unknown, general)
 
         Returns:
             Dict: Trading scenario information
@@ -1220,6 +1223,15 @@ class StockTrackingAgent:
 
             from prism_core.report_research_context import market_context_for_buy
             prompt_message += market_context_for_buy(getattr(self, "_pipeline_market_context", None))
+            # Sector-specific F2 (financial issuers only); '' keeps every other prompt byte-identical.
+            sector_mode = sector_f2_mode()
+            sector_stamp = sector_profile_stamp(sector_profile)
+            prompt_message += buy_sector_block(sector_profile, self.language, sector_mode)
+            logger.info(
+                "[SECTOR_BUY][KR] ticker=%s kind=%s subtype=%s basis=%s mode=%s f2_rule=%s",
+                ticker or "?", sector_stamp["kind"], sector_stamp["subtype"], sector_stamp["basis"],
+                sector_mode, f2_rule(sector_profile, sector_mode),
+            )
             from prism_core.buy_report_depth_evidence import report_depth_evidence_active
             depth_on = report_depth_evidence_active(getattr(self.trading_agent, "instruction", ""))
             logger.info(f"[BUY_REPORT_DEPTH] enabled={str(depth_on).lower()} ticker={ticker or '?'}")
@@ -1293,6 +1305,9 @@ class StockTrackingAgent:
                 # final pre-buy gate validates the exact same as-of snapshot.
                 if trend_facts:
                     scenario_json["_deterministic_trend_facts"] = trend_facts
+                if isinstance(sector_profile, dict):
+                    scenario_json["_sector_profile"] = {
+                        **sector_stamp, "f2_rule": f2_rule(sector_profile, sector_mode)}
                 # Persist the experience-based score adjustment alongside the scenario.
                 # It rides inside the scenario JSON, which is stored in
                 # stock_holdings.scenario and copied to trading_history.scenario on sell —
@@ -1319,6 +1334,12 @@ class StockTrackingAgent:
     def _default_scenario(self, error: str = "trading_scenario_unavailable") -> Dict[str, Any]:
         """Return an explicitly marked incomplete trading scenario."""
         return default_scenario(error)
+
+    def _report_sector_profile(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """Sector profile handed over from report generation; None means general."""
+        meta = (getattr(self, "_report_meta", None) or {}).get(ticker)
+        profile = meta.get("sector_profile") if isinstance(meta, dict) else None
+        return profile if isinstance(profile, dict) else None
 
     async def _analyze_report_core(self, pdf_report_path: str) -> Dict[str, Any]:
         """Analyze a report once before per-account execution checks.
@@ -1365,7 +1386,8 @@ class StockTrackingAgent:
                 sector=None,
                 trigger_type=trigger_type,
                 trigger_mode=trigger_mode,
-                db_lock=db_lock
+                db_lock=db_lock,
+                sector_profile=self._report_sector_profile(ticker),
             )
 
             scenario = apply_buy_scenario_contract(
@@ -5188,7 +5210,7 @@ class StockTrackingAgent:
         except Exception as e:
             logger.error(f"Error in _send_to_translation_channels: {str(e)}")
 
-    async def run(self, pdf_report_paths: List[str], chat_id: str = None, language: str = "ko", telegram_config=None, trigger_results_file: str = None, sector_names: list = None, market_regime: str = None, market_context: dict | None = None) -> bool | None:
+    async def run(self, pdf_report_paths: List[str], chat_id: str = None, language: str = "ko", telegram_config=None, trigger_results_file: str = None, sector_names: list = None, market_regime: str = None, market_context: dict | None = None, report_meta: dict | None = None) -> bool | None:
         """
         Main execution function for stock tracking system
 
@@ -5198,6 +5220,7 @@ class StockTrackingAgent:
             language: Message language ("ko" or "en")
             telegram_config: TelegramConfig object for multi-language support
             trigger_results_file: Path to trigger results JSON file for tracking trigger types
+            report_meta: {ticker: {'sector_profile': ...}} from report generation (optional)
 
         Returns:
             bool: Execution success status
@@ -5209,6 +5232,7 @@ class StockTrackingAgent:
             self.telegram_config = telegram_config
             self._pipeline_market_regime = market_regime
             self._pipeline_market_context = market_context
+            self._report_meta = report_meta if isinstance(report_meta, dict) else {}
 
             # Load trigger type mapping from trigger_results file
             self.trigger_info_map = {}
