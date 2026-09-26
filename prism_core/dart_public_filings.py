@@ -456,8 +456,11 @@ def _family(html, row):
     if (current is None or current['submitted_date'] != row['submitted_date'].isoformat()
             or current['is_correction'] != row['is_correction']):
         _fail('FAMILY_INTEGRITY_CONFLICT')
-    if len(set(dates)) != len(dates):
-        _fail('FAMILY_SAME_DAY_UNRESOLVED')
+    # Same-day editions are ordered only when the official list order and the
+    # sequential receipt numbers agree (newest first); otherwise stay unresolved.
+    for newer, older in pairwise(members):
+        if newer['submitted_date'] == older['submitted_date'] and not newer['receipt_id'] > older['receipt_id']:
+            _fail('FAMILY_SAME_DAY_UNRESOLVED')
     return members
 
 
