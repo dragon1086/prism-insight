@@ -484,6 +484,8 @@ def test_fetch_key_expiry_without_keys_skips_network(monkeypatch):
 @pytest.mark.parametrize("raw, expected", [
     ("2026-12-27T14:02:37Z", datetime(2026, 12, 27, 14, 2, 37, tzinfo=timezone.utc)),
     ("", None),
+    # A key with no expiry reports the Unix epoch (observed on the swing demo key).
+    ("1970-01-01T00:00:00Z", None),
 ])
 def test_fetch_key_expiry_parses_get_only_response(monkeypatch, raw, expected):
     monkeypatch.setenv("BYBIT_DEMO_API_KEY", "k")
