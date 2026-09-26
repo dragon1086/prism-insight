@@ -14,8 +14,10 @@ from prism_core.dart_source_tree_routing import chapter, family, route_catalogs
 from prism_core.dart_specialist_roles import _role
 
 WRITERS = ('finance', 'business', 'risks')
+# Per writer call. A larger writer context is split at source-group boundaries
+# into sequential calls; one group is never divided.
 WRITER_MAX_BYTES = 220000
-TOTAL_MAX_BYTES = 540000
+TOTAL_MAX_BYTES = 720000
 _BUSINESS = {'general', 'segment', 'investments', 'related', 'transactions', 'capital'}
 _RISK = {'commitments', 'risk', 'restricted', 'provisions', 'subsequent'}
 ROLE_WRITERS = {
@@ -35,6 +37,37 @@ def _json(value):
 
 def _hash(value):
     return hashlib.sha256(_json(value).encode()).hexdigest()
+
+
+def split_writer_context(context_json, max_bytes=WRITER_MAX_BYTES):
+    """Split one writer context into ordered parts of whole source groups.
+
+    Every part repeats the shared header (notice, guides, role inventory).
+    Groups keep their order and are never divided, so a single group larger
+    than ``max_bytes`` stays oversized for the capacity check to reject.
+    """
+    context = json.loads(context_json)
+    if len(context_json.encode()) <= max_bytes or len(context['sources']) < 2:
+        return [context_json]
+    parts, current = [], []
+    for group in context['sources']:
+        candidate = _json({**context, 'sources': current + [group]})
+        if current and len(candidate.encode()) > max_bytes:
+            parts.append(_json({**context, 'sources': current}))
+            current = [group]
+        else:
+            current.append(group)
+    parts.append(_json({**context, 'sources': current}))
+    return parts
+
+
+def _capacity(contexts, writer_max_bytes, total_max_bytes):
+    sizes = {w: len(contexts.get(w, '').encode()) for w in WRITERS}
+    parts = {w: [len(p.encode()) for p in split_writer_context(contexts[w], writer_max_bytes)]
+             for w in WRITERS if contexts.get(w)}
+    ok = (all(size <= writer_max_bytes for sizes_ in parts.values() for size in sizes_)
+          and sum(sizes.values()) <= total_max_bytes)
+    return sizes, {w: v for w, v in parts.items() if len(v) > 1}, ok
 
 
 _READING_AID_GUIDE = (
@@ -111,9 +144,8 @@ def enrich_dart_chapter_inputs(packet, *, writer_max_bytes=WRITER_MAX_BYTES,
         catalog_digests[writer] = before
         context['reading_aid_guide'] = _READING_AID_GUIDE
         contexts[writer] = _json(context)
-    sizes = {writer: len(contexts.get(writer, '').encode()) for writer in WRITERS}
-    capacity_ok = max(sizes.values(), default=0) <= writer_max_bytes and sum(sizes.values()) <= total_max_bytes
-    result['receipt'].update(writer_bytes=sizes, total_bytes=sum(sizes.values()),
+    sizes, part_bytes, capacity_ok = _capacity(contexts, writer_max_bytes, total_max_bytes)
+    result['receipt'].update(writer_bytes=sizes, total_bytes=sum(sizes.values()), writer_part_bytes=part_bytes,
                              writer_max_bytes=writer_max_bytes, total_max_bytes=total_max_bytes,
                              capacity_ok=capacity_ok, reading_aid_version='wide16-explicit-header-v1',
                              reading_aid_catalog_sha256=catalog_digests)
@@ -125,6 +157,10 @@ def enrich_dart_chapter_inputs(packet, *, writer_max_bytes=WRITER_MAX_BYTES,
 def build_dart_chapter_inputs(sources, *, collection_gaps=(), writer_max_bytes=WRITER_MAX_BYTES,
                              total_max_bytes=TOTAL_MAX_BYTES):
     """Never truncate: capacity or unsupported selected source blocks all writers.
+
+    When a writer would need splitting or capacity fails, annual-supplement
+    disclosures that the latest filing restates are superseded (recorded in the
+    receipt); a still-oversized writer is split into sequential calls.
 
     One core owner per selected material unit; dependencies alone may duplicate.
     The final seven-role classifier records all eligible original roles. This
@@ -150,17 +186,31 @@ def build_dart_chapter_inputs(sources, *, collection_gaps=(), writer_max_bytes=W
                          (source.get('scope_context') or {}).get('child_title', '')}
         registry[sid] = {k: v for k, v in source.items() if k != 'html'}
     routed = route_catalogs(catalogs, metadata)
+    args = (catalogs, metadata, registry, routed, tuple(collection_gaps), writer_max_bytes, total_max_bytes)
+    packet = _assemble(*args, supersede_annual=False)
+    receipt = packet['receipt']
+    # Prefer dropping restated annual material over an extra split call.
+    over = receipt['capacity_ok'] is False or receipt.get('writer_part_bytes')
+    if over and not receipt['unsupported']:
+        superseded = _assemble(*args, supersede_annual=True)
+        if superseded['receipt']['superseded_annual_units']:
+            return superseded
+    return packet
+
+
+def _assemble(catalogs, metadata, registry, routed, collection_gaps, writer_max_bytes, total_max_bytes,
+              *, supersede_annual):
     core = {w: {} for w in WRITERS}
     topics = {w: set() for w in WRITERS}
     ledger = []
     role_inventory = {role: {'writer': writer, 'assigned_units': 0, 'eligible_units': 0,
                              'source_ids': set(), 'topics': set()} for role, writer in ROLE_WRITERS.items()}
+    decisions = []
     for row in routed['ledger']:
         sid, path = row['source_id'], row['path']
         index = {u['path']: u for u in catalogs[sid]['units']}
         unit = index[path]
-        owner = None
-        roles = []
+        owner, roles, topic = None, [], None
         if row['owners'] and 'heading_level' not in unit and unit['kind'] != 'container':
             title = chapter(unit, index) or metadata[sid]['verified_fragment_title']
             topic = family(title)
@@ -176,6 +226,21 @@ def build_dart_chapter_inputs(sources, *, collection_gaps=(), writer_max_bytes=W
                 preferred = 'business' if topic in _BUSINESS else 'finance'
             candidates = {ROLE_WRITERS[role] for role in roles}
             owner = preferred if preferred in candidates else next(w for w in WRITERS if w in candidates)
+        decisions.append((row, owner, roles, topic))
+    # Under capacity pressure only: an annual-supplement disclosure that the
+    # latest filing also delivers (to any writer) is superseded as a whole unit.
+    latest = {row['disclosure'] for row, owner, _, _ in decisions
+              if owner and row['disclosure'] and metadata[row['source_id']].get('role') == 'primary'}
+    superseded = []
+    for row, owner, roles, topic in decisions:
+        sid, path = row['source_id'], row['path']
+        reason = 'selected_material' if owner else 'context_only' if row['final_owners'] \
+            else 'outside_heading_disclosure_scope'
+        if (supersede_annual and owner and metadata[sid].get('role') == 'annual_supplement'
+                and row['disclosure'] in latest):
+            superseded.append([sid, path, owner, row['disclosure']])
+            owner, reason = None, 'superseded_by_latest_filing'
+        if owner:
             for role in roles:
                 item = role_inventory[role]
                 item['eligible_units'] += 1
@@ -185,9 +250,7 @@ def build_dart_chapter_inputs(sources, *, collection_gaps=(), writer_max_bytes=W
                     item['topics'].add(topic)
             core[owner].setdefault(sid, set()).add(path)
             topics[owner].add(topic)
-        ledger.append({**row, 'core_writer': owner, 'specialist_roles': roles,
-                       'reason': 'selected_material' if owner else 'context_only' if row['final_owners']
-                       else 'outside_heading_disclosure_scope'})
+        ledger.append({**row, 'core_writer': owner, 'specialist_roles': roles, 'reason': reason})
     role_inventory = {role: {**item, 'source_ids': sorted(item['source_ids']), 'topics': sorted(item['topics'])}
                       for role, item in role_inventory.items()}
     shared_inventory = {'roles': role_inventory, 'notice':
@@ -233,14 +296,16 @@ def build_dart_chapter_inputs(sources, *, collection_gaps=(), writer_max_bytes=W
             contexts[writer] = _json({'notice': _NOTICE, 'codec_guide': CODEC_GUIDE,
                                      'grid_guide': GRID_GUIDE, 'role_inventory': shared_inventory,
                                      'sources': groups})
-    sizes = {w: len(contexts.get(w, '').encode()) for w in WRITERS}
-    capacity_ok = max(sizes.values(), default=0) <= writer_max_bytes and sum(sizes.values()) <= total_max_bytes
+    sizes, part_bytes, capacity_ok = _capacity(contexts, writer_max_bytes, total_max_bytes)
+    if superseded:
+        collection_gaps += ('DART_ANNUAL_SUPPLEMENT_SUPERSEDED_FOR_CAPACITY',)
     receipt = {'version': 'dart-chapter-source-v1', 'source_count': len(catalogs),
                'catalog_units': sum(len(c['units']) for c in catalogs.values()), 'ledger': ledger,
                'selected_core_units': len(expected), 'core_union_sha256': _hash(sorted(expected)),
                'delivered_core_union_sha256': _hash(sorted(transmitted)),
                'core_conserved': expected == transmitted, 'unsupported': unsupported,
-               'writer_bytes': sizes, 'total_bytes': sum(sizes.values()),
+               'writer_bytes': sizes, 'total_bytes': sum(sizes.values()), 'writer_part_bytes': part_bytes,
+               'superseded_annual_units': superseded,
                'writer_max_bytes': writer_max_bytes, 'total_max_bytes': total_max_bytes,
                'capacity_ok': capacity_ok, 'collection_gaps': list(collection_gaps),
                'present_material_topics': {w: sorted(v) for w, v in topics.items()},

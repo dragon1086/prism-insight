@@ -26,6 +26,7 @@ from typing import Any, Callable
 from report_generator import (
     REPORT_FAILURE_MESSAGE,
     _is_cacheable_report,
+    _is_deliverable_report,
     generate_report_response_sync,
     generate_us_report_response_sync,
     get_cached_report,
@@ -131,7 +132,7 @@ def generate_report(
 
     logger.info("Performing new analysis: %s - %s", ticker, company_name)
     content = backend.generate(ticker, company_name)
-    if not _is_cacheable_report(content):
+    if not _is_deliverable_report(content):
         return ReportArtifact(status=FAILED, content=backend.failure_message)
 
     markdown_path = backend.save_markdown(ticker, company_name, content)

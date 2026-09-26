@@ -21,7 +21,9 @@ CHAPTER_INCOMPLETE = '<!-- DART_DEPTH_INCOMPLETE -->'
 # Presentation expands merged/header labels without collecting extra sources.
 # Both source-packet limits and these actual model-message limits are enforced.
 WRITER_MESSAGE_MAX_BYTES = 360000
-TOTAL_MESSAGE_MAX_BYTES = 960000
+TOTAL_MESSAGE_MAX_BYTES = 1200000
+# A continuation call also carries the previous draft (max_tokens=16000).
+DRAFT_RESERVE_BYTES = 64000
 ROLES = {
     'finance': ('실적·현금흐름·차입과 회계 판단',
                 ('실적의 질(영업 성과와 일회성·영업외 손익 구분), 현금흐름과 운전자본(매출채권·재고·충당금), '
@@ -154,6 +156,25 @@ async def _write(agent, message):
     return result.text, result.usage
 
 
+def _part_note(index, count, language):
+    if language == 'ko':
+        if index == 0:
+            return (f'이 소단원의 공시 원문은 분량 때문에 {count}개 묶음으로 나눠 순서대로 전달됩니다. '
+                    f'이번은 1/{count} 묶음입니다. 이 묶음으로 소단원 원고를 완성된 형태로 쓰세요. '
+                    '다음 묶음에서 이 원고를 보완합니다.\n\n')
+        return (f'이 소단원의 공시 원문 {index + 1}/{count} 묶음입니다. <previous_draft>는 앞 묶음 원문으로 쓴 '
+                '같은 소단원의 원고입니다. 원고의 사실·수치·출처 링크를 유지하면서 이번 묶음 원문에서 확인되는 '
+                '사실을 통합해, 같은 제목과 형식의 소단원 전체를 다시 쓰세요. 같은 항목이 여러 기간에 걸쳐 있으면 '
+                '가장 최근 기간을 현재 상태로 쓰고 이전 기간 수치에는 기간을 붙이세요. 원고를 이어 붙이지 말고 '
+                '하나의 소단원으로 정리하세요.\n\n')
+    if index == 0:
+        return (f'The filing source for this subsection arrives in {count} ordered parts. This is part 1/{count}. '
+                'Write a complete subsection from it; later parts will revise it.\n\n')
+    return (f'This is filing source part {index + 1}/{count}. <previous_draft> is this subsection written from the '
+            'earlier parts. Keep its facts, figures and source links, integrate facts from this part, and rewrite '
+            'the whole subsection once under the same heading and format (latest period as the current state).\n\n')
+
+
 def _source_urls(context):
     data = json.loads(context)
     urls = {item['source']['url'] for item in data['sources']}
@@ -184,7 +205,11 @@ def _checked_prose(text, source_urls):
 async def generate_dart_chapter(packet, *, company_name, company_code, reference_date,
                                 language='ko', shared_reference='', peer_context='', report_context='',
                                 concurrency=1):
-    """No retry, silent clipping, automatic extra call, or partial chapter success."""
+    """No retry, silent clipping, or partial chapter success.
+
+    A writer whose source was split upstream runs one sequential call per part,
+    each revising the previous draft; that is planned input, not a retry.
+    """
     if not isinstance(packet, dict) or packet.get('ready') is not True:
         return '', {'status': 'not_generated', 'reason': 'source_inputs_not_ready', 'calls': 0}
     contexts = packet.get('contexts')
@@ -193,31 +218,41 @@ async def generate_dart_chapter(packet, *, company_name, company_code, reference
     if not all(isinstance(value, str) and value.strip() for value in contexts.values()):
         raise ValueError('Empty DART writer source')
     source_urls = {role: _source_urls(context) for role, context in contexts.items()}
-    from prism_core.dart_chapter_sources import TOTAL_MAX_BYTES, WRITER_MAX_BYTES
-    sizes = [len(value.encode()) for value in contexts.values()]
+    from prism_core.dart_chapter_sources import TOTAL_MAX_BYTES, WRITER_MAX_BYTES, split_writer_context
     receipt = packet.get('receipt', {})
+    parts = {role: split_writer_context(context, WRITER_MAX_BYTES) for role, context in contexts.items()}
+    sizes = [len(part.encode()) for items in parts.values() for part in items]
     if (receipt.get('core_conserved') is not True or receipt.get('capacity_ok') is not True
-            or max(sizes) > WRITER_MAX_BYTES or sum(sizes) > TOTAL_MAX_BYTES):
+            or max(sizes) > WRITER_MAX_BYTES
+            or sum(len(value.encode()) for value in contexts.values()) > TOTAL_MAX_BYTES):
         raise ValueError('DART source conservation or capacity check failed')
     from prism_core.dart_writer_context import render_dart_writer_context
     messages, render_receipts, agents = {}, {}, {}
-    for role, context in contexts.items():
-        source_text, rendered = render_dart_writer_context(context)
-        if not rendered['cell_text_conserved'] or rendered['truncated']:
-            raise ValueError('DART reader presentation lost source content')
+    for role in contexts:
         agent = writer_agent(role, company_name, company_code, reference_date, language)
-        message = (shared_reference + '\n\n<filing_source_data>\n' + source_text
-                   + '\n</filing_source_data>')
         topics = receipt.get('present_material_topics', {}).get(role, [])
-        if topics:
-            message = ('원문에서 분류된 주제: ' + ', '.join(topics)
-                       + '. 분류는 사실 검증이 아니며 실제 원문과 조건을 확인해 설명하세요.\n\n' + message)
-        if role == 'business' and peer_context:
-            message += '\n\n<peer_comparison_data>\n' + peer_context + '\n</peer_comparison_data>'
-        messages[role], agents[role], render_receipts[role] = message, agent, rendered
+        role_messages, role_renders = [], []
+        for index, part in enumerate(parts[role]):
+            source_text, rendered = render_dart_writer_context(part)
+            if not rendered['cell_text_conserved'] or rendered['truncated']:
+                raise ValueError('DART reader presentation lost source content')
+            message = (shared_reference + '\n\n<filing_source_data>\n' + source_text
+                       + '\n</filing_source_data>')
+            if topics:
+                message = ('원문에서 분류된 주제: ' + ', '.join(topics)
+                           + '. 분류는 사실 검증이 아니며 실제 원문과 조건을 확인해 설명하세요.\n\n' + message)
+            if len(parts[role]) > 1:
+                message = _part_note(index, len(parts[role]), language) + message
+            if role == 'business' and peer_context:
+                message += '\n\n<peer_comparison_data>\n' + peer_context + '\n</peer_comparison_data>'
+            role_messages.append(message)
+            role_renders.append(rendered)
+        messages[role], agents[role] = role_messages, agent
+        render_receipts[role] = role_renders[0] if len(role_renders) == 1 else role_renders
 
     def over_capacity(candidate):
-        sizes = [len((agents[role].instruction + message).encode()) for role, message in candidate.items()]
+        sizes = [len((agents[role].instruction + message).encode()) + (DRAFT_RESERVE_BYTES if index else 0)
+                 for role, items in candidate.items() for index, message in enumerate(items)]
         return max(sizes) > WRITER_MESSAGE_MAX_BYTES or sum(sizes) > TOTAL_MESSAGE_MAX_BYTES
 
     # Earlier report sections are dedup context only, never filing evidence;
@@ -226,7 +261,7 @@ async def generate_dart_chapter(packet, *, company_name, company_code, reference
     if isinstance(report_context, str) and report_context.strip():
         covered = ('\n\n<already_covered_report_sections>\n' + report_context.strip()
                    + '\n</already_covered_report_sections>')
-        with_context = {role: message + covered for role, message in messages.items()}
+        with_context = {role: [message + covered for message in items] for role, items in messages.items()}
         if over_capacity(with_context):
             context_status = 'omitted_capacity'
         else:
@@ -241,16 +276,23 @@ async def generate_dart_chapter(packet, *, company_name, company_code, reference
 
     async def run(role):
         async with semaphore:
-            agent, message = agents[role], messages[role]
-            started = time.monotonic()
-            text, usage = await _write(agent, message)
-            text = _checked_prose(text, source_urls[role])
-            receipts[role] = {'input_bytes': len((agent.instruction + message).encode()),
-                              'model': DART_REPORT_MODEL, 'reasoning_effort': DART_REPORT_EFFORT,
-                              'source_presentation': render_receipts[role],
+            agent, text, calls = agents[role], '', []
+            # Parts are sequential: each later call revises the draft so far.
+            for index, message in enumerate(messages[role]):
+                if index:
+                    message += '\n\n<previous_draft>\n' + text + '\n</previous_draft>'
+                started = time.monotonic()
+                text, usage = await _write(agent, message)
+                text = _checked_prose(text, source_urls[role])
+                calls.append({'input_bytes': len((agent.instruction + message).encode()),
                               'output_chars': len(text), 'elapsed_seconds': round(time.monotonic() - started, 3),
                               'usage': {key: usage.get(key) for key in ('input_tokens', 'output_tokens', 'total_tokens')}
-                              if isinstance(usage, dict) else None}
+                              if isinstance(usage, dict) else None})
+            receipts[role] = {**calls[-1], 'model': DART_REPORT_MODEL, 'reasoning_effort': DART_REPORT_EFFORT,
+                              'source_presentation': render_receipts[role]}
+            if len(calls) > 1:
+                receipts[role].update(source_parts=len(calls), part_calls=calls,
+                                      elapsed_seconds=round(sum(c['elapsed_seconds'] for c in calls), 3))
             logger.info('DART chapter writer %s completed: %s', role, receipts[role])
             return role, text.strip()
 
@@ -265,7 +307,8 @@ async def generate_dart_chapter(packet, *, company_name, company_code, reference
         raise
     title = '## 5. DART 주요 재무·사업 위험 분석' if language == 'ko' else '## 5. In-depth filing analysis'
     chapter = CHAPTER_START + '\n\n' + title + '\n\n' + '\n\n'.join(results[role] for role in ROLES if role in results) + '\n\n' + CHAPTER_END
-    return chapter, {'status': 'generated_not_independently_verified', 'calls': len(receipts),
+    return chapter, {'status': 'generated_not_independently_verified',
+                     'calls': sum(r.get('source_parts', 1) for r in receipts.values()),
                      'input_identity': {'company_code': company_code, 'reference_date': reference_date,
                                         'peer_context_sha256': hashlib.sha256(peer_context.encode()).hexdigest()},
                      'chapter_sha256': hashlib.sha256(chapter.encode()).hexdigest(),

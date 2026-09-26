@@ -63,6 +63,15 @@ def _report_parallel_limit(
     except ValueError:
         return section_count
 
+async def _alert_dart_depth_missing(company_code, company_name, reference_date, stage, detail):
+    from prism_core.ops_alert import send_ops_alert
+    await send_ops_alert(
+        f'[PRISM] DART 심층분석 누락 ({stage})\n'
+        f'{company_name}({company_code}) 기준일 {reference_date}\n'
+        f'보고서는 5장(DART) 없이 발행됩니다.\n{detail}\n'
+        f'로그: logs/subprocess/report_{company_code}_*.log')
+
+
 async def analyze_stock(company_code: str = "000660", company_name: str = "SK하이닉스", reference_date: str = None, language: str = "ko", macro_context: dict = None, *, require_dart_depth=False):
     """
     Generate comprehensive stock analysis report
@@ -136,7 +145,12 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             logger.warning('DART depth unavailable: sources=%s capacity_ok=%s failure_type=%s gaps=%s',
                            receipt.get('source_count'), receipt.get('capacity_ok'),
                            receipt.get('failure_type'), diagnostics.get('gaps', []))
-            raise ValueError('공시 심층분석 입력을 확보하지 못해 완성본 생성을 중단했습니다.')
+            # The rest of the report still ships; maintainers are told why the chapter is missing.
+            await _alert_dart_depth_missing(company_code, company_name, reference_date, 'inputs_not_ready',
+                                            f"sources={receipt.get('source_count')} "
+                                            f"capacity_ok={receipt.get('capacity_ok')} "
+                                            f"writer_bytes={receipt.get('writer_bytes')} "
+                                            f"gaps={sorted(set(diagnostics.get('gaps', [])))[:6]}")
         # WiseFn-selected competitor table, collected before the Industry Analyst
         # so it interprets real peer numbers. Optional data, never a trading gate.
         try:
@@ -274,10 +288,12 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                 reference_date=reference_date, language=language, shared_reference=shared_reference,
                 peer_context=peer_context, report_context=covered_sections,
                 concurrency=min(3, _report_parallel_limit(3)) if parallel_enabled else 1)
-        except Exception:
+        except Exception as e:
+            logger.warning('DART depth generation incomplete; preserving existing basic analysis without a new BUY gate',
+                           exc_info=require_dart_depth)
             if require_dart_depth:
-                raise
-            logger.warning('DART depth generation incomplete; preserving existing basic analysis without a new BUY gate')
+                await _alert_dart_depth_missing(company_code, company_name, reference_date, 'generation_failed',
+                                                f'{type(e).__name__}: {str(e)[:300]}')
             dart_chapter, dart_receipt = '', {'status': 'not_generated', 'calls': None}
         logger.info('DART chapter status=%s calls=%s', dart_receipt['status'], dart_receipt['calls'])
         if dart_chapter:

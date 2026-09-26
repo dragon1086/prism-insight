@@ -99,13 +99,21 @@ def _is_current_kst_day(path: Path) -> bool:
 
 
 def _is_cacheable_report(content: str | None) -> bool:
-    """Reject generated artifacts whose analysis mostly failed."""
+    """Reject generated artifacts whose analysis mostly failed or lacks DART depth."""
+
+    return (_is_deliverable_report(content)
+            and '<!-- dart_depth_incomplete -->' not in content.casefold())
+
+
+def _is_deliverable_report(content: str | None) -> bool:
+    """A report users may receive; a missing DART chapter is disclosed, not fatal.
+
+    Such reports are still never reused from cache, so the next request retries depth.
+    """
 
     if not isinstance(content, str) or not content.strip():
         return False
     normalized = content.casefold()
-    if '<!-- dart_depth_incomplete -->' in normalized:
-        return False
     if any(marker in normalized for marker in _REPORT_ERROR_MARKERS):
         return False
     # Section failures may contain exception messages, paths or credentials.

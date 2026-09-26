@@ -76,26 +76,6 @@ def test_public_flow_preserves_partial_coverage_and_missing_ratio():
     assert 'MISSING' not in public
 
 
-def test_required_depth_stops_before_models_when_sources_are_unready(monkeypatch):
-    import cores.data_prefetch as prefetch
-    import prism_core.kr_official_report_inputs as official
-    import prism_core.report_research_prefetch as research
-    from cores import analysis
-
-    monkeypatch.setattr(prefetch, 'prefetch_kr_analysis_data', lambda *args: {})
-    async def unavailable(*args):
-        return {'dart_chapter_inputs': {'ready': False}}
-    async def no_research(*args):
-        return None
-    def forbidden(*args, **kwargs):
-        raise AssertionError('Analysis models prepared before required source validation')
-    monkeypatch.setattr(official, 'collect_kr_official_report_inputs', unavailable)
-    monkeypatch.setattr(research, 'prefetch_report_research', no_research)
-    monkeypatch.setattr(analysis, 'get_agent_directory', forbidden)
-    with pytest.raises(ValueError, match='완성본'):
-        asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923', require_dart_depth=True))
-
-
 @pytest.mark.parametrize('summary_fails', [False, True])
 def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(monkeypatch, tmp_path, summary_fails):
     import cores.data_prefetch as prefetch
@@ -195,15 +175,26 @@ def test_deep_chapter_and_peer_facts_survive_real_assembly_and_both_syntheses(mo
     assert dart_deep_analysis.CHAPTER_START in report and dart_deep_analysis.CHAPTER_END in report
 
 
+@pytest.mark.parametrize('required', [False, True])
 @pytest.mark.parametrize('parallel', [False, True])
 @pytest.mark.parametrize('dart_fails', [False, True])
 def test_real_kr_assembly_reaches_synthesis_and_publication_without_extra_models(
-        monkeypatch, tmp_path, parallel, dart_fails):
+        monkeypatch, tmp_path, parallel, dart_fails, required):
     import cores.data_prefetch as prefetch
     import prism_core.kr_official_report_inputs as official
+    import prism_core.ops_alert as ops_alert
     import prism_core.report_research_prefetch as research
-    from cores import analysis
+    import report_generator
+    from cores import analysis, dart_deep_analysis
     from cores.llm import capabilities
+
+    alerts = []
+
+    async def alert(text):
+        alerts.append(text)
+        return True
+
+    monkeypatch.setattr(ops_alert, 'send_ops_alert', alert)
 
     packet = inputs()
     dart = packet.pop('official_dart')
@@ -258,7 +249,15 @@ def test_real_kr_assembly_reaches_synthesis_and_publication_without_extra_models
     monkeypatch.setattr(analysis, 'generate_market_report', base)
     monkeypatch.setattr(analysis, 'generate_investment_strategy', strategy)
     monkeypatch.setattr(analysis, 'generate_summary', summary)
-    report = asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923'))
+    report = asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923', require_dart_depth=required))
+    # Unready DART depth never blocks the report; the bot path alerts maintainers.
+    assert dart_deep_analysis.CHAPTER_INCOMPLETE in report
+    assert report_generator._is_deliverable_report(report)
+    assert not report_generator._is_cacheable_report(report)
+    assert len(alerts) == int(required)
+    if required:
+        assert 'inputs_not_ready' in alerts[0] and 'SK텔레콤(017670)' in alerts[0]
+        assert 'private transport error' not in alerts[0]
     assert len(calls) == 8 and len(set(calls)) == 8
     assert collected == [('017670', 'SK텔레콤', '20260923')]
     assert '12345.67원' in report and '3000.00포인트' in report
@@ -277,3 +276,64 @@ def test_filing_excerpts_stay_with_the_dart_chapter_when_it_can_be_written():
     # Basic reports without a chapter keep the section excerpts.
     packet['official_dart']['dart_chapter_inputs'] = {'ready': False}
     assert '123456천원' in apply_kr_report_context(agent, 'company_status', packet).instruction
+
+
+def test_required_depth_generation_failure_ships_basic_report_and_alerts(monkeypatch, tmp_path):
+    import cores.data_prefetch as prefetch
+    import prism_core.kr_official_report_inputs as official
+    import prism_core.ops_alert as ops_alert
+    import prism_core.report_research_prefetch as research
+    import report_generator
+    from cores import analysis, dart_deep_analysis
+    from cores.llm import capabilities
+
+    packet = inputs()
+    dart = packet.pop('official_dart')
+    dart['dart_chapter_inputs'] = {'ready': True, 'contexts': {}, 'receipt': {}}
+    monkeypatch.setattr(prefetch, 'prefetch_kr_analysis_data', lambda *a: copy.deepcopy(packet))
+
+    async def collect(*args):
+        return dart
+
+    async def no_research(*args):
+        return None
+
+    async def writer_fails(*args, **kwargs):
+        raise RuntimeError('DART writer boom')
+
+    alerts = []
+
+    async def alert(text):
+        alerts.append(text)
+        return True
+
+    async def section(agent, section, *args):
+        return f'### {section}\n관측 수치를 분석했습니다.'
+
+    async def strategy(*args):
+        return '기존 위험 한도를 유지하는 전략'
+
+    async def summary(*args, **kwargs):
+        return '## 핵심 요약\n기본 분석입니다.'
+
+    monkeypatch.setattr(official, 'collect_kr_official_report_inputs', collect)
+    monkeypatch.setattr(research, 'prefetch_report_research', no_research)
+    monkeypatch.setattr(dart_deep_analysis, 'generate_dart_chapter', writer_fails)
+    monkeypatch.setattr(ops_alert, 'send_ops_alert', alert)
+    monkeypatch.setattr(analysis, 'get_chart_as_base64_html', lambda *a, **k: '')
+    monkeypatch.setattr(capabilities, 'vision_available', lambda: False)
+    monkeypatch.setattr(capabilities, 'vision_buy_quality_active', lambda: False)
+    monkeypatch.setattr(analysis, 'generate_report', section)
+    monkeypatch.setattr(analysis, 'generate_market_report', section)
+    monkeypatch.setattr(analysis, 'generate_investment_strategy', strategy)
+    monkeypatch.setattr(analysis, 'generate_summary', summary)
+    monkeypatch.setenv('PRISM_PARALLEL_REPORT', 'false')
+    work = tmp_path / 'work'
+    work.mkdir()
+    monkeypatch.chdir(work)
+    analysis._market_analysis_cache.clear()
+    report = asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923', require_dart_depth=True))
+    assert dart_deep_analysis.CHAPTER_INCOMPLETE in report and dart_deep_analysis.CHAPTER_START not in report
+    assert report_generator._is_deliverable_report(report) and not report_generator._is_cacheable_report(report)
+    assert 'DART writer boom' not in report
+    assert len(alerts) == 1 and 'generation_failed' in alerts[0] and 'DART writer boom' in alerts[0]
