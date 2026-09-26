@@ -48,7 +48,7 @@ from core.swing import (
 from engine.config import SWING_ENABLED, SWING_INITIAL_EQUITY, SWING_MAX_LEVERAGE
 from live import tracking
 from live.broker_auth import auth_failure
-from live.demo import _f, _order_id, _pstr, _qstr, _result_list
+from live.demo import _f, _leverage_not_modified, _order_id, _pstr, _qstr, _result_list
 from live.exchange_snapshot import read_complete
 from live.native_stop import native_stop_params
 from live.position_snapshot import (
@@ -187,6 +187,8 @@ class ExchangeBackend:
                 if auth_failure(exc):
                     self._auth_failure = last_exc = auth_failure(exc)
                     break
+                if _leverage_not_modified(fn_name, exc):
+                    return {"retCode": 110043, "retMsg": "leverage not modified"}
                 last_exc = str(exc)
                 if (type(exc).__module__ == "pybit.exceptions"
                         and type(exc).__name__ == "InvalidRequestError"

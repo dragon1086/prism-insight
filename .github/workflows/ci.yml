@@ -233,6 +233,7 @@ jobs:
             prism-btc/tests/test_runner_recovery.py \
             prism-btc/tests/test_broker_recovery.py \
             prism-btc/tests/test_broker_auth.py \
+            prism-btc/tests/test_leverage_not_modified.py \
             prism-btc/tests/test_closed_entry_recovery.py \
             prism-btc/tests/test_order_retirement.py \
             prism-btc/tests/test_entry_reservations.py \

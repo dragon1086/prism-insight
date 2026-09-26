@@ -374,6 +374,12 @@ Telegram 점검 예약 ID: `342BFB31` (변경/중복 여부는 실제 예약 목
 
 ## 7. 변경 기록
 
+- 2026-09-27 (M3 운영성): 인증 만료 복구 후속. `set_leverage` Bybit `110043`을 demo/swing
+  모두 멱등 성공으로 처리해 가짜 에러 폭주 경보를 없애고, `live.healthcheck --daily`에 GET 전용
+  API 키 만료 사전 경고(14일 warn/3일 alert)를 추가했습니다. 무포지션 장기 공백 뒤 메인 demo의
+  과거 봉 재생 차단은 매매 변경이라 별도 작업으로 남깁니다.
+  [사고 기록](BTC_AUTH_AND_US_DELIVERY_INCIDENT_20260916_ko.md)
+
 - 2026-09-06: TP1 GTC·exact 체결 원장·잔여 quota·감축/flat 복구를 추가하고
   30개 오프라인 실행 진단 테스트를 고정했습니다. 기존 목표가·비중 반올림·
   core/backtest/shadow/swing 전략과 위험 예산은 유지했습니다. #662→#663 순서의
