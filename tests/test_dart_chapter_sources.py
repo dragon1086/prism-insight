@@ -184,3 +184,69 @@ def test_wide_td_only_labels_are_not_promoted_to_verified_headers():
     aids = json.loads(p['contexts']['risks'])['sources'][0]['reading_aids']
     assert aids['wide_cells'] == []
     assert aids['excluded']['ambiguous_tables'] == [[0, 'NO_EXPLICIT_HEADER_BAND']]
+
+
+def _label(text):
+    return f'<table><tr><td>{text}</td></tr><tr><td>(단위: 원)</td></tr></table>'
+
+
+def _filing_source(sid, role, marker):
+    body = ('<p>20. 우발부채와 약정</p>' + _label('법적소송우발부채에 대한 공시')
+            + '<table><tr><th>원고</th><th>소송가액</th></tr>'
+            + ''.join(f'<tr><td>{marker}{i}</td><td>{i}00</td></tr>' for i in range(40)) + '</table>'
+            + '<p>21. 특수관계자</p>' + _label('특수관계자거래에 대한 공시')
+            + f'<p>관계사 매출 100억원 {marker}.</p>')
+    annual = role == 'annual_supplement'
+    return {'source_id': sid, 'html': body, 'sha256': hashlib.sha256(body.encode()).hexdigest(),
+            'url': 'https://dart.fss.or.kr/report/viewer.do', 'scope_context': None,
+            'filing': {'role': role, 'section': 'financial_notes', 'scope': 'consolidated',
+                       'period_start': '2025-01-01' if annual else '2026-01-01',
+                       'period_end': '2025-12-31' if annual else '2026-06-30'}}
+
+
+def test_restated_annual_disclosures_are_superseded_only_under_capacity_pressure():
+    sources = [_filing_source('p', 'primary', 'LATEST'), _filing_source('a', 'annual_supplement', 'ANNUAL')]
+    roomy = build_dart_chapter_inputs(sources)
+    assert roomy['ready'] and roomy['receipt']['superseded_annual_units'] == []
+    assert 'ANNUAL' in roomy['contexts']['risks']
+    limit = len(roomy['contexts']['risks'].encode()) - 1
+    tight = build_dart_chapter_inputs(sources, writer_max_bytes=limit)
+    receipt = tight['receipt']
+    assert tight['ready'] and receipt['core_conserved']
+    # Whole annual units the latest filing restates are dropped and recorded, never clipped.
+    assert {row[3] for row in receipt['superseded_annual_units']} == {
+        '법적소송우발부채에 대한 공시', '특수관계자거래에 대한 공시'}
+    assert all(row[0] == 'a' for row in receipt['superseded_annual_units'])
+    assert 'DART_ANNUAL_SUPPLEMENT_SUPERSEDED_FOR_CAPACITY' in receipt['collection_gaps']
+    assert not any('ANNUAL' in context for context in tight['contexts'].values())
+    assert 'LATEST' in tight['contexts']['risks']
+    assert {row['reason'] for row in receipt['ledger'] if row['source_id'] == 'a' and row['disclosure']} == {
+        'superseded_by_latest_filing'}
+
+
+def test_oversized_writer_splits_into_whole_ordered_source_groups():
+    from prism_core.dart_chapter_sources import split_writer_context
+    groups = [{'source': {'source_id': f's{i}'}, 'catalog': 'X' * 900} for i in range(5)]
+    context = json.dumps({'notice': 'N', 'sources': groups}, ensure_ascii=False)
+    assert split_writer_context(context, len(context.encode())) == [context]
+    parts = split_writer_context(context, 2200)
+    decoded = [json.loads(part) for part in parts]
+    assert len(parts) > 1 and all(len(part.encode()) <= 2200 for part in parts)
+    assert all(part['notice'] == 'N' for part in decoded)
+    assert [g for part in decoded for g in part['sources']] == groups
+    # A single group larger than the limit is left whole for the capacity gate to reject.
+    assert all(len(p.encode()) > 500 for p in split_writer_context(context, 500))
+
+
+def test_split_writer_capacity_is_ready_and_single_oversized_group_is_not():
+    sources = [_filing_source('p', 'primary', 'LATEST'), _filing_source('q', 'primary', 'OTHER')]
+    whole = build_dart_chapter_inputs(sources)
+    risks = json.loads(whole['contexts']['risks'])
+    largest = max(len(json.dumps({**risks, 'sources': [g]}, ensure_ascii=False, sort_keys=True,
+                                 separators=(',', ':')).encode()) for g in risks['sources'])
+    split = build_dart_chapter_inputs(sources, writer_max_bytes=largest + 10)
+    assert split['ready'] and split['receipt']['capacity_ok']
+    assert len(split['receipt']['writer_part_bytes']['risks']) == 2
+    assert split['contexts']['risks'] == whole['contexts']['risks']
+    too_small = build_dart_chapter_inputs(sources, writer_max_bytes=largest - 10)
+    assert not too_small['ready'] and not too_small['contexts']

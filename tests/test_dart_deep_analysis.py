@@ -205,3 +205,34 @@ def test_writers_judge_burdens_net_of_offsetting_resources():
         assert '순효과 판단용 단순 계산 외에는' in ko
         en = writer_agent(role, 'Co', '000000', '20260926', 'en').instruction
         assert 'net of offsetting resources' in en
+
+
+def test_split_writer_revises_one_subsection_sequentially(monkeypatch):
+    from prism_core import dart_chapter_sources
+    base = packet()
+    risks = json.loads(base['contexts']['risks'])
+    second = json.loads(json.dumps(risks['sources'][0]))
+    second['source']['source_id'] = 'fixture-risks-annual'
+    second['source']['filing']['role'] = 'annual_supplement'
+    base['contexts']['risks'] = json.dumps({'sources': risks['sources'] + [second]})
+    limit = max(len(json.dumps({'sources': [g]}).encode()) for g in risks['sources'] + [second]) + 40
+    monkeypatch.setattr(dart_chapter_sources, 'WRITER_MAX_BYTES', limit)
+    calls = []
+
+    async def write(agent, message):
+        calls.append((agent.name, message))
+        n = sum(1 for name, _ in calls if name == agent.name)
+        return f'### {agent.name} DRAFT{n}\n\n' + ('금액과 조건을 설명합니다. ' * 60) + '\n\n출처: ' + SOURCE_URL, None
+
+    monkeypatch.setattr(depth, '_write', write)
+    text, receipt = asyncio.run(depth.generate_dart_chapter(
+        base, company_name='예시', company_code='123456', reference_date='20260924'))
+    risk_calls = [m for name, m in calls if name == 'dart_depth_risks']
+    assert len(risk_calls) == 2 and receipt['calls'] == 4
+    assert '1/2 묶음' in risk_calls[0] and '<previous_draft>' not in risk_calls[0]
+    assert '2/2 묶음' in risk_calls[1] and '<previous_draft>\n### dart_depth_risks DRAFT1' in risk_calls[1]
+    assert 'fixture-risks-annual' in risk_calls[1] and 'fixture-risks-annual' not in risk_calls[0]
+    # Only the revised final draft reaches the chapter, once.
+    assert text.count('### dart_depth_risks') == 1 and '### dart_depth_risks DRAFT2' in text
+    assert receipt['writers']['risks']['source_parts'] == 2
+    assert len(receipt['writers']['risks']['part_calls']) == 2
