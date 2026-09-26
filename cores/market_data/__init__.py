@@ -149,12 +149,12 @@ def get_market_trading_volume_by_date(
     now = _now_kst()
     today = now.strftime("%Y%m%d")
     wants_today = start_date <= today <= end_date
-    daily_pending = (
-        wants_today
-        and now.weekday() < 5
-        and now.time() < time(15, 40)
+    # KIS refuses an as-of of today before 15:40 on every calendar day
+    # ("TIME LIMIT 00:00 ~ 15:40"), weekends and holidays included.
+    daily_pending = wants_today and now.time() < time(15, 40)
+    estimate_window = (
+        daily_pending and now.weekday() < 5 and time(9, 30) <= now.time()
     )
-    estimate_window = daily_pending and time(9, 30) <= now.time()
 
     if not daily_pending:
         return _empty_on_exhaustion("investor_flows", ticker, start_date, end_date)

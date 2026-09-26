@@ -35,6 +35,8 @@ from cores.stock_chart import (
     create_trading_volume_chart,
     create_market_cap_chart,
     create_fundamentals_chart,
+    create_annual_earnings_chart,
+    create_annual_fundamentals_chart,
     get_chart_as_base64_html
 )
 from cores.utils import clean_markdown
@@ -359,6 +361,17 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         charts_dir = os.path.join("../charts", f"{company_code}_{reference_date}")
         os.makedirs(charts_dir, exist_ok=True)
 
+        # KIS has no market-cap/valuation history (today's snapshot only), so the
+        # daily cap/fundamental charts are omitted; fall back to WiseReport's
+        # reported fiscal-year figures instead of leaving the section empty.
+        financial_summary = None
+        try:
+            from prism_core.kr_financial_summary import collect_wisereport_financial_summary
+            financial_summary = await collect_wisereport_financial_summary(company_code, reference_date)
+        except Exception as e:  # noqa: BLE001 - optional chart data
+            logger.warning(f"Annual financial summary unavailable: {type(e).__name__}")
+        market_cap_chart_is_earnings = False
+
         try:
             # Generate chart images
             price_chart_html = get_chart_as_base64_html(
@@ -380,6 +393,19 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                 company_code, company_name, create_fundamentals_chart, 'Fundamental Indicators', width=900, dpi=80, image_format='jpg', compress=True,
                 days=730
             )
+
+            if market_cap_chart_html is None and financial_summary is not None:
+                market_cap_chart_html = get_chart_as_base64_html(
+                    company_code, company_name, create_annual_earnings_chart, 'Annual Earnings Trend', width=900, dpi=80, image_format='jpg', compress=True,
+                    financial_summary=financial_summary
+                )
+                market_cap_chart_is_earnings = market_cap_chart_html is not None
+
+            if fundamentals_chart_html is None and financial_summary is not None:
+                fundamentals_chart_html = get_chart_as_base64_html(
+                    company_code, company_name, create_annual_fundamentals_chart, 'Fundamental Indicators', width=900, dpi=80, image_format='jpg', compress=True,
+                    financial_summary=financial_summary
+                )
         except Exception as e:
             logger.error(f"Error occurred while generating charts: {str(e)}")
             price_chart_html = None
@@ -559,7 +585,10 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                     chart_title = "### 시가총액 및 펀더멘털 차트\n\n" if language == "ko" else "### Market Cap and Fundamental Charts\n\n"
                     final_report += chart_title
                     if market_cap_chart_html:
-                        chart_subtitle = "#### 시가총액 추이\n\n" if language == "ko" else "#### Market Cap Trend\n\n"
+                        if market_cap_chart_is_earnings:
+                            chart_subtitle = "#### 연간 실적 추이\n\n" if language == "ko" else "#### Annual Earnings Trend\n\n"
+                        else:
+                            chart_subtitle = "#### 시가총액 추이\n\n" if language == "ko" else "#### Market Cap Trend\n\n"
                         final_report += chart_subtitle + market_cap_chart_html + "\n\n"
                     if fundamentals_chart_html:
                         chart_subtitle = "#### 펀더멘털 지표 분석\n\n" if language == "ko" else "#### Fundamental Indicator Analysis\n\n"

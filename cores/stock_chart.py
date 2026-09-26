@@ -1139,8 +1139,10 @@ def create_trading_volume_chart(ticker, company_name=None, days=30, save_path=No
     df_volume = get_market_trading_volume_by_date(start_date, end_date, ticker)
 
     if df_volume is None or len(df_volume) == 0:
-        logger.info(f"No trading volume data available for {ticker}.")
-        return None
+        # The investor breakdown can be missing while prices are not (provider
+        # refusal, new listing). Total volume is still a truthful chart.
+        logger.info(f"No investor-type trading data for {ticker}; charting total daily volume.")
+        return _create_total_volume_chart(ticker, company_name, start_date, end_date, save_path)
 
     df_daily = df_volume
     estimate_note = getattr(df_daily, "attrs", {}).get("estimate_note")
@@ -1362,6 +1364,176 @@ def create_trading_volume_chart(ticker, company_name=None, days=30, save_path=No
         return save_path
     else:
         return fig
+
+
+def _finish_figure(fig, title, save_path, footnote=None):
+    """Shared suptitle / watermark / save handling for the charts below."""
+    title_kwargs = {"fontproperties": KOREAN_FONT_PROP} if KOREAN_FONT_PROP else {}
+    fig.suptitle(title, fontsize=16, fontweight='bold', y=0.98, **title_kwargs)
+    if footnote:
+        fig.text(0.01, 0.01, footnote, ha='left', va='bottom', color='#666666', fontsize=8, **title_kwargs)
+    fig.text(0.99, 0.01, "AI Stock Analysis", ha='right', va='bottom', color='#cccccc', fontsize=8)
+    fig.tight_layout(rect=(0, 0.03, 1, 0.95))
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        return save_path
+    return fig
+
+
+def _create_total_volume_chart(ticker, company_name, start_date, end_date, save_path=None):
+    """Daily total volume from the same KIS OHLCV the price chart uses."""
+    df = get_market_ohlcv_by_date(start_date, end_date, ticker)
+    if df is None or len(df) == 0 or 'Volume' not in df.columns:
+        logger.info(f"No trading volume data available for {ticker}.")
+        return None
+    df = df.sort_index()
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df.index = pd.to_datetime(df.index)
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    up = df['Close'].diff().fillna(0) >= 0 if 'Close' in df.columns else pd.Series(True, index=df.index)
+    ax.bar(df.index, df['Volume'], color=np.where(up, PRIMARY_COLORS[3], PRIMARY_COLORS[0]),
+           alpha=0.75, width=0.8)
+    if len(df) >= 5:
+        ax.plot(df.index, df['Volume'].rolling(5).mean(), color=PRIMARY_COLORS[1],
+                linewidth=2, label='5-day average')
+        ax.legend(loc='upper left')
+    ax.set_title("Daily Trading Volume (investor-type breakdown unavailable)", fontsize=12, loc='left')
+    ax.set_ylabel('Shares', fontsize=11)
+    ax.yaxis.set_major_formatter(select_number_formatter(df['Volume'].max()))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+    ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
+    plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+    ax.grid(axis='y', linestyle='--', alpha=0.7)
+    return _finish_figure(
+        fig, f"{company_name} ({ticker}) - Trading Volume", save_path,
+        footnote="Total daily volume (red: close up, blue: close down). Net buying by investor type was unavailable for this period.")
+
+
+def _annual_axis_labels(frame):
+    return [f"{period}(E)" if est else period for period, est in zip(frame.index, frame['estimate'])]
+
+
+def _plot_annual_series(ax, frame, column, color, fmt):
+    """Reported years solid, consensus years dashed with hollow markers."""
+    x = np.arange(len(frame))
+    values = frame[column].astype(float)
+    actual = ~frame['estimate'].to_numpy()
+    ax.plot(x[actual], values[actual], color=color, linewidth=2.5, marker='o', label='Reported', zorder=3)
+    last_actual = np.flatnonzero(actual)
+    if (~actual).any():
+        tail = np.r_[last_actual[-1:], np.flatnonzero(~actual)] if len(last_actual) else np.flatnonzero(~actual)
+        # Dashed bridge from the last reported year; hollow markers on estimates only.
+        ax.plot(x[tail], values.iloc[tail], color=color, linewidth=1.8, linestyle='--', zorder=1)
+        ax.plot(x[~actual], values[~actual], color=color, linestyle='none', marker='o',
+                markerfacecolor='white', label='Consensus (E)', zorder=2)
+    for xi, value in zip(x, values):
+        if pd.notna(value):
+            ax.annotate(fmt.format(value), xy=(xi, value), xytext=(0, 6), textcoords='offset points',
+                        ha='center', va='bottom', fontsize=8)
+    ax.set_xticks(x)
+    ax.set_xticklabels(_annual_axis_labels(frame), rotation=0, fontsize=9)
+    ax.grid(linestyle='--', alpha=0.7)
+
+
+def _usable_annual(financial_summary, columns):
+    if financial_summary is None or len(financial_summary) == 0 or 'estimate' not in financial_summary:
+        return None
+    present = [c for c in columns if c in financial_summary.columns]
+    if not present:
+        return None
+    # Drop fiscal years with nothing to plot (e.g. empty consensus columns).
+    frame = financial_summary[financial_summary[present].notna().any(axis=1)]
+    if frame[~frame['estimate']][present].notna().any(axis=1).sum() < 2:
+        return None
+    return frame
+
+
+def _annual_footnote(frame):
+    return (f"Source: {frame.attrs.get('source', 'WiseReport')} ({frame.attrs.get('basis', 'basis unknown')}). "
+            "Reported fiscal years; (E) = analyst consensus. Not a daily series.")
+
+
+def create_annual_fundamentals_chart(ticker, company_name=None, financial_summary=None, save_path=None):
+    """PER / PBR / ROE by fiscal year from the WiseReport annual summary.
+
+    Used when no daily valuation history exists (KIS publishes today's
+    snapshot only). Each point is a published fiscal-year value.
+    """
+    frame = _usable_annual(financial_summary, ['per', 'pbr', 'roe'])
+    if frame is None:
+        logger.info(f"No annual fundamental data available for {ticker}.")
+        return None
+    company_name = company_name or ticker
+    fig, axes = plt.subplots(3, 1, figsize=(12, 12), sharex=True)
+    panels = [('per', "Price-to-Earnings Ratio (PER, fiscal year)", 'PER', "{:.1f}"),
+              ('pbr', "Price-to-Book Ratio (PBR, fiscal year)", 'PBR', "{:.2f}"),
+              ('roe', "Return on Equity (ROE %, fiscal year)", 'ROE (%)', "{:.1f}")]
+    for i, (column, title, ylabel, fmt) in enumerate(panels):
+        ax = axes[i]
+        if column in frame.columns and frame[column].notna().any():
+            _plot_annual_series(ax, frame, column, PRIMARY_COLORS[i], fmt)
+            if column == 'roe':
+                ax.axhline(0, color='black', alpha=0.3)
+        else:
+            ax.text(0.5, 0.5, "Not published", transform=ax.transAxes, ha='center', va='center', color='#999999')
+            ax.set_xticks(np.arange(len(frame)))
+            ax.set_xticklabels(_annual_axis_labels(frame), fontsize=9)
+        ax.set_title(title, fontsize=12, loc='left')
+        ax.set_ylabel(ylabel, fontsize=11)
+    legend_ax = next((ax for ax in axes if ax.get_legend_handles_labels()[0]), None)
+    if legend_ax is not None:
+        legend_ax.legend(loc='upper left', fontsize=9)
+    return _finish_figure(fig, f"{company_name} ({ticker}) - Fundamental Analysis (Annual)",
+                          save_path, footnote=_annual_footnote(frame))
+
+
+def create_annual_earnings_chart(ticker, company_name=None, financial_summary=None, save_path=None):
+    """Revenue and operating income bars with operating margin, by fiscal year."""
+    frame = _usable_annual(financial_summary, ['revenue', 'operating_income'])
+    if frame is None or 'revenue' not in frame.columns:
+        logger.info(f"No annual earnings data available for {ticker}.")
+        return None
+    company_name = company_name or ticker
+    fig, ax = plt.subplots(figsize=(12, 6))
+    x = np.arange(len(frame))
+    width = 0.38
+    estimate = frame['estimate'].to_numpy()
+    revenue = frame['revenue'].astype(float)
+    operating = frame['operating_income'].astype(float) if 'operating_income' in frame else pd.Series(np.nan, index=frame.index)
+    for offset, series, color, label in ((-width / 2, revenue, PRIMARY_COLORS[0], 'Revenue'),
+                                         (width / 2, operating, PRIMARY_COLORS[1], 'Operating income')):
+        bars = ax.bar(x + offset, series.fillna(0), width, color=color, alpha=0.85, label=label)
+        for bar, is_est, value in zip(bars, estimate, series):
+            if is_est:
+                bar.set_alpha(0.35)
+                bar.set_hatch('//')
+            if pd.notna(value):
+                ax.annotate(f"{value:,.0f}", xy=(bar.get_x() + bar.get_width() / 2, value),
+                            xytext=(0, 3 if value >= 0 else -10), textcoords='offset points',
+                            ha='center', fontsize=8)
+    ax.axhline(0, color='black', alpha=0.3)
+    ax.set_ylabel('100M KRW', fontsize=11)
+    ax.set_xticks(x)
+    ax.set_xticklabels(_annual_axis_labels(frame), fontsize=9)
+    ax.grid(axis='y', linestyle='--', alpha=0.7)
+    ax.set_title("Revenue and Operating Income (fiscal year; hatched = consensus)", fontsize=12, loc='left')
+    handles, labels = ax.get_legend_handles_labels()
+    if 'op_margin' in frame.columns:
+        # Margins on a near-zero revenue base are not meaningful on this scale.
+        margin = frame['op_margin'].astype(float).where(lambda s: s.abs() <= 100)
+        if margin.notna().any():
+            ax2 = ax.twinx()
+            ax2.plot(x, margin, color=PRIMARY_COLORS[3], marker='o', linewidth=2, label='Operating margin (%)')
+            ax2.set_ylabel('Operating margin (%)', fontsize=11)
+            h2, l2 = ax2.get_legend_handles_labels()
+            handles, labels = handles + h2, labels + l2
+    ax.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, -0.08), ncol=3,
+              fontsize=9, frameon=False)
+    return _finish_figure(fig, f"{company_name} ({ticker}) - Annual Earnings Trend",
+                          save_path, footnote=_annual_footnote(frame))
+
 
 def create_comprehensive_report(ticker, company_name=None, days=730, output_dir='charts'):
     """
