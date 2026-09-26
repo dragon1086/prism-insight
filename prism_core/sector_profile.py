@@ -1,14 +1,17 @@
 """Deterministic KR issuer profile that selects the report's analytical lens.
 
 Evidence: the official KSIC industry name on the DART company profile and the
-layout of the latest statement of financial position. Financial institutions
-present assets and liabilities in liquidity order (no 유동자산/유동부채 rows).
-KIS/KRX sector labels are not used: they file non-financial holding companies
-and a shipbuilding holding company under "금융". Anything ambiguous is general.
+latest primary financial statements. Financial institutions present assets and
+liabilities in liquidity order (no 유동자산/유동부채 rows). Order-based issuers
+must also show contract-asset/liability rows on the balance sheet, and loss-
+making biotech must show an operating loss in every cumulative income-statement
+period. KIS/KRX sector labels are not used: they file non-financial holding
+companies and a shipbuilding holding company under "금융". Anything ambiguous
+is general.
 """
 import re
 
-from prism_core.dart_balance_sheet import _norm, _statement_tables
+from prism_core.dart_balance_sheet import _amount, _norm, _statement_tables
 
 GENERAL = {'kind': 'general', 'subtype': None}
 
@@ -20,10 +23,30 @@ _KSIC_FINANCIAL = (
     (re.compile(r'신용카드|할부금융|여신|리스업|대부업'), 'card_capital'),
 )
 _HOLDING = '지주회사'
+# Observed: 도로/토목/아파트/주거용 건물/건물/비주거용 건물 건설업. Specialty trades end in 공사업.
+_KSIC_CONSTRUCTION = re.compile(r'건설업$')
+# Observed: 기타 선박 건조업, 선박 및 수상 부유 구조물 건조업 (parts makers are
+# 선박 구성 부분품 제조업); 무기 및 총포탄, 전투용 차량, 항공기용 엔진, 유인 항공기;
+# 기타 엔지니어링 서비스업 (삼성E&A, 한전기술). 세미파이브's 건축기술, 엔지니어링 및
+# 관련 기술 서비스업 is excluded.
+_KSIC_ORDER = (
+    (re.compile(r'선박.*건조업'), 'shipbuilding'),
+    (re.compile(r'무기|총포탄|전투용\s*차량|항공기|우주선'), 'defense'),
+    (re.compile(r'^(?!건축기술).*엔지니어링\s*서비스업$'), 'engineering'),
+)
+# Observed: 의학 및 약학 연구개발업, 기초 의약 물질 제조업, 의약품 제조업,
+# 의료용품 및 기타 의약 관련제품 제조업, 자연과학 및 공학 연구개발업. Profitable
+# issuers share these names, so an operating loss is also required.
+_KSIC_BIOTECH = re.compile(r'의학\s*및\s*약학|의약|생물학|자연과학')
+_NOTE_REF = re.compile(r'\(주[0-9,.~\-]*\)')
+# 확정계약자산/부채 are hedge firm commitments, not contract balances.
+_CONTRACT_ROW = re.compile(r'(유동|비유동)?(계약자산|계약부채|미청구공사|초과청구공사)')
+# '영업손실' alone leaves the sign convention ambiguous and is not read.
+_OPERATING_ROWS = {'영업이익', '영업이익(손실)', '영업손익'}
 
 
-def _statement_labels(sources):
-    """Row labels of the single latest statement of financial position, or None."""
+def _primary_catalog(sources):
+    """Readable catalog of the single latest primary statements section, or None."""
     from prism_core.dart_source_table_evidence import pack_readable_units
     from prism_core.dart_source_tree_catalog import build_catalog
 
@@ -32,9 +55,16 @@ def _statement_labels(sources):
     if len(statements) != 1:
         return None
     try:
-        catalog = pack_readable_units(build_catalog(statements[0]['html'])['units'])
-        _, body = _statement_tables(catalog)
+        return pack_readable_units(build_catalog(statements[0]['html'])['units'])
     except Exception:  # noqa: BLE001 - unreadable statements leave the profile general
+        return None
+
+
+def _statement_labels(catalog):
+    """Row labels of the statement of financial position, or None."""
+    try:
+        _, body = _statement_tables(catalog)
+    except Exception:  # noqa: BLE001
         return None
     if body is None:
         return None
@@ -45,14 +75,71 @@ def _financial_layout(labels):
     return not any(label in labels for label in ('유동자산', '유동부채'))
 
 
+def _contract_rows(labels):
+    return any(_CONTRACT_ROW.fullmatch(_NOTE_REF.sub('', label)) for label in labels)
+
+
+def _income_verdict(table):
+    """True/False when every cumulative period shows an operating loss; None if unreadable."""
+    rows = [c['row'] for c in table['cells']
+            if c['col'] == 0 and _NOTE_REF.sub('', _norm(c['text'])) in _OPERATING_ROWS]
+    if not rows:
+        return 'absent'
+    if len(rows) != 1:
+        return None
+    cells = {(c['row'], c['col']): c for c in table['cells']}
+    headers = {(col, _norm(c['text'])) for (_, col), c in cells.items() if c['tag'] == 'th' and col > 0}
+    columns = range(1, table['column_count'])
+    # Interim statements pair 3-month and cumulative columns; only cumulative periods count.
+    cumulative = [col for col in columns if (col, '누적') in headers]
+    quarter = [col for col in columns if (col, '3개월') in headers]
+    if cumulative or quarter:
+        # Both kinds must sit on distinct period columns, pairwise; otherwise the header is misread.
+        if len(cumulative) != len(quarter) or set(cumulative) & set(quarter) or \
+                len(cumulative) + len(quarter) != len(columns):
+            return None
+        columns = cumulative
+    values = []
+    for col in columns:
+        cell = cells.get((rows[0], col))
+        amount = _amount(cell['text']) if cell and cell.get('colspan', 1) == 1 else None
+        if amount is None:
+            return None
+        values.append(amount)
+    return bool(values) and all(value < 0 for value in values)
+
+
+def _operating_loss(catalog):
+    """True only when every income statement agrees on a loss in all cumulative periods."""
+    from prism_core.dart_source_table_evidence import unpack_readable_units
+    from prism_core.dart_source_tree_catalog import decode_table
+
+    try:
+        tables = [decode_table(u['payload'], u['path']) for u in unpack_readable_units(catalog)
+                  if u['kind'] == 'table']
+    except Exception:  # noqa: BLE001
+        return False
+    verdicts = set()
+    for index, table in enumerate(tables[:-1]):
+        texts = [c['text'] for c in table['cells']]
+        if table['column_count'] == 1 and texts and '손익계산서' in _norm(texts[0]):
+            verdict = _income_verdict(tables[index + 1])
+            if verdict != 'absent':
+                verdicts.add(verdict)
+    return verdicts == {True}
+
+
 def classify_issuer(industry_name, sources):
     """Return {'kind', 'subtype', 'industry_name', 'basis'} for the lens.
 
     kind: 'financial' (subtype bank/insurance/securities/card_capital/
-    financial_group), 'holding' (non-financial holding company) or 'general'.
+    financial_group), 'holding' (non-financial holding company),
+    'construction', 'order_backlog' (subtype shipbuilding/defense/engineering),
+    'loss_biotech' or 'general'.
     """
     industry = industry_name.strip() if isinstance(industry_name, str) else ''
-    labels = _statement_labels(sources or [])
+    catalog = _primary_catalog(sources or [])
+    labels = _statement_labels(catalog) if catalog is not None else None
     base = {'industry_name': industry or None}
     if industry == _HOLDING:
         if labels is None:
@@ -67,6 +154,20 @@ def classify_issuer(industry_name, sources):
                 return {**GENERAL, **base, 'basis': 'ksic_financial+industrial_layout'}
             return {'kind': 'financial', 'subtype': subtype, **base,
                     'basis': 'ksic_financial' + ('+financial_layout' if labels is not None else '')}
+    industrial = labels is not None and not _financial_layout(labels)
+    if _KSIC_CONSTRUCTION.search(industry):
+        if not industrial:
+            return {**GENERAL, **base, 'basis': 'ksic_construction_without_industrial_layout'}
+        return {'kind': 'construction', 'subtype': None, **base, 'basis': 'ksic_construction+industrial_layout'}
+    for pattern, subtype in _KSIC_ORDER:
+        if pattern.search(industry):
+            if not (industrial and _contract_rows(labels)):
+                return {**GENERAL, **base, 'basis': 'ksic_order_without_contract_rows'}
+            return {'kind': 'order_backlog', 'subtype': subtype, **base, 'basis': 'ksic_order+contract_rows'}
+    if _KSIC_BIOTECH.search(industry):
+        if not (industrial and _operating_loss(catalog)):
+            return {**GENERAL, **base, 'basis': 'ksic_biotech_without_operating_loss'}
+        return {'kind': 'loss_biotech', 'subtype': None, **base, 'basis': 'ksic_biotech+operating_loss'}
     return {**GENERAL, **base, 'basis': 'ksic_general' if industry else 'ksic_unknown'}
 
 
@@ -104,11 +205,82 @@ _SUBTYPE_FOCUS = {
 }
 
 
+_ORDER_LABELS = {'shipbuilding': ('조선', 'shipbuilding'), 'defense': ('방산·항공', 'defense and aerospace'),
+                 'engineering': ('엔지니어링·플랜트', 'engineering and plant')}
+_ORDER_FOCUS = {
+    'shipbuilding': ('후판 등 원자재 가격과 선가, 선종별 수주 구성, 인도 일정과 인도 시 잔금 유입, 선수금환급보증(RG)',
+                     'steel-plate and other input prices versus newbuild prices, order mix by vessel type, delivery '
+                     'schedule and delivery-time cash inflows, and refund guarantees'),
+    'defense': ('국내 방위사업청 사업과 수출 계약의 비중, 수출 계약의 선수금·이행보증, 개발사업의 원가 초과와 지체상금',
+                'the split between domestic procurement and export contracts, export advances and performance '
+                'guarantees, and cost overruns and delay penalties on development programs'),
+    'engineering': ('프로젝트별 공정률·원가율과 예정원가 변경, 해외 현장의 지역·발주처 위험, 공동도급과 이행보증',
+                    'progress and cost ratios by project with estimate revisions, regional and client risk at '
+                    'overseas sites, and joint-venture and performance guarantees'),
+}
+_CONSTRUCTION_LENS = (
+    '업종 관점(건설): 이 회사는 공시상 건설업이며 공사 진행률에 따라 수익을 인식합니다. 이익은 수주잔고와 공사 '
+    '원가율, 예정원가 변경에 좌우되므로 공시 범위에서 다음을 확인하세요: 주택·건축·토목·플랜트 등 부문별 매출과 '
+    '원가율 추이, 예정원가 변경과 공사손실충당부채, 미청구공사(계약자산)와 초과청구공사(계약부채)의 증감과 매출 '
+    '대비 수준, 회수가 늦어진 현장의 매출채권, 부동산 PF 채무보증·자금보충·책임준공 약정 같은 우발채무(보증 '
+    '한도와 실행 잔액, 착공 여부, 만기 구분), 분양률과 미분양, 신규 수주와 수주잔고. 미청구공사 증가는 원가 상승이나 '
+    '발주처 회수 지연 때문일 수 있으므로 원인을 공시로 확인하세요. 공시에 없는 수치는 추정하지 말고 미확인으로 '
+    '남기세요.\n',
+    'Sector lens (construction): the issuer is officially classified as a builder and recognizes revenue by '
+    'progress. Earnings depend on the backlog, cost ratios and cost-estimate revisions, so check within the '
+    'disclosures: revenue and cost ratios by housing, building, civil and plant segments; estimate revisions and '
+    'onerous-contract provisions; changes in unbilled (contract assets) and overbilled (contract liabilities) '
+    'balances relative to revenue; receivables on delayed sites; real-estate PF guarantees, funding-support and '
+    'completion-guarantee commitments (limits versus drawn amounts, construction start, maturities); presale rates '
+    'and unsold units; new orders and backlog. Rising unbilled balances may reflect cost overruns or slow client '
+    'payment; confirm the cause in the filings. Leave undisclosed figures unverified; never estimate them.\n')
+_BIOTECH_LENS = (
+    '업종 관점(적자 바이오·신약개발): 이 회사는 공시상 의약·바이오 연구개발 업종이며 최근 비교 기간 모두 '
+    '영업손실을 기록했습니다. 매출·이익 배수보다 현금 소진 속도와 파이프라인 진척을 중심으로 판단하세요. 공시 '
+    '범위에서 다음을 확인하세요: 현금및현금성자산·단기금융상품 등 유동 자금과 영업활동 현금유출로 본 현금 소진 '
+    '기간(기준일과 계산식 표기), 연구개발비 총액과 비용 처리 금액, 개발비 등 무형자산으로 자산화한 금액과 손상, '
+    '기술이전 계약의 계약금·마일스톤·로열티와 수익 인식 시점, 임상 단계와 일정, 전환사채·유상증자 등 자금 조달과 '
+    '희석, 전환사채 조기상환청구 가능 시기, 법인세비용차감전손실 등 상장 유지 요건 관련 공시. 임상 성공 확률이나 '
+    '파이프라인 가치는 추정하지 말고, 공시에 없는 수치는 미확인으로 남기세요.\n',
+    'Sector lens (loss-making biotech): the issuer is officially classified in pharmaceutical or life-science R&D '
+    'and reported an operating loss in every recent comparative period. Judge cash burn and pipeline progress rather '
+    'than revenue or earnings multiples. Check within the disclosures: liquid funds (cash, short-term financial '
+    'instruments) against operating cash outflow as a cash runway (state the date and formula); total R&D spend, the '
+    'amount expensed, capitalized development costs and impairment; upfront, milestone and royalty terms of licensing '
+    'deals and when revenue is recognized; clinical stages and timelines; convertible bonds, rights offerings and '
+    'dilution, and bondholder put dates; listing-maintenance disclosures such as pre-tax loss thresholds. Never '
+    'estimate clinical success probabilities or pipeline value; leave undisclosed figures unverified.\n')
+
+
 def sector_lens(profile, language='ko'):
     """Report-wide analytical lens for a non-general issuer; '' for general."""
-    if not isinstance(profile, dict) or profile.get('kind') not in ('financial', 'holding'):
+    kind = profile.get('kind') if isinstance(profile, dict) else None
+    if kind not in ('financial', 'holding', 'construction', 'order_backlog', 'loss_biotech'):
         return ''
     ko = language == 'ko'
+    if kind == 'construction':
+        return _CONSTRUCTION_LENS[0 if ko else 1]
+    if kind == 'loss_biotech':
+        return _BIOTECH_LENS[0 if ko else 1]
+    if kind == 'order_backlog':
+        subtype = profile.get('subtype')
+        name = _ORDER_LABELS.get(subtype, ('수주산업', 'contract-based'))[0 if ko else 1]
+        focus = _ORDER_FOCUS.get(subtype, ('', ''))[0 if ko else 1]
+        return (
+            f'업종 관점(수주산업·{name}): 이 회사는 장기 계약으로 제작·공사하며 진행률에 따라 수익을 인식합니다. '
+            '계약부채(선수금·초과청구공사)는 발주처에서 미리 받은 대금으로 공사 진행으로 해소되는 의무이므로 차입금처럼 '
+            '부채비율이나 단기 상환 부담으로 해석하지 마세요. 계약자산(미청구공사)은 아직 청구하지 못한 대금이므로 회수 '
+            '조건과 함께 보세요. 공시 범위에서 다음을 확인하세요: 수주잔고와 신규 수주, 계약자산·계약부채의 증감과 순포지션, '
+            '예정원가 변경과 공사손실충당부채, 원가율 추이, 환율 위험회피(확정계약·파생상품) 손익, '
+            f'{focus}. 공시에 없는 수치는 추정하지 말고 미확인으로 남기세요.\n'
+            if ko else
+            f'Sector lens (contract-based, {name}): the issuer builds under long-term contracts and recognizes revenue '
+            'by progress. Contract liabilities (customer advances, overbilled amounts) are settled by performing the work, '
+            'not borrowings; do not read them as leverage or near-term repayment burden. Contract assets (unbilled '
+            'amounts) are not yet billed; read them with their collection terms. Check within the disclosures: backlog '
+            'and new orders, changes in contract assets and liabilities and the net position, cost-estimate revisions '
+            'and onerous-contract provisions, cost-ratio trends, FX hedging (firm commitments, derivatives) results, '
+            f'and {focus}. Leave undisclosed figures unverified; never estimate them.\n')
     if profile['kind'] == 'holding':
         return (
             '업종 관점(지주회사): 이 회사는 공시상 지주회사이며 재무제표는 일반 기업 형식입니다. 연결 실적은 자회사 '
