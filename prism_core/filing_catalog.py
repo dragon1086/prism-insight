@@ -182,8 +182,12 @@ def select_periodic_filings(candidates, *, entity_id, scope, decision_at, market
             continue
         for child, parent in pairwise(path):
             cb, pb = out["publication_bounds"][child], out["publication_bounds"][parent]
+            # Same-day editions share one date window; their order then rests on
+            # the verified amendment edge, not on publication time.
+            same_window = pb["lower"] == cb["lower"] and pb["upper"] == cb["upper"]
             if (_series_scope(records[child]) != _series_scope(records[parent])
-                    or datetime.fromisoformat(pb["upper"]) > datetime.fromisoformat(cb["lower"])):
+                    or (not same_window
+                        and datetime.fromisoformat(pb["upper"]) > datetime.fromisoformat(cb["lower"]))):
                 exclude(key, "CONFLICTING_AMENDMENT_CHAIN", True)
                 eligible.discard(key)
                 break

@@ -179,7 +179,8 @@ def test_family_adversarial_guards(case):
     assert result['selection']['annual_supplement_id'] is None
     rows = {r['receipt_id']: r for r in result['filings']}
     assert rows[EDITIONS[0][0]]['lineage_verified'] is False
-    if case in {'duplicate', 'cycle', 'cross_period', 'future_cover', 'original_cover'}:
+    # A family date that contradicts the parent's own filing date is an integrity conflict.
+    if case in {'duplicate', 'cycle', 'cross_period', 'future_cover', 'original_cover', 'same_day'}:
         assert result['selection']['primary_id'] is None
     else:
         assert result['selection']['primary_id'] == RECORDS[0][0]
@@ -675,3 +676,23 @@ def test_template_literal_cannot_supply_nodes():
 def test_three_digit_cover_day_cannot_be_truncated():
     with pytest.raises(ValueError):
         parse_cover_metadata(cover(RECORDS[0]).replace('06월 30일', '06월 300일'))
+
+
+def _row(rid, submitted, correction):
+    return {'receipt_id': rid, 'kind': 'interim', 'submitted_date': date.fromisoformat(submitted),
+            'is_correction': correction}
+
+
+@pytest.mark.parametrize('order,ok', [(['20260814003471', '20260814002738', '20260814002363'], True),
+                                      (['20260814002738', '20260814003471', '20260814002363'], False)])
+def test_same_day_family_needs_list_order_and_receipt_order_to_agree(order, ok):
+    from prism_core.dart_public_filings import _family, _SourceError
+    html = '<select id="family"><option value="null">+본문선택+</option>' + ''.join(
+        f'<option value="rcpNo={rid}">2026.08.14 {"" if i == len(order) - 1 else "[정정] "}반기보고서</option>'
+        for i, rid in enumerate(order)) + '</select>'
+    row = _row(order[0], '2026-08-14', True)
+    if ok:
+        assert [m['receipt_id'] for m in _family(html, row)] == order
+    else:
+        with pytest.raises(_SourceError, match='FAMILY_SAME_DAY_UNRESOLVED'):
+            _family(html, row)

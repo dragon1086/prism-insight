@@ -235,3 +235,14 @@ def test_bad_policy_rejected(args):
 def test_empty_result_never_claims_latest():
     result = select([])
     assert result["status"] == "NO_ELIGIBLE" and not result["latest_confirmed"]
+
+
+def test_same_day_corrections_follow_the_verified_amendment_chain():
+    # SK Square 2026-08-14: original, then two corrections filed the same day.
+    rows = [interim(), interim(filing_id="fix1", amendment_of="half"),
+            interim(filing_id="fix2", amendment_of="fix1")]
+    result = select(rows)
+    assert result["status"] == "SELECTED" and result["primary_id"] == "fix2"
+    # A parent published on a later day than its correction is still a conflict.
+    later_parent = [interim(published_at=date(2026, 8, 15)), interim(filing_id="fix1", amendment_of="half")]
+    assert select(later_parent)["primary_id"] != "fix1"
