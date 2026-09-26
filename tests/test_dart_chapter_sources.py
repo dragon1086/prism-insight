@@ -226,16 +226,49 @@ def test_restated_annual_disclosures_are_superseded_only_under_capacity_pressure
 
 def test_oversized_writer_splits_into_whole_ordered_source_groups():
     from prism_core.dart_chapter_sources import split_writer_context
-    groups = [{'source': {'source_id': f's{i}'}, 'catalog': 'X' * 900} for i in range(5)]
-    context = json.dumps({'notice': 'N', 'sources': groups}, ensure_ascii=False)
+    packet = build_dart_chapter_inputs([_filing_source('p', 'primary', 'LATEST'),
+                                        _filing_source('q', 'primary', 'OTHER')])
+    context = packet['contexts']['risks']
     assert split_writer_context(context, len(context.encode())) == [context]
-    parts = split_writer_context(context, 2200)
-    decoded = [json.loads(part) for part in parts]
-    assert len(parts) > 1 and all(len(part.encode()) <= 2200 for part in parts)
-    assert all(part['notice'] == 'N' for part in decoded)
-    assert [g for part in decoded for g in part['sources']] == groups
-    # A single group larger than the limit is left whole for the capacity gate to reject.
-    assert all(len(p.encode()) > 500 for p in split_writer_context(context, 500))
+    decoded = json.loads(context)
+    limit = max(len(json.dumps({**decoded, 'sources': [g]}, ensure_ascii=False, sort_keys=True,
+                               separators=(',', ':')).encode()) for g in decoded['sources']) + 10
+    parts = [json.loads(p) for p in split_writer_context(context, limit, rendered_max=10**9)]
+    assert len(parts) == 2 and all(p['notice'] == decoded['notice'] for p in parts)
+    assert [g for p in parts for g in p['sources']] == decoded['sources']
+
+
+def test_single_oversized_filing_splits_at_heading_blocks_with_exact_core_partition():
+    from prism_core.dart_chapter_sources import split_writer_context
+    from prism_core.dart_writer_context import render_dart_writer_context
+    body = ''.join(f'<p>{n}. 우발부채와 약정 {n}</p>' + _label(f'항목{n}에 대한 공시')
+                   + '<table><tr><th>구분</th>' + ''.join(f'<th>열{c}</th>' for c in range(16)) + '</tr>'
+                   + ''.join('<tr><td>행%d</td>%s</tr>' % (r, ''.join(f'<td>{n}{r}{c}</td>' for c in range(16)))
+                             for r in range(12)) + '</table>' for n in range(1, 7))
+    source = {'source_id': 'big', 'html': body, 'sha256': hashlib.sha256(body.encode()).hexdigest(),
+              'url': 'https://dart.fss.or.kr/report/viewer.do', 'scope_context': None,
+              'filing': {'role': 'primary', 'section': 'financial_notes', 'scope': 'consolidated',
+                         'period_start': '2026-01-01', 'period_end': '2026-06-30'}}
+    packet = build_dart_chapter_inputs([source])
+    writer, context = max(packet['contexts'].items(), key=lambda item: len(item[1]))
+    decoded = json.loads(context)
+    assert len(decoded['sources']) == 1
+    limit = len(context.encode()) // 2
+    parts = split_writer_context(context, limit, rendered_max=10**9)
+    assert len(parts) >= 2 and all(len(p.encode()) <= limit for p in parts)
+    groups = [g for p in parts for g in json.loads(p)['sources']]
+    # Every core unit is delivered exactly once; aids match each slice's own ordinals.
+    delivered = [path for g in groups for path in g['core_paths']]
+    assert sorted(delivered) == sorted(decoded['sources'][0]['core_paths']) and len(set(delivered)) == len(delivered)
+    for group in groups:
+        from prism_core.dart_chapter_sources import _reading_aids
+        assert group['reading_aids'] == _reading_aids(group)
+    for part in parts:
+        rendered, receipt = render_dart_writer_context(part)
+        assert receipt['cell_text_conserved'] and not receipt['truncated']
+    # The rendered bound splits too, even when JSON would fit.
+    rendered_total = len(render_dart_writer_context(context)[0].encode())
+    assert len(split_writer_context(context, 10**9, rendered_max=rendered_total // 2 + 5000)) >= 2
 
 
 def test_split_writer_capacity_is_ready_and_single_oversized_group_is_not():
@@ -248,5 +281,6 @@ def test_split_writer_capacity_is_ready_and_single_oversized_group_is_not():
     assert split['ready'] and split['receipt']['capacity_ok']
     assert len(split['receipt']['writer_part_bytes']['risks']) == 2
     assert split['contexts']['risks'] == whole['contexts']['risks']
-    too_small = build_dart_chapter_inputs(sources, writer_max_bytes=largest - 10)
+    # Below one indivisible unit plus its shared context nothing can fit.
+    too_small = build_dart_chapter_inputs(sources, writer_max_bytes=2000)
     assert not too_small['ready'] and not too_small['contexts']

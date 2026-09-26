@@ -20,8 +20,8 @@ CHAPTER_END = '<!-- DART_DEEP_ANALYSIS_END -->'
 CHAPTER_INCOMPLETE = '<!-- DART_DEPTH_INCOMPLETE -->'
 # Presentation expands merged/header labels without collecting extra sources.
 # Both source-packet limits and these actual model-message limits are enforced.
-WRITER_MESSAGE_MAX_BYTES = 360000
-TOTAL_MESSAGE_MAX_BYTES = 1200000
+WRITER_MESSAGE_MAX_BYTES = 400000
+TOTAL_MESSAGE_MAX_BYTES = 1800000
 # A continuation call also carries the previous draft (max_tokens=16000).
 DRAFT_RESERVE_BYTES = 64000
 ROLES = {

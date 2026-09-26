@@ -1,6 +1,7 @@
 """Source-conserving, model-free inputs for three DART chapter writers."""
 import copy
 import hashlib
+import itertools
 import json
 
 from prism_core.dart_source_table_evidence import (
@@ -14,10 +15,14 @@ from prism_core.dart_source_tree_routing import chapter, family, route_catalogs
 from prism_core.dart_specialist_roles import _role
 
 WRITERS = ('finance', 'business', 'risks')
-# Per writer call. A larger writer context is split at source-group boundaries
-# into sequential calls; one group is never divided.
+# Per writer call. A larger writer context is split into sequential calls at
+# source-group boundaries, then (for one oversized filing) at heading blocks.
 WRITER_MAX_BYTES = 220000
-TOTAL_MAX_BYTES = 720000
+TOTAL_MAX_BYTES = 900000
+# Rendered source text per call. Wide tables expand 1.2-2x when rendered, so
+# parts are also bounded by what the model actually reads (the message cap
+# also holds the instruction, shared reference and a revision draft).
+WRITER_RENDERED_MAX_BYTES = 300000
 _BUSINESS = {'general', 'segment', 'investments', 'related', 'transactions', 'capital'}
 _RISK = {'commitments', 'risk', 'restricted', 'provisions', 'subsequent'}
 ROLE_WRITERS = {
@@ -39,35 +44,150 @@ def _hash(value):
     return hashlib.sha256(_json(value).encode()).hexdigest()
 
 
-def split_writer_context(context_json, max_bytes=WRITER_MAX_BYTES):
-    """Split one writer context into ordered parts of whole source groups.
+def _part_bytes(header, groups):
+    return len(_json({**header, 'sources': groups}).encode())
+
+
+def _rendered_bytes(header, groups):
+    from prism_core.dart_writer_context import render_dart_writer_context
+    try:
+        rendered, _ = render_dart_writer_context(_json({**header, 'sources': groups}))
+    except ValueError:
+        return 0  # Unrenderable units are rejected by the unsupported/renderer gates, not capacity.
+    return len(rendered.encode())
+
+
+def _fits(header, groups, max_bytes, rendered_max):
+    return (_part_bytes(header, groups) <= max_bytes
+            and _rendered_bytes(header, groups) <= rendered_max)
+
+
+def _split_group(header, group, max_bytes, rendered_max, lead=()):
+    """Split one oversized source group into ordered sub-groups of whole units.
+
+    Core units are cut only between heading-context blocks (a block is cut unit
+    by unit only when it cannot fit alone). Every sub-group repeats the group's
+    non-core context units, partitions its core paths exactly, and carries
+    reading aids recomputed for its own catalog ordinals. The first sub-group
+    is sized to share a call with ``lead`` (groups already in the open part).
+    """
+    units = unpack_readable_units(group['catalog'])
+    core = set(group.get('core_paths', []))
+    blocks = [list(block) for _, block in itertools.groupby(
+        (u for u in units if u['path'] in core), key=lambda u: tuple(u.get('context') or ()))]
+    if len(blocks) + sum(len(b) for b in blocks) <= 2:
+        return [group]  # Nothing divisible: left whole for the capacity gate.
+
+    def build(core_units):
+        keep = {u['path'] for u in core_units}
+        sub = {key: value for key, value in group.items() if key != 'reading_aids'}
+        sub['core_paths'] = [path for path in group['core_paths'] if path in keep]
+        sub['catalog'] = pack_readable_units([u for u in units if u['path'] not in core or u['path'] in keep])
+        if 'reading_aids' in group:
+            sub['reading_aids'] = _reading_aids(sub)
+        return sub
+
+    # Sizes are near-additive per unit: measure each piece once over the shared
+    # context units, pack greedily, then verify every part exactly.
+    base = build([])
+    base_sizes = (_part_bytes(header, [base]), _rendered_bytes(header, [base]))
+    lead = list(lead)
+    lead_cost = ((_part_bytes(header, lead + [base]) - base_sizes[0],
+                  _rendered_bytes(header, lead + [base]) - base_sizes[1]) if lead else (0, 0))
+
+    def cost(piece):
+        sub = [build(piece)]
+        return (_part_bytes(header, sub) - base_sizes[0], _rendered_bytes(header, sub) - base_sizes[1])
+
+    pieces = []
+    for block in blocks:
+        size = cost(block)
+        if base_sizes[0] + size[0] <= max_bytes and base_sizes[1] + size[1] <= rendered_max:
+            pieces.append((block, size))
+        else:
+            pieces.extend(([u], cost([u])) for u in block)
+
+    def pack(items):
+        chunks, current, used = [], [], lead_cost
+        for piece, size in items:
+            total = (used[0] + size[0], used[1] + size[1])
+            if current and (base_sizes[0] + total[0] > max_bytes or base_sizes[1] + total[1] > rendered_max):
+                chunks.append(current)
+                current, total = [], size
+            current, used = current + [(piece, size)], total
+        return chunks + [current]
+
+    parts = []
+    pending = [chunk for chunk in pack(pieces) if chunk]
+    while pending:
+        chunk = pending.pop(0)
+        part = build([u for piece, _ in chunk for u in piece])
+        shared = lead if not parts else []
+        if not _fits(header, shared + [part], max_bytes, rendered_max):
+            if len(chunk) > 1:
+                half = len(chunk) // 2
+                pending[:0] = [chunk[:half], chunk[half:]]
+                continue
+            if shared:  # Too big beside the lead: it starts its own call instead.
+                lead = []
+                pending.insert(0, chunk)
+                parts.append(None)
+                continue
+        parts.append(part)
+    return parts
+
+
+def split_writer_context(context_json, max_bytes=WRITER_MAX_BYTES, rendered_max=WRITER_RENDERED_MAX_BYTES):
+    """Split one writer context into ordered parts no larger than ``max_bytes``.
 
     Every part repeats the shared header (notice, guides, role inventory).
-    Groups keep their order and are never divided, so a single group larger
-    than ``max_bytes`` stays oversized for the capacity check to reject.
+    Both the JSON and the rendered text of a part are bounded. Whole source
+    groups are packed first; a group too large alone is divided by
+    ``_split_group``. A single unit larger than the limits stays oversized for
+    the capacity check to reject.
     """
     context = json.loads(context_json)
-    if len(context_json.encode()) <= max_bytes or len(context['sources']) < 2:
+    header = {key: value for key, value in context.items() if key != 'sources'}
+    if _fits(header, context['sources'], max_bytes, rendered_max):
         return [context_json]
     parts, current = [], []
     for group in context['sources']:
-        candidate = _json({**context, 'sources': current + [group]})
-        if current and len(candidate.encode()) > max_bytes:
-            parts.append(_json({**context, 'sources': current}))
-            current = [group]
-        else:
+        if _fits(header, current + [group], max_bytes, rendered_max):
             current.append(group)
-    parts.append(_json({**context, 'sources': current}))
-    return parts
+            continue
+        if _fits(header, [group], max_bytes, rendered_max):
+            parts.append(_json({**header, 'sources': current}))
+            current = [group]
+            continue
+        # Oversized filing: its first slice fills the open call, later slices get their own.
+        subgroups = _split_group(header, group, max_bytes, rendered_max, lead=current)
+        if subgroups[0] is None:
+            subgroups = subgroups[1:]
+            parts.append(_json({**header, 'sources': current}))
+            current = []
+        for index, sub in enumerate(subgroups):
+            if index and current:
+                parts.append(_json({**header, 'sources': current}))
+                current = []
+            current.append(sub)
+    if current:
+        parts.append(_json({**header, 'sources': current}))
+    return [part for part in parts if json.loads(part)['sources']]
 
 
 def _capacity(contexts, writer_max_bytes, total_max_bytes):
     sizes = {w: len(contexts.get(w, '').encode()) for w in WRITERS}
-    parts = {w: [len(p.encode()) for p in split_writer_context(contexts[w], writer_max_bytes)]
-             for w in WRITERS if contexts.get(w)}
-    ok = (all(size <= writer_max_bytes for sizes_ in parts.values() for size in sizes_)
+    split = {w: split_writer_context(contexts[w], writer_max_bytes) for w in WRITERS if contexts.get(w)}
+    ok = (all(_fits(*_header_and_sources(p), writer_max_bytes, WRITER_RENDERED_MAX_BYTES)
+              for items in split.values() for p in items)
           and sum(sizes.values()) <= total_max_bytes)
+    parts = {w: [len(p.encode()) for p in items] for w, items in split.items()}
     return sizes, {w: v for w, v in parts.items() if len(v) > 1}, ok
+
+
+def _header_and_sources(part_json):
+    part = json.loads(part_json)
+    return {key: value for key, value in part.items() if key != 'sources'}, part['sources']
 
 
 _READING_AID_GUIDE = (
@@ -83,6 +203,45 @@ _READING_AID_GUIDE = (
     '실제 기간은 표 머리글로 확인하고, 연차자료를 최신 반기 수치로 바꾸지 마십시오. '
     'excluded는 보조 투영만 제외된 사유이며 원문 누락을 뜻하지 않습니다.'
 )
+
+
+def _reading_aids(group):
+    """Structural reading aids for one source group, keyed by its catalog ordinals."""
+    filing = group['source']['filing']
+    aids = {'wide_cells': [], 'annual_table_period': [],
+            'excluded': {'narrow_tables': 0, 'ambiguous_tables': []}}
+    for ordinal, unit in enumerate(unpack_readable_units(group['catalog'])):
+        if unit['kind'] != 'table':
+            continue
+        if filing['role'] == 'annual_supplement':
+            aids['annual_table_period'].append([ordinal, filing['period_end']])
+        evidence = expand_table_evidence(unit)
+        if evidence['columns'] < 16:
+            aids['excluded']['narrow_tables'] += 1
+            continue
+        if evidence['status'] != 'STRUCTURAL_ONLY':
+            aids['excluded']['ambiguous_tables'].append([ordinal, evidence['reason']])
+            continue
+        rows = []
+        for cell in evidence['cells']:
+            candidates = cell['column_header_candidates']
+            if not candidates or not cell['text']:
+                continue
+            headers = [evidence['cells'][i] for i in candidates]
+            # Lowest header per covered column, not one guessed label
+            # for a value spanning several differently named columns.
+            leaves = []
+            for column in range(cell['column'], cell['column'] + cell['colspan']):
+                covering = [h for h in headers if h['column'] <= column < h['column'] + h['colspan']]
+                if covering:
+                    leaf = max(covering, key=lambda h: h['row'])
+                    if leaf['path'] not in [h['path'] for h in leaves]:
+                        leaves.append(leaf)
+            labels = [h['text'] for h in leaves]
+            label = labels[0] if len(labels) == 1 else labels
+            rows.append([cell['row'], cell['column'], label, cell['text']])
+        aids['wide_cells'].append([ordinal, rows])
+    return aids
 
 
 def enrich_dart_chapter_inputs(packet, *, writer_max_bytes=WRITER_MAX_BYTES,
@@ -103,41 +262,7 @@ def enrich_dart_chapter_inputs(packet, *, writer_max_bytes=WRITER_MAX_BYTES,
         context = json.loads(text)
         before = _hash([group['catalog'] for group in context['sources']])
         for group in context['sources']:
-            filing = group['source']['filing']
-            aids = {'wide_cells': [], 'annual_table_period': [],
-                    'excluded': {'narrow_tables': 0, 'ambiguous_tables': []}}
-            for ordinal, unit in enumerate(unpack_readable_units(group['catalog'])):
-                if unit['kind'] != 'table':
-                    continue
-                if filing['role'] == 'annual_supplement':
-                    aids['annual_table_period'].append([ordinal, filing['period_end']])
-                evidence = expand_table_evidence(unit)
-                if evidence['columns'] < 16:
-                    aids['excluded']['narrow_tables'] += 1
-                    continue
-                if evidence['status'] != 'STRUCTURAL_ONLY':
-                    aids['excluded']['ambiguous_tables'].append([ordinal, evidence['reason']])
-                    continue
-                rows = []
-                for cell in evidence['cells']:
-                    candidates = cell['column_header_candidates']
-                    if not candidates or not cell['text']:
-                        continue
-                    headers = [evidence['cells'][i] for i in candidates]
-                    # Lowest header per covered column, not one guessed label
-                    # for a value spanning several differently named columns.
-                    leaves = []
-                    for column in range(cell['column'], cell['column'] + cell['colspan']):
-                        covering = [h for h in headers if h['column'] <= column < h['column'] + h['colspan']]
-                        if covering:
-                            leaf = max(covering, key=lambda h: h['row'])
-                            if leaf['path'] not in [h['path'] for h in leaves]:
-                                leaves.append(leaf)
-                    labels = [h['text'] for h in leaves]
-                    label = labels[0] if len(labels) == 1 else labels
-                    rows.append([cell['row'], cell['column'], label, cell['text']])
-                aids['wide_cells'].append([ordinal, rows])
-            group['reading_aids'] = aids
+            group['reading_aids'] = _reading_aids(group)
         after = _hash([group['catalog'] for group in context['sources']])
         if before != after:
             raise ValueError('reading aids changed original catalogs')
