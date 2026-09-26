@@ -247,7 +247,9 @@ def _fetch_key_expiry(prefix: str) -> datetime | None:
     from pybit.unified_trading import HTTP
     info = HTTP(demo=True, api_key=key, api_secret=secret, timeout=10).get_api_key_information()
     raw = ((info or {}).get("result") or {}).get("expiredAt")
-    return _parse_ts(raw) if raw else None
+    expires = _parse_ts(raw) if raw else None
+    # A key with no expiry reports the Unix epoch (observed on the swing demo key).
+    return expires if expires is not None and expires.timestamp() > 0 else None
 
 
 def _check_api_key_expiry(mode: str, now: datetime) -> list[dict]:
