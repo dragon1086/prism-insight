@@ -5,7 +5,8 @@ latest primary financial statements. Financial institutions present assets and
 liabilities in liquidity order (no 유동자산/유동부채 rows). Order-based issuers
 must also show contract-asset/liability rows on the balance sheet, and loss-
 making biotech must show an operating loss in every cumulative income-statement
-period. KIS/KRX sector labels are not used: they file non-financial holding
+period. REITs need 부동산투자회사 in the official legal name on the same profile
+and an investment-property row. KIS/KRX sector labels are not used: they file non-financial holding
 companies and a shipbuilding holding company under "금융". Anything ambiguous
 is general.
 """
@@ -38,6 +39,11 @@ _KSIC_ORDER = (
 # 의료용품 및 기타 의약 관련제품 제조업, 자연과학 및 공학 연구개발업. Profitable
 # issuers share these names, so an operating loss is also required.
 _KSIC_BIOTECH = re.compile(r'의학\s*및\s*약학|의약|생물학|자연과학')
+# Observed on seven listed REITs: 부동산 임대 및 공급업, 부동산 임대업, 비주거용 건물 임대업.
+# Ordinary lessors and developers share these names; REITs must carry 부동산투자회사 in
+# their legal name (e.g. 롯데위탁관리부동산투자회사, 이리츠코크렙기업구조조정부동산투자회사).
+_KSIC_REAL_ESTATE = re.compile(r'(?:부동산|건물)\s*임대')
+_REIT_LEGAL_NAME = '부동산투자회사'
 _NOTE_REF = re.compile(r'\(주[0-9,.~\-]*\)')
 # 확정계약자산/부채 are hedge firm commitments, not contract balances.
 _CONTRACT_ROW = re.compile(r'(유동|비유동)?(계약자산|계약부채|미청구공사|초과청구공사)')
@@ -129,13 +135,14 @@ def _operating_loss(catalog):
     return verdicts == {True}
 
 
-def classify_issuer(industry_name, sources):
+def classify_issuer(industry_name, sources, *, legal_name=None):
     """Return {'kind', 'subtype', 'industry_name', 'basis'} for the lens.
 
     kind: 'financial' (subtype bank/insurance/securities/card_capital/
     financial_group), 'holding' (non-financial holding company),
     'construction', 'order_backlog' (subtype shipbuilding/defense/engineering),
-    'loss_biotech' or 'general'.
+    'loss_biotech', 'reit' or 'general'. ``legal_name`` is the official name on
+    the same DART company profile.
     """
     industry = industry_name.strip() if isinstance(industry_name, str) else ''
     catalog = _primary_catalog(sources or [])
@@ -155,6 +162,12 @@ def classify_issuer(industry_name, sources):
             return {'kind': 'financial', 'subtype': subtype, **base,
                     'basis': 'ksic_financial' + ('+financial_layout' if labels is not None else '')}
     industrial = labels is not None and not _financial_layout(labels)
+    if _KSIC_REAL_ESTATE.search(industry):
+        if not (isinstance(legal_name, str) and _REIT_LEGAL_NAME in legal_name):
+            return {**GENERAL, **base, 'basis': 'ksic_real_estate_without_reit_name'}
+        if labels is None or not any(_NOTE_REF.sub('', label) == '투자부동산' for label in labels):
+            return {**GENERAL, **base, 'basis': 'reit_name_without_investment_property'}
+        return {'kind': 'reit', 'subtype': None, **base, 'basis': 'ksic_real_estate+reit_name+investment_property'}
     if _KSIC_CONSTRUCTION.search(industry):
         if not industrial:
             return {**GENERAL, **base, 'basis': 'ksic_construction_without_industrial_layout'}
@@ -252,14 +265,37 @@ _BIOTECH_LENS = (
     'estimate clinical success probabilities or pipeline value; leave undisclosed figures unverified.\n')
 
 
+_REIT_LENS = (
+    '업종 관점(리츠·부동산투자회사): 이 회사는 공시상 부동산투자회사이며 임대수익을 배당으로 지급하는 구조입니다. '
+    '투자부동산 감가상각·공정가치 평가손익과 매각손익이 순이익을 크게 움직이므로 순이익·PER보다 임대 영업에서 나오는 '
+    '현금과 배당 여력을 중심으로 판단하세요. 공시 범위에서 다음을 확인하세요: 임대수익과 임대 영업이익, 감가상각비를 '
+    '더한 FFO(운용자금)와 주당 배당금·배당 재원(이익배당·초과배당), 자산별 임대율과 공실, 주요 임차인과 계열사 '
+    '임차 비중, 임대차 잔여기간과 임대료 조정 조건, 차입금·사채의 만기 구조와 금리(고정·변동)와 리파이낸싱 일정, '
+    '담보 제공과 차입 약정(LTV 등) 조건, 투자부동산 장부금액과 감정평가액·공정가치, 자산 편입·매각 계획과 유상증자 '
+    '희석. FFO·LTV가 공시에 없으면 계산식과 사용한 원문 수치를 밝힌 경우에만 단순 계산하고, 그렇지 않으면 미확인으로 '
+    '남기세요. 일반 기업의 부채비율·영업이익률 기준만으로 건전성을 판단하지 마세요.\n',
+    'Sector lens (REIT): the issuer is an officially registered real-estate investment company that pays rental '
+    'income out as dividends. Depreciation, fair-value changes and disposal gains move net income, so judge cash '
+    'from leasing and dividend capacity rather than net income or P/E. Check within the disclosures: rental revenue '
+    'and leasing operating profit, FFO (adding back depreciation) against dividends per share and their sources '
+    '(profit and excess dividends), occupancy and vacancy by asset, major tenants and affiliate tenancy, remaining '
+    'lease terms and rent-adjustment clauses, the maturity profile and fixed/floating rates of borrowings and bonds '
+    'with refinancing dates, collateral and loan covenants (such as LTV), book value versus appraised or fair value '
+    'of investment property, and planned acquisitions, disposals and dilutive rights offerings. Compute FFO or LTV '
+    'only when you state the formula and source figures; otherwise leave them unverified. Do not judge soundness '
+    'by industrial debt-to-equity or operating-margin yardsticks alone.\n')
+
+
 def sector_lens(profile, language='ko'):
     """Report-wide analytical lens for a non-general issuer; '' for general."""
     kind = profile.get('kind') if isinstance(profile, dict) else None
-    if kind not in ('financial', 'holding', 'construction', 'order_backlog', 'loss_biotech'):
+    if kind not in ('financial', 'holding', 'construction', 'order_backlog', 'loss_biotech', 'reit'):
         return ''
     ko = language == 'ko'
     if kind == 'construction':
         return _CONSTRUCTION_LENS[0 if ko else 1]
+    if kind == 'reit':
+        return _REIT_LENS[0 if ko else 1]
     if kind == 'loss_biotech':
         return _BIOTECH_LENS[0 if ko else 1]
     if kind == 'order_backlog':

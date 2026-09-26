@@ -69,3 +69,38 @@ def test_fallback_requires_official_absence_and_same_issuer_receipt(monkeypatch,
         assert packet['diagnostics']['dart_calls']==8
     else:
         assert '별도재무제표' not in packet['public_receipt']
+
+
+def test_dash_separated_official_absence_is_recognized():
+    # 롯데리츠 2026 사업보고서, the whole consolidated section body.
+    assert _consolidated_not_applicable('<html><body><p>2. 연결재무제표 - 해당사항 없음.</p></body></html>')
+    assert not _consolidated_not_applicable('<p>2. 연결재무제표 - 소송은 해당사항 없음.</p>')
+
+
+@pytest.mark.parametrize('corrections,admitted', [
+    (['20260814000011'], True),      # 카카오뱅크: the correction is also officially not consolidated
+    (['20260814009999'], False),     # a correction without that proof still blocks
+])
+def test_fallback_tolerates_only_officially_not_applicable_corrections(monkeypatch, corrections, admitted):
+    calls = []
+    absence = {key: {'reason': 'OFFICIAL_NOT_APPLICABLE', 'scope': 'consolidated', 'receipt_id': key,
+                     'url': 'https://dart.fss.or.kr/report/viewer.do?rcpNo=' + key, 'sha256': 'a' * 64}
+               for key in ('20260814002834', '20260814000011')}
+    async def collect(ticker, company, date, scope, progress, *, source_sink):
+        calls.append(scope)
+        identity = {'corp_code': '12345678', 'ticker_verified_from_company_profile': True}
+        if scope == 'consolidated':
+            progress['filing_selection'] = {'identity': identity, 'scope_absence_evidence': absence,
+                'selection': {'primary_id': None, 'best_known_candidate_id': '20260814002834',
+                              'unresolved_corrections': corrections}}
+        else:
+            progress['filing_selection'] = {'identity': identity, 'selection': {'primary_id': '20260814002834'}}
+            progress['sources'] = [{'filing': {'scope': 'standalone'}}]
+            source_sink.append({'scope': 'standalone'})
+    monkeypatch.setattr(adapter, 'collect_latest', collect)
+    monkeypatch.setattr(adapter, '_render', lambda p, c: {'section_contexts': {}, 'public_receipt': '',
+                                                         'shared_reference': '', 'diagnostics': p})
+    monkeypatch.setattr(adapter, 'build_dart_chapter_inputs', lambda sources, **kw: {'ready': bool(sources), 'contexts': {}})
+    packet = asyncio.run(adapter.collect_kr_official_report_inputs('323410', '검증은행', '20260924'))
+    assert calls == (['consolidated', 'standalone'] if admitted else ['consolidated'])
+    assert packet['dart_chapter_inputs']['ready'] is admitted

@@ -200,3 +200,20 @@ def test_official_industry_name_is_read_only_when_unique(rows, expected):
     result = run(handler)
     assert result['ticker_verified_from_company_profile'] is True
     assert result.get('industry_name') == expected
+
+
+@pytest.mark.parametrize('rows,expected', [
+    # Observed markup: buttons share the cell with the official name.
+    ('<tr><th scope="row"><label>회사이름</label></th><td> 롯데위탁관리부동산투자회사 주식회사 '
+     '<button class="btnRss">rss</button> </td></tr>', '롯데위탁관리부동산투자회사 주식회사'),
+    ('<tr><th>회사이름</th><td> SK(주) <button>정보 더보기</button> <button>rss</button> </td></tr>', 'SK(주)'),
+    ('', None),
+])
+def test_official_legal_name_excludes_cell_buttons(rows, expected):
+    def handler(request):
+        body = (profile()[:-8] + rows + '</table>' if request.url.path.endswith('selectPopup.ax')
+                else catalog(('회사A', '12345678')))
+        return httpx.Response(200, text=body)
+    result = run(handler)
+    assert result['ticker_verified_from_company_profile'] is True
+    assert result.get('legal_name') == expected

@@ -368,8 +368,9 @@ def _consolidated_not_applicable(body):
     if len(body.encode('utf-8')) > 16384:
         return False
     text = _compact(_text(_tree(body)))
+    # Observed forms include "2. 연결재무제표 - 해당사항 없음." (롯데리츠).
     return bool(re.fullmatch(
-        r'\d+\.연결재무제표(?:당사는)?(?:보고서작성기준일현재)?'
+        r'\d+\.연결재무제표-?(?:당사는)?(?:보고서작성기준일현재)?'
         r'해당사항(?:이)?없(?:습니다\.?|음\.?)', text))
 
 

@@ -295,3 +295,39 @@ def test_total_budget_is_flagged_not_blocking_until_the_runaway_ceiling(monkeypa
     assert over['ready'] and over['receipt']['budget_exceeded'] is True
     monkeypatch.setattr(module, 'HARD_TOTAL_MAX_BYTES', 1000)
     assert not build_dart_chapter_inputs(sources, total_max_bytes=1000)['ready']
+
+
+OVERSIZED = ('<h2>1. 회사의 개요</h2><p>연결실체는 석유정제업과 통신업을 영위합니다.</p>'
+             '<p>(2) 연결대상 종속기업 및 현황</p>'
+             '<table>' + '<tr><td>종속기업</td><td>100%</td></tr>' * 301 + '</table>'
+             '<h2>2. 차입금</h2><p>사채 100억원, 만기 2027년입니다.</p>')
+
+
+def test_oversized_notes_table_is_withheld_with_notice():
+    p = build_dart_chapter_inputs([source(OVERSIZED)])
+    assert p['ready'] and not p['receipt']['unsupported']
+    assert p['receipt']['withheld_tables'] == [['s1', '/html/body/table']]
+    assert 'DART_OVERSIZED_TABLE_WITHHELD' in p['receipt']['collection_gaps']
+    withheld = [json.loads(c).get('withheld_tables') for c in p['contexts'].values()]
+    notices = [item for items in withheld if items for item in items]
+    assert len(notices) == 1 and '공시에 없다고 쓰지 말고' in notices[0]['notice']
+    assert '사채 100억원' in ''.join(p['contexts'].values())
+
+
+def test_lone_oversized_table_leaves_its_writer_uncalled():
+    body = OVERSIZED.replace('<p>연결실체는 석유정제업과 통신업을 영위합니다.</p>', '')
+    p = build_dart_chapter_inputs([source(body)])
+    assert p['ready'] and p['receipt']['withheld_tables']
+    assert all('withheld_tables' not in json.loads(c) for c in p['contexts'].values())
+
+
+def test_oversized_statement_table_still_blocks():
+    p = build_dart_chapter_inputs([source(OVERSIZED, section='financial_statements')])
+    assert not p['ready'] and p['receipt']['unsupported']
+    assert 'withheld_tables' not in p['receipt']
+
+
+def test_ordinary_sources_have_no_withheld_fields():
+    p = build_dart_chapter_inputs([source(BODY)])
+    assert 'withheld_tables' not in p['receipt']
+    assert all('withheld_tables' not in json.loads(c) for c in p['contexts'].values())
