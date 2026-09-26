@@ -254,10 +254,7 @@ def _check_api_key_expiry(mode: str, now: datetime) -> list[dict]:
     """7) API 키 만료 예정: 만료는 자동 갱신되지 않으므로 만료 전에 교체를 알린다."""
     if mode != "demo":
         return []
-    try:
-        _load_env()
-    except Exception:  # noqa: BLE001 — env 가 이미 프로세스에 있을 수 있음
-        pass
+    _load_env()  # best-effort; absorbs its own failures
     issues = []
     for label, prefix in _API_KEY_LANES:
         try:
