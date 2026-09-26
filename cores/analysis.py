@@ -300,7 +300,8 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                 chapter_inputs, company_name=company_name, company_code=company_code,
                 reference_date=reference_date, language=language, shared_reference=shared_reference,
                 peer_context=peer_context, report_context=covered_sections,
-                concurrency=min(3, _report_parallel_limit(3)) if parallel_enabled else 1)
+                concurrency=min(3, _report_parallel_limit(3)) if parallel_enabled else 1,
+                sector=dart_packet.get('sector_profile') if isinstance(dart_packet, dict) else None)
         except Exception as e:
             logger.warning('DART depth generation incomplete; preserving existing basic analysis without a new BUY gate',
                            exc_info=require_dart_depth)
@@ -309,6 +310,14 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                                                 f'{type(e).__name__}: {str(e)[:300]}')
             dart_chapter, dart_receipt = '', {'status': 'not_generated', 'calls': None}
         logger.info('DART chapter status=%s calls=%s', dart_receipt['status'], dart_receipt['calls'])
+        if dart_chapter and dart_receipt.get('budget_exceeded'):
+            # Delivered anyway; the cost overrun is a maintenance signal, not a failure.
+            source_receipt = chapter_inputs.get('receipt', {}) if isinstance(chapter_inputs, dict) else {}
+            from prism_core.ops_alert import send_ops_alert
+            await send_ops_alert(
+                f'[PRISM] DART 심층분석 비용 상한 초과 (발행됨)\n{company_name}({company_code}) 기준일 {reference_date}\n'
+                f"원문 {source_receipt.get('total_bytes', 0) // 1000}KB, 모델 메시지 "
+                f"{dart_receipt.get('message_bytes', 0) // 1000}KB, 호출 {dart_receipt['calls']}회")
         if dart_chapter:
             section_reports['dart_deep_analysis'] = dart_chapter
         else:
@@ -450,9 +459,12 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                 from prism_core.dart_balance_sheet import balance_sheet_series
                 balance_series = balance_sheet_series(chapter_inputs)
                 if balance_series:
+                    sector = dart_packet.get('sector_profile') if isinstance(dart_packet, dict) else None
+                    financial = isinstance(sector, dict) and sector.get('kind') == 'financial'
                     dart_balance_chart_html = get_chart_as_base64_html(
                         company_code, company_name, create_dart_balance_sheet_chart, 'Balance Sheet Structure',
-                        width=900, dpi=80, image_format='jpg', compress=True, series=balance_series)
+                        width=900, dpi=80, image_format='jpg', compress=True, series=balance_series,
+                        ratio='equity_to_assets' if financial else 'debt_to_equity')
                 else:
                     logger.info('DART balance-sheet chart omitted: totals not verifiable')
             except Exception as e:  # noqa: BLE001 - optional chart

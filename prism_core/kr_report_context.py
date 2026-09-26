@@ -57,8 +57,11 @@ def reference_context(prefetched, language='ko', *, market_only=False):
     reference = prefetched.get(key, '')
     dart = prefetched.get('official_dart', {})
     receipt = dart.get('public_receipt', '') if isinstance(dart, dict) and not market_only else ''
+    # Issuer-specific lens (financial/holding); empty for general issuers and the market section.
+    from prism_core.sector_profile import sector_lens
+    lens = sector_lens(dart.get('sector_profile'), language) if isinstance(dart, dict) and not market_only else ''
     return (report_narrative_contract(language) + financial_evidence_contract(language)
-            + '\n' + rules + '\n' + render_calendar_reference(prefetched.get('report_calendar_context'), language)
+            + '\n' + rules + lens + '\n' + render_calendar_reference(prefetched.get('report_calendar_context'), language)
             + '\n' + reference + '\n' + receipt)
 
 

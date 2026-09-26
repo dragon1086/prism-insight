@@ -100,3 +100,12 @@ def test_chart_closes_finance_subsection_inside_the_chapter():
     appended = _with_balance_chart(finance_only, '<img/>', 'ko')
     assert appended.index('본문') < appended.index('<img/>') < appended.index(CHAPTER_END)
     assert _with_balance_chart(chapter, None, 'ko') == chapter
+
+
+def test_financial_chart_uses_equity_to_assets_instead_of_debt_ratio():
+    from cores.stock_chart import create_dart_balance_sheet_chart
+    series = balance_sheet_series(_packet(_group('primary', _statement(INTERIM, INTERIM_ROWS)),
+                                          _group('annual_supplement', _statement(ANNUAL, ANNUAL_ROWS))))
+    fig = create_dart_balance_sheet_chart('105560', 'KB금융', series=series, ratio='equity_to_assets')
+    labels = [line.get_label() for ax in fig.axes for line in ax.get_lines()]
+    assert 'Equity-to-assets (%)' in labels and 'Debt-to-equity (%)' not in labels

@@ -185,3 +185,18 @@ def test_extreme_timezone_conversion_is_sanitized():
 def test_invalid_html_or_encoding_is_sanitized(body):
     result = run(lambda r: httpx.Response(200, content=body))
     assert result['reason'] == 'IDENTITY_LOOKUP_FAILED'
+
+
+@pytest.mark.parametrize('rows,expected', [
+    ('<tr><th>업종명</th><td>지주회사</td></tr>', '지주회사'),
+    ('', None),
+    ('<tr><th>업종명</th><td>국내은행</td></tr><tr><th>업종명</th><td>지주회사</td></tr>', None),
+])
+def test_official_industry_name_is_read_only_when_unique(rows, expected):
+    def handler(request):
+        body = (profile()[:-8] + rows + '</table>' if request.url.path.endswith('selectPopup.ax')
+                else catalog(('회사A', '12345678')))
+        return httpx.Response(200, text=body)
+    result = run(handler)
+    assert result['ticker_verified_from_company_profile'] is True
+    assert result.get('industry_name') == expected

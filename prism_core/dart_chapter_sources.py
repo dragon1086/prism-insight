@@ -18,7 +18,10 @@ WRITERS = ('finance', 'business', 'risks')
 # Per writer call. A larger writer context is split into sequential calls at
 # source-group boundaries, then (for one oversized filing) at heading blocks.
 WRITER_MAX_BYTES = 220000
+# Cost budget, not a gate: exceeding it still builds the chapter and is flagged
+# (receipt budget_exceeded) for a maintenance alert. Only the runaway ceiling blocks.
 TOTAL_MAX_BYTES = 900000
+HARD_TOTAL_MAX_BYTES = 3000000
 # Rendered source text per call. Wide tables expand 1.2-2x when rendered, so
 # parts are also bounded by what the model actually reads (the message cap
 # also holds the instruction, shared reference and a revision draft).
@@ -180,9 +183,9 @@ def _capacity(contexts, writer_max_bytes, total_max_bytes):
     split = {w: split_writer_context(contexts[w], writer_max_bytes) for w in WRITERS if contexts.get(w)}
     ok = (all(_fits(*_header_and_sources(p), writer_max_bytes, WRITER_RENDERED_MAX_BYTES)
               for items in split.values() for p in items)
-          and sum(sizes.values()) <= total_max_bytes)
+          and sum(sizes.values()) <= max(total_max_bytes, HARD_TOTAL_MAX_BYTES))
     parts = {w: [len(p.encode()) for p in items] for w, items in split.items()}
-    return sizes, {w: v for w, v in parts.items() if len(v) > 1}, ok
+    return sizes, {w: v for w, v in parts.items() if len(v) > 1}, ok, sum(sizes.values()) > total_max_bytes
 
 
 def _header_and_sources(part_json):
@@ -269,9 +272,10 @@ def enrich_dart_chapter_inputs(packet, *, writer_max_bytes=WRITER_MAX_BYTES,
         catalog_digests[writer] = before
         context['reading_aid_guide'] = _READING_AID_GUIDE
         contexts[writer] = _json(context)
-    sizes, part_bytes, capacity_ok = _capacity(contexts, writer_max_bytes, total_max_bytes)
+    sizes, part_bytes, capacity_ok, over_budget = _capacity(contexts, writer_max_bytes, total_max_bytes)
     result['receipt'].update(writer_bytes=sizes, total_bytes=sum(sizes.values()), writer_part_bytes=part_bytes,
                              writer_max_bytes=writer_max_bytes, total_max_bytes=total_max_bytes,
+                             budget_exceeded=over_budget,
                              capacity_ok=capacity_ok, reading_aid_version='wide16-explicit-header-v1',
                              reading_aid_catalog_sha256=catalog_digests)
     result['ready'] = bool(contexts) and capacity_ok
@@ -315,7 +319,7 @@ def build_dart_chapter_inputs(sources, *, collection_gaps=(), writer_max_bytes=W
     packet = _assemble(*args, supersede_annual=False)
     receipt = packet['receipt']
     # Prefer dropping restated annual material over an extra split call.
-    over = receipt['capacity_ok'] is False or receipt.get('writer_part_bytes')
+    over = receipt['capacity_ok'] is False or receipt.get('writer_part_bytes') or receipt.get('budget_exceeded')
     if over and not receipt['unsupported']:
         superseded = _assemble(*args, supersede_annual=True)
         if superseded['receipt']['superseded_annual_units']:
@@ -421,7 +425,7 @@ def _assemble(catalogs, metadata, registry, routed, collection_gaps, writer_max_
             contexts[writer] = _json({'notice': _NOTICE, 'codec_guide': CODEC_GUIDE,
                                      'grid_guide': GRID_GUIDE, 'role_inventory': shared_inventory,
                                      'sources': groups})
-    sizes, part_bytes, capacity_ok = _capacity(contexts, writer_max_bytes, total_max_bytes)
+    sizes, part_bytes, capacity_ok, over_budget = _capacity(contexts, writer_max_bytes, total_max_bytes)
     if superseded:
         collection_gaps += ('DART_ANNUAL_SUPPLEMENT_SUPERSEDED_FOR_CAPACITY',)
     receipt = {'version': 'dart-chapter-source-v1', 'source_count': len(catalogs),
@@ -432,7 +436,8 @@ def _assemble(catalogs, metadata, registry, routed, collection_gaps, writer_max_
                'writer_bytes': sizes, 'total_bytes': sum(sizes.values()), 'writer_part_bytes': part_bytes,
                'superseded_annual_units': superseded,
                'writer_max_bytes': writer_max_bytes, 'total_max_bytes': total_max_bytes,
-               'capacity_ok': capacity_ok, 'collection_gaps': list(collection_gaps),
+               'capacity_ok': capacity_ok, 'budget_exceeded': over_budget,
+               'collection_gaps': list(collection_gaps),
                'present_material_topics': {w: sorted(v) for w, v in topics.items()},
                'role_inventory': shared_inventory,
                'full_filing_coverage': False}

@@ -284,3 +284,14 @@ def test_split_writer_capacity_is_ready_and_single_oversized_group_is_not():
     # Below one indivisible unit plus its shared context nothing can fit.
     too_small = build_dart_chapter_inputs(sources, writer_max_bytes=2000)
     assert not too_small['ready'] and not too_small['contexts']
+
+
+def test_total_budget_is_flagged_not_blocking_until_the_runaway_ceiling(monkeypatch):
+    from prism_core import dart_chapter_sources as module
+    sources = [_filing_source('p', 'primary', 'LATEST'), _filing_source('q', 'primary', 'OTHER')]
+    roomy = build_dart_chapter_inputs(sources)
+    assert roomy['ready'] and roomy['receipt']['budget_exceeded'] is False
+    over = build_dart_chapter_inputs(sources, total_max_bytes=1000)
+    assert over['ready'] and over['receipt']['budget_exceeded'] is True
+    monkeypatch.setattr(module, 'HARD_TOTAL_MAX_BYTES', 1000)
+    assert not build_dart_chapter_inputs(sources, total_max_bytes=1000)['ready']
