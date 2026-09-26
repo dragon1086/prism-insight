@@ -273,7 +273,8 @@ _REIT_LENS = (
     '임차 비중, 임대차 잔여기간과 임대료 조정 조건, 차입금·사채의 만기 구조와 금리(고정·변동)와 리파이낸싱 일정, '
     '담보 제공과 차입 약정(LTV 등) 조건, 투자부동산 장부금액과 감정평가액·공정가치, 자산 편입·매각 계획과 유상증자 '
     '희석. FFO·LTV가 공시에 없으면 계산식과 사용한 원문 수치를 밝힌 경우에만 단순 계산하고, 그렇지 않으면 미확인으로 '
-    '남기세요. 일반 기업의 부채비율·영업이익률 기준만으로 건전성을 판단하지 마세요.\n',
+    '남기세요. 일반 기업의 부채비율·영업이익률 기준만으로 건전성을 판단하지 마세요. 리츠는 6개월 사업연도가 흔하므로 '
+    '6개월 기간의 사업보고서를 반기보고서나 반기 실적으로 부르지 말고, 공시의 보고서 종류와 사업연도(제N기)를 그대로 쓰세요.\n',
     'Sector lens (REIT): the issuer is an officially registered real-estate investment company that pays rental '
     'income out as dividends. Depreciation, fair-value changes and disposal gains move net income, so judge cash '
     'from leasing and dividend capacity rather than net income or P/E. Check within the disclosures: rental revenue '
@@ -283,7 +284,9 @@ _REIT_LENS = (
     'with refinancing dates, collateral and loan covenants (such as LTV), book value versus appraised or fair value '
     'of investment property, and planned acquisitions, disposals and dilutive rights offerings. Compute FFO or LTV '
     'only when you state the formula and source figures; otherwise leave them unverified. Do not judge soundness '
-    'by industrial debt-to-equity or operating-margin yardsticks alone.\n')
+    'by industrial debt-to-equity or operating-margin yardsticks alone. REITs often have six-month fiscal years: never '
+    'call a six-month annual report a half-year report or interim results; use the filing\'s report type and fiscal '
+    'period as stated.\n')
 
 
 def sector_lens(profile, language='ko'):
