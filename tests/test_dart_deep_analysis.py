@@ -245,5 +245,6 @@ def test_writers_gloss_filing_jargon_for_retail_readers():
         for sector in (None, {'kind': 'financial', 'subtype': 'bank'}, {'kind': 'loss_biotech'}):
             ko = writer_agent(role, '예시', '000000', '20260926', 'ko', sector).instruction
             assert PLAIN_LANGUAGE_RULE in ko and '괄호 안에 한 줄 이내의 쉬운 풀이' in ko
+            assert '예시에 없더라도' in ko and '환매조건부채권(RP)' in ko and '이연법인세' in ko
             en = writer_agent(role, 'Example', '000000', '20260926', 'en', sector).instruction
-            assert 'Write for retail investors unfamiliar with accounting terms' in en
+            assert 'Write for retail investors unfamiliar with accounting terms' in en and 'even one not listed' in en
