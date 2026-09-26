@@ -85,7 +85,7 @@ async def _alert_dart_depth_missing(company_code, company_name, reference_date, 
         f'로그: logs/subprocess/report_{company_code}_*.log')
 
 
-async def analyze_stock(company_code: str = "000660", company_name: str = "SK하이닉스", reference_date: str = None, language: str = "ko", macro_context: dict = None, *, require_dart_depth=False):
+async def analyze_stock(company_code: str = "000660", company_name: str = "SK하이닉스", reference_date: str = None, language: str = "ko", macro_context: dict = None, *, require_dart_depth=False, report_meta: dict = None):
     """
     Generate comprehensive stock analysis report
 
@@ -94,6 +94,7 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         company_name: Company name
         reference_date: Analysis reference date (YYYYMMDD format)
         language: Language code ("ko" or "en")
+        report_meta: Optional dict that receives ``sector_profile`` for the BUY step
 
     Returns:
         str: Generated final report markdown text
@@ -150,6 +151,8 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             profile = prefetched['official_dart'].get('sector_profile') or {}
             logger.info('DART sector profile kind=%s subtype=%s basis=%s',
                         profile.get('kind'), profile.get('subtype'), profile.get('basis'))
+            if report_meta is not None:
+                report_meta['sector_profile'] = dict(profile)
         except Exception:
             logger.warning('Official filing inputs unavailable; retaining existing report sources')
 

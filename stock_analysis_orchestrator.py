@@ -1410,6 +1410,7 @@ class StockAnalysisOrchestrator:
                             pdf_paths, chat_id, language, self.telegram_config,
                             trigger_results_file=trigger_results_file,
                             sector_names=kr_sector_names,
+                            report_meta=getattr(self, "report_meta", None),
                             market_regime=(macro_context or {}).get("market_regime"),
                             market_context={
                                 **(
@@ -1497,6 +1498,8 @@ class StockAnalysisOrchestrator:
             f"(bounded parallelism={concurrency})"
         )
         semaphore = asyncio.Semaphore(concurrency)
+        # Per-ticker report facts (sector profile) handed to the tracking agent in-process.
+        self.report_meta = {}
 
         async def generate_one(idx, ticker_info):
             # If ticker_info is a dict
@@ -1521,6 +1524,7 @@ class StockAnalysisOrchestrator:
                 # Import function directly from main.py
                 from cores.main import analyze_stock
 
+                report_meta = {}
                 async with semaphore:
                     logger.info(f"[{idx}/{len(tickers)}] Starting analyze_stock function call")
                     report = await analyze_stock(
@@ -1528,13 +1532,16 @@ class StockAnalysisOrchestrator:
                         company_name=company_name,
                         reference_date=reference_date,
                         language=language,
-                        macro_context=macro_context
+                        macro_context=macro_context,
+                        report_meta=report_meta,
                     )
 
                 # Save result
                 if report and len(report.strip()) > 0:
                     with open(output_file, "w", encoding="utf-8") as f:
                         f.write(report)
+                    if report_meta:
+                        self.report_meta[ticker] = report_meta
                     logger.info(f"[{idx}/{len(tickers)}] Report generation complete: {company_name}({ticker}) - {len(report)} characters")
                     return output_file
                 else:
