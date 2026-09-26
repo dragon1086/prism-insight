@@ -70,3 +70,29 @@ def test_today_only_preopen_is_empty_without_provider_call(monkeypatch, flow_sou
     frame = market_data.get_market_trading_volume_by_date("20260924", "20260924", "017670")
     assert frame.empty
     assert flow_source.calls == []
+
+
+def set_datetime(monkeypatch, stamp):
+    monkeypatch.setattr(
+        market_data, "_now_kst",
+        lambda: pd.Timestamp(stamp, tz="Asia/Seoul").to_pydatetime(),
+    )
+
+
+# KIS rejects an as-of of today before 15:40 on every calendar day
+# ("TIME LIMIT 00:00 ~ 15:40"), not only on weekdays. 2026-09-26 is a Saturday.
+@pytest.mark.parametrize("stamp", ["2026-09-26 00:26", "2026-09-26 09:25",
+                                   "2026-09-27 15:39"])
+def test_weekend_before_cutoff_uses_yesterday_as_of_without_estimate(
+        monkeypatch, flow_source, stamp):
+    set_datetime(monkeypatch, stamp)
+    today = pd.Timestamp(stamp).strftime("%Y%m%d")
+    yesterday = (pd.Timestamp(stamp) - pd.Timedelta(days=1)).strftime("%Y%m%d")
+    market_data.get_market_trading_volume_by_date("20260826", today, "252990")
+    assert flow_source.calls == [("daily", "252990", "20260826", yesterday)]
+
+
+def test_weekend_after_cutoff_keeps_today_as_of(monkeypatch, flow_source):
+    set_datetime(monkeypatch, "2026-09-26 15:40")
+    market_data.get_market_trading_volume_by_date("20260826", "20260926", "252990")
+    assert flow_source.calls == [("daily", "252990", "20260826", "20260926")]
