@@ -586,7 +586,7 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                     final_report += chart_title
                     if market_cap_chart_html:
                         if market_cap_chart_is_earnings:
-                            chart_subtitle = "#### 연간 실적 추이\n\n" if language == "ko" else "#### Annual Earnings Trend\n\n"
+                            chart_subtitle = "#### 연간 실적 추이 분석\n\n" if language == "ko" else "#### Annual Earnings Trend\n\n"
                         else:
                             chart_subtitle = "#### 시가총액 추이\n\n" if language == "ko" else "#### Market Cap Trend\n\n"
                         final_report += chart_subtitle + market_cap_chart_html + "\n\n"
