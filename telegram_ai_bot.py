@@ -49,7 +49,7 @@ from report_generator import (
     get_cached_us_report, generate_journal_conversation_response,
     generate_firecrawl_search_response, generate_firecrawl_followup_response,
     get_recent_evaluation_report,
-    REPORT_FAILURE_MESSAGE, _is_cacheable_report,
+    REPORT_FAILURE_MESSAGE, _is_deliverable_report,
 )
 from tracking.user_memory import UserMemoryManager
 from firecrawl_client import firecrawl_agent
@@ -792,7 +792,7 @@ class TelegramAIBot:
         if request.status == "failed":
             return True
         if request.status == "completed":
-            return not _is_cacheable_report(request.result)
+            return not _is_deliverable_report(request.result)
         return False
 
     def load_stock_map(self):
