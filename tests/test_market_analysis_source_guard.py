@@ -101,3 +101,28 @@ def test_real_factory_only_deduplicates_macro_when_shared_context_exists():
         assert agent.server_names == ([] if available else ["perplexity"])
     source = (ROOT / "prism-us/cores/us_analysis.py").read_text()
     assert 'prefetched["shared_macro_available"] = bool(macro_context)' in source
+
+
+def test_one_dangling_citation_drops_only_its_paragraph_not_the_section():
+    linked = ('### 4. 시장 분석\n\n' + 'KOSPI는 7,080.92로 0.90% 상승했고 반도체 강세가 이어졌습니다. ' * 4
+              + '[1](https://www.newspim.com/news/view/20260923000946)')
+    table = '| 지수 | 종가 |\n|---|---|\n| KOSPI | 7,080.92 |'
+    prose = linked + '\n\n연준이 25bp 인하했습니다[2][3].\n\n' + table
+    text = public_market_analysis(prose, None, require_citation_integrity=True)
+    assert text.startswith(linked) and table in text
+    assert '25bp' not in text and '[2]' not in text
+    assert text.endswith('출처 연결이 확인되지 않은 일부 시장 서술은 제외했습니다.')
+
+
+@pytest.mark.parametrize('prose', [
+    'Claim [1, 2]\n\n[1]: https://www.bok.or.kr/a\n[2]: https://www.newspim.com/b',
+    'Claim [1-2]\n\n[1]: <https://www.bok.or.kr/a>\n[2]: <https://www.newspim.com/b>',
+    'Claim [1](<https://www.bok.or.kr/a>)',
+])
+def test_grouped_ranged_and_angle_bracket_references_resolve(prose):
+    assert public_market_analysis(prose, None, require_citation_integrity=True) == prose
+
+
+def test_grouped_citation_with_one_missing_number_is_unresolved():
+    prose = 'Claim [1, 3]\n\n[1]: https://www.bok.or.kr/a'
+    assert '제외했습니다' in public_market_analysis(prose, None, require_citation_integrity=True)
