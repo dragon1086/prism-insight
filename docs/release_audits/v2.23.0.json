@@ -1,0 +1,3871 @@
+{
+  "schema_version": 1,
+  "release": "v2.23.0",
+  "previous_tag": "v2.22.0",
+  "previous_tag_commit": "60a0c8cdfd69339809da7cc27cfdbeaa1d6407ec",
+  "source_cutoff": "62dd941410b946565ea1d99b6af733407a7351ee",
+  "source_range": "v2.22.0..62dd941410b946565ea1d99b6af733407a7351ee",
+  "release_preparation_commits_excluded": true,
+  "method": "Every reachable source commit reviewed once, weight=1; one primary category per nonmerge commit, merges counted separately. Dates, churn, author and recency do not alter weight. Related commits and scoped backports are explained as grouped work, not repeated features. PR association uses merge-first-parent..merge-second-parent reachability (nested PR merges included), not title guessing; a commit carried by both a nested PR and an integration PR takes the nested PR category.",
+  "counts": {
+    "all": 226,
+    "nonmerge": 156,
+    "merge": 70,
+    "pr_merges": 61,
+    "other_merges": 9,
+    "direct_nonmerge": 5
+  },
+  "diff": {
+    "files": 357,
+    "insertions": 47369,
+    "deletions": 1850
+  },
+  "categories": {
+    "btc": 18,
+    "merge": 70,
+    "ops_governance": 7,
+    "shadow_observability": 6,
+    "screening_data": 16,
+    "market_evidence": 9,
+    "report_us": 19,
+    "report_quality": 45,
+    "report_kr_dart": 29,
+    "sector_aware": 7
+  },
+  "periods": [
+    {
+      "start": "2026-09-15",
+      "end": "2026-09-16",
+      "total": 39,
+      "nonmerge": 24,
+      "merge": 15
+    },
+    {
+      "start": "2026-09-17",
+      "end": "2026-09-22",
+      "total": 30,
+      "nonmerge": 24,
+      "merge": 6
+    },
+    {
+      "start": "2026-09-23",
+      "end": "2026-09-24",
+      "total": 76,
+      "nonmerge": 60,
+      "merge": 16
+    },
+    {
+      "start": "2026-09-25",
+      "end": "2026-09-27",
+      "total": 81,
+      "nonmerge": 48,
+      "merge": 33
+    }
+  ],
+  "commits": [
+    {
+      "sha": "2c154ad70362bdaa5232db6af689da78be7d0129",
+      "date": "2026-09-15T10:11:24+09:00",
+      "parents": [
+        "60a0c8cdfd69339809da7cc27cfdbeaa1d6407ec"
+      ],
+      "subject": "fix: recover exact BTC swing fills and isolate operational alerts",
+      "prs": [
+        731
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "7b28f55a8513c16982ebc3548cd06417e0023b34",
+      "date": "2026-09-15T10:15:51+09:00",
+      "parents": [
+        "60a0c8cdfd69339809da7cc27cfdbeaa1d6407ec",
+        "2c154ad70362bdaa5232db6af689da78be7d0129"
+      ],
+      "subject": "Merge pull request #731 from dragon1086/fix/btc-swing-recovery-alert",
+      "prs": [
+        731
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "23f676a89d42d4a66c8564a209e9f3b84d925822",
+      "date": "2026-09-15T10:20:32+09:00",
+      "parents": [
+        "7b28f55a8513c16982ebc3548cd06417e0023b34"
+      ],
+      "subject": "docs: record verified BTC swing entry recovery and private delivery",
+      "prs": [
+        732
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "6473c39e8bcbd25c79e97f83ee2946b95cd25681",
+      "date": "2026-09-15T10:25:26+09:00",
+      "parents": [
+        "7b28f55a8513c16982ebc3548cd06417e0023b34",
+        "23f676a89d42d4a66c8564a209e9f3b84d925822"
+      ],
+      "subject": "Merge pull request #732 from dragon1086/docs/btc-swing-incident-recovery",
+      "prs": [
+        732
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "8afb176c6d443d8702f0cee7d3867454cd92bb24",
+      "date": "2026-09-15T10:31:26+09:00",
+      "parents": [
+        "6473c39e8bcbd25c79e97f83ee2946b95cd25681"
+      ],
+      "subject": "docs: require strategy-fit and regime-attribution review before adoption",
+      "prs": [
+        733
+      ],
+      "category": "ops_governance",
+      "weight": 1
+    },
+    {
+      "sha": "e95a28e7acc53f9d51759cc6d49058b637fc9b2b",
+      "date": "2026-09-15T10:34:54+09:00",
+      "parents": [
+        "6473c39e8bcbd25c79e97f83ee2946b95cd25681",
+        "8afb176c6d443d8702f0cee7d3867454cd92bb24"
+      ],
+      "subject": "Merge pull request #733 from dragon1086/docs/strategy-adoption-fit-gate",
+      "prs": [
+        733
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "c3c558b06d7ce9306d0182d7d4fab3a3a063faf1",
+      "date": "2026-09-15T10:47:48+09:00",
+      "parents": [
+        "e95a28e7acc53f9d51759cc6d49058b637fc9b2b"
+      ],
+      "subject": "fix: publish recovered BTC swing entries through durable public notices",
+      "prs": [
+        734
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "b2191b572de54bfc2a44458b5ed86f0a01c59a3a",
+      "date": "2026-09-15T10:52:01+09:00",
+      "parents": [
+        "e95a28e7acc53f9d51759cc6d49058b637fc9b2b",
+        "c3c558b06d7ce9306d0182d7d4fab3a3a063faf1"
+      ],
+      "subject": "Merge pull request #734 from dragon1086/fix/btc-recovered-entry-announcement",
+      "prs": [
+        734
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "1a6d475468b3465a3ff999ef1f2af71c1ce70b43",
+      "date": "2026-09-15T11:02:32+09:00",
+      "parents": [
+        "b2191b572de54bfc2a44458b5ed86f0a01c59a3a"
+      ],
+      "subject": "fix: distinguish historical BTC alarm counts from current tick context",
+      "prs": [
+        735
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "eb8c70a41ae8073d9cc676250162469806f4d2cc",
+      "date": "2026-09-15T11:05:29+09:00",
+      "parents": [
+        "1a6d475468b3465a3ff999ef1f2af71c1ce70b43"
+      ],
+      "subject": "fix: return explicit unknown completion context on read failure",
+      "prs": [
+        735
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "49da686617ea710949d917927b1f3d7ab94fe0de",
+      "date": "2026-09-15T11:09:44+09:00",
+      "parents": [
+        "b2191b572de54bfc2a44458b5ed86f0a01c59a3a",
+        "eb8c70a41ae8073d9cc676250162469806f4d2cc"
+      ],
+      "subject": "Merge pull request #735 from dragon1086/fix/btc-health-alert-time-context",
+      "prs": [
+        735
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "b6e53f8dad5e3230eb427b760debffdb05f3e2b0",
+      "date": "2026-09-15T11:15:09+09:00",
+      "parents": [
+        "49da686617ea710949d917927b1f3d7ab94fe0de"
+      ],
+      "subject": "docs: require screening and trading-agent compatibility trace",
+      "prs": [
+        736
+      ],
+      "category": "ops_governance",
+      "weight": 1
+    },
+    {
+      "sha": "ff3fa582f7ab4ecf8a91cdb8907c86a1575b5d62",
+      "date": "2026-09-15T11:18:43+09:00",
+      "parents": [
+        "49da686617ea710949d917927b1f3d7ab94fe0de",
+        "b6e53f8dad5e3230eb427b760debffdb05f3e2b0"
+      ],
+      "subject": "Merge pull request #736 from dragon1086/docs/screening-agent-compatibility-gate",
+      "prs": [
+        736
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "54e52abf2c373cbffff1c8bf8697d25e475960af",
+      "date": "2026-09-15T11:42:04+09:00",
+      "parents": [
+        "ff3fa582f7ab4ecf8a91cdb8907c86a1575b5d62"
+      ],
+      "subject": "fix(btc): restore verified account and position details in trade notices",
+      "prs": [
+        737
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "15a1142feba701be5b41d3e7f110c488e3a9f83e",
+      "date": "2026-09-15T11:44:07+09:00",
+      "parents": [
+        "54e52abf2c373cbffff1c8bf8697d25e475960af"
+      ],
+      "subject": "fix(btc): return unknown explicitly on optional snapshot failures",
+      "prs": [
+        737
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "4673855822461a897b70de43fe2ddaf4e1170d09",
+      "date": "2026-09-15T11:49:08+09:00",
+      "parents": [
+        "ff3fa582f7ab4ecf8a91cdb8907c86a1575b5d62",
+        "15a1142feba701be5b41d3e7f110c488e3a9f83e"
+      ],
+      "subject": "Merge pull request #737 from dragon1086/fix/btc-position-message-details",
+      "prs": [
+        737
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "9577c473830bac6e11674c3572f474f25228efbb",
+      "date": "2026-09-15T17:39:23+09:00",
+      "parents": [
+        "4673855822461a897b70de43fe2ddaf4e1170d09"
+      ],
+      "subject": "fix(btc): prioritize margin usage against operating capital",
+      "prs": [
+        738
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "205154389cdf24d7dab20ab0ae0c54ed8018cb7d",
+      "date": "2026-09-15T17:44:34+09:00",
+      "parents": [
+        "4673855822461a897b70de43fe2ddaf4e1170d09",
+        "9577c473830bac6e11674c3572f474f25228efbb"
+      ],
+      "subject": "Merge pull request #738 from dragon1086/fix/btc-operating-capital-notice",
+      "prs": [
+        738
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "fe3001cb121c8967fa8e3d21510da132004452e2",
+      "date": "2026-09-15T18:51:08+09:00",
+      "parents": [
+        "205154389cdf24d7dab20ab0ae0c54ed8018cb7d"
+      ],
+      "subject": "fix(btc): guard shared demo entries with margin and capital stress checks",
+      "prs": [
+        739
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "9e5f7d4cca8b68b6f19ac207455e21c4e5b16cb1",
+      "date": "2026-09-15T18:55:01+09:00",
+      "parents": [
+        "205154389cdf24d7dab20ab0ae0c54ed8018cb7d",
+        "fe3001cb121c8967fa8e3d21510da132004452e2"
+      ],
+      "subject": "Merge pull request #739 from dragon1086/fix/btc-liquidation-risk-guard",
+      "prs": [
+        739
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "ee61c919949dd0e7f98abda2e573d0b3e64e5d43",
+      "date": "2026-09-15T19:09:08+09:00",
+      "parents": [
+        "9e5f7d4cca8b68b6f19ac207455e21c4e5b16cb1"
+      ],
+      "subject": "fix(btc): make public trade notices concise and restore settled leverage",
+      "prs": [
+        740
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "318c0007642a92a6cb57ee3e293043deef8d8edd",
+      "date": "2026-09-15T19:13:19+09:00",
+      "parents": [
+        "9e5f7d4cca8b68b6f19ac207455e21c4e5b16cb1",
+        "ee61c919949dd0e7f98abda2e573d0b3e64e5d43"
+      ],
+      "subject": "Merge pull request #740 from dragon1086/fix/btc-readable-trade-notices",
+      "prs": [
+        740
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "4e61687ca8935aaac935a0ce79cee9ac77486df5",
+      "date": "2026-09-16T00:57:32+09:00",
+      "parents": [
+        "318c0007642a92a6cb57ee3e293043deef8d8edd"
+      ],
+      "subject": "feat(shadow): track ONeil candidates and link existing micro-split scouts",
+      "prs": [
+        741
+      ],
+      "category": "shadow_observability",
+      "weight": 1
+    },
+    {
+      "sha": "45a558eaba9744993a59d4b4206fa74631847a5a",
+      "date": "2026-09-16T01:00:39+09:00",
+      "parents": [
+        "4e61687ca8935aaac935a0ce79cee9ac77486df5"
+      ],
+      "subject": "fix(shadow): fail closed on malformed watchlist override",
+      "prs": [
+        741
+      ],
+      "category": "shadow_observability",
+      "weight": 1
+    },
+    {
+      "sha": "79bd9b7c536a644362c00d8cef5efccbe7106c9a",
+      "date": "2026-09-16T01:06:08+09:00",
+      "parents": [
+        "45a558eaba9744993a59d4b4206fa74631847a5a"
+      ],
+      "subject": "test(shadow): verify fixed no-shell collector boundary",
+      "prs": [
+        741
+      ],
+      "category": "shadow_observability",
+      "weight": 1
+    },
+    {
+      "sha": "bac1f27cf09be104338461edf4d426e16e1d0867",
+      "date": "2026-09-16T01:09:37+09:00",
+      "parents": [
+        "79bd9b7c536a644362c00d8cef5efccbe7106c9a"
+      ],
+      "subject": "feat(shadow): retain facts used in readiness comparisons",
+      "prs": [
+        741
+      ],
+      "category": "shadow_observability",
+      "weight": 1
+    },
+    {
+      "sha": "b0953ced13d26f35fdc23b55c7fd75cdbf2a7cfc",
+      "date": "2026-09-16T01:13:14+09:00",
+      "parents": [
+        "318c0007642a92a6cb57ee3e293043deef8d8edd",
+        "bac1f27cf09be104338461edf4d426e16e1d0867"
+      ],
+      "subject": "Merge pull request #741 from dragon1086/feat/oneil-watchlist-micro-shadow",
+      "prs": [
+        741
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "111aabae5ed53dc3a8d0691c9dd2c6a3b18f371d",
+      "date": "2026-09-16T09:36:37+09:00",
+      "parents": [
+        "b0953ced13d26f35fdc23b55c7fd75cdbf2a7cfc"
+      ],
+      "subject": "fix(ops): classify expired BTC credentials and preserve delivery diagnostics",
+      "prs": [
+        743
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "359dec3c122e641f9f91323b1d7c07773e07fdea",
+      "date": "2026-09-16T09:38:25+09:00",
+      "parents": [
+        "111aabae5ed53dc3a8d0691c9dd2c6a3b18f371d"
+      ],
+      "subject": "test(btc): match deployed pybit exception signature",
+      "prs": [
+        743
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "da30c9d23898567de5e1e12ee32a78a14b8db4ac",
+      "date": "2026-09-16T09:59:55+09:00",
+      "parents": [
+        "b0953ced13d26f35fdc23b55c7fd75cdbf2a7cfc"
+      ],
+      "subject": "fix(kr): reconcile KIS bonus-rights snapshots without losing raw evidence",
+      "prs": [
+        744
+      ],
+      "category": "screening_data",
+      "weight": 1
+    },
+    {
+      "sha": "e028f37d32f354436be531fcafed659d2dfb4f76",
+      "date": "2026-09-16T10:16:18+09:00",
+      "parents": [
+        "b0953ced13d26f35fdc23b55c7fd75cdbf2a7cfc",
+        "da30c9d23898567de5e1e12ee32a78a14b8db4ac"
+      ],
+      "subject": "Merge pull request #744 from dragon1086/fix/kr-master-session-20260916",
+      "prs": [
+        744
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "b75896b7d0873f6e62767bb9c16c2839abb10ab4",
+      "date": "2026-09-16T10:18:17+09:00",
+      "parents": [
+        "359dec3c122e641f9f91323b1d7c07773e07fdea",
+        "e028f37d32f354436be531fcafed659d2dfb4f76"
+      ],
+      "subject": "Merge remote-tracking branch 'origin/main' into fix/btc-recovery-incident-20260916",
+      "prs": [
+        743
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "d715e363e1dff180a8a300759d39707999afc98a",
+      "date": "2026-09-16T10:19:33+09:00",
+      "parents": [
+        "b75896b7d0873f6e62767bb9c16c2839abb10ab4"
+      ],
+      "subject": "fix(btc): retain void recovery contract in auth wrappers",
+      "prs": [
+        743
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "f5f7761aef388c414b75a3df289430f0c796a7d9",
+      "date": "2026-09-16T10:22:36+09:00",
+      "parents": [
+        "d715e363e1dff180a8a300759d39707999afc98a"
+      ],
+      "subject": "fix(btc): distinguish expiry history from unresolved recovery",
+      "prs": [
+        743
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "a48656719c47b86ccb1cb600ea31f368d2648d03",
+      "date": "2026-09-16T10:27:22+09:00",
+      "parents": [
+        "f5f7761aef388c414b75a3df289430f0c796a7d9"
+      ],
+      "subject": "fix(telegram): preserve compatibility with already-loaded delivery helpers",
+      "prs": [
+        743
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "e6df1ba564d9df7d219623be2c414e01b21553f9",
+      "date": "2026-09-16T10:31:34+09:00",
+      "parents": [
+        "e028f37d32f354436be531fcafed659d2dfb4f76",
+        "a48656719c47b86ccb1cb600ea31f368d2648d03"
+      ],
+      "subject": "Merge pull request #743 from dragon1086/fix/btc-recovery-incident-20260916",
+      "prs": [
+        743
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "12cc3138141cea67eaba9f3168768babb7932ba3",
+      "date": "2026-09-16T11:37:48+09:00",
+      "parents": [
+        "e6df1ba564d9df7d219623be2c414e01b21553f9"
+      ],
+      "subject": "feat(shadow): observe KR and US watchlist outcomes with exact provenance",
+      "prs": [
+        745
+      ],
+      "category": "shadow_observability",
+      "weight": 1
+    },
+    {
+      "sha": "22d49a263bc131f67f083dc55edd5345680030ad",
+      "date": "2026-09-16T11:40:32+09:00",
+      "parents": [
+        "12cc3138141cea67eaba9f3168768babb7932ba3"
+      ],
+      "subject": "fix(shadow): diagnose optional KIS history failure safely",
+      "prs": [
+        745
+      ],
+      "category": "shadow_observability",
+      "weight": 1
+    },
+    {
+      "sha": "03021932c0870fe45156c85fd86260fb1cc88c5e",
+      "date": "2026-09-16T11:45:28+09:00",
+      "parents": [
+        "e6df1ba564d9df7d219623be2c414e01b21553f9",
+        "22d49a263bc131f67f083dc55edd5345680030ad"
+      ],
+      "subject": "Merge pull request #745 from dragon1086/feat/kr-us-watchlist-shadow-evidence",
+      "prs": [
+        745
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "2b945cf6cb9a0fac47d29bea6d5bda23d246a781",
+      "date": "2026-09-17T18:16:27+09:00",
+      "parents": [
+        "22d49a263bc131f67f083dc55edd5345680030ad"
+      ],
+      "subject": "research: audit competitive evidence and prototype bounded prefetch packets",
+      "prs": [
+        747
+      ],
+      "category": "market_evidence",
+      "weight": 1
+    },
+    {
+      "sha": "5680fa01f6bc3767ce69beea3c9831bd9d3b57a2",
+      "date": "2026-09-18T00:24:20+09:00",
+      "parents": [
+        "2b945cf6cb9a0fac47d29bea6d5bda23d246a781"
+      ],
+      "subject": "research: validate TradingView payloads and document staged-entry readiness",
+      "prs": [
+        747
+      ],
+      "category": "market_evidence",
+      "weight": 1
+    },
+    {
+      "sha": "d711587d42fe2b81a73061f7f78e71a87391fa6b",
+      "date": "2026-09-18T00:52:58+09:00",
+      "parents": [
+        "5680fa01f6bc3767ce69beea3c9831bd9d3b57a2"
+      ],
+      "subject": "docs: plan shared market intelligence and screening BUY alignment",
+      "prs": [
+        747
+      ],
+      "category": "market_evidence",
+      "weight": 1
+    },
+    {
+      "sha": "2a59d03589f959d2588791b06358216aaca70afe",
+      "date": "2026-09-18T01:18:45+09:00",
+      "parents": [
+        "d711587d42fe2b81a73061f7f78e71a87391fa6b"
+      ],
+      "subject": "feat: share bounded market evidence and correct target provenance across KR and US",
+      "prs": [
+        747
+      ],
+      "category": "market_evidence",
+      "weight": 1
+    },
+    {
+      "sha": "0ef4b0de26a1247a7300682ee462bc124a9d6a1d",
+      "date": "2026-09-18T01:18:45+09:00",
+      "parents": [
+        "2a59d03589f959d2588791b06358216aaca70afe",
+        "03021932c0870fe45156c85fd86260fb1cc88c5e"
+      ],
+      "subject": "Merge remote-tracking branch 'origin/main' into research/competitive-prefetch-validation",
+      "prs": [
+        747
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "e4db2629c48dfa70cf86d38355840dd15a3396db",
+      "date": "2026-09-18T01:22:29+09:00",
+      "parents": [
+        "0ef4b0de26a1247a7300682ee462bc124a9d6a1d"
+      ],
+      "subject": "fix: harden optional evidence boundaries and integration fixtures",
+      "prs": [
+        747
+      ],
+      "category": "market_evidence",
+      "weight": 1
+    },
+    {
+      "sha": "e24f3f22cf668dc58862401f84cb3f38656da69d",
+      "date": "2026-09-18T01:26:24+09:00",
+      "parents": [
+        "e4db2629c48dfa70cf86d38355840dd15a3396db"
+      ],
+      "subject": "docs: record original-plan gaps and real enrichment validation; validate collector arguments",
+      "prs": [
+        747
+      ],
+      "category": "market_evidence",
+      "weight": 1
+    },
+    {
+      "sha": "954b2ea2d6ca32bd69cf15fc7b8da8dcd04f3cb2",
+      "date": "2026-09-18T01:32:26+09:00",
+      "parents": [
+        "e24f3f22cf668dc58862401f84cb3f38656da69d"
+      ],
+      "subject": "test: preserve reviewed BUY prompt tripwires and record paired quality gate results",
+      "prs": [
+        747
+      ],
+      "category": "market_evidence",
+      "weight": 1
+    },
+    {
+      "sha": "bb6fab4580b39bfb33ee59bf8779183b8f83d18c",
+      "date": "2026-09-18T01:37:03+09:00",
+      "parents": [
+        "03021932c0870fe45156c85fd86260fb1cc88c5e",
+        "954b2ea2d6ca32bd69cf15fc7b8da8dcd04f3cb2"
+      ],
+      "subject": "Merge pull request #747 from dragon1086/research/competitive-prefetch-validation",
+      "prs": [
+        747
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "efb7639d744ab3a4a60a4764697f49916a7a23b7",
+      "date": "2026-09-18T02:07:56+09:00",
+      "parents": [
+        "bb6fab4580b39bfb33ee59bf8779183b8f83d18c"
+      ],
+      "subject": "fix: make US macro MCP setup reproducible and allow bounded report payloads",
+      "prs": [
+        748
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "c67c5c015ac1abda2f41dc65a2228e53df0b4a65",
+      "date": "2026-09-18T02:28:01+09:00",
+      "parents": [
+        "efb7639d744ab3a4a60a4764697f49916a7a23b7"
+      ],
+      "subject": "fix: share one market report per batch and guard public source linkage",
+      "prs": [
+        748
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "d71f4668dd7e36d47f2b0bbb6c6ed700c68c9719",
+      "date": "2026-09-18T02:34:02+09:00",
+      "parents": [
+        "c67c5c015ac1abda2f41dc65a2228e53df0b4a65"
+      ],
+      "subject": "fix: restore Nasdaq-100 constituents after source page migration",
+      "prs": [
+        748
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "92615c9ee1eb9e95d3cf2f5863b586da1d423df5",
+      "date": "2026-09-18T02:54:29+09:00",
+      "parents": [
+        "d71f4668dd7e36d47f2b0bbb6c6ed700c68c9719"
+      ],
+      "subject": "fix: guard market evidence before report synthesis and remove duplicate macro research",
+      "prs": [
+        748
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "cb1c0c249510eb6f031566dee8a5150492fb03a9",
+      "date": "2026-09-18T03:02:50+09:00",
+      "parents": [
+        "92615c9ee1eb9e95d3cf2f5863b586da1d423df5"
+      ],
+      "subject": "fix: preserve standalone report macro research while sharing batch analysis",
+      "prs": [
+        748
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "f44a9b65bb7da1a3ced1d088731588045736d468",
+      "date": "2026-09-18T03:18:28+09:00",
+      "parents": [
+        "cb1c0c249510eb6f031566dee8a5150492fb03a9"
+      ],
+      "subject": "docs: record real US pipeline runs, final report comparison and remaining gaps",
+      "prs": [
+        748
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "4bd5ca9b18c5a6ff8baebc8b178a8e7c180955be",
+      "date": "2026-09-18T03:23:31+09:00",
+      "parents": [
+        "bb6fab4580b39bfb33ee59bf8779183b8f83d18c",
+        "f44a9b65bb7da1a3ced1d088731588045736d468"
+      ],
+      "subject": "Merge pull request #748 from dragon1086/test/us-full-pipeline-validation",
+      "prs": [
+        748
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "2fa3eef12e7dd6ed117d3f9eef584cb3c65e6d31",
+      "date": "2026-09-18T03:28:10+09:00",
+      "parents": [
+        "4bd5ca9b18c5a6ff8baebc8b178a8e7c180955be"
+      ],
+      "subject": "fix: count recovered MCP failures from status and clarify validation evidence",
+      "prs": [
+        749
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "c8d14f778e5c280333a3101420211b767b60aa3a",
+      "date": "2026-09-18T03:35:07+09:00",
+      "parents": [
+        "4bd5ca9b18c5a6ff8baebc8b178a8e7c180955be",
+        "2fa3eef12e7dd6ed117d3f9eef584cb3c65e6d31"
+      ],
+      "subject": "Merge pull request #749 from dragon1086/fix/us-validation-retry-accounting",
+      "prs": [
+        749
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "3f29519583f8e3391179b7881ec590dc3eef423b",
+      "date": "2026-09-18T06:28:18+09:00",
+      "parents": [
+        "2fa3eef12e7dd6ed117d3f9eef584cb3c65e6d31"
+      ],
+      "subject": "fix: preserve comparative research evidence and scope validated enrichment",
+      "prs": [
+        750
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "8ab918c4f4b9d61f6911ebb0be4253e47590dafe",
+      "date": "2026-09-18T06:35:19+09:00",
+      "parents": [
+        "3f29519583f8e3391179b7881ec590dc3eef423b"
+      ],
+      "subject": "fix: remove conflicting citation rules and preserve research toggle isolation",
+      "prs": [
+        750
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "63930364e2fea3a526e9de81b5ffa6325d75aaf4",
+      "date": "2026-09-18T06:46:08+09:00",
+      "parents": [
+        "8ab918c4f4b9d61f6911ebb0be4253e47590dafe"
+      ],
+      "subject": "docs: record report-quality evidence, scoped approval and remaining defects",
+      "prs": [
+        750
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "f586cc9b9a452a76086ef9bbd5485691b107e3fa",
+      "date": "2026-09-18T06:52:20+09:00",
+      "parents": [
+        "c8d14f778e5c280333a3101420211b767b60aa3a",
+        "63930364e2fea3a526e9de81b5ffa6325d75aaf4"
+      ],
+      "subject": "Merge pull request #750 from dragon1086/fix/research-excerpt-integrity",
+      "prs": [
+        750
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "f2f8312ff54af253937788ae8c36efc5316d02d4",
+      "date": "2026-09-18T12:01:46+09:00",
+      "parents": [
+        "f586cc9b9a452a76086ef9bbd5485691b107e3fa"
+      ],
+      "subject": "Protect isolated feature work from accidental tracking",
+      "prs": [],
+      "category": "ops_governance",
+      "weight": 1
+    },
+    {
+      "sha": "8e0db4fc0e61a269de8825d691cb1b754341c170",
+      "date": "2026-09-18T12:17:55+09:00",
+      "parents": [
+        "f2f8312ff54af253937788ae8c36efc5316d02d4"
+      ],
+      "subject": "Ground Telegram summaries before model execution",
+      "prs": [],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "6cc1778543d7f03614fc97f07517c3322e9baf21",
+      "date": "2026-09-18T12:24:26+09:00",
+      "parents": [
+        "8e0db4fc0e61a269de8825d691cb1b754341c170"
+      ],
+      "subject": "Preserve summaries when evaluation is unavailable",
+      "prs": [],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "bd8df83082eab91ce7c2fb3464c301ecf89c4550",
+      "date": "2026-09-18T12:32:49+09:00",
+      "parents": [
+        "6cc1778543d7f03614fc97f07517c3322e9baf21"
+      ],
+      "subject": "Separate report evidence from current market cap",
+      "prs": [],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "47b58e1556b066af9a652d1dc6d7b7a1ddf3be2d",
+      "date": "2026-09-18T12:35:08+09:00",
+      "parents": [
+        "bd8df83082eab91ce7c2fb3464c301ecf89c4550"
+      ],
+      "subject": "Keep summary evidence and quality gates explicit",
+      "prs": [],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "752bd3c7d8314e8795d9915e50bd1e3c7af94fb5",
+      "date": "2026-09-22T21:10:01+09:00",
+      "parents": [
+        "47b58e1556b066af9a652d1dc6d7b7a1ddf3be2d"
+      ],
+      "subject": "fix: validate paid-rights KIS snapshots",
+      "prs": [
+        754
+      ],
+      "category": "screening_data",
+      "weight": 1
+    },
+    {
+      "sha": "c57dfde3f414f11bb36ff0807b022a922965bf34",
+      "date": "2026-09-22T21:14:41+09:00",
+      "parents": [
+        "752bd3c7d8314e8795d9915e50bd1e3c7af94fb5"
+      ],
+      "subject": "test: isolate volatility shadow mode",
+      "prs": [
+        754
+      ],
+      "category": "screening_data",
+      "weight": 1
+    },
+    {
+      "sha": "264fd487fb6f91207efd864eaa97c79aa29a6b3c",
+      "date": "2026-09-22T21:19:50+09:00",
+      "parents": [
+        "47b58e1556b066af9a652d1dc6d7b7a1ddf3be2d",
+        "c57dfde3f414f11bb36ff0807b022a922965bf34"
+      ],
+      "subject": "Merge pull request #754 from dragon1086/fix/kr-snapshot-session-20260922",
+      "prs": [
+        754
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "981bda8b9ecb3670679e4f85f2d783c491941fe1",
+      "date": "2026-09-23T14:08:15+09:00",
+      "parents": [
+        "264fd487fb6f91207efd864eaa97c79aa29a6b3c"
+      ],
+      "subject": "fix: preserve US analyst evidence and retire TradingView",
+      "prs": [
+        755
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "b87365a502cab681c47743130e49d2f6e9c5b647",
+      "date": "2026-09-23T14:17:32+09:00",
+      "parents": [
+        "981bda8b9ecb3670679e4f85f2d783c491941fe1"
+      ],
+      "subject": "Keep legacy prompt hashes around reviewed evidence changes",
+      "prs": [
+        755
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "a8ba1a11e6aa1a02b5e053fb57d3c9b4a11bc09d",
+      "date": "2026-09-23T14:23:15+09:00",
+      "parents": [
+        "264fd487fb6f91207efd864eaa97c79aa29a6b3c",
+        "b87365a502cab681c47743130e49d2f6e9c5b647"
+      ],
+      "subject": "Merge pull request #755 from dragon1086/fix/us-evidence-retirement-20260923",
+      "prs": [
+        755
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "ae0389a07a188c948136f0282f3314297c5e18d6",
+      "date": "2026-09-23T15:35:40+09:00",
+      "parents": [
+        "a8ba1a11e6aa1a02b5e053fb57d3c9b4a11bc09d"
+      ],
+      "subject": "Preserve US report units, compute indicators and reconcile shared evidence",
+      "prs": [
+        756
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "a270dfb91c24c75cc08c3aa5dbf441c6f869176c",
+      "date": "2026-09-23T15:40:57+09:00",
+      "parents": [
+        "ae0389a07a188c948136f0282f3314297c5e18d6"
+      ],
+      "subject": "Validate filing URL schemes and update assembly fixture",
+      "prs": [
+        756
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "837044bd7586cc43d1d2dc185f0b3cbfb2a0f105",
+      "date": "2026-09-23T15:46:38+09:00",
+      "parents": [
+        "a8ba1a11e6aa1a02b5e053fb57d3c9b4a11bc09d",
+        "a270dfb91c24c75cc08c3aa5dbf441c6f869176c"
+      ],
+      "subject": "Merge pull request #756 from dragon1086/fix/us-report-verified-numbers-20260923",
+      "prs": [
+        756
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "2e1088bbbd51ff7292123d9d93c263a4d3e5e1a6",
+      "date": "2026-09-23T15:51:28+09:00",
+      "parents": [
+        "837044bd7586cc43d1d2dc185f0b3cbfb2a0f105"
+      ],
+      "subject": "Separate persistent report OAuth proxy from batch lifecycle",
+      "prs": [
+        757
+      ],
+      "category": "ops_governance",
+      "weight": 1
+    },
+    {
+      "sha": "ca77b155d147e5ca3b67f2c7fac87d2183fb7c6a",
+      "date": "2026-09-23T15:53:25+09:00",
+      "parents": [
+        "2e1088bbbd51ff7292123d9d93c263a4d3e5e1a6"
+      ],
+      "subject": "Keep persistent report proxy a read-only host token consumer",
+      "prs": [
+        757
+      ],
+      "category": "ops_governance",
+      "weight": 1
+    },
+    {
+      "sha": "8a2146cb4e853e4b3d5dd629e2bfd0ef5e4626c7",
+      "date": "2026-09-23T15:54:23+09:00",
+      "parents": [
+        "ca77b155d147e5ca3b67f2c7fac87d2183fb7c6a"
+      ],
+      "subject": "Validate read-only auth snapshots and bind account per request",
+      "prs": [
+        757
+      ],
+      "category": "ops_governance",
+      "weight": 1
+    },
+    {
+      "sha": "bc7f4c5b71f4fc755f1b38b067690abc9c5bda95",
+      "date": "2026-09-23T15:59:42+09:00",
+      "parents": [
+        "837044bd7586cc43d1d2dc185f0b3cbfb2a0f105",
+        "8a2146cb4e853e4b3d5dd629e2bfd0ef5e4626c7"
+      ],
+      "subject": "Merge pull request #757 from dragon1086/fix/report-oauth-service-20260923",
+      "prs": [
+        757
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "2072e8a42f0b5d071df5427fa6589b129c30deb1",
+      "date": "2026-09-23T16:02:29+09:00",
+      "parents": [
+        "bc7f4c5b71f4fc755f1b38b067690abc9c5bda95"
+      ],
+      "subject": "Use verified DB systemd launcher for report proxy",
+      "prs": [
+        758
+      ],
+      "category": "ops_governance",
+      "weight": 1
+    },
+    {
+      "sha": "b632da8bd33dd7a41e30cc2f8892164ba1bd692d",
+      "date": "2026-09-23T16:09:37+09:00",
+      "parents": [
+        "bc7f4c5b71f4fc755f1b38b067690abc9c5bda95",
+        "2072e8a42f0b5d071df5427fa6589b129c30deb1"
+      ],
+      "subject": "Merge pull request #758 from dragon1086/fix/report-proxy-systemd-exec-20260923",
+      "prs": [
+        758
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "07a34d80d2d31de3f1150b85479f59b468df0e49",
+      "date": "2026-09-23T16:16:32+09:00",
+      "parents": [
+        "b632da8bd33dd7a41e30cc2f8892164ba1bd692d"
+      ],
+      "subject": "Keep calculation records in appendix instead of report prose",
+      "prs": [
+        759
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "d7c03c53a03572d6c9d8201e41a81946a6b56deb",
+      "date": "2026-09-23T16:23:08+09:00",
+      "parents": [
+        "b632da8bd33dd7a41e30cc2f8892164ba1bd692d",
+        "07a34d80d2d31de3f1150b85479f59b468df0e49"
+      ],
+      "subject": "Merge pull request #759 from dragon1086/fix/report-reference-appendix-20260923",
+      "prs": [
+        759
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "5a49b0b2e696d880ff2a876e49b71bfff9736aab",
+      "date": "2026-09-23T18:15:30+09:00",
+      "parents": [
+        "d7c03c53a03572d6c9d8201e41a81946a6b56deb"
+      ],
+      "subject": "Ground US reports in official releases and dated public market data",
+      "prs": [
+        760
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "eb5cea2462efd692bb080d4914c12346fc47e245",
+      "date": "2026-09-23T18:22:24+09:00",
+      "parents": [
+        "d7c03c53a03572d6c9d8201e41a81946a6b56deb",
+        "5a49b0b2e696d880ff2a876e49b71bfff9736aab"
+      ],
+      "subject": "Merge pull request #760 from dragon1086/feat/us-public-report-inputs-20260923",
+      "prs": [
+        760
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "cce077c7f08fd6ab3d3b791c4e552a7c64bc252e",
+      "date": "2026-09-23T18:55:04+09:00",
+      "parents": [
+        "eb5cea2462efd692bb080d4914c12346fc47e245"
+      ],
+      "subject": "Fix US report macro use, financial arithmetic and incomplete-bar charts",
+      "prs": [
+        761
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "591670379a823f03bd18ed617700639db5f72816",
+      "date": "2026-09-23T18:58:49+09:00",
+      "parents": [
+        "eb5cea2462efd692bb080d4914c12346fc47e245",
+        "cce077c7f08fd6ab3d3b791c4e552a7c64bc252e"
+      ],
+      "subject": "Merge pull request #761 from dragon1086/fix/us-public-report-followthrough-20260923",
+      "prs": [
+        761
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "8045a72f30a3f0239ce570f58acda55c9fa7f2bb",
+      "date": "2026-09-23T19:10:21+09:00",
+      "parents": [
+        "591670379a823f03bd18ed617700639db5f72816"
+      ],
+      "subject": "Render report financial tables and preserve unknown consensus basis",
+      "prs": [
+        762
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "738275e0c7100ae47e49d1fd47f7c2b75b3afe32",
+      "date": "2026-09-23T19:15:24+09:00",
+      "parents": [
+        "591670379a823f03bd18ed617700639db5f72816",
+        "8045a72f30a3f0239ce570f58acda55c9fa7f2bb"
+      ],
+      "subject": "Merge pull request #762 from dragon1086/fix/us-report-final-render-20260923",
+      "prs": [
+        762
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "d52df705aed80107c318747ea180b2416b8bd35e",
+      "date": "2026-09-23T19:50:44+09:00",
+      "parents": [
+        "738275e0c7100ae47e49d1fd47f7c2b75b3afe32"
+      ],
+      "subject": "Activate bounded DART evidence and calculated facts in production KR reports",
+      "prs": [
+        763
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "0d5a6b9c8486072a3cf724336ea3d2a1f43f06c5",
+      "date": "2026-09-23T19:56:17+09:00",
+      "parents": [
+        "738275e0c7100ae47e49d1fd47f7c2b75b3afe32",
+        "d52df705aed80107c318747ea180b2416b8bd35e"
+      ],
+      "subject": "Merge pull request #763 from dragon1086/fix/kr-production-quality-20260923",
+      "prs": [
+        763
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "7a5094dacafdd8e575863dba326fc7ceb9bbeeaf",
+      "date": "2026-09-23T20:24:36+09:00",
+      "parents": [
+        "0d5a6b9c8486072a3cf724336ea3d2a1f43f06c5"
+      ],
+      "subject": "Publish reader-facing evidence labels without changing report facts",
+      "prs": [
+        764
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "831a3f6c72f3f030e967dccda690e25292e98015",
+      "date": "2026-09-23T20:29:44+09:00",
+      "parents": [
+        "0d5a6b9c8486072a3cf724336ea3d2a1f43f06c5",
+        "7a5094dacafdd8e575863dba326fc7ceb9bbeeaf"
+      ],
+      "subject": "Merge pull request #764 from dragon1086/fix/report-public-evidence-labels-20260923",
+      "prs": [
+        764
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "4478ebefaaf17ee581989215395231d2c2733027",
+      "date": "2026-09-23T23:35:39+09:00",
+      "parents": [
+        "831a3f6c72f3f030e967dccda690e25292e98015"
+      ],
+      "subject": "Add source-preserving DART depth chapter and same-basis peer comparison",
+      "prs": [
+        765
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "f7210474426e88f3161594b58d12254f138b4d1f",
+      "date": "2026-09-23T23:36:49+09:00",
+      "parents": [
+        "4478ebefaaf17ee581989215395231d2c2733027"
+      ],
+      "subject": "Include final specialist classification dependency in depth release",
+      "prs": [
+        765
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "b3bf262d130187976f242ee7d142678955cdb5a6",
+      "date": "2026-09-23T23:40:20+09:00",
+      "parents": [
+        "f7210474426e88f3161594b58d12254f138b4d1f"
+      ],
+      "subject": "Name table cell markers by purpose for static credential scan",
+      "prs": [
+        765
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "68cc3a29c899b8dc37fc3cfb1a1b2f655f79769e",
+      "date": "2026-09-24T00:23:19+09:00",
+      "parents": [
+        "b3bf262d130187976f242ee7d142678955cdb5a6"
+      ],
+      "subject": "Bind wide DART table values to headers and support isolated chapter replay",
+      "prs": [
+        765
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "b86e5b872f11e313ecf669f1c354445af43f2c1a",
+      "date": "2026-09-24T00:32:40+09:00",
+      "parents": [
+        "68cc3a29c899b8dc37fc3cfb1a1b2f655f79769e"
+      ],
+      "subject": "Record failed DART prose replay and hold depth deployment",
+      "prs": [
+        765
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "2432291599235bf5f6f4b1a36cedaff398943e52",
+      "date": "2026-09-24T00:52:12+09:00",
+      "parents": [
+        "b86e5b872f11e313ecf669f1c354445af43f2c1a"
+      ],
+      "subject": "Reconcile PR752 and isolate filing writers with bounded peer smoke",
+      "prs": [
+        765
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "69937ada48bbc1c3c5ecce8117f6d42013d49312",
+      "date": "2026-09-24T00:58:34+09:00",
+      "parents": [
+        "2432291599235bf5f6f4b1a36cedaff398943e52"
+      ],
+      "subject": "Render complete filing tables literally before specialized DART writing",
+      "prs": [
+        765
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "5ab2c72194e6fc3c5b0591f0a19e860353035bf5",
+      "date": "2026-09-24T00:58:51+09:00",
+      "parents": [
+        "69937ada48bbc1c3c5ecce8117f6d42013d49312"
+      ],
+      "subject": "Keep isolated validation imports and date metadata explicit",
+      "prs": [
+        765
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "2239fee06053a05451969dbe9bd1f9d19ac65162",
+      "date": "2026-09-24T01:03:58+09:00",
+      "parents": [
+        "5ab2c72194e6fc3c5b0591f0a19e860353035bf5"
+      ],
+      "subject": "Exercise literal filing inputs through the real report assembly regression",
+      "prs": [
+        765
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "1c81206c16b35978c0020b9b191385895080b69c",
+      "date": "2026-09-24T01:11:13+09:00",
+      "parents": [
+        "2239fee06053a05451969dbe9bd1f9d19ac65162"
+      ],
+      "subject": "Make same-basis peer report presentation order deterministic",
+      "prs": [
+        765
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "4dd7222951f57ba7572a0e0f9275a8e468dce7e0",
+      "date": "2026-09-24T01:17:48+09:00",
+      "parents": [
+        "1c81206c16b35978c0020b9b191385895080b69c"
+      ],
+      "subject": "Use completed daily investor flows before the Korean session opens",
+      "prs": [
+        765
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "6ddfe0ee27935567a1049c74fc39cb164723d81e",
+      "date": "2026-09-24T01:27:33+09:00",
+      "parents": [
+        "4dd7222951f57ba7572a0e0f9275a8e468dce7e0"
+      ],
+      "subject": "Present missing financial table cells without internal status tokens",
+      "prs": [
+        765
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "42302736d3a5184b8f29df5aef55a9f03d23458a",
+      "date": "2026-09-24T01:31:34+09:00",
+      "parents": [
+        "6ddfe0ee27935567a1049c74fc39cb164723d81e"
+      ],
+      "subject": "Discover explicit peer candidates before their comparison metrics are available",
+      "prs": [
+        765
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "a93cbdb91aca636d47c7a6781080d8dda4b4bec9",
+      "date": "2026-09-24T01:36:06+09:00",
+      "parents": [
+        "42302736d3a5184b8f29df5aef55a9f03d23458a"
+      ],
+      "subject": "Render plain comparison evidence with shared lossless field parsing",
+      "prs": [
+        765
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "ef3878782783297a51e453a7a3d302b8416a2974",
+      "date": "2026-09-24T01:49:14+09:00",
+      "parents": [
+        "a93cbdb91aca636d47c7a6781080d8dda4b4bec9"
+      ],
+      "subject": "Reconcile factual prose atomically in the existing final summary stage",
+      "prs": [
+        765
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "186893b64601440d6379fb244d1a063ee95aa15b",
+      "date": "2026-09-24T02:01:15+09:00",
+      "parents": [
+        "ef3878782783297a51e453a7a3d302b8416a2974"
+      ],
+      "subject": "Constrain final report timing corrections to verified Korean closure dates",
+      "prs": [
+        765
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "c45b1c12b17950e72027e39c0a73aa5b76e3c51a",
+      "date": "2026-09-24T02:09:28+09:00",
+      "parents": [
+        "186893b64601440d6379fb244d1a063ee95aa15b"
+      ],
+      "subject": "Keep report calendar corrections separate from trade action instructions",
+      "prs": [
+        765
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "aa2f1e89cd460a76ad3d9dca1ce2e52b85b69c60",
+      "date": "2026-09-24T02:17:10+09:00",
+      "parents": [
+        "831a3f6c72f3f030e967dccda690e25292e98015",
+        "c45b1c12b17950e72027e39c0a73aa5b76e3c51a"
+      ],
+      "subject": "Merge pull request #765 from dragon1086/feat/dart-depth-peer-comparison-20260923",
+      "prs": [
+        765
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "8788e56784b539240046fdbc7f4737890685188a",
+      "date": "2026-09-24T07:26:45+09:00",
+      "parents": [
+        "aa2f1e89cd460a76ad3d9dca1ce2e52b85b69c60"
+      ],
+      "subject": "fix(batch): validate US snapshot coverage and notify incomplete KR/US runs",
+      "prs": [
+        767
+      ],
+      "category": "screening_data",
+      "weight": 1
+    },
+    {
+      "sha": "329620d3676dba0c6959ba4c5537b76d807f72f0",
+      "date": "2026-09-24T07:28:44+09:00",
+      "parents": [
+        "8788e56784b539240046fdbc7f4737890685188a"
+      ],
+      "subject": "fix(batch): exclude unchanged same-symbol summaries from delivery",
+      "prs": [
+        767
+      ],
+      "category": "screening_data",
+      "weight": 1
+    },
+    {
+      "sha": "b4c8a04cf356473638ae9b2a3af9d7572cb5623c",
+      "date": "2026-09-24T07:38:01+09:00",
+      "parents": [
+        "329620d3676dba0c6959ba4c5537b76d807f72f0"
+      ],
+      "subject": "test(batch): align shadow harness dependencies with status notifications",
+      "prs": [
+        767
+      ],
+      "category": "screening_data",
+      "weight": 1
+    },
+    {
+      "sha": "a4dafd320ab542f06a79c5e4249f3b549813f931",
+      "date": "2026-09-24T07:45:13+09:00",
+      "parents": [
+        "aa2f1e89cd460a76ad3d9dca1ce2e52b85b69c60",
+        "b4c8a04cf356473638ae9b2a3af9d7572cb5623c"
+      ],
+      "subject": "Merge pull request #767 from dragon1086/fix/kr-us-batch-startup-20260924",
+      "prs": [
+        767
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "84c39fb02e21c7117c6ecac6d85cd406d90be717",
+      "date": "2026-09-24T14:06:17+09:00",
+      "parents": [
+        "a4dafd320ab542f06a79c5e4249f3b549813f931"
+      ],
+      "subject": "fix: parse signed volatility facts in shared buy gate",
+      "prs": [
+        768
+      ],
+      "category": "screening_data",
+      "weight": 1
+    },
+    {
+      "sha": "1d6df17e861c64042c5139d4c2be136604408ad1",
+      "date": "2026-09-24T14:09:28+09:00",
+      "parents": [
+        "84c39fb02e21c7117c6ecac6d85cd406d90be717"
+      ],
+      "subject": "feat: add opt-in US common-stock universe and observation-only quality context",
+      "prs": [
+        769
+      ],
+      "category": "screening_data",
+      "weight": 1
+    },
+    {
+      "sha": "a21270e39c42c5c73521863c4b512e48737ca051",
+      "date": "2026-09-24T14:11:33+09:00",
+      "parents": [
+        "1d6df17e861c64042c5139d4c2be136604408ad1"
+      ],
+      "subject": "fix: make directory parser arguments explicit for static analysis",
+      "prs": [
+        769
+      ],
+      "category": "screening_data",
+      "weight": 1
+    },
+    {
+      "sha": "fdd621d55bf71d6d59c200273908cd9b4492c4bc",
+      "date": "2026-09-24T14:12:29+09:00",
+      "parents": [
+        "a4dafd320ab542f06a79c5e4249f3b549813f931",
+        "84c39fb02e21c7117c6ecac6d85cd406d90be717"
+      ],
+      "subject": "Merge pull request #768 from dragon1086/fix/signed-volatility-facts-20260924",
+      "prs": [
+        768
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "fb590d1604ef53cf845222635202430ff80b312a",
+      "date": "2026-09-24T14:50:57+09:00",
+      "parents": [
+        "fdd621d55bf71d6d59c200273908cd9b4492c4bc"
+      ],
+      "subject": "build: align yfinance and curl transport with validated local versions",
+      "prs": [
+        770
+      ],
+      "category": "screening_data",
+      "weight": 1
+    },
+    {
+      "sha": "9514ac4addfe667819102df8b144d82d8a774fbb",
+      "date": "2026-09-24T14:55:53+09:00",
+      "parents": [
+        "fb590d1604ef53cf845222635202430ff80b312a"
+      ],
+      "subject": "test: freeze optional market-context capture time in US batch comparisons",
+      "prs": [
+        770
+      ],
+      "category": "screening_data",
+      "weight": 1
+    },
+    {
+      "sha": "2cf08ccfd6eb5f44c2ef193841f308a2d03a6cbb",
+      "date": "2026-09-24T15:02:58+09:00",
+      "parents": [
+        "fdd621d55bf71d6d59c200273908cd9b4492c4bc",
+        "9514ac4addfe667819102df8b144d82d8a774fbb"
+      ],
+      "subject": "Merge pull request #770 from dragon1086/fix/pin-yfinance-1-4-1",
+      "prs": [
+        770
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "21c5fa17eddb1a56feaa0412aca0b30efc6b051a",
+      "date": "2026-09-24T16:32:38+09:00",
+      "parents": [
+        "2cf08ccfd6eb5f44c2ef193841f308a2d03a6cbb"
+      ],
+      "subject": "fix: preserve completed US daily bars with guarded exact-date recovery",
+      "prs": [
+        771
+      ],
+      "category": "screening_data",
+      "weight": 1
+    },
+    {
+      "sha": "f80f635b879576c030696f15c429d214d65322d9",
+      "date": "2026-09-24T16:33:53+09:00",
+      "parents": [
+        "21c5fa17eddb1a56feaa0412aca0b30efc6b051a"
+      ],
+      "subject": "fix: preserve runtime cache default for empty path override",
+      "prs": [
+        771
+      ],
+      "category": "screening_data",
+      "weight": 1
+    },
+    {
+      "sha": "955af7d39b0b0c84489f1b1a41312891b7295b5d",
+      "date": "2026-09-24T16:37:17+09:00",
+      "parents": [
+        "f80f635b879576c030696f15c429d214d65322d9"
+      ],
+      "subject": "fix: make best-effort daily cache write failures observable",
+      "prs": [
+        771
+      ],
+      "category": "screening_data",
+      "weight": 1
+    },
+    {
+      "sha": "7f8015a9fb541a0f882892a3d63c288f0ea5b749",
+      "date": "2026-09-24T16:44:44+09:00",
+      "parents": [
+        "2cf08ccfd6eb5f44c2ef193841f308a2d03a6cbb",
+        "955af7d39b0b0c84489f1b1a41312891b7295b5d"
+      ],
+      "subject": "Merge pull request #771 from dragon1086/fix/us-daily-cache",
+      "prs": [
+        771
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "dfeb6a16e8d8cf13690048c259ca8f9c6d41114b",
+      "date": "2026-09-24T18:06:45+09:00",
+      "parents": [
+        "7f8015a9fb541a0f882892a3d63c288f0ea5b749"
+      ],
+      "subject": "fix: resolve standalone DART reports and preserve full synthesis evidence",
+      "prs": [
+        772
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "61ba6fc1f3d14077e92e22651fbcaa781653af9d",
+      "date": "2026-09-24T18:14:36+09:00",
+      "parents": [
+        "dfeb6a16e8d8cf13690048c259ca8f9c6d41114b"
+      ],
+      "subject": "test: align cache mocks and allow bounded font discovery",
+      "prs": [
+        772
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "9f7a6e97ddac5929e14ddec18892e8a9705a2998",
+      "date": "2026-09-24T18:33:34+09:00",
+      "parents": [
+        "61ba6fc1f3d14077e92e22651fbcaa781653af9d"
+      ],
+      "subject": "fix: recover source-backed report conflicts once before fresh synthesis",
+      "prs": [
+        772
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "ebec672d03da287b328a5370250216b47efe58dd",
+      "date": "2026-09-24T18:48:04+09:00",
+      "parents": [
+        "9f7a6e97ddac5929e14ddec18892e8a9705a2998"
+      ],
+      "subject": "fix: preserve signed literal equivalence and audit factual period conflicts",
+      "prs": [
+        772
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "406be82f8173574fa77a0ea1ea1a22f28593e4a5",
+      "date": "2026-09-24T18:49:42+09:00",
+      "parents": [
+        "ebec672d03da287b328a5370250216b47efe58dd"
+      ],
+      "subject": "test: preserve staged chapter identity and fail-closed reuse guards",
+      "prs": [
+        772
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "629ee92a4a2c8ec66520f823b74c222a7d01d2c0",
+      "date": "2026-09-24T18:52:54+09:00",
+      "parents": [
+        "406be82f8173574fa77a0ea1ea1a22f28593e4a5"
+      ],
+      "subject": "fix: rebuild strategy when corrected source conflicts propagated into it",
+      "prs": [
+        772
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "4347a36bbe12fa96dba79635b604a00ba8443523",
+      "date": "2026-09-24T19:02:15+09:00",
+      "parents": [
+        "629ee92a4a2c8ec66520f823b74c222a7d01d2c0"
+      ],
+      "subject": "fix: preserve all factual correction targets across bounded recovery",
+      "prs": [
+        772
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "461048098a461f422f4213d5beb2966206edc7e6",
+      "date": "2026-09-24T19:07:00+09:00",
+      "parents": [
+        "4347a36bbe12fa96dba79635b604a00ba8443523"
+      ],
+      "subject": "fix: accept equivalent positive-number literals in report synthesis",
+      "prs": [
+        772
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "f0ba51ab76ac27b0e66bf8e9798f9b55aa4d6edf",
+      "date": "2026-09-24T19:12:39+09:00",
+      "parents": [
+        "461048098a461f422f4213d5beb2966206edc7e6"
+      ],
+      "subject": "fix: distinguish ISO date separators from negative report amounts",
+      "prs": [
+        772
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "0ab2fe1e2a1ba46cb13211d7a1e9f9f43d2d3000",
+      "date": "2026-09-24T19:19:32+09:00",
+      "parents": [
+        "f0ba51ab76ac27b0e66bf8e9798f9b55aa4d6edf"
+      ],
+      "subject": "fix: constrain factual recovery to minimal source-preserving revisions",
+      "prs": [
+        772
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "59b9d2247a7842630bd24833863d7d010bdf1efc",
+      "date": "2026-09-24T19:22:16+09:00",
+      "parents": [
+        "0ab2fe1e2a1ba46cb13211d7a1e9f9f43d2d3000"
+      ],
+      "subject": "fix: exclude date separators from signed financial evidence",
+      "prs": [
+        772
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "246809d4f16db06a5c971e9699d53060985394ae",
+      "date": "2026-09-24T19:30:04+09:00",
+      "parents": [
+        "59b9d2247a7842630bd24833863d7d010bdf1efc"
+      ],
+      "subject": "fix: preserve related factual draft context during report recovery",
+      "prs": [
+        772
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "41cf259c91378a42efe8637a98941f66211ba363",
+      "date": "2026-09-24T19:41:39+09:00",
+      "parents": [
+        "246809d4f16db06a5c971e9699d53060985394ae"
+      ],
+      "subject": "fix: number strategy headings after escaped report newlines",
+      "prs": [
+        772
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "5658f8a1b7367d8a14f175adbccc695c5b54fe8a",
+      "date": "2026-09-24T19:49:46+09:00",
+      "parents": [
+        "7f8015a9fb541a0f882892a3d63c288f0ea5b749",
+        "41cf259c91378a42efe8637a98941f66211ba363"
+      ],
+      "subject": "Merge pull request #772 from dragon1086/fix/report-dart-and-synthesis-20260924",
+      "prs": [
+        772
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "8fbe6d318213d292b3cff8a6303749d075e7ce18",
+      "date": "2026-09-24T21:32:41+09:00",
+      "parents": [
+        "5658f8a1b7367d8a14f175adbccc695c5b54fe8a"
+      ],
+      "subject": "fix: separate typed report assessment from repair authority and synthesis",
+      "prs": [
+        773
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "8204dca6587fa6740a9c3600328941c115f34f06",
+      "date": "2026-09-24T21:39:27+09:00",
+      "parents": [
+        "8fbe6d318213d292b3cff8a6303749d075e7ce18"
+      ],
+      "subject": "fix: redact credential-bearing report diagnostic URLs without losing provenance",
+      "prs": [
+        773
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "c42710209567b1f3880fec1b80a7c29a3cd9f9cb",
+      "date": "2026-09-24T21:47:47+09:00",
+      "parents": [
+        "8204dca6587fa6740a9c3600328941c115f34f06"
+      ],
+      "subject": "fix: make diagnostic fallback logging and owner-only permissions explicit",
+      "prs": [
+        773
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "0656f548cdb7aa5c9afcf9f9619d911262ed53c3",
+      "date": "2026-09-24T22:14:09+09:00",
+      "parents": [
+        "c42710209567b1f3880fec1b80a7c29a3cd9f9cb"
+      ],
+      "subject": "fix: qualify unsupported claims and pack explicit complete filing roles once",
+      "prs": [
+        773
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "37a3cf887bafb46ea9fa3a9aeb861c9e2e90d855",
+      "date": "2026-09-24T22:59:17+09:00",
+      "parents": [
+        "0656f548cdb7aa5c9afcf9f9619d911262ed53c3"
+      ],
+      "subject": "fix: separate return intervals from input prices across report interpretation",
+      "prs": [
+        773
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "db930a7338472a71147aae26e5317f21f4a783b6",
+      "date": "2026-09-25T07:09:38+09:00",
+      "parents": [
+        "37a3cf887bafb46ea9fa3a9aeb861c9e2e90d855"
+      ],
+      "subject": "fix: rebuild corrected report evidence and constrain review reason codes",
+      "prs": [
+        773
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "53ad167e907a4fed659f67594884642704836637",
+      "date": "2026-09-25T07:30:53+09:00",
+      "parents": [
+        "db930a7338472a71147aae26e5317f21f4a783b6"
+      ],
+      "subject": "fix: distinguish complete date spellings from financial numeric literals",
+      "prs": [
+        773
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "f7abac4e8c8a74f782e14eac74a15b647133acf0",
+      "date": "2026-09-25T07:56:55+09:00",
+      "parents": [
+        "53ad167e907a4fed659f67594884642704836637"
+      ],
+      "subject": "fix: preflight Korean market citations and align financial comparison scope",
+      "prs": [
+        773
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "a1aeb49ad8060426e591734f82928add3c693407",
+      "date": "2026-09-25T08:27:41+09:00",
+      "parents": [
+        "f7abac4e8c8a74f782e14eac74a15b647133acf0"
+      ],
+      "subject": "fix: share frozen calendar facts and bound repair by original section owner",
+      "prs": [
+        773
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "e40e47990153e34e4d08831002dbe93e51ad6e36",
+      "date": "2026-09-25T08:59:32+09:00",
+      "parents": [
+        "a1aeb49ad8060426e591734f82928add3c693407"
+      ],
+      "subject": "fix: compare exact Korean net-share notation without cross-unit aliases",
+      "prs": [
+        773
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "7e1efb0394167ffc5d25c968cfc2e8ce75c7f7ca",
+      "date": "2026-09-25T09:27:46+09:00",
+      "parents": [
+        "5658f8a1b7367d8a14f175adbccc695c5b54fe8a"
+      ],
+      "subject": "fix: omit unmeasured optional market rows with explicit coverage notice",
+      "prs": [
+        774
+      ],
+      "category": "market_evidence",
+      "weight": 1
+    },
+    {
+      "sha": "eebfe20646eb9612cb1ae0579b8e121f63cbd05b",
+      "date": "2026-09-25T09:33:09+09:00",
+      "parents": [
+        "5658f8a1b7367d8a14f175adbccc695c5b54fe8a",
+        "7e1efb0394167ffc5d25c968cfc2e8ce75c7f7ca"
+      ],
+      "subject": "Merge pull request #774 from dragon1086/fix/market-display-missing-20260925",
+      "prs": [
+        774
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "d09ca797f80e4274bd13edd1a172bd7f3c760145",
+      "date": "2026-09-25T09:56:56+09:00",
+      "parents": [
+        "e40e47990153e34e4d08831002dbe93e51ad6e36",
+        "eebfe20646eb9612cb1ae0579b8e121f63cbd05b"
+      ],
+      "subject": "Merge remote-tracking branch 'origin/main' into fix/report-recurrence-20260924",
+      "prs": [
+        773
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "e7d60cdb41610ce01faa8b3be83450f2a270191d",
+      "date": "2026-09-25T10:04:05+09:00",
+      "parents": [
+        "eebfe20646eb9612cb1ae0579b8e121f63cbd05b",
+        "d09ca797f80e4274bd13edd1a172bd7f3c760145"
+      ],
+      "subject": "Merge pull request #773 from dragon1086/fix/report-recurrence-20260924",
+      "prs": [
+        773
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "059de1fefc53bed5ff565115b4d7c0fd2e08c90f",
+      "date": "2026-09-25T10:19:55+09:00",
+      "parents": [
+        "a21270e39c42c5c73521863c4b512e48737ca051",
+        "e7d60cdb41610ce01faa8b3be83450f2a270191d"
+      ],
+      "subject": "Merge remote-tracking branch 'origin/main' into feat/us-common-stock-universe-20260924",
+      "prs": [
+        769
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "bc8a08365045fe5efe3e6840864912d28637bae6",
+      "date": "2026-09-25T10:25:59+09:00",
+      "parents": [
+        "059de1fefc53bed5ff565115b4d7c0fd2e08c90f"
+      ],
+      "subject": "feat: activate one-billion-dollar US common-stock liquidity screen",
+      "prs": [
+        769
+      ],
+      "category": "screening_data",
+      "weight": 1
+    },
+    {
+      "sha": "ed0f4dde6974f4b56b9bc7996933dcf50e20fc83",
+      "date": "2026-09-25T10:32:24+09:00",
+      "parents": [
+        "bc8a08365045fe5efe3e6840864912d28637bae6"
+      ],
+      "subject": "test: pin legacy cache regression to index universe",
+      "prs": [
+        769
+      ],
+      "category": "screening_data",
+      "weight": 1
+    },
+    {
+      "sha": "2d0a7229280e273ba5fe2a8acb1ed7b019caf0c7",
+      "date": "2026-09-25T10:45:05+09:00",
+      "parents": [
+        "e7d60cdb41610ce01faa8b3be83450f2a270191d",
+        "ed0f4dde6974f4b56b9bc7996933dcf50e20fc83"
+      ],
+      "subject": "Merge pull request #769 from dragon1086/feat/us-common-stock-universe-20260924",
+      "prs": [
+        769
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "37227d359f1bd6e2ef5311ca19e625eeb206fcd5",
+      "date": "2026-09-25T13:32:53+09:00",
+      "parents": [
+        "2d0a7229280e273ba5fe2a8acb1ed7b019caf0c7"
+      ],
+      "subject": "fix: preserve approximate Korean net-share direction aliases",
+      "prs": [
+        775
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "08fb33f5ddd7b82f9e260e9a34834c6bcfc8670e",
+      "date": "2026-09-25T13:44:45+09:00",
+      "parents": [
+        "2d0a7229280e273ba5fe2a8acb1ed7b019caf0c7",
+        "37227d359f1bd6e2ef5311ca19e625eeb206fcd5"
+      ],
+      "subject": "Merge pull request #775 from dragon1086/fix/report-approx-net-shares-20260925",
+      "prs": [
+        775
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "a2afb7d610c20d09f4e774e65bb7a12d1858749c",
+      "date": "2026-09-25T14:05:15+09:00",
+      "parents": [
+        "08fb33f5ddd7b82f9e260e9a34834c6bcfc8670e"
+      ],
+      "subject": "fix: recognize prefixed approximate net-share fields",
+      "prs": [
+        776
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "a3c01595c6f35f9c50876a57924f6bd554e8a04c",
+      "date": "2026-09-25T14:15:54+09:00",
+      "parents": [
+        "08fb33f5ddd7b82f9e260e9a34834c6bcfc8670e",
+        "a2afb7d610c20d09f4e774e65bb7a12d1858749c"
+      ],
+      "subject": "Merge pull request #776 from dragon1086/fix/report-approx-net-share-field-20260925",
+      "prs": [
+        776
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "73e9f03d824ec8a3496c801519445b710ea6e361",
+      "date": "2026-09-26T00:25:41+09:00",
+      "parents": [
+        "a3c01595c6f35f9c50876a57924f6bd554e8a04c"
+      ],
+      "subject": "fix: remove runtime report fact-editor gate that aborted KR reports",
+      "prs": [
+        781
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "fc248dcf9f1e9b7c7b68dc8c19eb2040dc44a4e5",
+      "date": "2026-09-26T00:36:28+09:00",
+      "parents": [
+        "73e9f03d824ec8a3496c801519445b710ea6e361"
+      ],
+      "subject": "feat: slim KR DART chapter writers with topic ownership and report context",
+      "prs": [
+        778,
+        781
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "47143096d9239b0e809a0fb14db65e9d18a8cc6e",
+      "date": "2026-09-26T00:39:55+09:00",
+      "parents": [
+        "73e9f03d824ec8a3496c801519445b710ea6e361"
+      ],
+      "subject": "fix: cap DART writer model at gpt-6-sol instead of gpt-6-astra",
+      "prs": [
+        781
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "48c55d24b8648b177ecf0a2b475ed74d911536a4",
+      "date": "2026-09-26T00:40:20+09:00",
+      "parents": [
+        "73e9f03d824ec8a3496c801519445b710ea6e361"
+      ],
+      "subject": "feat: real WiseFn competitor table for KR reports",
+      "prs": [
+        779,
+        781
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "8e618685abea988d2ba888757a9a3469ec16644c",
+      "date": "2026-09-26T00:40:31+09:00",
+      "parents": [
+        "fc248dcf9f1e9b7c7b68dc8c19eb2040dc44a4e5"
+      ],
+      "subject": "fix: keep DART filing excerpts with the DART chapter when it is written",
+      "prs": [
+        778,
+        781
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "451de7d4d13916a8428dd618a3fdc49b730bc655",
+      "date": "2026-09-26T00:47:03+09:00",
+      "parents": [
+        "47143096d9239b0e809a0fb14db65e9d18a8cc6e"
+      ],
+      "subject": "ci: drop deleted fact-editor tests from workflow",
+      "prs": [
+        781
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "7c60278c3c3766425b08b3caa02a1d1b737f0675",
+      "date": "2026-09-26T00:47:22+09:00",
+      "parents": [
+        "48c55d24b8648b177ecf0a2b475ed74d911536a4"
+      ],
+      "subject": "feat: filter tiny WiseFn peers and drop competitive evidence from public KR report",
+      "prs": [
+        779,
+        781
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "f036c70768e637168a0a077fbd71abc679ef0282",
+      "date": "2026-09-26T00:52:37+09:00",
+      "parents": [
+        "7c60278c3c3766425b08b3caa02a1d1b737f0675"
+      ],
+      "subject": "refactor: drop KR Competitive Evidence at the source instead of stripping output",
+      "prs": [
+        779,
+        781
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "0e481200ba947610c6fcb0e4cb446331fbc49bc0",
+      "date": "2026-09-26T01:02:09+09:00",
+      "parents": [
+        "451de7d4d13916a8428dd618a3fdc49b730bc655",
+        "8e618685abea988d2ba888757a9a3469ec16644c"
+      ],
+      "subject": "Merge branch 'feat/kr-dart-chapter-slim-20260926' into test/kr-report-integration-20260926",
+      "prs": [
+        778,
+        781
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "b6b60fe5fcd9c0983ee6ab846be0f63168cd1cd1",
+      "date": "2026-09-26T01:02:09+09:00",
+      "parents": [
+        "0e481200ba947610c6fcb0e4cb446331fbc49bc0",
+        "f036c70768e637168a0a077fbd71abc679ef0282"
+      ],
+      "subject": "Merge branch 'feat/kr-wisereport-peer-table-20260926' into test/kr-report-integration-20260926",
+      "prs": [
+        779,
+        781
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "4abd79e4d2f96ca79a810d1fb87dd7cbf14086bd",
+      "date": "2026-09-26T01:16:19+09:00",
+      "parents": [
+        "451de7d4d13916a8428dd618a3fdc49b730bc655"
+      ],
+      "subject": "test: treat US report module load as import phase in PDF handoff audit",
+      "prs": [
+        777,
+        781
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "6703a52b9460ebe726b0603369f86eec589bf81a",
+      "date": "2026-09-26T01:28:45+09:00",
+      "parents": [
+        "451de7d4d13916a8428dd618a3fdc49b730bc655"
+      ],
+      "subject": "fix: stale issuer release, English receipts and 4-decimal upside in US reports",
+      "prs": [
+        781
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "bb8428f133d7cfe50688e4ca890fac1a6045e3f3",
+      "date": "2026-09-26T01:28:45+09:00",
+      "parents": [
+        "6703a52b9460ebe726b0603369f86eec589bf81a"
+      ],
+      "subject": "feat: deterministic peer comparison table for US reports",
+      "prs": [
+        781
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "283746d7cd85462404b22d7317c3e624cf4132d4",
+      "date": "2026-09-26T01:30:11+09:00",
+      "parents": [
+        "451de7d4d13916a8428dd618a3fdc49b730bc655"
+      ],
+      "subject": "feat: flag-gated BUY use of DART chapter and competitor table as evidence",
+      "prs": [
+        780,
+        781
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "0298af5c94f74164de1b3e9c339c67faf56e14dd",
+      "date": "2026-09-26T01:32:18+09:00",
+      "parents": [
+        "bb8428f133d7cfe50688e4ca890fac1a6045e3f3"
+      ],
+      "subject": "fix: use a 3%-10x market-cap window for US peers",
+      "prs": [
+        781
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "8c9254aed266e8a99a451f996b87b2d84acf1ee8",
+      "date": "2026-09-26T01:49:02+09:00",
+      "parents": [
+        "b6b60fe5fcd9c0983ee6ab846be0f63168cd1cd1",
+        "0298af5c94f74164de1b3e9c339c67faf56e14dd"
+      ],
+      "subject": "Merge branch 'feat/us-report-peer-comparison-20260926' into release/report-overhaul-20260926",
+      "prs": [
+        781
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "678da82c525ecc781eaf5679f3e7896d944ff481",
+      "date": "2026-09-26T01:49:06+09:00",
+      "parents": [
+        "8c9254aed266e8a99a451f996b87b2d84acf1ee8",
+        "283746d7cd85462404b22d7317c3e624cf4132d4"
+      ],
+      "subject": "Merge branch 'feat/buy-report-depth-evidence-20260926' into release/report-overhaul-20260926",
+      "prs": [
+        780,
+        781
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "8b7e5733103db3047155e3126fa2f681b50567da",
+      "date": "2026-09-26T01:58:21+09:00",
+      "parents": [
+        "678da82c525ecc781eaf5679f3e7896d944ff481"
+      ],
+      "subject": "feat: story-first executive summary and surface-vs-substance strategy thesis",
+      "prs": [
+        781
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "4dc06d5bc8c3c19c9cc550d727165ba2d71eb2eb",
+      "date": "2026-09-26T02:01:12+09:00",
+      "parents": [
+        "8b7e5733103db3047155e3126fa2f681b50567da"
+      ],
+      "subject": "fix: BUY depth anchor drift falls back to base prompt; peer retry backoff; rounded US holder percents",
+      "prs": [
+        781
+      ],
+      "category": "report_us",
+      "weight": 1
+    },
+    {
+      "sha": "0502fddc51e861fe0c25ff041bef22d2bb967b25",
+      "date": "2026-09-26T02:03:33+09:00",
+      "parents": [
+        "4dc06d5bc8c3c19c9cc550d727165ba2d71eb2eb"
+      ],
+      "subject": "fix: DART writers default to gpt-6-luna/high; latest-period, conditional CB and citation-leak prompt fixes",
+      "prs": [
+        781
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "ffa22eee132d5b67a1e5071bca3feb7f7e949f56",
+      "date": "2026-09-26T02:36:44+09:00",
+      "parents": [
+        "0502fddc51e861fe0c25ff041bef22d2bb967b25",
+        "4abd79e4d2f96ca79a810d1fb87dd7cbf14086bd"
+      ],
+      "subject": "Merge branch 'fix/report-remove-fact-gate-20260925' into release/report-overhaul-20260926",
+      "prs": [
+        777,
+        781
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "70c776e79e91477f88610b311598f0e97afe28eb",
+      "date": "2026-09-26T02:46:44+09:00",
+      "parents": [
+        "a3c01595c6f35f9c50876a57924f6bd554e8a04c",
+        "ffa22eee132d5b67a1e5071bca3feb7f7e949f56"
+      ],
+      "subject": "Merge pull request #781 from dragon1086/release/report-overhaul-20260926",
+      "prs": [
+        781
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "6d8b11031d749a41b3f4f225e0451cf1b8bae0f6",
+      "date": "2026-09-26T09:51:02+09:00",
+      "parents": [
+        "70c776e79e91477f88610b311598f0e97afe28eb"
+      ],
+      "subject": "fix: judge DART burdens net of offsetting resources in chapter and summary",
+      "prs": [
+        782
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "e51f1d87769d65aa3335f48d4f40fca73ed08c8b",
+      "date": "2026-09-26T10:35:19+09:00",
+      "parents": [
+        "70c776e79e91477f88610b311598f0e97afe28eb"
+      ],
+      "subject": "fix: restore KR report volume and fundamental charts under KIS-only data",
+      "prs": [
+        782
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "fc6149c24cabe36ec1724267e61191865039dedd",
+      "date": "2026-09-26T10:36:19+09:00",
+      "parents": [
+        "e51f1d87769d65aa3335f48d4f40fca73ed08c8b",
+        "6d8b11031d749a41b3f4f225e0451cf1b8bae0f6"
+      ],
+      "subject": "Merge branch 'fix/dart-net-risk-insight-20260926' into fix/report-charts-missing-20260926",
+      "prs": [
+        782
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "5da9fea59077e9ceac0732103d057768af12d67c",
+      "date": "2026-09-26T10:48:31+09:00",
+      "parents": [
+        "fc6149c24cabe36ec1724267e61191865039dedd"
+      ],
+      "subject": "fix: keep annual earnings chart subtitle as a heading after markdown cleaning",
+      "prs": [
+        782
+      ],
+      "category": "report_quality",
+      "weight": 1
+    },
+    {
+      "sha": "967af430543c39bc83d17cfb512b5bb60f4043ec",
+      "date": "2026-09-26T10:54:30+09:00",
+      "parents": [
+        "70c776e79e91477f88610b311598f0e97afe28eb",
+        "5da9fea59077e9ceac0732103d057768af12d67c"
+      ],
+      "subject": "Merge pull request #782 from dragon1086/fix/report-charts-missing-20260926",
+      "prs": [
+        782
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "a49c711b5f0a1ce72092f01ecaea978fd0be7b38",
+      "date": "2026-09-26T12:53:42+09:00",
+      "parents": [
+        "967af430543c39bc83d17cfb512b5bb60f4043ec"
+      ],
+      "subject": "fix: keep KR DART depth chapter available for large filers",
+      "prs": [
+        783
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "74671de3cfc7d59d4632fdd0f24a6ccabeec4896",
+      "date": "2026-09-26T13:20:36+09:00",
+      "parents": [
+        "a49c711b5f0a1ce72092f01ecaea978fd0be7b38"
+      ],
+      "subject": "fix: ship KR reports without the DART chapter instead of aborting",
+      "prs": [
+        783
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "113ea44f9acf39b33918d7d9abb956696bbb4960",
+      "date": "2026-09-26T13:29:29+09:00",
+      "parents": [
+        "74671de3cfc7d59d4632fdd0f24a6ccabeec4896"
+      ],
+      "subject": "chore: reword ops alert config warning",
+      "prs": [
+        783
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "e31c1d5b7bbd3a5bf68b5868fadcef404a76b674",
+      "date": "2026-09-26T13:38:03+09:00",
+      "parents": [
+        "967af430543c39bc83d17cfb512b5bb60f4043ec",
+        "113ea44f9acf39b33918d7d9abb956696bbb4960"
+      ],
+      "subject": "Merge pull request #783 from dragon1086/fix/dart-capacity-large-filers-20260926",
+      "prs": [
+        783
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "8de62a8bc12ff758e574d2ecb7e77522df5d97af",
+      "date": "2026-09-26T15:16:37+09:00",
+      "parents": [
+        "e31c1d5b7bbd3a5bf68b5868fadcef404a76b674"
+      ],
+      "subject": "fix: drop only unlinked market paragraphs instead of the whole section",
+      "prs": [
+        784
+      ],
+      "category": "market_evidence",
+      "weight": 1
+    },
+    {
+      "sha": "8888d3fff92da7a61b6acb1770f110fed221ffda",
+      "date": "2026-09-26T15:45:47+09:00",
+      "parents": [
+        "e31c1d5b7bbd3a5bf68b5868fadcef404a76b674",
+        "8de62a8bc12ff758e574d2ecb7e77522df5d97af"
+      ],
+      "subject": "Merge pull request #784 from dragon1086/fix/kr-report-market-and-charts-20260926",
+      "prs": [
+        784
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "41b4ef0c622b1d254f81f28ea450a49d1f5663ae",
+      "date": "2026-09-26T16:06:17+09:00",
+      "parents": [
+        "8888d3fff92da7a61b6acb1770f110fed221ffda"
+      ],
+      "subject": "feat: DART balance-sheet structure chart closing filing subsection 5-1",
+      "prs": [
+        785
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "fe11c226de8ba31c8df598c2d3266660dd6f91fb",
+      "date": "2026-09-26T16:14:59+09:00",
+      "parents": [
+        "8888d3fff92da7a61b6acb1770f110fed221ffda",
+        "41b4ef0c622b1d254f81f28ea450a49d1f5663ae"
+      ],
+      "subject": "Merge pull request #785 from dragon1086/feat/kr-dart-statement-charts-20260926",
+      "prs": [
+        785
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "d5638edcfd345d36cab5c281cbe246283308fd7a",
+      "date": "2026-09-26T16:39:46+09:00",
+      "parents": [
+        "fe11c226de8ba31c8df598c2d3266660dd6f91fb"
+      ],
+      "subject": "fix: split one oversized DART filing at heading blocks for bank reports",
+      "prs": [
+        786
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "bf70982148ed1981c270ed182f3070ec3247c864",
+      "date": "2026-09-26T16:42:37+09:00",
+      "parents": [
+        "fe11c226de8ba31c8df598c2d3266660dd6f91fb"
+      ],
+      "subject": "fix: resolve same-day DART corrections when list and receipt order agree",
+      "prs": [
+        787
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "97a0452e1d39b3b87a2a682cfa3ca742a54cef13",
+      "date": "2026-09-26T16:50:38+09:00",
+      "parents": [
+        "fe11c226de8ba31c8df598c2d3266660dd6f91fb",
+        "d5638edcfd345d36cab5c281cbe246283308fd7a"
+      ],
+      "subject": "Merge pull request #786 from dragon1086/fix/dart-split-within-filing-20260926",
+      "prs": [
+        786
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "8984cd2b67393a6bd246d5cb9089d3f1190e4a28",
+      "date": "2026-09-26T16:50:41+09:00",
+      "parents": [
+        "97a0452e1d39b3b87a2a682cfa3ca742a54cef13",
+        "bf70982148ed1981c270ed182f3070ec3247c864"
+      ],
+      "subject": "Merge pull request #787 from dragon1086/fix/dart-same-day-corrections-20260926",
+      "prs": [
+        787
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "b7596d422d3d6ea81ea2dba8dd0b0da438fa9b49",
+      "date": "2026-09-26T17:30:24+09:00",
+      "parents": [
+        "8984cd2b67393a6bd246d5cb9089d3f1190e4a28"
+      ],
+      "subject": "feat: sector-aware KR reports for financial institutions and holding companies",
+      "prs": [
+        788
+      ],
+      "category": "sector_aware",
+      "weight": 1
+    },
+    {
+      "sha": "e452707938e34fb4dd6358b6ea3e53ecd61bab65",
+      "date": "2026-09-26T17:40:59+09:00",
+      "parents": [
+        "8984cd2b67393a6bd246d5cb9089d3f1190e4a28",
+        "b7596d422d3d6ea81ea2dba8dd0b0da438fa9b49"
+      ],
+      "subject": "Merge pull request #788 from dragon1086/feat/kr-sector-aware-reports-20260926",
+      "prs": [
+        788
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "bf334f128ef80c5c028f181474d40cfc2d5030e5",
+      "date": "2026-09-26T19:58:41+09:00",
+      "parents": [
+        "e452707938e34fb4dd6358b6ea3e53ecd61bab65"
+      ],
+      "subject": "feat: sector-aware KR reports for construction, contract-based and loss-making biotech issuers",
+      "prs": [
+        789
+      ],
+      "category": "sector_aware",
+      "weight": 1
+    },
+    {
+      "sha": "8d26f68d56c27cbaf607368545cf6c585e86c736",
+      "date": "2026-09-26T20:11:41+09:00",
+      "parents": [
+        "e452707938e34fb4dd6358b6ea3e53ecd61bab65",
+        "bf334f128ef80c5c028f181474d40cfc2d5030e5"
+      ],
+      "subject": "Merge pull request #789 from dragon1086/feat/kr-sector-aware-reports-stage2-20260926",
+      "prs": [
+        789
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "77d831c38a2332e96404aa54d671f2b93076fe27",
+      "date": "2026-09-26T20:46:37+09:00",
+      "parents": [
+        "8d26f68d56c27cbaf607368545cf6c585e86c736"
+      ],
+      "subject": "fix: recover DART chapter inputs for REITs, standalone banks and large holding companies",
+      "prs": [
+        790
+      ],
+      "category": "sector_aware",
+      "weight": 1
+    },
+    {
+      "sha": "db5b89b46ecc5954f2200a46fa13dccc2dc26f82",
+      "date": "2026-09-26T21:05:37+09:00",
+      "parents": [
+        "77d831c38a2332e96404aa54d671f2b93076fe27"
+      ],
+      "subject": "fix: keep REIT six-month annual reports from being called half-year reports; record stage 3 in roadmap",
+      "prs": [
+        790
+      ],
+      "category": "sector_aware",
+      "weight": 1
+    },
+    {
+      "sha": "ff88d63abb772c4f11ee7702d354997c33701462",
+      "date": "2026-09-26T21:17:16+09:00",
+      "parents": [
+        "8d26f68d56c27cbaf607368545cf6c585e86c736",
+        "db5b89b46ecc5954f2200a46fa13dccc2dc26f82"
+      ],
+      "subject": "Merge pull request #790 from dragon1086/feat/kr-dart-collection-fixes-stage3-20260926",
+      "prs": [
+        790
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "26462f936bb619a3bc638030aa2068b702d2746d",
+      "date": "2026-09-26T22:36:21+09:00",
+      "parents": [
+        "ff88d63abb772c4f11ee7702d354997c33701462"
+      ],
+      "subject": "feat: judge KR financial issuers' F2 on regulatory capital ratios (off by default)",
+      "prs": [
+        791
+      ],
+      "category": "sector_aware",
+      "weight": 1
+    },
+    {
+      "sha": "9bc7d0a223c217bc55da60e12e53c0a5a39d09b5",
+      "date": "2026-09-26T22:45:32+09:00",
+      "parents": [
+        "ff88d63abb772c4f11ee7702d354997c33701462",
+        "26462f936bb619a3bc638030aa2068b702d2746d"
+      ],
+      "subject": "Merge pull request #791 from dragon1086/feat/kr-sector-f2-stage4-20260926",
+      "prs": [
+        791
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "c481bc90d8a414a7e709c68e814b738d7bd7f690",
+      "date": "2026-09-26T22:56:31+09:00",
+      "parents": [
+        "9bc7d0a223c217bc55da60e12e53c0a5a39d09b5"
+      ],
+      "subject": "feat: raise card/capital F2 capital threshold to 10% for the live switch",
+      "prs": [
+        792
+      ],
+      "category": "sector_aware",
+      "weight": 1
+    },
+    {
+      "sha": "8d42477648b602cdd6083a20f02940f6c25324c3",
+      "date": "2026-09-26T23:01:08+09:00",
+      "parents": [
+        "9bc7d0a223c217bc55da60e12e53c0a5a39d09b5"
+      ],
+      "subject": "feat: explain filing jargon in plain words in the KR DART chapter",
+      "prs": [
+        793
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "86efa3170bffadb55cd9836222841f06deba7ec1",
+      "date": "2026-09-26T23:05:10+09:00",
+      "parents": [
+        "9bc7d0a223c217bc55da60e12e53c0a5a39d09b5",
+        "c481bc90d8a414a7e709c68e814b738d7bd7f690"
+      ],
+      "subject": "Merge pull request #792 from dragon1086/feat/kr-sector-f2-live-20260926",
+      "prs": [
+        792
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "9b31a27684089a9e9356e3d70ac011ed9d2e7d9e",
+      "date": "2026-09-26T23:10:18+09:00",
+      "parents": [
+        "8d42477648b602cdd6083a20f02940f6c25324c3",
+        "86efa3170bffadb55cd9836222841f06deba7ec1"
+      ],
+      "subject": "Merge branch 'main' into feat/kr-dart-plain-language-20260926",
+      "prs": [
+        793
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "f59c722e840b82a00bf58e4177e0682076197f84",
+      "date": "2026-09-26T23:19:31+09:00",
+      "parents": [
+        "86efa3170bffadb55cd9836222841f06deba7ec1",
+        "9b31a27684089a9e9356e3d70ac011ed9d2e7d9e"
+      ],
+      "subject": "Merge pull request #793 from dragon1086/feat/kr-dart-plain-language-20260926",
+      "prs": [
+        793
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "f9c5f294ccc766c267fe187be29e7ac76c1ac486",
+      "date": "2026-09-27T00:24:40+09:00",
+      "parents": [
+        "f59c722e840b82a00bf58e4177e0682076197f84"
+      ],
+      "subject": "fix: stop false BTC error-burst alerts on leverage no-op and warn before API keys expire",
+      "prs": [
+        794
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "0a2fe9f112508c293f18945c033e873945f8995e",
+      "date": "2026-09-27T00:32:09+09:00",
+      "parents": [
+        "f9c5f294ccc766c267fe187be29e7ac76c1ac486"
+      ],
+      "subject": "fix: drop redundant try/except around best-effort env load in key expiry check",
+      "prs": [
+        794
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "c2f8fd966e286e4289158b0bc3801a720f8c13c2",
+      "date": "2026-09-27T00:36:00+09:00",
+      "parents": [
+        "f59c722e840b82a00bf58e4177e0682076197f84"
+      ],
+      "subject": "feat: gloss every filing term in the KR DART chapter, not just the examples",
+      "prs": [
+        795
+      ],
+      "category": "report_kr_dart",
+      "weight": 1
+    },
+    {
+      "sha": "25ae42f079f9de5475954ac7d2c32833c2851cf2",
+      "date": "2026-09-27T00:41:14+09:00",
+      "parents": [
+        "f59c722e840b82a00bf58e4177e0682076197f84",
+        "0a2fe9f112508c293f18945c033e873945f8995e"
+      ],
+      "subject": "Merge pull request #794 from dragon1086/fix/btc-leverage-noise-key-expiry-20260927",
+      "prs": [
+        794
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "4cdd3919f0fa69ca54ffaa9ea700048656fb4ec9",
+      "date": "2026-09-27T00:45:08+09:00",
+      "parents": [
+        "c2f8fd966e286e4289158b0bc3801a720f8c13c2",
+        "25ae42f079f9de5475954ac7d2c32833c2851cf2"
+      ],
+      "subject": "Merge branch 'main' into feat/kr-dart-plain-language-v2-20260927",
+      "prs": [
+        795
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "dcb18a9d0fe92724e676412582db03bf8ae91b25",
+      "date": "2026-09-27T00:47:01+09:00",
+      "parents": [
+        "25ae42f079f9de5475954ac7d2c32833c2851cf2"
+      ],
+      "subject": "fix: treat Bybit's epoch expiredAt as no expiry in the key expiry check",
+      "prs": [
+        796
+      ],
+      "category": "btc",
+      "weight": 1
+    },
+    {
+      "sha": "70dbe608d72c6a3ea3359ea007bb4ddba3fd2015",
+      "date": "2026-09-27T00:53:29+09:00",
+      "parents": [
+        "25ae42f079f9de5475954ac7d2c32833c2851cf2",
+        "4cdd3919f0fa69ca54ffaa9ea700048656fb4ec9"
+      ],
+      "subject": "Merge pull request #795 from dragon1086/feat/kr-dart-plain-language-v2-20260927",
+      "prs": [
+        795
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "ceb6f130d47c5ee212d3eaeae317bbe869ea9d88",
+      "date": "2026-09-27T00:56:59+09:00",
+      "parents": [
+        "dcb18a9d0fe92724e676412582db03bf8ae91b25",
+        "70dbe608d72c6a3ea3359ea007bb4ddba3fd2015"
+      ],
+      "subject": "Merge branch 'main' into fix/btc-key-expiry-no-expiry-epoch-20260927",
+      "prs": [
+        796
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "7c3e6fc2a5ae192aa73aa2ed4ed2abf96abea2fd",
+      "date": "2026-09-27T01:06:37+09:00",
+      "parents": [
+        "70dbe608d72c6a3ea3359ea007bb4ddba3fd2015",
+        "ceb6f130d47c5ee212d3eaeae317bbe869ea9d88"
+      ],
+      "subject": "Merge pull request #796 from dragon1086/fix/btc-key-expiry-no-expiry-epoch-20260927",
+      "prs": [
+        796
+      ],
+      "category": "merge",
+      "weight": 1
+    },
+    {
+      "sha": "71bb694034e81b3f04aa36f99af04c816922d378",
+      "date": "2026-09-27T01:21:06+09:00",
+      "parents": [
+        "7c3e6fc2a5ae192aa73aa2ed4ed2abf96abea2fd"
+      ],
+      "subject": "feat: let the KR BUY step look up a financial issuer's capital ratio",
+      "prs": [
+        797
+      ],
+      "category": "sector_aware",
+      "weight": 1
+    },
+    {
+      "sha": "62dd941410b946565ea1d99b6af733407a7351ee",
+      "date": "2026-09-27T01:30:17+09:00",
+      "parents": [
+        "7c3e6fc2a5ae192aa73aa2ed4ed2abf96abea2fd",
+        "71bb694034e81b3f04aa36f99af04c816922d378"
+      ],
+      "subject": "Merge pull request #797 from dragon1086/feat/kr-financial-capital-ratio-lookup-20260927",
+      "prs": [
+        797
+      ],
+      "category": "merge",
+      "weight": 1
+    }
+  ],
+  "prs": [
+    {
+      "additions": 543,
+      "baseRefName": "main",
+      "changedFiles": 13,
+      "deletions": 51,
+      "mergeCommit": {
+        "oid": "7b28f55a8513c16982ebc3548cd06417e0023b34"
+      },
+      "mergedAt": "2026-09-15T01:15:52Z",
+      "number": 731,
+      "state": "MERGED",
+      "title": "fix: BTC swing fill recovery and private monitoring alerts"
+    },
+    {
+      "additions": 21,
+      "baseRefName": "main",
+      "changedFiles": 2,
+      "deletions": 0,
+      "mergeCommit": {
+        "oid": "6473c39e8bcbd25c79e97f83ee2946b95cd25681"
+      },
+      "mergedAt": "2026-09-15T01:25:26Z",
+      "number": 732,
+      "state": "MERGED",
+      "title": "docs: BTC swing incident deployment and exact recovery evidence"
+    },
+    {
+      "additions": 72,
+      "baseRefName": "main",
+      "changedFiles": 2,
+      "deletions": 1,
+      "mergeCommit": {
+        "oid": "e95a28e7acc53f9d51759cc6d49058b637fc9b2b"
+      },
+      "mergedAt": "2026-09-15T01:34:54Z",
+      "number": 733,
+      "state": "MERGED",
+      "title": "docs: strategy adoption fit gate from user-provided reading"
+    },
+    {
+      "additions": 433,
+      "baseRefName": "main",
+      "changedFiles": 8,
+      "deletions": 11,
+      "mergeCommit": {
+        "oid": "b2191b572de54bfc2a44458b5ed86f0a01c59a3a"
+      },
+      "mergedAt": "2026-09-15T01:52:02Z",
+      "number": 734,
+      "state": "MERGED",
+      "title": "fix: confirmed recovered BTC entries reach public channel"
+    },
+    {
+      "additions": 85,
+      "baseRefName": "main",
+      "changedFiles": 3,
+      "deletions": 10,
+      "mergeCommit": {
+        "oid": "49da686617ea710949d917927b1f3d7ab94fe0de"
+      },
+      "mergedAt": "2026-09-15T02:09:45Z",
+      "number": 735,
+      "state": "MERGED",
+      "title": "fix: timestamp BTC health alerts and distinguish historical errors"
+    },
+    {
+      "additions": 45,
+      "baseRefName": "main",
+      "changedFiles": 2,
+      "deletions": 2,
+      "mergeCommit": {
+        "oid": "ff3fa582f7ab4ecf8a91cdb8907c86a1575b5d62"
+      },
+      "mergedAt": "2026-09-15T02:18:44Z",
+      "number": 736,
+      "state": "MERGED",
+      "title": "docs: mandatory screening↔trading-agent compatibility review"
+    },
+    {
+      "additions": 705,
+      "baseRefName": "main",
+      "changedFiles": 15,
+      "deletions": 121,
+      "mergeCommit": {
+        "oid": "4673855822461a897b70de43fe2ddaf4e1170d09"
+      },
+      "mergedAt": "2026-09-15T02:49:09Z",
+      "number": 737,
+      "state": "MERGED",
+      "title": "fix(btc): 매매 공지의 마진·레버리지·계좌 비중 상세 복원"
+    },
+    {
+      "additions": 62,
+      "baseRefName": "main",
+      "changedFiles": 6,
+      "deletions": 7,
+      "mergeCommit": {
+        "oid": "205154389cdf24d7dab20ab0ae0c54ed8018cb7d"
+      },
+      "mergedAt": "2026-09-15T08:44:35Z",
+      "number": 738,
+      "state": "MERGED",
+      "title": "fix(btc): 운용자금 대비 증거금 사용 비중을 우선 표시"
+    },
+    {
+      "additions": 431,
+      "baseRefName": "main",
+      "changedFiles": 9,
+      "deletions": 9,
+      "mergeCommit": {
+        "oid": "9e5f7d4cca8b68b6f19ac207455e21c4e5b16cb1"
+      },
+      "mergedAt": "2026-09-15T09:55:01Z",
+      "number": 739,
+      "state": "MERGED",
+      "title": "fix(btc): 공유 데모 진입의 강제청산 위험 검사 보강"
+    },
+    {
+      "additions": 387,
+      "baseRefName": "main",
+      "changedFiles": 13,
+      "deletions": 347,
+      "mergeCommit": {
+        "oid": "318c0007642a92a6cb57ee3e293043deef8d8edd"
+      },
+      "mergedAt": "2026-09-15T10:13:20Z",
+      "number": 740,
+      "state": "MERGED",
+      "title": "fix(btc): 공개 매매 공지 간소화 및 청산 레버리지 누락 교정"
+    },
+    {
+      "additions": 1260,
+      "baseRefName": "main",
+      "changedFiles": 19,
+      "deletions": 9,
+      "mergeCommit": {
+        "oid": "b0953ced13d26f35fdc23b55c7fd75cdbf2a7cfc"
+      },
+      "mergedAt": "2026-09-15T16:13:15Z",
+      "number": 741,
+      "state": "MERGED",
+      "title": "feat(shadow): 오닐식 후보 감시와 초분할 초기 투영 연계"
+    },
+    {
+      "additions": 402,
+      "baseRefName": "main",
+      "changedFiles": 12,
+      "deletions": 12,
+      "mergeCommit": {
+        "oid": "e6df1ba564d9df7d219623be2c414e01b21553f9"
+      },
+      "mergedAt": "2026-09-16T01:31:35Z",
+      "number": 743,
+      "state": "MERGED",
+      "title": "fix(ops): BTC API 만료 진단과 Telegram 전달 미확정 기록 보강"
+    },
+    {
+      "additions": 323,
+      "baseRefName": "main",
+      "changedFiles": 4,
+      "deletions": 3,
+      "mergeCommit": {
+        "oid": "e028f37d32f354436be531fcafed659d2dfb4f76"
+      },
+      "mergedAt": "2026-09-16T01:16:18Z",
+      "number": 744,
+      "state": "MERGED",
+      "title": "fix(kr): 무상증자 권리락으로 중단된 오전 KIS 선별 복구"
+    },
+    {
+      "additions": 2118,
+      "baseRefName": "main",
+      "changedFiles": 27,
+      "deletions": 75,
+      "mergeCommit": {
+        "oid": "03021932c0870fe45156c85fd86260fb1cc88c5e"
+      },
+      "mergedAt": "2026-09-16T02:45:28Z",
+      "number": 745,
+      "state": "MERGED",
+      "title": "feat: KR/US watchlist × micro-split SHADOW evidence"
+    },
+    {
+      "additions": 3699,
+      "baseRefName": "main",
+      "changedFiles": 48,
+      "deletions": 101,
+      "mergeCommit": {
+        "oid": "bb6fab4580b39bfb33ee59bf8779183b8f83d18c"
+      },
+      "mergedAt": "2026-09-17T16:37:04Z",
+      "number": 747,
+      "state": "MERGED",
+      "title": "Align KR/US market evidence and target provenance; validate optional source prefetch"
+    },
+    {
+      "additions": 1407,
+      "baseRefName": "main",
+      "changedFiles": 24,
+      "deletions": 50,
+      "mergeCommit": {
+        "oid": "4bd5ca9b18c5a6ff8baebc8b178a8e7c180955be"
+      },
+      "mergedAt": "2026-09-17T18:23:32Z",
+      "number": 748,
+      "state": "MERGED",
+      "title": "Validate real local US pipeline and fix MCP, payload, dependency parity"
+    },
+    {
+      "additions": 32,
+      "baseRefName": "main",
+      "changedFiles": 3,
+      "deletions": 1,
+      "mergeCommit": {
+        "oid": "c8d14f778e5c280333a3101420211b767b60aa3a"
+      },
+      "mergedAt": "2026-09-17T18:35:08Z",
+      "number": 749,
+      "state": "MERGED",
+      "title": "Correct US validation tool-failure accounting and deployment evidence"
+    },
+    {
+      "additions": 782,
+      "baseRefName": "main",
+      "changedFiles": 18,
+      "deletions": 32,
+      "mergeCommit": {
+        "oid": "f586cc9b9a452a76086ef9bbd5485691b107e3fa"
+      },
+      "mergedAt": "2026-09-17T21:52:21Z",
+      "number": 750,
+      "state": "MERGED",
+      "title": "fix: comparative report evidence and scoped research activation"
+    },
+    {
+      "additions": 107,
+      "baseRefName": "main",
+      "changedFiles": 4,
+      "deletions": 17,
+      "mergeCommit": {
+        "oid": "264fd487fb6f91207efd864eaa97c79aa29a6b3c"
+      },
+      "mergedAt": "2026-09-22T12:19:51Z",
+      "number": 754,
+      "state": "MERGED",
+      "title": "Fix KIS paid-rights snapshot validation"
+    },
+    {
+      "additions": 866,
+      "baseRefName": "main",
+      "changedFiles": 20,
+      "deletions": 551,
+      "mergeCommit": {
+        "oid": "a8ba1a11e6aa1a02b5e053fb57d3c9b4a11bc09d"
+      },
+      "mergedAt": "2026-09-23T05:23:16Z",
+      "number": 755,
+      "state": "MERGED",
+      "title": "Preserve US analyst evidence and retire TradingView"
+    },
+    {
+      "additions": 960,
+      "baseRefName": "main",
+      "changedFiles": 18,
+      "deletions": 187,
+      "mergeCommit": {
+        "oid": "837044bd7586cc43d1d2dc185f0b3cbfb2a0f105"
+      },
+      "mergedAt": "2026-09-23T06:46:38Z",
+      "number": 756,
+      "state": "MERGED",
+      "title": "Fix verified US report numeric and evidence consistency errors"
+    },
+    {
+      "additions": 140,
+      "baseRefName": "main",
+      "changedFiles": 5,
+      "deletions": 3,
+      "mergeCommit": {
+        "oid": "bc7f4c5b71f4fc755f1b38b067690abc9c5bda95"
+      },
+      "mergedAt": "2026-09-23T06:59:42Z",
+      "number": 757,
+      "state": "MERGED",
+      "title": "Keep report OAuth proxy independent of batch lifetime"
+    },
+    {
+      "additions": 2,
+      "baseRefName": "main",
+      "changedFiles": 1,
+      "deletions": 1,
+      "mergeCommit": {
+        "oid": "b632da8bd33dd7a41e30cc2f8892164ba1bd692d"
+      },
+      "mergedAt": "2026-09-23T07:09:37Z",
+      "number": 758,
+      "state": "MERGED",
+      "title": "Match report proxy launcher to DB systemd execution policy"
+    },
+    {
+      "additions": 17,
+      "baseRefName": "main",
+      "changedFiles": 3,
+      "deletions": 2,
+      "mergeCommit": {
+        "oid": "d7c03c53a03572d6c9d8201e41a81946a6b56deb"
+      },
+      "mergedAt": "2026-09-23T07:23:08Z",
+      "number": 759,
+      "state": "MERGED",
+      "title": "Keep report calculation records outside investor prose"
+    },
+    {
+      "additions": 2415,
+      "baseRefName": "main",
+      "changedFiles": 20,
+      "deletions": 38,
+      "mergeCommit": {
+        "oid": "eb5cea2462efd692bb080d4914c12346fc47e245"
+      },
+      "mergedAt": "2026-09-23T09:22:25Z",
+      "number": 760,
+      "state": "MERGED",
+      "title": "Fill US report evidence gaps using bounded official public sources"
+    },
+    {
+      "additions": 635,
+      "baseRefName": "main",
+      "changedFiles": 15,
+      "deletions": 20,
+      "mergeCommit": {
+        "oid": "591670379a823f03bd18ed617700639db5f72816"
+      },
+      "mergedAt": "2026-09-23T09:58:50Z",
+      "number": 761,
+      "state": "MERGED",
+      "title": "Fix public report evidence follow-through and numerical consistency"
+    },
+    {
+      "additions": 19,
+      "baseRefName": "main",
+      "changedFiles": 4,
+      "deletions": 1,
+      "mergeCommit": {
+        "oid": "738275e0c7100ae47e49d1fd47f7c2b75b3afe32"
+      },
+      "mergedAt": "2026-09-23T10:15:25Z",
+      "number": 762,
+      "state": "MERGED",
+      "title": "Finish financial appendix rendering and consensus basis wording"
+    },
+    {
+      "additions": 10294,
+      "baseRefName": "main",
+      "changedFiles": 60,
+      "deletions": 15,
+      "mergeCommit": {
+        "oid": "0d5a6b9c8486072a3cf724336ea3d2a1f43f06c5"
+      },
+      "mergedAt": "2026-09-23T10:56:17Z",
+      "number": 763,
+      "state": "MERGED",
+      "title": "Deploy Korean report data quality on the shared production pipeline"
+    },
+    {
+      "additions": 203,
+      "baseRefName": "main",
+      "changedFiles": 5,
+      "deletions": 5,
+      "mergeCommit": {
+        "oid": "831a3f6c72f3f030e967dccda690e25292e98015"
+      },
+      "mergedAt": "2026-09-23T11:29:44Z",
+      "number": 764,
+      "state": "MERGED",
+      "title": "Finish reader-facing evidence labels and appendix spacing"
+    },
+    {
+      "additions": 5455,
+      "baseRefName": "main",
+      "changedFiles": 45,
+      "deletions": 21,
+      "mergeCommit": {
+        "oid": "aa2f1e89cd460a76ad3d9dca1ce2e52b85b69c60"
+      },
+      "mergedAt": "2026-09-23T17:17:11Z",
+      "number": 765,
+      "state": "MERGED",
+      "title": "Preserve substantive DART analysis and peer facts through reports and BUY"
+    },
+    {
+      "additions": 1317,
+      "baseRefName": "main",
+      "changedFiles": 15,
+      "deletions": 193,
+      "mergeCommit": {
+        "oid": "a4dafd320ab542f06a79c5e4249f3b549813f931"
+      },
+      "mergedAt": "2026-09-23T22:45:14Z",
+      "number": 767,
+      "state": "MERGED",
+      "title": "fix: restore observable KR/US batches and strict US snapshot identity"
+    },
+    {
+      "additions": 223,
+      "baseRefName": "main",
+      "changedFiles": 3,
+      "deletions": 4,
+      "mergeCommit": {
+        "oid": "fdd621d55bf71d6d59c200273908cd9b4492c4bc"
+      },
+      "mergedAt": "2026-09-24T05:12:30Z",
+      "number": 768,
+      "state": "MERGED",
+      "title": "fix: preserve signed KR/US volatility facts in buy gate"
+    },
+    {
+      "additions": 1589,
+      "baseRefName": "main",
+      "changedFiles": 19,
+      "deletions": 19,
+      "mergeCommit": {
+        "oid": "2d0a7229280e273ba5fe2a8acb1ed7b019caf0c7"
+      },
+      "mergedAt": "2026-09-25T01:45:06Z",
+      "number": 769,
+      "state": "MERGED",
+      "title": "feat: US common-stock universe and observation-only screening quality"
+    },
+    {
+      "additions": 14,
+      "baseRefName": "main",
+      "changedFiles": 2,
+      "deletions": 2,
+      "mergeCommit": {
+        "oid": "2cf08ccfd6eb5f44c2ef193841f308a2d03a6cbb"
+      },
+      "mergedAt": "2026-09-24T06:02:58Z",
+      "number": 770,
+      "state": "MERGED",
+      "title": "build: pin yfinance 1.4.1 and validated curl_cffi 0.15.0"
+    },
+    {
+      "additions": 913,
+      "baseRefName": "main",
+      "changedFiles": 10,
+      "deletions": 29,
+      "mergeCommit": {
+        "oid": "7f8015a9fb541a0f882892a3d63c288f0ea5b749"
+      },
+      "mergedAt": "2026-09-24T07:44:45Z",
+      "number": 771,
+      "state": "MERGED",
+      "title": "fix: cache completed US daily bars and bound missing-only retries"
+    },
+    {
+      "additions": 1963,
+      "baseRefName": "main",
+      "changedFiles": 27,
+      "deletions": 186,
+      "mergeCommit": {
+        "oid": "5658f8a1b7367d8a14f175adbccc695c5b54fe8a"
+      },
+      "mergedAt": "2026-09-24T10:49:46Z",
+      "number": 772,
+      "state": "MERGED",
+      "title": "fix: restore standalone-company reports and complete synthesis inputs"
+    },
+    {
+      "additions": 3152,
+      "baseRefName": "main",
+      "changedFiles": 32,
+      "deletions": 513,
+      "mergeCommit": {
+        "oid": "e7d60cdb41610ce01faa8b3be83450f2a270191d"
+      },
+      "mergedAt": "2026-09-25T01:04:06Z",
+      "number": 773,
+      "state": "MERGED",
+      "title": "fix: eliminate report review protocol mismatches and capture bounded failures"
+    },
+    {
+      "additions": 165,
+      "baseRefName": "main",
+      "changedFiles": 3,
+      "deletions": 6,
+      "mergeCommit": {
+        "oid": "eebfe20646eb9612cb1ae0579b8e121f63cbd05b"
+      },
+      "mergedAt": "2026-09-25T00:33:09Z",
+      "number": 774,
+      "state": "MERGED",
+      "title": "fix: compact unmeasured optional market indicators in reports"
+    },
+    {
+      "additions": 39,
+      "baseRefName": "main",
+      "changedFiles": 2,
+      "deletions": 4,
+      "mergeCommit": {
+        "oid": "08fb33f5ddd7b82f9e260e9a34834c6bcfc8670e"
+      },
+      "mergedAt": "2026-09-25T04:44:46Z",
+      "number": 775,
+      "state": "MERGED",
+      "title": "fix: accept equivalent approximate Korean net-share notation"
+    },
+    {
+      "additions": 24,
+      "baseRefName": "main",
+      "changedFiles": 2,
+      "deletions": 16,
+      "mergeCommit": {
+        "oid": "a3c01595c6f35f9c50876a57924f6bd554e8a04c"
+      },
+      "mergedAt": "2026-09-25T05:15:54Z",
+      "number": 776,
+      "state": "MERGED",
+      "title": "fix: recognize prefixed approximate net-share recovery fields"
+    },
+    {
+      "additions": 167,
+      "baseRefName": "main",
+      "changedFiles": 22,
+      "deletions": 3216,
+      "mergeCommit": {
+        "oid": "ffa22eee132d5b67a1e5071bca3feb7f7e949f56"
+      },
+      "mergedAt": "2026-09-25T17:46:46Z",
+      "number": 777,
+      "state": "MERGED",
+      "title": "fix: remove runtime report fact-editor gate; cap DART writers at gpt-6-sol"
+    },
+    {
+      "additions": 152,
+      "baseRefName": "main",
+      "changedFiles": 5,
+      "deletions": 20,
+      "mergeCommit": {
+        "oid": "0e481200ba947610c6fcb0e4cb446331fbc49bc0"
+      },
+      "mergedAt": "2026-09-25T17:46:47Z",
+      "number": 778,
+      "state": "MERGED",
+      "title": "feat: slim KR DART chapter and make it the single owner of filing interpretation"
+    },
+    {
+      "additions": 2717,
+      "baseRefName": "main",
+      "changedFiles": 20,
+      "deletions": 798,
+      "mergeCommit": {
+        "oid": "b6b60fe5fcd9c0983ee6ab846be0f63168cd1cd1"
+      },
+      "mergedAt": "2026-09-25T17:46:49Z",
+      "number": 779,
+      "state": "MERGED",
+      "title": "feat: deterministic KR competitor table from WiseReport peers; drop Competitive Evidence dump"
+    },
+    {
+      "additions": 512,
+      "baseRefName": "main",
+      "changedFiles": 11,
+      "deletions": 3,
+      "mergeCommit": {
+        "oid": "678da82c525ecc781eaf5679f3e7896d944ff481"
+      },
+      "mergedAt": "2026-09-25T17:46:50Z",
+      "number": 780,
+      "state": "MERGED",
+      "title": "feat: let BUY agents cite DART chapter and competitor table as evidence (flag, default off)"
+    },
+    {
+      "additions": 5113,
+      "baseRefName": "main",
+      "changedFiles": 73,
+      "deletions": 4316,
+      "mergeCommit": {
+        "oid": "70c776e79e91477f88610b311598f0e97afe28eb"
+      },
+      "mergedAt": "2026-09-25T17:46:44Z",
+      "number": 781,
+      "state": "MERGED",
+      "title": "release: KR/US report overhaul — remove fact-editor gate, DART slim, deterministic peer tables, lay-reader summary"
+    },
+    {
+      "additions": 1050,
+      "baseRefName": "main",
+      "changedFiles": 10,
+      "deletions": 13,
+      "mergeCommit": {
+        "oid": "967af430543c39bc83d17cfb512b5bb60f4043ec"
+      },
+      "mergedAt": "2026-09-26T01:54:31Z",
+      "number": 782,
+      "state": "MERGED",
+      "title": "fix: restore KR report charts and net DART burdens against offsetting resources"
+    },
+    {
+      "additions": 434,
+      "baseRefName": "main",
+      "changedFiles": 11,
+      "deletions": 73,
+      "mergeCommit": {
+        "oid": "e31c1d5b7bbd3a5bf68b5868fadcef404a76b674"
+      },
+      "mergedAt": "2026-09-26T04:38:04Z",
+      "number": 783,
+      "state": "MERGED",
+      "title": "fix: keep KR DART depth chapter available for large filers"
+    },
+    {
+      "additions": 84,
+      "baseRefName": "main",
+      "changedFiles": 2,
+      "deletions": 19,
+      "mergeCommit": {
+        "oid": "8888d3fff92da7a61b6acb1770f110fed221ffda"
+      },
+      "mergedAt": "2026-09-26T06:45:47Z",
+      "number": 784,
+      "state": "MERGED",
+      "title": "fix: drop only unlinked market paragraphs instead of the whole section"
+    },
+    {
+      "additions": 314,
+      "baseRefName": "main",
+      "changedFiles": 4,
+      "deletions": 1,
+      "mergeCommit": {
+        "oid": "fe11c226de8ba31c8df598c2d3266660dd6f91fb"
+      },
+      "mergedAt": "2026-09-26T07:15:00Z",
+      "number": 785,
+      "state": "MERGED",
+      "title": "feat: DART balance-sheet structure chart in filing subsection 5-1"
+    },
+    {
+      "additions": 224,
+      "baseRefName": "main",
+      "changedFiles": 3,
+      "deletions": 65,
+      "mergeCommit": {
+        "oid": "97a0452e1d39b3b87a2a682cfa3ca742a54cef13"
+      },
+      "mergedAt": "2026-09-26T07:50:38Z",
+      "number": 786,
+      "state": "MERGED",
+      "title": "fix: split one oversized DART filing at heading blocks (bank reports)"
+    },
+    {
+      "additions": 43,
+      "baseRefName": "main",
+      "changedFiles": 4,
+      "deletions": 4,
+      "mergeCommit": {
+        "oid": "8984cd2b67393a6bd246d5cb9089d3f1190e4a28"
+      },
+      "mergedAt": "2026-09-26T07:50:41Z",
+      "number": 787,
+      "state": "MERGED",
+      "title": "fix: resolve same-day DART corrections when list and receipt order agree"
+    },
+    {
+      "additions": 419,
+      "baseRefName": "main",
+      "changedFiles": 14,
+      "deletions": 36,
+      "mergeCommit": {
+        "oid": "e452707938e34fb4dd6358b6ea3e53ecd61bab65"
+      },
+      "mergedAt": "2026-09-26T08:40:59Z",
+      "number": 788,
+      "state": "MERGED",
+      "title": "feat: sector-aware KR reports for financial institutions and holding companies"
+    },
+    {
+      "additions": 338,
+      "baseRefName": "main",
+      "changedFiles": 4,
+      "deletions": 26,
+      "mergeCommit": {
+        "oid": "8d26f68d56c27cbaf607368545cf6c585e86c736"
+      },
+      "mergedAt": "2026-09-26T11:11:41Z",
+      "number": 789,
+      "state": "MERGED",
+      "title": "feat: sector-aware KR reports for construction, contract-based and loss-making biotech"
+    },
+    {
+      "additions": 222,
+      "baseRefName": "main",
+      "changedFiles": 11,
+      "deletions": 22,
+      "mergeCommit": {
+        "oid": "ff88d63abb772c4f11ee7702d354997c33701462"
+      },
+      "mergedAt": "2026-09-26T12:17:17Z",
+      "number": 790,
+      "state": "MERGED",
+      "title": "fix: recover KR DART chapter inputs for REITs, standalone banks and large holding companies (sector roadmap stage 3)"
+    },
+    {
+      "additions": 355,
+      "baseRefName": "main",
+      "changedFiles": 7,
+      "deletions": 14,
+      "mergeCommit": {
+        "oid": "9bc7d0a223c217bc55da60e12e53c0a5a39d09b5"
+      },
+      "mergedAt": "2026-09-26T13:45:32Z",
+      "number": 791,
+      "state": "MERGED",
+      "title": "feat: 업종별 로드맵 4단계 — 금융업 F2를 규제 자본비율로 판정 (기본 off)"
+    },
+    {
+      "additions": 11,
+      "baseRefName": "main",
+      "changedFiles": 3,
+      "deletions": 8,
+      "mergeCommit": {
+        "oid": "86efa3170bffadb55cd9836222841f06deba7ec1"
+      },
+      "mergedAt": "2026-09-26T14:05:10Z",
+      "number": 792,
+      "state": "MERGED",
+      "title": "feat: 금융업 F2 live 전환 준비 — 카드·캐피탈 기준 10%"
+    },
+    {
+      "additions": 28,
+      "baseRefName": "main",
+      "changedFiles": 2,
+      "deletions": 0,
+      "mergeCommit": {
+        "oid": "f59c722e840b82a00bf58e4177e0682076197f84"
+      },
+      "mergedAt": "2026-09-26T14:19:31Z",
+      "number": 793,
+      "state": "MERGED",
+      "title": "feat: DART 심층분석 장에서 어려운 공시 용어를 쉽게 풀이"
+    },
+    {
+      "additions": 266,
+      "baseRefName": "main",
+      "changedFiles": 8,
+      "deletions": 10,
+      "mergeCommit": {
+        "oid": "25ae42f079f9de5475954ac7d2c32833c2851cf2"
+      },
+      "mergedAt": "2026-09-26T15:41:15Z",
+      "number": 794,
+      "state": "MERGED",
+      "title": "fix: stop false BTC error-burst alerts on leverage no-op and warn before API keys expire"
+    },
+    {
+      "additions": 20,
+      "baseRefName": "main",
+      "changedFiles": 2,
+      "deletions": 10,
+      "mergeCommit": {
+        "oid": "70dbe608d72c6a3ea3359ea007bb4ddba3fd2015"
+      },
+      "mergedAt": "2026-09-26T15:53:29Z",
+      "number": 795,
+      "state": "MERGED",
+      "title": "feat: DART 5장 용어 풀이 범위 확대 (예시 밖 전문 용어까지)"
+    },
+    {
+      "additions": 5,
+      "baseRefName": "main",
+      "changedFiles": 2,
+      "deletions": 1,
+      "mergeCommit": {
+        "oid": "7c3e6fc2a5ae192aa73aa2ed4ed2abf96abea2fd"
+      },
+      "mergedAt": "2026-09-26T16:06:38Z",
+      "number": 796,
+      "state": "MERGED",
+      "title": "fix: treat Bybit's epoch expiredAt as no expiry in the key expiry check"
+    },
+    {
+      "additions": 45,
+      "baseRefName": "main",
+      "changedFiles": 3,
+      "deletions": 12,
+      "mergeCommit": {
+        "oid": "62dd941410b946565ea1d99b6af733407a7351ee"
+      },
+      "mergedAt": "2026-09-26T16:30:18Z",
+      "number": 797,
+      "state": "MERGED",
+      "title": "feat: 금융사 BUY 판단에서 자본비율을 Perplexity로 보완 조회"
+    }
+  ]
+}
