@@ -25,7 +25,7 @@ _F2_CAPITAL_RULES = {
                   'K-ICS solvency ratio of at least 150% (use the figure before transitional measures when both '
                   'are disclosed)'),
     'securities': ('순자본비율(NCR) 150% 이상', 'net capital ratio (NCR) of at least 150%'),
-    'card_capital': ('조정자기자본비율 8% 이상', 'adjusted equity capital ratio of at least 8%'),
+    'card_capital': ('조정자기자본비율 10% 이상', 'adjusted equity capital ratio of at least 10%'),
 }
 _SUBTYPE_NAMES = {
     'bank': ('은행', 'bank'), 'financial_group': ('금융지주', 'financial holding company'),

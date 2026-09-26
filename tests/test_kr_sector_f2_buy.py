@@ -40,7 +40,7 @@ def test_non_financial_issuers_get_no_block_even_when_live(profile, language):
 
 @pytest.mark.parametrize('subtype, marker', [
     ('bank', 'CET1) 11%'), ('financial_group', 'CET1) 11%'), ('insurance', 'K-ICS) 150%'),
-    ('securities', 'NCR) 150%'), ('card_capital', '조정자기자본비율 8%'),
+    ('securities', 'NCR) 150%'), ('card_capital', '조정자기자본비율 10%'),
 ])
 def test_financial_block_requires_disclosed_capital_ratio(subtype, marker):
     profile = {'kind': 'financial', 'subtype': subtype, 'basis': 'ksic_financial'}
