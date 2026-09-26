@@ -11,6 +11,7 @@
 #   4) 자산 이상     — latest_equity 기록 없음 → warn / demo & equity<=0 → alert
 #   5) 포지션 고착   — entry_time 20일+ 경과 포지션 → warn
 #   6) 섀도우-데모 괴리 — demo&shadow equity 둘 다 있고 |차이|>15% → warn
+#   7) API 키 만료 예정 — --daily 에서만 Bybit GET 조회. 14일 이내 warn / 3일 이내 alert
 #
 # 안전 원칙: 모든 SQL/전송 실패를 흡수한다. 어떤 예외도 밖으로 던지지 않는다.
 # 토큰/운영 채널 미설정 시 미전송으로 기록 (크래시 금지). 시간 기준은 now 인자 주입으로
@@ -20,6 +21,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import math
+import os
 from datetime import datetime, timedelta, timezone
 
 from live import tracking
@@ -33,6 +36,9 @@ _HEARTBEAT_MAX_MIN = 70       # 데몬 정지 의심 (틱 누락) 임계 (분)
 _ERROR_WINDOW_HOURS = 2       # 에러 폭주 관측 창 (시간)
 _ERROR_MAX_COUNT = 5          # 이 개수 초과면 폭주
 _PRICE_MAX_MIN = 90           # 시세/처리 정지 임계 (분)
+_KEY_EXPIRY_WARN_DAYS = 14    # API 키 만료 사전 경고 (일)
+_KEY_EXPIRY_ALERT_DAYS = 3    # API 키 만료 임박 경보 (일)
+_API_KEY_LANES = (("메인", "BYBIT_DEMO_"), ("스윙", "BYBIT_SWING_DEMO_"))
 _POSITION_STALE_DAYS = 20     # 장기 미청산 포지션 임계 (일)
 _SHADOW_DIVERGENCE_PCT = 15.0 # 섀도우-데모 괴리 경보 임계 (%)
 
@@ -232,6 +238,47 @@ def _check_shadow_divergence(conn, mode: str, now: datetime) -> dict | None:
     return None
 
 
+def _fetch_key_expiry(prefix: str) -> datetime | None:
+    """GET-only lookup of a Bybit demo key's expiry. None = no key or no expiry."""
+    key = os.environ.get(prefix + "API_KEY")
+    secret = os.environ.get(prefix + "API_SECRET")
+    if not key or not secret:
+        return None
+    from pybit.unified_trading import HTTP
+    info = HTTP(demo=True, api_key=key, api_secret=secret, timeout=10).get_api_key_information()
+    raw = ((info or {}).get("result") or {}).get("expiredAt")
+    return _parse_ts(raw) if raw else None
+
+
+def _check_api_key_expiry(mode: str, now: datetime) -> list[dict]:
+    """7) API 키 만료 예정: 만료는 자동 갱신되지 않으므로 만료 전에 교체를 알린다."""
+    if mode != "demo":
+        return []
+    _load_env()  # best-effort; absorbs its own failures
+    issues = []
+    for label, prefix in _API_KEY_LANES:
+        try:
+            expires = _fetch_key_expiry(prefix)
+        except Exception as exc:  # noqa: BLE001 — 조회 실패는 에러 폭주 점검이 따로 다룬다
+            # Exception text may carry the signed request; log the type only.
+            log.warning("key expiry lookup (%s) failed (absorbed): %s", label, type(exc).__name__)
+            continue
+        if expires is None:
+            continue
+        days = (expires - now).total_seconds() / 86400
+        if days > _KEY_EXPIRY_WARN_DAYS:
+            continue
+        remaining = "이미 만료" if days <= 0 else f"D-{math.ceil(days)}"
+        issues.append({
+            "level": "alert" if days <= _KEY_EXPIRY_ALERT_DAYS else "warn",
+            "code": "key_expiry",
+            "msg": (f"{label} Bybit 데모 API 키 만료 예정 — {_kst_time(expires)} ({remaining})\n"
+                    "만료 전에 같은 계정에서 키를 재발급해 db-server .env 를 교체하세요. "
+                    "만료 키는 자동 갱신되지 않습니다."),
+        })
+    return issues
+
+
 _CHECKS = (
     _check_daemon,
     _check_error_burst,
@@ -246,11 +293,13 @@ _CHECKS = (
 # 핵심 점검 — 이슈 리스트 반환 (빈 리스트 = 정상).
 # ---------------------------------------------------------------------------
 
-def run_healthcheck(conn, mode: str = "demo", now: datetime | None = None) -> list[dict]:
+def run_healthcheck(conn, mode: str = "demo", now: datetime | None = None,
+                    *, key_expiry: bool = False) -> list[dict]:
     """모든 점검을 실행해 이슈 리스트를 반환한다. 빈 리스트 = 정상.
 
     각 이슈는 {level: "warn"|"alert", code, msg}. 시간 기준은 now 주입으로 결정적.
     개별 점검의 예외는 흡수되어 다른 점검을 막지 않는다.
+    key_expiry=True 일 때만 거래소 GET 조회로 API 키 만료를 점검한다 (daily 전용).
     """
     ref = _now(now)
     issues: list[dict] = []
@@ -262,6 +311,11 @@ def run_healthcheck(conn, mode: str = "demo", now: datetime | None = None) -> li
             continue
         if issue:
             issues.append(issue)
+    if key_expiry:
+        try:
+            issues.extend(_check_api_key_expiry(mode, ref))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("healthcheck key expiry 실패 (흡수): %s", type(exc).__name__)
     return issues
 
 
@@ -277,6 +331,7 @@ _CODE_TAG = {
     "equity_zero": "자산이상",
     "stale_position": "포지션고착",
     "shadow_divergence": "괴리",
+    "key_expiry": "키만료",
 }
 
 
@@ -331,7 +386,7 @@ def notify_health(conn, mode: str = "demo", send: bool = True,
     - 모든 전송 실패 흡수, 예외 비전파. 반환은 {"issues", "sent", "level"} (디버그용).
     """
     now = _now(now)
-    issues = run_healthcheck(conn, mode, now=now)
+    issues = run_healthcheck(conn, mode, now=now, key_expiry=daily)
     has_alert = any(i["level"] == "alert" for i in issues)
     result = {"issues": len(issues), "sent": False,
               "level": "alert" if has_alert else ("warn" if issues else "ok")}
@@ -384,9 +439,9 @@ def main() -> int:
     try:
         tracking.ensure_schema(conn)
         if args.no_send:
-            issues = run_healthcheck(conn, args.mode)
+            issues = run_healthcheck(conn, args.mode, key_expiry=args.daily)
             # 이력은 남기되 전송은 안 함.
-            notify_health(conn, args.mode, send=False)
+            notify_health(conn, args.mode, send=False, daily=args.daily)
             if issues:
                 print(_build_alert_message(issues, args.mode))
             else:

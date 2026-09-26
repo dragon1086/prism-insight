@@ -121,6 +121,18 @@ def _ok(resp: Any) -> bool:
         return False
 
 
+def _leverage_not_modified(fn_name: str, value: Any) -> bool:
+    """Bybit 110043: the requested leverage is already applied (desired final state).
+
+    pybit raises InvalidRequestError for non-zero retCode, so check both the
+    structured response and the exception's status_code. Never match on text.
+    """
+    if fn_name != "set_leverage":
+        return False
+    code = value.get("retCode") if isinstance(value, dict) else getattr(value, "status_code", None)
+    return code in (110043, "110043")
+
+
 def _result_list(resp: Any) -> list:
     """resp["result"]["list"] 를 안전하게 꺼낸다 (없으면 빈 리스트)."""
     try:
@@ -272,12 +284,16 @@ class DemoAdapter:
                         fallback_order_id=str(kwargs.get("orderId") or "") or None,
                     )
                     return resp
+                if _leverage_not_modified(fn_name, resp):
+                    return resp
                 last_exc = f"retCode={resp.get('retCode') if isinstance(resp, dict) else '?'} " \
                            f"retMsg={resp.get('retMsg') if isinstance(resp, dict) else resp}"
             except Exception as exc:  # noqa: BLE001 — 모든 거래소 실패 흡수
                 if auth_failure(exc):
                     self._auth_failure = last_exc = auth_failure(exc)
                     break
+                if _leverage_not_modified(fn_name, exc):
+                    return {"retCode": 110043, "retMsg": "leverage not modified"}
                 last_exc = str(exc)
             if attempt + 1 < attempts:
                 time.sleep(_RETRY_SLEEP_SEC)
@@ -299,7 +315,7 @@ class DemoAdapter:
         return None
 
     def _set_leverage(self, leverage: float) -> None:
-        # set_leverage 는 이미 같은 값이면 retCode 110043 등으로 실패할 수 있다 — 흡수.
+        # 이미 같은 값이면 Bybit 110043 — _call 이 멱등 성공으로 처리한다 (오류 이벤트 없음).
         self._call("set_leverage", category=_CATEGORY, symbol=_SYMBOL,
                    buyLeverage=str(leverage), sellLeverage=str(leverage))
 

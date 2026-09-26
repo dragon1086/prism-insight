@@ -71,6 +71,7 @@ def captured(monkeypatch):
 
     monkeypatch.setattr(healthcheck, "_send", _fake_send)
     monkeypatch.setattr(healthcheck, "_load_env", lambda: None)
+    monkeypatch.setattr(healthcheck, "_fetch_key_expiry", lambda prefix: None)
     # 채널/토큰 주입되어 있다고 가정 (전송 경로 타게).
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
     monkeypatch.setenv("BTC_OPS_CHANNEL_ID", "12345")
@@ -412,3 +413,91 @@ def test_no_send_does_not_dispatch(captured):
         "SELECT COUNT(*) AS c FROM btc_events WHERE kind='health'"
     ).fetchone()
     assert r["c"] == 1
+
+
+# ---------------------------------------------------------------------------
+# API 키 만료 사전 경고 — daily 점검에서만 GET 조회 (매시간 점검은 네트워크 0)
+# ---------------------------------------------------------------------------
+
+def _expiring(monkeypatch, **days_by_prefix):
+    def fetch(prefix):
+        days = days_by_prefix.get(prefix)
+        return None if days is None else _NOW + timedelta(days=days)
+    monkeypatch.setattr(healthcheck, "_fetch_key_expiry", fetch)
+
+
+def test_key_expiry_warns_within_two_weeks_on_daily(captured, monkeypatch):
+    _expiring(monkeypatch, BYBIT_DEMO_=10)
+    res = healthcheck.notify_health(_healthy_conn(), "demo", send=True, daily=True, now=_NOW)
+    assert res["level"] == "warn"
+    assert len(captured) == 1
+    assert "[키만료]" in captured[0]
+    assert "메인" in captured[0] and "스윙" not in captured[0]
+    assert "2026-06-25" in captured[0]
+    assert "정상 가동 중" not in captured[0]
+
+
+def test_key_expiry_alerts_within_three_days(captured, monkeypatch):
+    _expiring(monkeypatch, BYBIT_DEMO_=40, BYBIT_SWING_DEMO_=2)
+    issues = healthcheck.run_healthcheck(_healthy_conn(), "demo", now=_NOW, key_expiry=True)
+    assert [(i["code"], i["level"]) for i in issues] == [("key_expiry", "alert")]
+    assert "스윙" in issues[0]["msg"]
+
+
+def test_key_expiry_far_away_stays_quiet(captured, monkeypatch):
+    _expiring(monkeypatch, BYBIT_DEMO_=60, BYBIT_SWING_DEMO_=15)
+    res = healthcheck.notify_health(_healthy_conn(), "demo", send=True, daily=True, now=_NOW)
+    assert res["issues"] == 0
+    assert "정상 가동 중" in captured[0]
+
+
+def test_hourly_check_never_queries_key_expiry(captured, monkeypatch):
+    monkeypatch.setattr(healthcheck, "_fetch_key_expiry",
+                        lambda prefix: pytest.fail("hourly check must stay offline"))
+    res = healthcheck.notify_health(_healthy_conn(), "demo", send=True, now=_NOW)
+    assert res["issues"] == 0
+    assert captured == []
+
+
+def test_key_expiry_lookup_failure_is_absorbed_without_payload(captured, monkeypatch):
+    def fail(prefix):
+        raise RuntimeError("request api_key=SECRET_VALUE")
+    monkeypatch.setattr(healthcheck, "_fetch_key_expiry", fail)
+    res = healthcheck.notify_health(_healthy_conn(), "demo", send=True, daily=True, now=_NOW)
+    assert res["issues"] == 0
+    assert "SECRET_VALUE" not in str(captured)
+
+
+def test_key_expiry_only_for_demo_mode(captured, monkeypatch):
+    _expiring(monkeypatch, BYBIT_DEMO_=1)
+    assert healthcheck._check_api_key_expiry("shadow", _NOW) == []
+
+
+def test_fetch_key_expiry_without_keys_skips_network(monkeypatch):
+    monkeypatch.delenv("BYBIT_DEMO_API_KEY", raising=False)
+    monkeypatch.delenv("BYBIT_DEMO_API_SECRET", raising=False)
+    ut = pytest.importorskip("pybit.unified_trading")
+    monkeypatch.setattr(ut, "HTTP", lambda **kw: pytest.fail("no keys → no session"))
+    assert healthcheck._fetch_key_expiry("BYBIT_DEMO_") is None
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("2026-12-27T14:02:37Z", datetime(2026, 12, 27, 14, 2, 37, tzinfo=timezone.utc)),
+    ("", None),
+])
+def test_fetch_key_expiry_parses_get_only_response(monkeypatch, raw, expected):
+    monkeypatch.setenv("BYBIT_DEMO_API_KEY", "k")
+    monkeypatch.setenv("BYBIT_DEMO_API_SECRET", "s")
+    ut = pytest.importorskip("pybit.unified_trading")
+    calls = []
+
+    class FakeHTTP:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+        def get_api_key_information(self):
+            return {"retCode": 0, "result": {"expiredAt": raw}}
+
+    monkeypatch.setattr(ut, "HTTP", FakeHTTP)
+    assert healthcheck._fetch_key_expiry("BYBIT_DEMO_") == expected
+    assert calls[0]["demo"] is True
