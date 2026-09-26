@@ -195,3 +195,13 @@ def test_generic_unknown_sentence_cannot_be_a_completed_chapter(monkeypatch):
     with pytest.raises(ValueError, match='substantive attributed prose'):
         asyncio.run(depth.generate_dart_chapter(packet(), company_name='예시',
             company_code='123456', reference_date='20260923'))
+
+
+def test_writers_judge_burdens_net_of_offsetting_resources():
+    from cores.dart_deep_analysis import writer_agent
+    for role in ('finance', 'business', 'risks'):
+        ko = writer_agent(role, '회사', '000000', '20260926', 'ko').instruction
+        assert '위험의 순효과 판단' in ko and '현금및현금성자산' in ko and '계산식' in ko
+        assert '순효과 판단용 단순 계산 외에는' in ko
+        en = writer_agent(role, 'Co', '000000', '20260926', 'en').instruction
+        assert 'net of offsetting resources' in en
