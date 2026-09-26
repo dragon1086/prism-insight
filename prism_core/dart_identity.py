@@ -104,14 +104,20 @@ async def resolve_dart_identity(name, ticker, start_date, decision_at, *, client
                 raise _IdentityError('IDENTITY_AMBIGUOUS_OR_MISSING')
             code = next(iter(codes))
             profile = await fetch(_PROFILE_URL, {'selectKey': code}, 'profile')
-            profile_tickers, industries = [], []
+            profile_tickers, industries, legal_names = [], [], []
             for row in profile.xpath('//tr'):
-                cells = [' '.join(node.text_content().split()) for node in row.xpath('./th|./td')]
+                nodes = row.xpath('./th|./td')
+                cells = [' '.join(node.text_content().split()) for node in nodes]
                 label = re.sub(r'\s+', '', cells[0]).rstrip(':') if cells else ''
                 if len(cells) >= 2 and label == '종목코드':
                     profile_tickers.extend(re.findall(r'(?<![0-9])[0-9]{6}(?![0-9])', ' '.join(cells[1:])))
                 elif len(cells) == 2 and label == '업종명' and cells[1]:
                     industries.append(cells[1])
+                elif len(cells) == 2 and label == '회사이름':
+                    # The cell's own text; its 정보 더보기/rss buttons are separate elements.
+                    legal = ' '.join(''.join(nodes[1].xpath('./text()')).split())
+                    if legal:
+                        legal_names.append(legal)
             if profile_tickers != [ticker]:
                 raise _IdentityError('PROFILE_TICKER_MISMATCH')
             result.update(status='RESOLVED_WITH_OFFICIAL_PROFILE', corp_code=code, resolution=resolution,
@@ -119,6 +125,9 @@ async def resolve_dart_identity(name, ticker, start_date, decision_at, *, client
             # Official KSIC industry name from the same profile page; absent or repeated stays unknown.
             if len(industries) == 1:
                 result['industry_name'] = industries[0]
+            # Official legal name from the same page (e.g. …부동산투자회사 주식회사).
+            if len(legal_names) == 1:
+                result['legal_name'] = legal_names[0]
 
     try:
         await asyncio.wait_for(resolve(), timeout=_TIMEOUT_SECONDS)

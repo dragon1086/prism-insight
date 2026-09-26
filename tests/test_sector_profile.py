@@ -173,3 +173,32 @@ def test_stage2_lens_reaches_report_references():
     bio = {'official_dart': {'sector_profile': {'kind': 'loss_biotech'}}}
     assert '업종 관점(적자 바이오' in reference_context(bio)
     assert '업종 관점' not in reference_context(bio, market_only=True)
+
+
+REIT_LAYOUT = ['현금및현금성자산', '투자부동산(주5)', '자산총계', '차입금', '부채총계', '자본총계']
+
+
+@pytest.mark.parametrize('industry,legal_name,labels,kind,basis', [
+    ('부동산 임대 및 공급업', '롯데위탁관리부동산투자회사 주식회사', REIT_LAYOUT, 'reit',
+     'ksic_real_estate+reit_name+investment_property'),
+    ('비주거용 건물 임대업', '(주)이리츠코크렙기업구조조정부동산투자회사', REIT_LAYOUT, 'reit',
+     'ksic_real_estate+reit_name+investment_property'),
+    ('부동산 임대업', '(주)신한알파위탁관리부동산투자회사', REIT_LAYOUT, 'reit',
+     'ksic_real_estate+reit_name+investment_property'),
+    ('부동산 임대 및 공급업', '주식회사 일반부동산', REIT_LAYOUT, 'general', 'ksic_real_estate_without_reit_name'),
+    ('부동산 임대 및 공급업', None, REIT_LAYOUT, 'general', 'ksic_real_estate_without_reit_name'),
+    ('부동산 임대 및 공급업', '롯데위탁관리부동산투자회사 주식회사', INDUSTRIAL, 'general',
+     'reit_name_without_investment_property'),
+    ('부동산 임대 및 공급업', '롯데위탁관리부동산투자회사 주식회사', None, 'general',
+     'reit_name_without_investment_property'),
+    ('신탁업 및 집합투자업', '맥쿼리한국인프라투융자회사', REIT_LAYOUT, 'general', 'ksic_general'),
+])
+def test_reit_needs_ksic_legal_name_and_investment_property(industry, legal_name, labels, kind, basis):
+    profile = classify_issuer(industry, statement(labels) if labels else [], legal_name=legal_name)
+    assert (profile['kind'], profile['basis']) == (kind, basis)
+
+
+def test_reit_lens():
+    ko = sector_lens({'kind': 'reit'}, 'ko')
+    assert ko.startswith('업종 관점(리츠·부동산투자회사)') and 'FFO' in ko and 'LTV' in ko and '임대율' in ko
+    assert sector_lens({'kind': 'reit'}, 'en').startswith('Sector lens (REIT)')

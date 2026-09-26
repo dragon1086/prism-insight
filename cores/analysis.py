@@ -147,6 +147,9 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             from prism_core.kr_official_report_inputs import collect_kr_official_report_inputs
             prefetched['official_dart'] = await collect_kr_official_report_inputs(
                 company_code, company_name, reference_date)
+            profile = prefetched['official_dart'].get('sector_profile') or {}
+            logger.info('DART sector profile kind=%s subtype=%s basis=%s',
+                        profile.get('kind'), profile.get('subtype'), profile.get('basis'))
         except Exception:
             logger.warning('Official filing inputs unavailable; retaining existing report sources')
 

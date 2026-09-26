@@ -123,10 +123,13 @@ async def collect_kr_official_report_inputs(ticker, company, reference_date):
         filing = progress.get('filing_selection', {})
         selection = filing.get('selection', {})
         latest = selection.get('best_known_candidate_id') or selection.get('latest_candidate_id')
-        proof = filing.get('scope_absence_evidence', {}).get(latest, {})
+        absence = filing.get('scope_absence_evidence', {})
+        proof = absence.get(latest, {})
         resolution = None
+        # A correction whose consolidated statements are officially not applicable
+        # cannot be lineage-verified in this pass; the standalone pass re-verifies it.
         if (not progress.get('sources') and not selection.get('primary_id')
-                and not selection.get('unresolved_corrections')
+                and set(selection.get('unresolved_corrections') or ()) <= set(absence)
                 and proof.get('reason') == 'OFFICIAL_NOT_APPLICABLE'
                 and proof.get('scope') == 'consolidated' and proof.get('receipt_id') == latest
                 and filing.get('identity', {}).get('ticker_verified_from_company_profile') is True):
@@ -164,7 +167,8 @@ async def collect_kr_official_report_inputs(ticker, company, reference_date):
             from prism_core.sector_profile import classify_issuer
             identity = progress.get('filing_selection', {}).get('identity', {})
             packet['sector_profile'] = await asyncio.to_thread(
-                classify_issuer, identity.get('industry_name'), chapter_sources)
+                classify_issuer, identity.get('industry_name'), chapter_sources,
+                legal_name=identity.get('legal_name'))
         except Exception:  # noqa: BLE001 - an unknown profile keeps the general lens
             packet['sector_profile'] = {'kind': 'general', 'subtype': None, 'basis': 'profile_failed'}
         try:
