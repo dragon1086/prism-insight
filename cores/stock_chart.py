@@ -1535,8 +1535,12 @@ def create_annual_earnings_chart(ticker, company_name=None, financial_summary=No
                           save_path, footnote=_annual_footnote(frame))
 
 
-def create_dart_balance_sheet_chart(ticker, company_name=None, series=None, save_path=None):
-    """Assets / liabilities / equity and debt ratio from DART balance-sheet totals.
+def create_dart_balance_sheet_chart(ticker, company_name=None, series=None, save_path=None,
+                                    ratio='debt_to_equity'):
+    """Assets / liabilities / equity and a leverage line from DART balance-sheet totals.
+
+    ``ratio`` is 'debt_to_equity' (industrial) or 'equity_to_assets' (financial
+    institutions, where deposits and policy liabilities make debt ratios meaningless).
 
     ``series`` comes from prism_core.dart_balance_sheet.balance_sheet_series;
     every point already balances (assets = liabilities + equity).
@@ -1570,14 +1574,21 @@ def create_dart_balance_sheet_chart(ticker, company_name=None, series=None, save
     ax.set_title("Balance sheet totals by period end", fontsize=12, loc='left')
     handles, labels = ax.get_legend_handles_labels()
     # Debt ratio is meaningless when equity is zero or negative.
-    if all(p['equity'] > 0 for p in points):
-        ratio = [p['liabilities'] / p['equity'] * 100 for p in points]
+    if ratio == 'equity_to_assets':
+        values, label = [p['equity'] / p['assets'] * 100 for p in points], 'Equity-to-assets (%)'
+        fmt = "{:,.1f}%"
+    elif all(p['equity'] > 0 for p in points):
+        values, label = [p['liabilities'] / p['equity'] * 100 for p in points], 'Debt-to-equity (%)'
+        fmt = "{:,.0f}%"
+    else:
+        values = None
+    if values:
         ax2 = ax.twinx()
-        ax2.plot(x, ratio, color=PRIMARY_COLORS[4], marker='o', linewidth=2, label='Debt-to-equity (%)')
-        for xi, value in zip(x, ratio):
-            ax2.annotate(f"{value:,.0f}%", xy=(xi, value), xytext=(0, 6), textcoords='offset points',
+        ax2.plot(x, values, color=PRIMARY_COLORS[4], marker='o', linewidth=2, label=label)
+        for xi, value in zip(x, values):
+            ax2.annotate(fmt.format(value), xy=(xi, value), xytext=(0, 6), textcoords='offset points',
                          ha='center', fontsize=8, color=PRIMARY_COLORS[4])
-        top = max(ratio) * 1.25
+        top = max(values) * 1.25
         ax2.set_ylim(-top * 2.2, top)  # Line sits in the top band, above the bars.
         ax2.set_yticks([])  # Each point is labelled; a partial axis would mislead.
         h2, l2 = ax2.get_legend_handles_labels()

@@ -278,7 +278,8 @@ def test_filing_excerpts_stay_with_the_dart_chapter_when_it_can_be_written():
     assert '123456천원' in apply_kr_report_context(agent, 'company_status', packet).instruction
 
 
-def test_required_depth_generation_failure_ships_basic_report_and_alerts(monkeypatch, tmp_path):
+@pytest.mark.parametrize('mode', ['fails', 'over_budget'])
+def test_required_depth_generation_failure_ships_basic_report_and_alerts(monkeypatch, tmp_path, mode):
     import cores.data_prefetch as prefetch
     import prism_core.kr_official_report_inputs as official
     import prism_core.ops_alert as ops_alert
@@ -289,7 +290,8 @@ def test_required_depth_generation_failure_ships_basic_report_and_alerts(monkeyp
 
     packet = inputs()
     dart = packet.pop('official_dart')
-    dart['dart_chapter_inputs'] = {'ready': True, 'contexts': {}, 'receipt': {}}
+    dart['dart_chapter_inputs'] = {'ready': True, 'contexts': {}, 'receipt': {'total_bytes': 1_200_000}}
+    dart['sector_profile'] = {'kind': 'financial', 'subtype': 'bank'}
     monkeypatch.setattr(prefetch, 'prefetch_kr_analysis_data', lambda *a: copy.deepcopy(packet))
 
     async def collect(*args):
@@ -298,7 +300,15 @@ def test_required_depth_generation_failure_ships_basic_report_and_alerts(monkeyp
     async def no_research(*args):
         return None
 
+    seen_sector = []
+
     async def writer_fails(*args, **kwargs):
+        seen_sector.append(kwargs.get('sector'))
+        if mode == 'over_budget':
+            chapter = (dart_deep_analysis.CHAPTER_START + '\n\n## 5. DART\n\n### 5-1. 재무\n본문\n\n'
+                       + dart_deep_analysis.CHAPTER_END)
+            return chapter, {'status': 'generated_not_independently_verified', 'calls': 7,
+                             'message_bytes': 2_100_000, 'budget_exceeded': True}
         raise RuntimeError('DART writer boom')
 
     alerts = []
@@ -333,7 +343,14 @@ def test_required_depth_generation_failure_ships_basic_report_and_alerts(monkeyp
     monkeypatch.chdir(work)
     analysis._market_analysis_cache.clear()
     report = asyncio.run(analysis.analyze_stock('017670', 'SK텔레콤', '20260923', require_dart_depth=True))
+    assert seen_sector == [{'kind': 'financial', 'subtype': 'bank'}]
+    assert len(alerts) == 1
+    if mode == 'over_budget':
+        # Over the cost budget the chapter still ships; maintainers get the sizes.
+        assert dart_deep_analysis.CHAPTER_START in report and report_generator._is_cacheable_report(report)
+        assert '비용 상한 초과' in alerts[0] and '1200KB' in alerts[0] and '호출 7회' in alerts[0]
+        return
     assert dart_deep_analysis.CHAPTER_INCOMPLETE in report and dart_deep_analysis.CHAPTER_START not in report
     assert report_generator._is_deliverable_report(report) and not report_generator._is_cacheable_report(report)
     assert 'DART writer boom' not in report
-    assert len(alerts) == 1 and 'generation_failed' in alerts[0] and 'DART writer boom' in alerts[0]
+    assert 'generation_failed' in alerts[0] and 'DART writer boom' in alerts[0]

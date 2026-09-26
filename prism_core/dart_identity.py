@@ -104,15 +104,21 @@ async def resolve_dart_identity(name, ticker, start_date, decision_at, *, client
                 raise _IdentityError('IDENTITY_AMBIGUOUS_OR_MISSING')
             code = next(iter(codes))
             profile = await fetch(_PROFILE_URL, {'selectKey': code}, 'profile')
-            profile_tickers = []
+            profile_tickers, industries = [], []
             for row in profile.xpath('//tr'):
                 cells = [' '.join(node.text_content().split()) for node in row.xpath('./th|./td')]
-                if len(cells) >= 2 and re.sub(r'\s+', '', cells[0]).rstrip(':') == '종목코드':
+                label = re.sub(r'\s+', '', cells[0]).rstrip(':') if cells else ''
+                if len(cells) >= 2 and label == '종목코드':
                     profile_tickers.extend(re.findall(r'(?<![0-9])[0-9]{6}(?![0-9])', ' '.join(cells[1:])))
+                elif len(cells) == 2 and label == '업종명' and cells[1]:
+                    industries.append(cells[1])
             if profile_tickers != [ticker]:
                 raise _IdentityError('PROFILE_TICKER_MISMATCH')
             result.update(status='RESOLVED_WITH_OFFICIAL_PROFILE', corp_code=code, resolution=resolution,
                           official_display_names=sorted(names), ticker_verified_from_company_profile=True)
+            # Official KSIC industry name from the same profile page; absent or repeated stays unknown.
+            if len(industries) == 1:
+                result['industry_name'] = industries[0]
 
     try:
         await asyncio.wait_for(resolve(), timeout=_TIMEOUT_SECONDS)

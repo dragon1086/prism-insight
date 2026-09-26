@@ -161,6 +161,13 @@ async def collect_kr_official_report_inputs(ticker, company, reference_date):
             packet['public_receipt'] = note + packet.get('public_receipt', '')
             packet['shared_reference'] = packet['public_receipt']
         try:
+            from prism_core.sector_profile import classify_issuer
+            identity = progress.get('filing_selection', {}).get('identity', {})
+            packet['sector_profile'] = await asyncio.to_thread(
+                classify_issuer, identity.get('industry_name'), chapter_sources)
+        except Exception:  # noqa: BLE001 - an unknown profile keeps the general lens
+            packet['sector_profile'] = {'kind': 'general', 'subtype': None, 'basis': 'profile_failed'}
+        try:
             packet['dart_chapter_inputs'] = await asyncio.to_thread(
                 build_dart_chapter_inputs, chapter_sources, collection_gaps=progress['gaps'])
         except asyncio.CancelledError:
