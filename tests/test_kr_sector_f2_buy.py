@@ -48,8 +48,10 @@ def test_financial_block_requires_disclosed_capital_ratio(subtype, marker):
     ko = buy_sector_block(profile, 'ko', 'live')
     assert marker in ko and 'NOT_IN_INPUT' in ko and '추정하지 마십시오' in ko
     assert '부채비율' in ko and 'F1·F3·F4' in ko
+    assert '`perplexity-ask`' in ko and '12개월 이내' in ko and '최대 1회' in ko and '재시도하지 마십시오' in ko
     en = buy_sector_block(profile, 'en', 'live')
-    assert en.startswith('\n\n### Sector-specific F2 rule') and 'Never compute or estimate' in en
+    assert en.startswith('\n\n### Sector-specific F2 rule') and 'never compute or estimate' in en
+    assert '`perplexity-ask`' in en and 'within 12 months' in en and 'at-most-one' in en
     assert f2_rule(profile, 'live') == 'financial_capital_ratio'
 
 
