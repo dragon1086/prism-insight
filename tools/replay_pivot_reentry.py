@@ -69,10 +69,12 @@ def enrolments(db_path, market):
             if kind == "stop" or (kind is None and pnl is not None and pnl <= -3):
                 scen = _scenario(scenario)
                 rows.append({"source": "STOP_EXIT", "ticker": str(ticker), "date": session_date(sell_date, market),
-                             "price": sell_price, "fundamentals": (scen.get("fundamental_check") or {}).get("all_passed"),
+                             "price": sell_price, "scenario": scen,
+                             "fundamentals": (scen.get("fundamental_check") or {}).get("all_passed"),
                              "decision_id": scen.get("_decision_id"), "reason": f"stopped out ({pnl:.1f}%)"})
         for ticker, stamp, price, decision, score, minimum, scenario, decision_id, skip in conn.execute(SKIP_SQL[market]):
-            passed = (_scenario(scenario).get("fundamental_check") or {}).get("all_passed")
+            scen = _scenario(scenario)
+            passed = (scen.get("fundamental_check") or {}).get("all_passed")
             entered = str(decision or "").strip().lower() in {"enter", "진입", "entry"}
             if entered:
                 source = "ENTER_BLOCKED"
@@ -81,7 +83,7 @@ def enrolments(db_path, market):
             else:
                 continue
             rows.append({"source": source, "ticker": str(ticker), "date": session_date(stamp, market), "price": price,
-                         "fundamentals": passed, "decision_id": decision_id, "reason": skip,
+                         "scenario": scen, "fundamentals": passed, "decision_id": decision_id, "reason": skip,
                          "score": score, "min_score": minimum})
     rows.sort(key=lambda r: (r["date"], r["ticker"], r["source"]))
     return rows
@@ -114,7 +116,7 @@ def bull_fn(bench_bars):
     return lambda day: flags.get(day, True)
 
 
-def replay(db_path, market, bars_by_ticker, bench_bars, exit_mode="production", **exit_kwargs):
+def replay(db_path, market, bars_by_ticker, bench_bars, exit_mode="production", levels="computed", **exit_kwargs):
     gate = pulse_gate(bench_bars)
     if exit_mode == "production":
         bull = bull_fn(bench_bars)
@@ -142,9 +144,11 @@ def replay(db_path, market, bars_by_ticker, bench_bars, exit_mode="production", 
         key = (source, ticker)
         if live_until.get(key, "") >= day:
             continue                     # an earlier watch of this name/source was still live
-        watch = P.run_watch(bars, start, market, market_ok=gate, exit_fn=exit_fn)
+        level = P.scenario_levels(item.get("scenario"), price) if levels == "scenario" else None
+        watch = P.run_watch(bars, start, market, market_ok=gate, exit_fn=exit_fn, level=level)
         live_until[key] = bars[watch["index"]]["date"]
         row = {"source": source, "ticker": ticker, "date": day, "fundamentals": passed, "status": watch["status"],
+               "level_source": (level or {}).get("source", "computed"), "level": level,
                "events": watch["events"], "decision_id": item.get("decision_id"), "reason": item.get("reason"),
                "score": item.get("score"), "min_score": item.get("min_score")}
         if watch["status"] == "TRIGGERED":
@@ -211,11 +215,13 @@ def main(argv=None):
     parser.add_argument("--bench-code", default=None)
     parser.add_argument("--out")
     parser.add_argument("--exit", choices=["production", "v1"], default="production")
+    parser.add_argument("--levels", choices=["computed", "scenario"], default="computed",
+                        help="pivot from the detected base, or from the BUY scenario key_levels (fallback: computed)")
     args = parser.parse_args(argv)
     bars = {t: load_bars(v) for t, v in json.loads(Path(args.bars).read_text()).items()}
     bench_raw = json.loads(Path(args.bench).read_text())["bars"]
     bench = load_bars(bench_raw[args.bench_code or next(iter(bench_raw))])
-    results = replay(args.db, args.market, bars, bench, exit_mode=args.exit)
+    results = replay(args.db, args.market, bars, bench, exit_mode=args.exit, levels=args.levels)
     if args.out:
         Path(args.out).write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in results) + "\n")
     print(json.dumps(summarize(results), ensure_ascii=False, indent=1))

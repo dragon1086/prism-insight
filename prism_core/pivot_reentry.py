@@ -101,6 +101,67 @@ def evaluate_day(bars, i, market):
     return out
 
 
+def _price(value):
+    """key_levels price: 1700 / "1,700" / "1700~1800" (range midpoint), else None."""
+    if isinstance(value, (int, float)):
+        return float(value) if value > 0 else None
+    if not isinstance(value, str):
+        return None
+    parts = [p.strip().replace(",", "") for p in value.replace("-", "~").split("~")]
+    try:
+        nums = [float(p) for p in parts if p]
+    except ValueError:
+        return None
+    return sum(nums) / len(nums) if nums and min(nums) > 0 else None
+
+
+def scenario_levels(scenario, reference):
+    """Pivot and floor from the BUY scenario's key_levels, relative to the enrolment price.
+
+    pivot: first resistance above the reference price (primary, else secondary).
+    floor: secondary support (else primary); only armed while the reference sits above it,
+    so a stop-out that already closed below the box does not end its own watch.
+    """
+    levels = ((scenario or {}).get("trading_scenarios") or {}).get("key_levels") or {}
+    ref = float(reference or 0)
+    pivot = next((v for v in (_price(levels.get("primary_resistance")), _price(levels.get("secondary_resistance")))
+                  if v and v > ref), None)
+    if pivot is None:
+        return None
+    floor = next((v for v in (_price(levels.get("secondary_support")), _price(levels.get("primary_support")))
+                  if v and v < pivot), None)
+    return {"pivot": pivot, "floor": floor if floor and ref >= floor else None, "source": "scenario"}
+
+
+def evaluate_level_day(bars, i, level):
+    """evaluate_day with a given pivot (scenario key level) instead of a detected base."""
+    trend = trend_ok(bars, i)
+    pivot = level["pivot"]
+    out = {"date": bars[i]["date"], "base": level, "trend_ok": trend}
+    if trend is not True:
+        out["status"] = "TREND_BLOCKED"
+        return out
+    prev, today = bars[i - 1], bars[i]
+    ceiling = pivot * (1 + BUY_ZONE)
+    prev_avg = avg_volume(bars, i - 1)
+    # Follow-through: yesterday was the FIRST close above the pivot, on >= 1.4x volume.
+    if prev_avg and bars[i - 2]["close"] <= pivot < prev["close"] <= ceiling \
+            and prev["volume"] >= FOLLOW_THROUGH_VOLUME * prev_avg and today["open"] <= ceiling:
+        out.update(status="TRIGGERED", trigger="FOLLOW_THROUGH", entry=today["open"], pivot=pivot)
+        return out
+    ready = pivot * (1 - READY_BAND) <= prev["close"] <= pivot
+    out["status"] = "READY" if ready else "WATCHING"
+    if not ready:
+        return out
+    if today["open"] > ceiling:
+        out["status"] = "CHASE_SKIPPED"
+        return out
+    vol_avg = avg_volume(bars, i)
+    if today["high"] > pivot and vol_avg and today["volume"] >= INTRADAY_VOLUME * vol_avg:
+        out.update(status="TRIGGERED", trigger="INTRADAY_BREAKOUT", entry=max(today["open"], pivot), pivot=pivot)
+    return out
+
+
 def simulate(bars, i, entry, *, intraday=True):
     """Managed exit from day i: 7% stop, breakeven after +10% close, MA20 trend exit, 40-bar horizon."""
     if i < 20:
@@ -126,10 +187,12 @@ def simulate(bars, i, entry, *, intraday=True):
             "ret": round(held[-1]["close"] / entry - 1, 6), "bars": HOLD_BARS, "mfe": round(mfe, 6), "mae": round(mae, 6)}
 
 
-def run_watch(bars, start_index, market, *, market_ok=None, watch_bars=WATCH_BARS, exit_fn=None):
+def run_watch(bars, start_index, market, *, market_ok=None, watch_bars=WATCH_BARS, exit_fn=None, level=None):
     """Scan a watch from start_index for up to watch_bars sessions; first trigger wins.
 
     market_ok(date) -> bool|None gates triggers on the previous session's market state.
+    level: scenario pivot/floor (scenario_levels); None uses the detected base. A close
+    below an armed floor ends the watch as INVALIDATED.
     Also returns the READY_OPEN timing control (open of the first READY day).
     """
     ready_control = None
@@ -137,7 +200,9 @@ def run_watch(bars, start_index, market, *, market_ok=None, watch_bars=WATCH_BAR
     for i in range(start_index, min(len(bars), start_index + watch_bars)):
         if i < 56:
             continue
-        day = evaluate_day(bars, i, market)
+        if level and level.get("floor") and bars[i - 1]["close"] < level["floor"]:
+            return {"status": "INVALIDATED", "index": i - 1, "ready_control": ready_control, "events": events}
+        day = evaluate_level_day(bars, i, level) if level else evaluate_day(bars, i, market)
         if day["status"] == "CHASE_SKIPPED":
             events["chase_skipped"] += 1
         if day["status"] in {"READY", "TRIGGERED"} and ready_control is None:
