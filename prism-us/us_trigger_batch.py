@@ -205,6 +205,27 @@ def _compute_extension_score(extension_in_adr: float) -> float:
     return float(max(0.0, min(1.0, 1.0 - (extension_in_adr - EXTENSION_ADR_T_LOW) / span)))
 
 
+def _rel_amount50(history: pd.DataFrame, trade_date: str):
+    """Trade-date dollar turnover / mean of the previous 50 sessions (#822 SHADOW).
+
+    None unless the last bar is the trade date and at least 40 prior sessions
+    exist. The trade-date bar is intraday in both batches, so the ratio is a
+    partial-session value; callers record the elapsed session time with it.
+    Observation only: nothing ranks, gates or prompts on this value.
+    """
+    try:
+        if history.index[-1].strftime("%Y%m%d") != trade_date:
+            return None
+        amount = (history["Close"] * history["Volume"]).astype(float)
+        prior = amount.iloc[:-1].tail(50)
+        prior = prior[prior > 0]
+        if len(prior) < 40 or not amount.iloc[-1] > 0:
+            return None
+        return round(float(amount.iloc[-1] / prior.mean()), 4)
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return None
+
+
 def calculate_screening_signals(ticker: str, current_price: float, trade_date: str,
                                 lookback_days: int = SCREENING_SIGNAL_LOOKBACK_DAYS,
                                 quality_capture: dict = None,
@@ -224,7 +245,8 @@ def calculate_screening_signals(ticker: str, current_price: float, trade_date: s
         - return_nd:        N-day price return % (raw multi-week relative-strength input;
                             benchmark subtraction cancels under cross-candidate normalization)
     """
-    result = {"extension_in_adr": 0.0, "extension_score": 1.0, "return_nd": 0.0, "oneil_raw": None}
+    result = {"extension_in_adr": 0.0, "extension_score": 1.0, "return_nd": 0.0, "oneil_raw": None,
+              "rel_amount50": None}
     if current_price <= 0:
         return result
 
@@ -246,6 +268,7 @@ def calculate_screening_signals(ticker: str, current_price: float, trade_date: s
             }
     if df260.empty:
         return result
+    result["rel_amount50"] = _rel_amount50(df260, trade_date)
 
     # O'Neil 다개월 RS Rating (Phase B SHADOW-gate): 260일 전체 종가 사용.
     if "Close" in df260.columns:
@@ -1171,7 +1194,8 @@ def get_us_sector_map(tickers: list) -> dict:
 
 def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: bool = True,
                          lookback_days: int = 10, macro_context: dict = None,
-                         quality_capture: dict = None, expected_completed_session: str = None) -> dict:
+                         quality_capture: dict = None, expected_completed_session: str = None,
+                         rel_amount_capture: dict = None) -> dict:
     """
     Aggregate selected stocks from all triggers and make final selection.
 
@@ -1291,6 +1315,14 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
                                "Scenario R/R=N/A")
 
             trigger_candidates[name] = scored_df
+            if rel_amount_capture is not None and "FinalScore" in scored_df.columns:
+                # #822 SHADOW: record, in live FinalScore order, what a
+                # relative-turnover preference would have seen. Not used below.
+                rel_amount_capture[name] = [
+                    [ticker, round(float(scored_df.loc[ticker, "FinalScore"]), 4),
+                     screening_signals.get(ticker, {}).get("rel_amount50")]
+                    for ticker in scored_df.index
+                ]
 
     # Final selection
     selected_tickers = set()
@@ -1580,6 +1612,17 @@ def _load_screening_inputs(trade_date):
     return tickers, current.loc[kept].copy(), previous.loc[kept].copy(), date, diagnostic
 
 
+def _session_elapsed_minutes(trade_date, override_date):
+    """Minutes since the 09:30 ET open on the trade date; None for replays/off-session."""
+    if override_date:
+        return None
+    now = datetime.datetime.now(tz=ZoneInfo("America/New_York"))
+    if now.strftime("%Y%m%d") != trade_date:
+        return None
+    minutes = (now.hour * 60 + now.minute) - (9 * 60 + 30)
+    return minutes if 0 <= minutes <= 390 else None
+
+
 def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = None, macro_context: dict = None, override_date: str = None, watch_batch_ref: str = None):
     """
     Execute trigger batch.
@@ -1606,6 +1649,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
         logger.info(f"Batch reference date: {trade_date} (US Eastern Time)")
 
     tickers, snapshot, prev_snapshot, prev_date, universe_diagnostic = _load_screening_inputs(trade_date)
+    snapshot_elapsed_minutes = _session_elapsed_minutes(trade_date, override_date)
     from prism_core.batch_run_status import snapshot_coverage
     coverage = (universe_diagnostic['price_coverage'] if universe_diagnostic else
                 snapshot_coverage(snapshot, prev_snapshot, tickers, trade_date, prev_date))
@@ -1807,7 +1851,9 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
     quality_capture = ({} if os.getenv('US_SCREENING_QUALITY_CAPTURE_ENABLED', '').lower() == 'true' else None)
     capture_args = ({'quality_capture': quality_capture, 'expected_completed_session': prev_date}
                     if quality_capture is not None else {})
-    final_results = select_final_tickers(triggers, trade_date=trade_date, macro_context=macro_context, **capture_args)
+    rel_amount_capture = {}
+    final_results = select_final_tickers(triggers, trade_date=trade_date, macro_context=macro_context,
+                                         rel_amount_capture=rel_amount_capture, **capture_args)
 
     # Research observes a copy boundary, never modifies ranking, JSON or BUY inputs.
     if watch_batch_ref:
@@ -1893,6 +1939,12 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
         output_data["metadata"] = {
             "snapshot_coverage": coverage,
             **({'screening_quality_candidates': quality_capture} if quality_capture is not None else {}),
+            "rel_amount50_shadow": {
+                "contract": "rel_amount50_shadow_v1",
+                "scoring_applied": False,
+                "session_elapsed_minutes": snapshot_elapsed_minutes,
+                "triggers": rel_amount_capture,
+            },
             **({'universe_eligibility': universe_diagnostic} if universe_diagnostic else {}),
             "trigger_errors": trigger_errors,
             **({"market_participation": market_participation} if market_participation else {}),
