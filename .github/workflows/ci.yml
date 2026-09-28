@@ -44,7 +44,7 @@ jobs:
             tests/test_journal_recent_loss_penalty.py -q
           python -m pytest prism-us/tests/test_journal_recent_loss_penalty.py -q
           python -m pytest tests/test_us_stock_universe.py tests/test_us_batched_snapshots.py tests/test_us_expanded_universe_integration.py tests/test_us_universe_priority.py -q
-          python -m pytest tests/test_emerging_liquidity_lane.py -q
+          python -m pytest tests/test_emerging_liquidity_lane.py tests/test_us_kis_market_screen.py -q
           python -m pytest tests/test_screening_quality.py tests/test_screening_quality_handoff.py tests/test_screening_quality_tracker_integration.py tests/test_buy_gate_volatility_contract.py tests/test_volatility_producer_integration.py -q
           python -m pytest tests/test_dart_standalone_resolution.py tests/test_report_synthesis_reference_contract.py tests/test_report_macro_synthesis.py tests/test_kr_market_source_guard_integration.py tests/test_telegram_bot_shutdown.py -q
           python -m pytest tests/test_bot_report_entry_validation.py tests/test_competitive_evidence_recovery.py -q
