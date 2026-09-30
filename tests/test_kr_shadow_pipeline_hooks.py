@@ -206,7 +206,7 @@ def test_real_kr_thread_boundary_receives_explicit_batch(monkeypatch):
     asyncio.run(invoke())
 
 
-@pytest.mark.parametrize("market", ["KR", "US"])
+@pytest.mark.parametrize("market", ["KR", "KR_ENHANCED", "US"])
 @pytest.mark.parametrize("enabled", ["false", "true"])
 def test_real_tracking_hook_preserves_isolated_no_effects(tmp_path, market, enabled):
     """Run the imported full agent, real gates and the new callback boundary."""
@@ -222,6 +222,13 @@ def test_real_tracking_hook_preserves_isolated_no_effects(tmp_path, market, enab
             shadow_calls.append(kwargs)
         return original_observe(agent, emitter, *args, **kwargs)
     target_module.observe_or_emit = observe
+    import observability.decision_inputs as decision_inputs_module
+    decision_calls = []
+    original_decision_inputs = decision_inputs_module.emit_decision_inputs
+    def record_decision_inputs(*args, **kwargs):
+        decision_calls.append(kwargs)
+        return original_decision_inputs(*args, **kwargs)
+    decision_inputs_module.emit_decision_inputs = record_decision_inputs
     def forbidden_callback(*args, **kwargs):
         raise AssertionError("Isolated pipeline invoked production emitter")
     micro.emit_event = forbidden_callback
@@ -232,7 +239,9 @@ def test_real_tracking_hook_preserves_isolated_no_effects(tmp_path, market, enab
         '    assert shadow_calls[0]["market"] == market\n'
         '    assert shadow_calls[0]["current_price"] == 100\n'
         '    unit_key = "buy_amount_krw" if market == "KR" else "buy_amount_usd"\n'
-        '    assert shadow_calls[0]["unit_amount"] == agent.account_configs[0].get(unit_key)\n')
+        '    assert shadow_calls[0]["unit_amount"] == agent.account_configs[0].get(unit_key)\n'
+        '    if market == "KR":\n'
+        '        assert [c["decision"] for c in decision_calls] == ["Enter"], decision_calls\n')
     env = {key: value for key, value in os.environ.items()
            if not any(secret in key.upper() for secret in ("KIS", "TOKEN", "SECRET", "API_KEY", "APP_KEY"))}
     env.update(HOME=str(tmp_path), KIS_CONFIG_ROOT=str(tmp_path / "absent-kis"),
