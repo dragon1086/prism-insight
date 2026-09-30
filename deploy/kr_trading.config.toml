@@ -9,7 +9,7 @@ env = { PYTHONPATH = "/root/prism-insight" }
 enabled_tools = ["get_current_time"]
 default_tools_approval_mode = "approve"
 required = true
-startup_timeout_sec = 15
+startup_timeout_sec = 30
 tool_timeout_sec = 30
 
 [mcp_servers.kospi_kosdaq]

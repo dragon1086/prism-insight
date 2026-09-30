@@ -72,6 +72,20 @@ _MAX_OUTPUT_BYTES = 32 * 1024 * 1024
 _MAX_TELEMETRY_LINE = 64 * 1024
 _MAX_STAGE_EVENTS = 256
 _STDIN_WRITE_BUDGET = 64 * 1024
+
+
+def _startup_slots() -> int:
+    try:
+        return max(1, int(os.getenv("PRISM_CODEX_STARTUP_CONCURRENCY", "1")))
+    except ValueError:
+        return 1
+
+
+# Each Codex process boots four MCP servers before its first event. On the
+# 1-vCPU db-server, three parallel BUY analyses booted twelve servers at once and
+# the 15s `time` handshake timed out (US batches since 2026-09-22). Only the boot
+# phase is serialized; model turns still run in parallel.
+_STARTUP_GATE = threading.BoundedSemaphore(_startup_slots())
 _SAFE_SERVERS = frozenset({"time", "sqlite", "perplexity", "kospi_kosdaq", "yahoo_finance"})
 _SAFE_TOOLS = frozenset({
     "get_current_time", "list_tables", "describe_table", "read_query", "perplexity_ask",
@@ -477,6 +491,18 @@ def generate_codex_fast(
             raise CodexFastError("Invalid diagnostic parent lease")
     if home:
         environment["CODEX_HOME"] = home
+    while not _STARTUP_GATE.acquire(timeout=0.2):
+        if _cancel_event is not None and _cancel_event.is_set():
+            log_event("cancelled")
+            raise CodexFastError("Codex Fast cancelled")
+    gate_held = True
+
+    def release_gate():
+        nonlocal gate_held
+        if gate_held:
+            gate_held = False
+            _STARTUP_GATE.release()
+
     started = time.monotonic()
     process = None
     try:
@@ -527,6 +553,8 @@ def generate_codex_fast(
                     except subprocess.TimeoutExpired as exc:
                         check_output(exc.output, exc.stderr)
                         telemetry.consume(exc.output)
+                        if telemetry.last_stage != "start":
+                            release_gate()  # first event: MCP servers are up
             except BaseException:
                 try:
                     if pump is not None:
@@ -556,6 +584,8 @@ def generate_codex_fast(
     except (OSError, subprocess.TimeoutExpired, UnicodeError, ValueError):
         log_event("launch_error" if process is None else "process_io_error")
         raise CodexFastError("Codex Fast unavailable") from None
+    finally:
+        release_gate()
     latency = time.monotonic() - started
     if process.returncode != 0:
         log_event("nonzero_exit", process.returncode)
