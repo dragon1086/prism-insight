@@ -33,6 +33,7 @@ from prism_core.sell_regime_context import kr_live_regime_block
 from prism_core.execution_service import ExecutionService, OrderOutcomeUnknown
 from prism_core.order_intents import OrderIntent
 from observability.trading_context import emit_trading_context
+from observability.micro_split import emit_initial_shadow as emit_micro_split_shadow
 
 logging.basicConfig(
     level=logging.INFO,
@@ -806,6 +807,10 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         source="kr_enhanced_decision",
                         research_context=getattr(self, "_trend_research_snapshots", {}).get(ticker),
                     )
+                    from observability.decision_inputs import emit_decision_inputs
+                    emit_decision_inputs(self, market="KR", ticker=ticker, decision_id=source_decision_id,
+                                         scenario=scenario, current_price=current_price, decision="Enter",
+                                         source="kr_enhanced_decision")
 
                 # Process buy if entry decision
                 if entry_eligible:
@@ -842,6 +847,22 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                             scenario=scenario, sector=sector, was_traded=False,
                         )
                         continue
+                    if not is_add:
+                        account = getattr(self, "active_account", None) or {}
+                        observe_or_emit(self, emit_micro_split_shadow,
+                            market="KR", ticker=ticker,
+                            decision_id=source_decision_id,
+                            account_id=str(account.get("account_key") or "default"),
+                            unit_amount=account.get("buy_amount_krw"),
+                            current_price=current_price,
+                            baseline_position_fraction=(scenario.get("regime_entry_policy") or {}).get("position_fraction"),
+                            regime=(
+                                _buy_gate.get("effective_regime")
+                                or scenario.get("_deterministic_market_regime")
+                                or scenario.get("market_condition")
+                                or "unknown"
+                            ),
+                        )
                     if effects is not None:
                         if is_add or await self._is_ticker_in_holdings(ticker):
                             raise EffectsFailure("Existing strategy campaign requires explicit lifecycle transition")
