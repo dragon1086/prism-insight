@@ -60,7 +60,8 @@ def get_agent_directory(company_name, company_code, reference_date, base_section
             prefetched_data=pf.get("trading_volume"), prefetched_prices=pf.get("stock_ohlcv")
         ),
         "company_status": lambda: create_company_status_agent(
-            company_name, company_code, reference_date, urls, language
+            company_name, company_code, reference_date, urls, language,
+            quarterly_facts=pf.get("quarterly_eps_facts", "")
         ),
         "company_overview": lambda: create_company_overview_agent(
             company_name, company_code, reference_date, urls, language,

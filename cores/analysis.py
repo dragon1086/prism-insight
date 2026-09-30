@@ -183,6 +183,17 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             f"reason={peer_packet.get('skip_reason') or '-'}")
         if peer_packet.get('ready'):
             prefetched['peer_comparison'] = peer_packet
+        # Quarterly EPS with its prior-year quarter, collected by code so the
+        # company-status writer no longer depends on which pages it scraped.
+        try:
+            from prism_core.kr_financial_summary import (
+                collect_wisereport_quarterly_summary, render_quarterly_facts)
+            quarterly_facts = render_quarterly_facts(
+                await collect_wisereport_quarterly_summary(company_code, reference_date), language)
+            if quarterly_facts:
+                prefetched['quarterly_eps_facts'] = quarterly_facts
+        except Exception as e:  # noqa: BLE001 - optional data, never a trading gate
+            logger.warning(f"Quarterly EPS facts unavailable: {type(e).__name__}")
         if report_meta is not None:
             # SHADOW measurement only (decision_inputs_v1); not a BUY prompt input.
             from observability.decision_inputs import peer_valuation_summary
