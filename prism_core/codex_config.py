@@ -14,7 +14,7 @@ class CodexFastError(RuntimeError):
     pass
 
 
-SUPPORTED_MODELS = frozenset({"gpt-5.6-sol", "gpt-6-astra"})
+SUPPORTED_MODELS = frozenset({"gpt-5.6-sol", "gpt-6-astra", "gpt-6.1-sol"})
 SUPPORTED_REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max", "ultra"})
 MAX_TIMEOUT_SECONDS = 600
 
