@@ -184,7 +184,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--auth", choices=["api", "proxy"], default="proxy", help="auth path to verify")
     ap.add_argument("--mcp", nargs="*", default=[], help="MCP server names from mcp_agent.config.yaml")
-    ap.add_argument("--model", default="gpt-5.4-mini")
+    ap.add_argument("--model", default="gpt-6-luna")
     ap.add_argument("--prompt", default="In one sentence, confirm you can respond.")
     ap.add_argument("--reasoning", default="none", help="none|low|medium|high")
     ap.add_argument("--max-tokens", type=int, default=2000, dest="max_tokens")

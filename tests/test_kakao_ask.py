@@ -240,7 +240,7 @@ def test_worker_answers_an_ask_job_and_enqueues_an_ask_result(repository):
                     "use_primary_sources": False,
                     "is_intraday": False,
                     "source": "LLM",
-                    "model": "gpt-5.6-luna",
+                    "model": "gpt-6-luna",
                     "effort": "low",
                     "latency_ms": 321,
                     "error": None,
@@ -260,7 +260,7 @@ def test_worker_answers_an_ask_job_and_enqueues_an_ask_result(repository):
 
     [observation] = repository.list_search_query_observations()
     assert observation["utterance"] == QUESTION
-    assert observation["planner_model"] == "gpt-5.6-luna"
+    assert observation["planner_model"] == "gpt-6-luna"
     assert observation["planner_effort"] == "low"
     assert observation["planner_source"] == "LLM"
     assert observation["queries"] == ["코스피 오늘 하락 외국인 수급"]
@@ -461,7 +461,7 @@ async def test_llm_search_planner_uses_luna_low_and_validates_json(monkeypatch):
         "하이닉스 얼마까지 오를지 작두탄듯이 예측해보세요"
     )
 
-    assert captured["model"] == "gpt-5.6-luna"
+    assert captured["model"] == "gpt-6-luna"
     assert captured["reasoning_effort"] == "low"
     assert captured["max_completion_tokens"] == 900
     assert plan.source == "LLM"

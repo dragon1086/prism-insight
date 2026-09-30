@@ -41,12 +41,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ticker", help="종목 코드 (예: 005930, AAPL)")
     p.add_argument("--date-from", dest="date_from", metavar="YYYY-MM-DD", help="시작일")
     p.add_argument("--date-to", dest="date_to", metavar="YYYY-MM-DD", help="종료일")
-    _ALLOWED_MODELS = ["gpt-5.4-mini", "gpt-4.1-mini", "gpt-4.1", "gpt-4.1-nano"]
+    _ALLOWED_MODELS = ["gpt-6-luna", "gpt-4.1-mini", "gpt-4.1", "gpt-4.1-nano"]
     p.add_argument(
         "--model",
-        default="gpt-5.4-mini",
+        default="gpt-6-luna",
         choices=_ALLOWED_MODELS,
-        help="LLM 모델 (기본값: gpt-5.4-mini)",
+        help="LLM 모델 (기본값: gpt-6-luna)",
     )
     p.add_argument(
         "--skip-cache",

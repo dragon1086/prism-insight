@@ -34,7 +34,7 @@ def _positive_number_env(name: str, default: float) -> float:
         return default
 
 TELEGRAM_ANALYSIS_MODEL = os.environ.get(
-    "TELEGRAM_ANALYSIS_MODEL", "gpt-5.6-terra"
+    "TELEGRAM_ANALYSIS_MODEL", "gpt-6.1-sol"
 )
 TELEGRAM_ANALYSIS_EFFORT = os.environ.get(
     "TELEGRAM_ANALYSIS_EFFORT", "medium"

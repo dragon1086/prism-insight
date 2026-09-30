@@ -35,7 +35,7 @@ PY="${PY:-python3}"
 # The bot imports report generation modules before loading its .env file, so
 # formal-report model defaults must exist in the process environment at launch.
 # Explicit operator overrides still win.
-export REPORT_MODEL="${REPORT_MODEL:-gpt-5.6-luna}"
+export REPORT_MODEL="${REPORT_MODEL:-gpt-6-luna}"
 export REPORT_EFFORT="${REPORT_EFFORT:-high}"
 
 # pyenv python 이 ENTRY 를 직접 실행하는 프로세스만 매칭한다.

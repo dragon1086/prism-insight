@@ -271,8 +271,8 @@ def test_legacy_report_source_order_gains_recent_flow_fallback():
 def test_kakao_reports_default_to_luna_with_medium_reasoning():
     environ = {}
 
-    assert _configure_report_model(environ) == ("gpt-5.6-luna", "medium")
-    assert environ["REPORT_MODEL"] == "gpt-5.6-luna"
+    assert _configure_report_model(environ) == ("gpt-6-luna", "medium")
+    assert environ["REPORT_MODEL"] == "gpt-6-luna"
     assert environ["REPORT_EFFORT"] == "medium"
 
 
@@ -304,12 +304,12 @@ def test_kakao_search_planner_defaults_to_fast_luna_low():
 
     assert _configure_search_planner(environ) == (
         "true",
-        "gpt-5.6-luna",
+        "gpt-6-luna",
         "low",
         "12",
     )
     assert environ["KAKAO_SEARCH_PLANNER_ENABLED"] == "true"
-    assert environ["KAKAO_SEARCH_PLANNER_MODEL"] == "gpt-5.6-luna"
+    assert environ["KAKAO_SEARCH_PLANNER_MODEL"] == "gpt-6-luna"
     assert environ["KAKAO_SEARCH_PLANNER_EFFORT"] == "low"
 
 

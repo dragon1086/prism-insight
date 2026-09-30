@@ -865,7 +865,7 @@ class USStockAnalysisOrchestrator:
                         logger.info(f"Translating US telegram message to {lang}")
                         translated_message = await translate_telegram_message(
                             original_message,
-                            model="gpt-5.6-luna",
+                            model="gpt-6-luna",
                             from_lang="ko",
                             to_lang=lang
                         )
@@ -1160,7 +1160,7 @@ class USStockAnalysisOrchestrator:
                     logger.info(f"Translating US trigger alert to {lang}")
                     translated_message = await translate_telegram_message(
                         original_message,
-                        model="gpt-5.6-luna",
+                        model="gpt-6-luna",
                         from_lang="ko",
                         to_lang=lang
                     )

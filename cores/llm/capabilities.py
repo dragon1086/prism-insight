@@ -22,7 +22,7 @@ import os
 # Constants
 # ---------------------------------------------------------------------------
 # Default to the project's standard multimodal model (registered in models.py).
-_DEFAULT_VISION_MODEL = "gpt-5.4-mini"
+_DEFAULT_VISION_MODEL = "gpt-6-luna"
 _PLACEHOLDER_KEY = "chatgpt-oauth-placeholder"
 
 
