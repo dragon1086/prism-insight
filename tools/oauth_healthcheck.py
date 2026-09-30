@@ -179,8 +179,31 @@ async def _check_token() -> tuple[bool, str]:
         return False, f"토큰 점검 중 예외: {e!r}"
 
 
+# Leading timestamp of a log line: "2026-09-30 23:35:08,554 - ..." or
+# mcp_agent's "[INFO] 2026-09-30T15:11:39". Server-local time, like the cron.
+_LINE_TS = re.compile(r"^(?:\[[A-Z]+\]\s+)?(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})")
+
+
+def _line_epoch(line: str) -> float | None:
+    match = _LINE_TS.match(line)
+    if not match:
+        return None
+    try:
+        return time.mktime(time.strptime(f"{match.group(1)} {match.group(2)}", "%Y-%m-%d %H:%M:%S"))
+    except (ValueError, OverflowError):
+        return None
+
+
 def _scan_logs() -> tuple[int, list[str]]:
-    """Count error-pattern hits in log files modified within the scan window."""
+    """Count error-pattern hits written within the scan window.
+
+    A file's mtime only says it was touched: a batch that starts appending to
+    a long-lived log (us_morning.log) would otherwise re-count yesterday's
+    errors still sitting in the tail (2026-09-30 23:30 false alert, 160 hits
+    from 9/29). Lines therefore count by their own timestamp; untimestamped
+    continuation lines inherit the last one above them, and a file that never
+    prints timestamps keeps the mtime-only window.
+    """
     if not LOG_DIR.is_dir():
         return 0, []
     cutoff = time.time() - LOG_SCAN_MINUTES * 60
@@ -196,7 +219,15 @@ def _scan_logs() -> tuple[int, list[str]]:
                 size = f.tell()
                 f.seek(max(0, size - 200_000))
                 tail = f.read().decode("utf-8", errors="ignore")
-            for line in tail.splitlines():
+            lines = tail.splitlines()
+            stamps = [_line_epoch(line) for line in lines]
+            dated = any(stamp is not None for stamp in stamps)
+            current = None
+            for line, stamp in zip(lines, stamps):
+                if stamp is not None:
+                    current = stamp
+                if dated and (current is None or current < cutoff):
+                    continue
                 if ERROR_PATTERNS.search(line):
                     hits += 1
                     if len(samples) < 5:
