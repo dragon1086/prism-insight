@@ -10,21 +10,23 @@ from typing import Any
 
 # Models not supported on Codex endpoint -> best available replacement
 _MODEL_MAP: dict[str, str] = {
-    "gpt-4o": "gpt-5.4-mini",
-    "gpt-4o-mini": "gpt-5.4-mini",
-    "gpt-4o-2024-08-06": "gpt-5.4-mini",
-    "gpt-4-turbo": "gpt-5.4-mini",
-    "gpt-4": "gpt-5.4-mini",
-    "gpt-3.5-turbo": "gpt-5.4-mini",
-    "o4-mini": "gpt-5.4-mini",
-    "o3-mini": "gpt-5.4-mini",
+    "gpt-4o": "gpt-6-luna",
+    "gpt-4o-mini": "gpt-6-luna",
+    "gpt-4o-2024-08-06": "gpt-6-luna",
+    "gpt-4-turbo": "gpt-6-luna",
+    "gpt-4": "gpt-6-luna",
+    "gpt-3.5-turbo": "gpt-6-luna",
+    "o4-mini": "gpt-6-luna",
+    "o3-mini": "gpt-6-luna",
     # nano-tier models are rejected by the Codex/ChatGPT-account endpoint
     # ("model is not supported when using Codex with a ChatGPT account").
     # Map them to the lightest Codex-compatible model so OAuth-mode callers
     # (telegram_translator, dashboards, weekly intelligence) keep working.
     # API-key mode bypasses this proxy, so it uses the real nano model.
-    "gpt-5.4-nano": "gpt-5.4-mini",   # current nano default (2026-03)
-    "gpt-5-nano": "gpt-5.4-mini",     # back-compat (older nano, still live)
+    "gpt-5.4-nano": "gpt-6-luna",   # current nano default (2026-03)
+    "gpt-5-nano": "gpt-6-luna",     # back-compat (older nano, still live)
+    # The ChatGPT account rejects gpt-5.4-mini (400, 2026-09); keep old callers working.
+    "gpt-5.4-mini": "gpt-6-luna",
 }
 
 
@@ -40,7 +42,7 @@ def prepare_responses_passthrough(body: dict) -> dict:
     ``input``, ``instructions``, ``tools`` flat, ``text.format``, etc.), so
     this function must NOT re-translate the payload.  It only:
 
-    - Maps the model name via ``_map_model`` (e.g. gpt-4o -> gpt-5.4-mini).
+    - Maps the model name via ``_map_model`` (e.g. gpt-4o -> gpt-6-luna).
     - Forces ``store=False`` and ``stream=True`` (mandatory for Codex backend).
     - Injects a default ``instructions`` value when the caller omitted it
       (Codex requires the field to be present and non-empty).
@@ -52,7 +54,7 @@ def prepare_responses_passthrough(body: dict) -> dict:
     Does not mutate the caller's dict.
     """
     out = dict(body)
-    out["model"] = _map_model(body.get("model", "gpt-5.4-mini"))
+    out["model"] = _map_model(body.get("model", "gpt-6-luna"))
     out["store"] = False   # MANDATORY: store:true returns 400
     out["stream"] = True   # MANDATORY: always stream upstream
     if not out.get("instructions"):

@@ -111,7 +111,7 @@ class ModerationConfig:
     db_path: str = "telegram_moderation.sqlite"
     announcement_interval_hours: float = 24.0
     llm_enabled: bool = False
-    llm_model: str = "gpt-5.4-mini"
+    llm_model: str = "gpt-6-luna"
     llm_min_score: int = 4
     delete_score: int = 5
     restrict_score: int = 8
@@ -146,7 +146,7 @@ class ModerationConfig:
                 1.0, _env_float("TELEGRAM_MODERATION_ANNOUNCEMENT_HOURS", 24.0)
             ),
             llm_enabled=_env_bool("TELEGRAM_MODERATION_LLM_ENABLED", False),
-            llm_model=os.getenv("TELEGRAM_MODERATION_LLM_MODEL", "gpt-5.4-mini"),
+            llm_model=os.getenv("TELEGRAM_MODERATION_LLM_MODEL", "gpt-6-luna"),
             llm_min_score=max(1, _env_int("TELEGRAM_MODERATION_LLM_MIN_SCORE", 4)),
             delete_score=max(1, _env_int("TELEGRAM_MODERATION_DELETE_SCORE", 5)),
             restrict_score=max(1, _env_int("TELEGRAM_MODERATION_RESTRICT_SCORE", 8)),

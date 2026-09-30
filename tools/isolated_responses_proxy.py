@@ -25,7 +25,7 @@ from aiohttp import web
 
 MAX_REQUEST_BYTES = 1024 * 1024
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
-MODELS = frozenset({"gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-astra"})
+MODELS = frozenset({"gpt-5.6-sol", "gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"})
 _ACTIVE = False
 
 

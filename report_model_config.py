@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 
-REPORT_MODEL = os.environ.get("REPORT_MODEL", "gpt-5.6-luna")
+REPORT_MODEL = os.environ.get("REPORT_MODEL", "gpt-6-luna")
 REPORT_EFFORT = os.environ.get("REPORT_EFFORT", "medium")
 REPORT_AUX_MODEL = os.environ.get("REPORT_AUX_MODEL", REPORT_MODEL)
 REPORT_AUX_EFFORT = os.environ.get("REPORT_AUX_EFFORT", "low")

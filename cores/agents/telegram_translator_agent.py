@@ -117,7 +117,7 @@ async def translate_telegram_message(
 
     Args:
         message: Telegram message to translate
-        model: OpenAI model to use (default: gpt-5.6-luna for cost efficiency)
+        model: OpenAI model to use (default: gpt-6-luna for cost efficiency)
         from_lang: Source language code (default: "ko" for Korean)
         to_lang: Target language code (default: "en" for English)
         raise_on_error: Re-raise failures when callers must not send the source
