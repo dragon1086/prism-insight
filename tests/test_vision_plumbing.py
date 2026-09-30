@@ -108,7 +108,7 @@ class TestCapabilities:
     def test_vision_model_default(self, monkeypatch):
         monkeypatch.delenv("PRISM_VISION_MODEL", raising=False)
         from cores.llm import capabilities
-        assert capabilities.vision_model() == "gpt-5.4-mini"
+        assert capabilities.vision_model() == "gpt-6-luna"
 
     def test_vision_model_override(self, monkeypatch):
         monkeypatch.setenv("PRISM_VISION_MODEL", "gpt-4o-mini")

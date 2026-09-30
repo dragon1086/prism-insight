@@ -45,7 +45,7 @@ class TestTranslateRequest:
             "messages": [{"role": "user", "content": "안녕하세요"}],
         }
         result = translate_request(body)
-        assert result["model"] == "gpt-5.4-mini"
+        assert result["model"] == "gpt-6-luna"
 
     def test_supported_model_not_remapped(self):
         # A Codex-supported model passes through unchanged.

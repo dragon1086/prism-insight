@@ -11,7 +11,7 @@ from cores.chatgpt_proxy.api_translator import prepare_responses_passthrough
 
 
 def test_string_input_wrapped_into_list():
-    out = prepare_responses_passthrough({"model": "gpt-5.4-mini", "input": "say hi"})
+    out = prepare_responses_passthrough({"model": "gpt-6-luna", "input": "say hi"})
     assert out["input"] == [{"role": "user", "content": "say hi"}]
 
 
@@ -46,7 +46,7 @@ def test_store_stream_forced_and_model_mapped():
     out = prepare_responses_passthrough({"model": "gpt-4o", "input": [], "store": True, "stream": False})
     assert out["store"] is False
     assert out["stream"] is True
-    assert out["model"] == "gpt-5.4-mini"
+    assert out["model"] == "gpt-6-luna"
 
 
 def test_default_instructions_only_when_missing():
