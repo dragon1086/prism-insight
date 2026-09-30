@@ -439,3 +439,75 @@ def test_tracking_mcp_app_is_lazy_for_codex_runtime(path: str) -> None:
     assert "class _LazyMCPApp" in source
     assert "app = _LazyMCPApp(" in source
     assert "app = MCPApp(" not in source
+
+
+def _gated_stream():
+    return "\n".join([
+        json.dumps({"type": "thread.started"}),
+        json.dumps({"type": "item.completed", "item": {
+            "type": "mcp_tool_call", "server": "time", "tool": "get_current_time",
+            "arguments": {}, "status": "completed"}}),
+        json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}}),
+        json.dumps({"type": "turn.completed", "usage": {"output_tokens": 1}}),
+    ])
+
+
+def test_mcp_boot_is_serialized_until_first_event(monkeypatch, _trusted_codex, tmp_path) -> None:
+    """A second Codex process may only boot its MCP servers after the first
+    reports its first event; model turns then overlap (1-vCPU db-server)."""
+    import subprocess
+    import threading
+
+    monkeypatch.setattr(backend, "_STARTUP_GATE", threading.BoundedSemaphore(1))
+    booted = threading.Event()
+    finish = threading.Event()
+    launches = []
+
+    def fake_popen(command, **kwargs):
+        index = len(launches)
+        launches.append(index)
+
+        def communicate(**_):
+            if index == 0:
+                if not booted.is_set():
+                    booted.wait(0.05)
+                    raise subprocess.TimeoutExpired(command, 0.1, output=b"")
+                if not finish.is_set():
+                    # first event seen -> gate released while the turn continues
+                    raise subprocess.TimeoutExpired(
+                        command, 0.1, output=b'{"type":"thread.started"}\n')
+            return _gated_stream(), ""
+        return SimpleNamespace(stdin=(tmp_path / f"stdin{index}.bin").open("wb"),
+                               returncode=0, communicate=communicate)
+
+    monkeypatch.setattr(backend.subprocess, "Popen", fake_popen)
+    results = []
+    call = lambda: results.append(backend.generate_codex_fast(  # noqa: E731
+        system_prompt="s", user_prompt="u", mcp_profile="us_trading", timeout=10))
+    first = threading.Thread(target=call)
+    first.start()
+    while not launches:
+        pass
+    second = threading.Thread(target=call)
+    second.start()
+    second.join(0.5)
+    assert launches == [0], "second process booted before the first finished MCP startup"
+
+    booted.set()          # first process emits its first event
+    second.join(5)
+    assert launches == [0, 1] and not second.is_alive(), "gate not released after first event"
+    finish.set()
+    first.join(5)
+    assert [r.text for r in results] == ["ok", "ok"]
+
+
+def test_mcp_boot_gate_released_on_startup_failure(monkeypatch, _trusted_codex) -> None:
+    import threading
+
+    gate = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(backend, "_STARTUP_GATE", gate)
+    monkeypatch.setattr(backend.subprocess, "Popen",
+                        lambda *a, **k: fake_process(returncode=1, stderr="MCP boot failed"))
+    with pytest.raises(backend.CodexFastError):
+        backend.generate_codex_fast(system_prompt="s", user_prompt="u", timeout=5)
+    assert gate.acquire(blocking=False), "startup gate leaked after a failed boot"
