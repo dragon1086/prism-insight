@@ -263,6 +263,42 @@ class KisSource:
             raise Unavailable(f"KIS ohlcv {ticker} missing OHLCV columns")
         return frame
 
+    def corporate_action_flags(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        """Per-session corporate-action flags from the same daily chart.
+
+        `flng_cls_code` is 락구분 ("00" = none; 권리락·배당락·분할 etc. otherwise),
+        `prtt_rate` the split ratio and `mod_yn` whether the bar was adjusted.
+        Kept apart from `price_history` so OHLCV consumers see no new columns.
+        """
+        def window(window_start: str, window_end: str) -> list[dict]:
+            body = self._fetch(
+                _DAILY_CHART,
+                _DAILY_CHART_TR,
+                {
+                    "FID_COND_MRKT_DIV_CODE": _MARKET_DOMESTIC,
+                    "FID_INPUT_ISCD": ticker,
+                    "FID_INPUT_DATE_1": window_start,
+                    "FID_INPUT_DATE_2": window_end,
+                    "FID_PERIOD_DIV_CODE": "D",
+                    "FID_ORG_ADJ_PRC": "0",
+                },
+            )
+            return list(getattr(body, "output2", None) or [])
+
+        rows = [row for row in self._walk_range(start, end, window)
+                if start <= str(row.get(_DATE_FIELD, "")) <= end]
+        fields = ("flng_cls_code", "prtt_rate", "mod_yn")
+        # A row without all three fields cannot prove "no event"; refuse it.
+        if not rows or any(row.get(field) in (None, "") for row in rows for field in fields):
+            raise Unavailable(f"KIS corporate-action flags {ticker} missing")
+        frame = pd.DataFrame(
+            [[str(row["flng_cls_code"]).strip(), pd.to_numeric(row["prtt_rate"], errors="coerce"),
+              str(row["mod_yn"]).strip().upper()] for row in rows],
+            columns=["LockCode", "SplitRate", "Modified"],
+            index=pd.to_datetime([str(row[_DATE_FIELD]) for row in rows], format="%Y%m%d"),
+        )
+        return frame[~frame.index.duplicated(keep="first")].sort_index()
+
     def index_history(self, index_code: str, start: str, end: str) -> pd.DataFrame:
         kis_code = _INDEX_CODES.get(str(index_code))
         if kis_code is None:

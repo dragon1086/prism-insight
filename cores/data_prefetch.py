@@ -714,6 +714,24 @@ def _compute_kr_regime(kospi_ohlcv: dict, kosdaq_ohlcv: dict = None) -> dict:
     }
 
 
+def _prefetch_corporate_action_flags(company_code: str, reference_date: str):
+    """KIS per-session 락구분 flags covering the 30-session flow window, or None (unknown)."""
+    # Same provider module as the other prefetch reads; a module without the
+    # capability (e.g. a test double) simply leaves the check unknown.
+    fetch = getattr(_get_mcp_server_module(), "get_corporate_action_flags", None)
+    if fetch is None:
+        return None
+    try:
+        end = datetime.strptime(str(reference_date), "%Y%m%d")
+        # 70 calendar days comfortably cover 30 sessions plus holidays.
+        flags = fetch(
+            (end - timedelta(days=70)).strftime("%Y%m%d"), end.strftime("%Y%m%d"), company_code)
+    except Exception as e:  # noqa: BLE001 - optional evidence; unknown stays unknown
+        logger.warning(f"Corporate-action flags unavailable for {company_code}: {type(e).__name__}")
+        return None
+    return flags if isinstance(flags, pd.DataFrame) and not flags.empty else None
+
+
 def prefetch_kr_analysis_data(company_code: str, reference_date: str, max_years_ago: str, *, asof_utc=None) -> dict:
     """Prefetch all data needed for KR stock analysis agents.
 
@@ -771,7 +789,8 @@ def prefetch_kr_analysis_data(company_code: str, reference_date: str, max_years_
         evidence = compute_kr_flow_evidence(
             captured.get("trading_volume"), captured.get("stock_ohlcv"),
             captured.get("index_1001"),
-            asof_utc=calculation_time)
+            asof_utc=calculation_time,
+            corporate_actions=_prefetch_corporate_action_flags(company_code, reference_date))
         result["flow_evidence"] = render_kr_flow_evidence(evidence)
         from prism_core.kr_report_context import render_flow_reference
         result['flow_evidence_public'] = render_flow_reference(evidence)

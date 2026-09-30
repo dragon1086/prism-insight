@@ -89,6 +89,7 @@ def _load_repo_env() -> None:
 _load_repo_env()
 
 from cores.market_data import (  # noqa: E402
+    get_corporate_action_flags,  # noqa: F401 - plain attribute for data_prefetch, not an MCP tool
     get_index_ohlcv_by_date,
     get_market_cap_by_date,
     get_market_ohlcv_by_date,

@@ -31,6 +31,7 @@ __all__ = [
     "Unsupported",
     "default_chain",
     "get_index_ohlcv_by_date",
+    "get_corporate_action_flags",
     "get_market_cap_by_date",
     "get_market_fundamental_by_date",
     "get_market_ohlcv_by_date",
@@ -111,6 +112,13 @@ def get_market_cap_by_date(
     start_date: str, end_date: str, ticker: str
 ) -> pd.DataFrame:
     return _empty_on_exhaustion("market_cap_history", ticker, start_date, end_date)
+
+
+def get_corporate_action_flags(
+    start_date: str, end_date: str, ticker: str
+) -> pd.DataFrame:
+    """Per-session 락구분/split/adjusted flags; empty means unknown, never "no event"."""
+    return _empty_on_exhaustion("corporate_action_flags", ticker, start_date, end_date)
 
 
 def get_market_fundamental_by_date(

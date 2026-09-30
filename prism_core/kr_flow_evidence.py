@@ -58,11 +58,43 @@ def _hash_quantity(value):
         return None
 
 
-def compute_kr_flow_evidence(flow_data, price_data, session_data, *, asof_utc):
+def _action_rows(corporate_actions):
+    """{ISO date: row} from a flags frame or mapping; None when not supplied/readable."""
+    if corporate_actions is None:
+        return None
+    try:
+        if isinstance(corporate_actions, pd.DataFrame):
+            corporate_actions = corporate_actions.to_dict(orient="index")
+        return {pd.Timestamp(key).date().isoformat(): row for key, row in corporate_actions.items()}
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _flagged(row):
+    rate = pd.to_numeric(row.get("SplitRate"), errors="coerce")
+    return (str(row.get("LockCode", "")).strip() != "00"
+            or (pd.notna(rate) and rate != 0)
+            or str(row.get("Modified", "")).strip().upper() == "Y")
+
+
+def _window_actions(days, actions):
+    """NONE only when every session has flags and none is set; UNKNOWN is never NONE."""
+    if not days or actions is None or any(day not in actions for day in days):
+        return {"status": "UNKNOWN", "events": []}
+    events = [{"date": day, "lock_code": str(actions[day].get("LockCode", "")).strip(),
+               "split_rate": actions[day].get("SplitRate"),
+               "modified": str(actions[day].get("Modified", "")).strip().upper()}
+              for day in days if _flagged(actions[day])]
+    return {"status": "EVENT" if events else "NONE", "events": events}
+
+
+def compute_kr_flow_evidence(flow_data, price_data, session_data, *, asof_utc, corporate_actions=None):
     """Use the last N completed observed benchmark sessions, not calendar days.
 
     An independent KIS benchmark is the session reference. This is not a claim
     that an exchange calendar or missing benchmark rows were independently audited.
+    ``corporate_actions`` (KIS 락구분/split/adjusted flags per session) only
+    reports whether raw quantities are comparable; quantities are never adjusted.
     """
     result = {"version": VERSION, "market": "KR", "source": "KIS",
               "classification": "reported_investor_net_quantity",
@@ -120,6 +152,9 @@ def compute_kr_flow_evidence(flow_data, price_data, session_data, *, asof_utc):
         result["reason"] = "invalid_or_missing_dated_input"
         flow, prices, sessions = {}, {}, []
 
+    actions = _action_rows(corporate_actions)
+    if actions is not None:
+        result["corporate_action_check"] = "KIS_daily_chart_flng_cls_code_prtt_rate_mod_yn"
     for n in (5, 20, 30):
         expected = sessions[-n:]
         window = {"status": "MISSING", "required_sessions": n,
@@ -129,7 +164,8 @@ def compute_kr_flow_evidence(flow_data, price_data, session_data, *, asof_utc):
                   "net_shares": None, "positive_sessions": None,
                   "trailing_positive_sessions_within_window": None,
                   "combined_pct_of_traded_shares": None,
-                  "volume_ratio_status": "MISSING", "reason": result["reason"]}
+                  "volume_ratio_status": "MISSING", "reason": result["reason"],
+                  "corporate_actions": _window_actions(expected if len(expected) == n else [], actions)}
         result["windows"][str(n)] = window
         if window["reason"]:
             continue
@@ -179,9 +215,36 @@ def render_kr_flow_evidence(evidence):
         ratio_text = f"{ratio:.8f}%" if ratio is not None else "MISSING"
         lines.append(f"  동일 구간 거래량 대비 합계 순매수 수량: {ratio_text}.")
     lines.extend([f"- 계산 입력 해시: {evidence['input_hash']}",
-                  "- 기업행위를 보정하지 않은 원시 수량입니다. 누적 양수는 연속 순매수의 증명이 아닙니다.",
+                  corporate_action_line(evidence),
+                  "- 누적 양수는 연속 순매수의 증명이 아닙니다.",
                   "- 겹치는 창을 독립 가점으로 세거나 결측을0으로 바꾸거나 새로운 매수 차단 조건으로 삼지 마십시오."])
     return "\n".join(lines) + "\n"
+
+
+def _event_text(event):
+    return (f"{event['date']}(락구분 {event['lock_code']}, 분할비율 {event['split_rate']}, "
+            f"수정주가 {event['modified']})")
+
+
+def corporate_action_summary(evidence):
+    """('NONE'|'EVENT'|'UNKNOWN', sorted unique event texts) over the OK windows."""
+    windows = [w for w in evidence.get("windows", {}).values() if w.get("status") == "OK"]
+    checks = [w.get("corporate_actions") or {"status": "UNKNOWN", "events": []} for w in windows]
+    if not checks or any(c["status"] == "UNKNOWN" for c in checks):
+        return "UNKNOWN", []
+    events = sorted({_event_text(e) for c in checks for e in c["events"]})
+    return ("EVENT" if events else "NONE"), events
+
+
+def corporate_action_line(evidence):
+    status, events = corporate_action_summary(evidence)
+    if status == "NONE":
+        return ("- 기업행위 확인(KIS 일봉 락구분·분할비율·수정주가 표시): 제시한 창에 해당 표시가 없어 "
+                "원시 수량을 그대로 비교할 수 있습니다.")
+    if status == "EVENT":
+        return ("- 기업행위 확인: " + ", ".join(events)
+                + " 표시가 있어 해당 창의 원시 수량 기간 비교에는 한계가 있습니다(수량 보정 미적용).")
+    return "- 기업행위 여부를 확인하지 못했습니다. 기업행위를 보정하지 않은 원시 수량입니다."
 
 
 def kr_flow_interpretation_contract(language="ko"):
@@ -190,7 +253,9 @@ def kr_flow_interpretation_contract(language="ko"):
 ## KR investor-flow evidence contract
 Use KR_FLOW_EVIDENCE_V1 (public heading: 투자자 순매수 수량 요약) as the numeric reference for 5/20/30 observed completed sessions.
 Foreign, institution and combined figures are separate net SHARE quantities, not KRW or ownership levels.
-Check window dates, coverage, source, as-of and raw-share adjustment limits. Intraday estimates are separate.
+Check window dates, coverage, source and as-of. Read the corporate-action check line: when no event is flagged,
+compare the raw shares directly and do not restate an adjustment caveat; mention the raw-share limit only when an
+event is flagged or the check is unknown. Intraday estimates are separate.
 MISSING is unknown, never zero/buying/selling. A positive total does not prove consecutive positive sessions.
 Keep the existing consecutive-3-session and cumulative-5-session criteria. Do not add independent credits
 for the overlapping new 20/30-session context. Preserve existing criteria, scores,
@@ -199,8 +264,9 @@ stop/sizing rules; do not introduce a blanket rejection from a negative long win
     return """
 ## 한국 수급 정량 근거 계약
 KR_FLOW_EVIDENCE_V1(공개 보고서 제목: 투자자 순매수 수량 요약)의5/20/30 확정 관측 세션 계산값을 수급 숫자의 기준으로 사용하십시오.
-외국인·기관·합계는 각각 순매수 수량(주)이며 원화 금액·보유 비율이 아닙니다. 기간·세션 수·출처·기준시각과
-기업행위 미조정 원시 수량이라는 한계를 확인하고 장중 추정은 별도로 읽으십시오.
+외국인·기관·합계는 각각 순매수 수량(주)이며 원화 금액·보유 비율이 아닙니다. 기간·세션 수·출처·기준시각을 확인하십시오.
+기업행위 확인 줄에서 표시가 없으면 원시 수량을 그대로 비교하고 보정 한계를 되풀이하지 마십시오. 표시가 있거나
+확인하지 못한 경우에만 원시 수량의 한계를 밝히십시오. 장중 추정은 별도로 읽으십시오.
 MISSING은 미확인이지0·순매수·순매도가 아닙니다. 합계 양수만으로 연속 순매수를 추정하지 마십시오.
 기존3세션 연속·5세션 누적 조건은 유지하되 새20/30 창을 별도 독립 확인으로 더하지 마십시오. 기존 조건·점수·손절·비중을 유지하고
 20/30일 순매도만으로 전역 매수 금지나 인과관계를 새로 만들지 마십시오.
