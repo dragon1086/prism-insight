@@ -16,14 +16,14 @@ class TestModelRegistryDefaults:
     def test_resolve_journal(self):
         reg = ModelRegistry.defaults()
         model_id, params = reg.resolve("journal")
-        assert model_id == "gpt-5.4-mini"
+        assert model_id == "gpt-6-luna"
         assert params.reasoning_effort == "none"
         assert params.max_tokens == 16000
 
     def test_resolve_summary(self):
         reg = ModelRegistry.defaults()
         model_id, params = reg.resolve("summary")
-        assert model_id == "gpt-5.6-luna"
+        assert model_id == "gpt-6-luna"
         assert params.reasoning_effort == "low"
 
     def test_resolve_trading(self):
@@ -64,7 +64,7 @@ class TestModelRegistryFromMapping:
         )
         # original defaults still present
         model_id, _ = reg.resolve("journal")
-        assert model_id == "gpt-5.4-mini"
+        assert model_id == "gpt-6-luna"
         # new role also present
         model_id2, _ = reg.resolve("custom_role")
         assert model_id2 == "gpt-x"

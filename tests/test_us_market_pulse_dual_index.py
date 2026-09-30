@@ -105,3 +105,34 @@ def test_kr_is_unchanged():
             patch.object(rp, "_fetch_us_nasdaq_bars", side_effect=AssertionError("not for KR")), \
             patch.object(rp, "_load_root_cores", return_value=mp):
         assert rp.get_market_pulse_state("kr", use_cache=False) == C
+
+
+def _distribution_bars(n_dd):
+    """Rising index with `n_dd` recent distribution days (drop >=0.2% on higher volume, no +5% recovery)."""
+    closes, vols = [100 + i * .1 for i in range(80)], [1e6] * 80
+    for k in range(n_dd):
+        i = 60 + 3 * k
+        closes[i] = closes[i - 1] * 0.995
+        vols[i] = vols[i - 1] * 1.5
+        for j in range(i + 1, 80):
+            closes[j] = min(closes[j], closes[i] * 1.02)
+    return [mp.DailyBar(date=f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}", close=c, volume=v)
+            for i, (c, v) in enumerate(zip(closes, vols))]
+
+
+@pytest.mark.parametrize("mode,want", [("dual", 0), ("spx", 5)])
+def test_us_distribution_days_need_both_indexes_in_dual_mode(monkeypatch, mode, want):
+    """2026-09-29: S&P 500 had 6 distribution days, NASDAQ 0; the S&P count alone
+    stepped every US new buy down to sideways. Dual mode now reports the smaller count."""
+    spx, ndx = _distribution_bars(5), _distribution_bars(0)  # 5: below the CORRECTION reset
+    assert mp.MarketPulse().distribution_days == 0  # sanity: fresh machine
+    probe = mp.MarketPulse()
+    for bar in spx:
+        probe.feed(bar)
+    assert probe.distribution_days == 5
+    monkeypatch.setenv("US_MARKET_PULSE_INDEX_MODE", mode)
+    monkeypatch.setattr(rp, "_fetch_us_bars", lambda DailyBar: spx)
+    monkeypatch.setattr(rp, "_fetch_us_nasdaq_bars", lambda DailyBar: ndx)
+    rp._DETAIL_CACHE.clear()
+    detail = rp.get_market_pulse_detail("us", use_cache=False)
+    assert detail is not None and detail.distribution_days == want

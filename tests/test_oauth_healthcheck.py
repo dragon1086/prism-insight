@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib.util
 import asyncio
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -154,3 +155,39 @@ def test_available_low_quota_and_429_remain_dangerous():
     assert "⏱ 5시간: 사용 81% · 잔량 19% ⚠️" in low_text
     assert exhausted_danger is True
     assert "🚨 429 — 쿼터 소진됨" in exhausted_text
+
+
+# ---------------------------------------------------------------- log window
+# 2026-09-30 23:30: the US morning batch touched us_morning.log, and the scan
+# re-counted 160 of the previous day's 429 lines still in the file's tail.
+
+def _stamp(seconds_ago, fmt="%Y-%m-%d %H:%M:%S"):
+    return time.strftime(fmt, time.localtime(time.time() - seconds_ago))
+
+
+def _scan(monkeypatch, tmp_path, name, text):
+    (tmp_path / name).write_text(text, encoding="utf-8")
+    monkeypatch.setattr(oauth_healthcheck, "LOG_DIR", tmp_path)
+    return oauth_healthcheck._scan_logs()
+
+
+def test_touched_log_does_not_recount_yesterdays_errors(monkeypatch, tmp_path):
+    old = f"{_stamp(86400)},554 - httpx - INFO - HTTP Request: POST x \"HTTP/1.1 429 Too Many Requests\"\n"
+    fresh = f"{_stamp(60)},001 - __main__ - INFO - [MARKET_PULSE] batch=morning\n"
+    hits, samples = _scan(monkeypatch, tmp_path, "us_morning.log", old * 160 + fresh)
+    assert (hits, samples) == (0, [])
+
+
+def test_recent_errors_and_their_continuation_lines_count(monkeypatch, tmp_path):
+    text = (f"{_stamp(86400)},1 - mcp_agent - ERROR - Error code: 429 - {{'error': 'old'}}\n"
+            f"{_stamp(120)},2 - mcp_agent - ERROR - Error executing task: Error code: 429 - {{'error':\n"
+            "    'The usage limit has been reached', 'type': 'insufficient_quota'}\n"
+            f"[INFO] {_stamp(60, '%Y-%m-%dT%H:%M:%S')} RateLimitError from proxy\n")
+    hits, samples = _scan(monkeypatch, tmp_path, "orchestrator.log", text)
+    assert hits == 3
+    assert all("old" not in sample for sample in samples)
+
+
+def test_untimestamped_log_keeps_the_mtime_window(monkeypatch, tmp_path):
+    hits, _ = _scan(monkeypatch, tmp_path, "plain.log", "Token refresh failed\nok\n")
+    assert hits == 1

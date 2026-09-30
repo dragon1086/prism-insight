@@ -18,6 +18,9 @@ _REGIME_MIN_SCORE_FLOORS = {
 }
 
 
+_BULL_REGIMES = frozenset({"parabolic", "strong_bull", "moderate_bull"})
+
+
 def regime_min_score_floor_enabled() -> bool:
     return os.getenv("REGIME_MIN_SCORE_FLOOR", "true").strip().lower() in {
         "1", "true", "yes", "on"
@@ -84,13 +87,21 @@ def evaluate_entry_score_policy(
     """Resolve a single score threshold without bypassing independent gates.
 
     A distribution downgrade never inherits the sideways recovery exception,
-    even when its *result* is sideways. Missing budget permission fails closed
+    even when its *result* is sideways. A downgraded bull market uses its own
+    (bull) strict floor, so only the stepped regime's rule applies. Missing budget permission fails closed
     for a pilot. The regular rollback flag disables only the strict overlay.
     """
     regime = effective_regime or market_regime
     pulse = None if distribution_caution else pulse_state
     enabled = regime_min_score_floor_enabled()
     floor = min_score_floor(regime, pulse) if enabled else 0
+    if distribution_caution and _regime(market_regime) in _BULL_REGIMES:
+        # A bull market stepped down one level by distribution days keeps the
+        # stepped regime's own rule (sideways: 5) — not the strict floor meant
+        # for a genuinely sideways market (8). That doubled the one-step caution
+        # into "no new buys": in 2026 caution was on for 43% of US candidate days,
+        # only 9 of 398 candidates reached 8, and they did not outperform.
+        floor = min_score_floor(market_regime, None) if enabled else 0
     base = _finite_number(llm_min_score)
     pilot = (
         pilot_budget_available is True and not is_add and not distribution_caution

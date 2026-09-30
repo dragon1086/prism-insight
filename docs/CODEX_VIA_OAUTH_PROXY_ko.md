@@ -51,3 +51,9 @@ fast_mode = true
 
 이제 `chatgpt_auth.json` 하나만 바꾸면 리포트와 BUY/SELL이 함께 바뀐다
 (`python -m cores.chatgpt_proxy.oauth_login --force`).
+
+## 계정별 추론 강도 (2026-09-30)
+
+`PRISM_CODEX_EFFORT_BY_ACCOUNT="dragon1086@naver.com=medium,munsangrok@gmail.com=xhigh"`를 매매 cron에 두면,
+실행 시점에 `chatgpt_auth.json`의 활성 계정 이메일을 읽어 BUY/SELL effort를 고른다. 매핑에 없거나 파일을 읽을
+수 없으면 기존 `PRISM_{BUY,SELL}_CODEX_EFFORT`를 쓴다. 계정만 바꾸면 강도가 따라 바뀐다.

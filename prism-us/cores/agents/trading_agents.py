@@ -198,7 +198,7 @@ B) 결정론적 값이 명시적으로 없을 때만 S&P 500 (^GSPC) + VIX 최�
 
 다음 항목 중 충족하는 것을 모두 카운트하십시오:
 1. 거래량 20일 평균 대비 200% 이상 (당일 또는 최근 3거래일 내)
-2. 기관 3거래일 연속 순매수 (보고서에 명시되어 있을 때)
+2. 기관 3거래일 연속 순매수 — 미국은 일별 기관 순매매 자료가 제공되지 않아 이 항목은 평가하지 않습니다(점수 0). 판단 근거·메시지에 '기관 순매수 미확인'처럼 언급하지 마십시오.
 3. 52주 신고가 95% 이상 근접
 4. 섹터 전체 상승 추세 (보고서 4. 시장 분석)
 5. 직전 박스 상단 거래량 동반 돌파 (단순 터치 X, 박스 업그레이드 O)
@@ -209,7 +209,7 @@ B) 결정론적 값이 명시적으로 없을 때만 S&P 500 (^GSPC) + VIX 최�
 ## 4단계 — 추가 확인 요소 (sideways / bear 한정)
 
 다음 항목 중 충족하는 것을 카운트하십시오:
-- 기관 5거래일+ 누적 순매수 (강한 수급, 보고서에 명시되어 있을 때)
+- 기관 5거래일+ 누적 순매수 — 미국은 일별 기관 순매매 자료가 제공되지 않아 이 항목은 평가하지 않습니다(점수 0). 판단 근거·메시지에 '기관 순매수 미확인'처럼 언급하지 마십시오.
 - 보고서 '4. 시장 분석'에서 해당 섹터를 주도 섹터로 명시
 - 보고서 '2-1. 기업 현황 분석'에서 동종업계 P/E 대비 30% 이상 저평가 (단순 1배 차이는 인정 X)
 - 보고서 '3. 뉴스 요약'에서 1개월+ 지속될 catalyst 식별
@@ -255,7 +255,7 @@ us_stock_holdings 테이블(account_id='primary' 필터)에서 다음을 확인�
 5. effective_score < 현재 regime의 min_score
 
 **복합 사유 (둘 다 충족 시):**
-6. (RSI ≥ 85 OR 20일선 괴리율 ≥ +25%) AND (기관 5거래일+ 순매도)
+6. (RSI ≥ 85 OR 20일선 괴리율 ≥ +25%) AND (기관 5거래일+ 순매도) — 미국은 일별 기관 순매매 자료가 없어 이 조건은 발동하지 않습니다. 과열 위험은 기존 추격 위험·손익비 규칙으로 판단하고, 기관 매도 미확인을 근거로 서술하지 마십시오.
 
 **단독 사유로 사용 금지된 표현:** "과열 우려", "변곡 신호", "추가 확인 필요", "단기 조정 가능성", "관망이 안전".
 이 표현들은 막연한 회피이며, 시스템에 "다음 기회"가 없으므로 rejection_reason으로 사용할 수 없습니다.
@@ -577,7 +577,7 @@ expiring on a +5% recovery; null when volume is missing → then judge from the 
 
 Count each that holds:
 1. Volume ≥ 200% of 20-day average (today or any of the last 3 sessions)
-2. Institutional net buying for 3 consecutive sessions (when reported)
+2. Institutional net buying for 3 consecutive sessions — Daily institutional flow is not supplied for US stocks, so this item is not evaluated (scores 0). Do not mention it (e.g. 'institutional buying unconfirmed') in the rationale or message.
 3. Within 5% of 52-week high
 4. Sector-wide uptrend (per report 4. Market)
 5. Prior box top broken with volume confirmation (true upgrade, not a touch-and-fail)
@@ -590,7 +590,7 @@ However, **this automatic credit does NOT apply to downtrend stocks caught by th
 ## Step 4 — Extra Confirmations (sideways / bear only)
 
 Count each that holds:
-- Institutional cumulative net buying for 5+ sessions (strong supply, when reported)
+- Institutional cumulative net buying for 5+ sessions — Daily institutional flow is not supplied for US stocks, so this item is not evaluated (scores 0). Do not mention it (e.g. 'institutional buying unconfirmed') in the rationale or message.
 - Sector flagged as a leading sector in report 4
 - PE discount ≥ 30% vs sector median per report 2-1 (small 1× differences do NOT count)
 - Catalyst with ≥ 1-month durability identified in report 3
@@ -638,7 +638,7 @@ Query us_stock_holdings (filter by account_id='primary' when column exists):
 5. effective_score < min_score for the current regime
 
 **Compound (BOTH required):**
-6. (RSI ≥ 85 OR 20d-MA deviation ≥ +25%) AND (institutional net selling ≥ 5 sessions)
+6. (RSI ≥ 85 OR 20d-MA deviation ≥ +25%) AND (institutional net selling ≥ 5 sessions) — daily institutional flow is not supplied for US stocks, so this condition never fires. Judge overextension with the existing chasing-risk and R/R rules and do not cite unconfirmed institutional selling.
 
 **Prohibited single reasons:** "overheating concern", "inflection signal", "needs more confirmation",
 "short-term correction risk", "wait and see is safer". These are vague-hedge expressions and the

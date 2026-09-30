@@ -313,6 +313,7 @@ async def test_sell_dispatch_uses_isolated_settings_and_safe_fallback(monkeypatc
     namespace = dict(os=os, logger=logging.getLogger("sell_dispatch_test"),
                      self=SimpleNamespace(sell_decision_agent=SimpleNamespace(instruction="read-only test", attach_llm=attach), _get_legacy_fallback_lock=asyncio.Lock),
                      generate_codex_fast_async=generate, resolve_sell_codex_settings=resolve_sell_codex_settings,
+                     codex_service_tier=lambda: "fast",
                      parse_llm_json=parse, ticker="TEST", prompt_message="no orders",
                      OpenAIAugmentedLLM=object(), RequestParams=SimpleNamespace,
                      app=SimpleNamespace(run=host))

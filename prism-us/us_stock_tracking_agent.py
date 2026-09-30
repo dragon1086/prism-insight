@@ -134,6 +134,7 @@ sys.modules[_codex_spec.name] = _codex_mod
 _codex_spec.loader.exec_module(_codex_mod)  # type: ignore[union-attr]
 generate_codex_fast = _codex_mod.generate_codex_fast
 generate_codex_fast_async = _codex_mod.generate_codex_fast_async
+codex_service_tier = _codex_mod.codex_service_tier
 del _ilu, _spec, _mod, _codex_spec, _codex_mod
 
 # Import US-specific modules
@@ -171,6 +172,7 @@ def _import_from_main_cores(module_name: str, relative_path: str):
     return module
 
 
+from prism_core.buy_model_shadow import drain_buy_model_shadows, schedule_buy_model_shadow
 from prism_core.codex_config import resolve_buy_codex_settings, resolve_sell_codex_settings
 from prism_core.isolated_agent_runtime import (
     prepare_isolated_runtime, configured_mcp_app, attach_isolated_llm,
@@ -1570,6 +1572,18 @@ class USStockTrackingAgent:
                             "[%s] Codex Fast parse failed; falling back to mcp-agent",
                             ticker_tag,
                         )
+                    if scenario_json is not None:
+                        schedule_buy_model_shadow(
+                            market="US", ticker=ticker or "?",
+                            system_prompt=instruction, user_prompt=prompt_message,
+                            mcp_profile="us_trading", live_model=settings.model,
+                            live_effort=settings.reasoning_effort,
+                            live_result=codex_result, live_scenario=scenario_json,
+                            generate=generate_codex_fast_async,
+                            parse=lambda text: parse_llm_json(
+                                text, context="US buy model shadow"),
+                            service_tier=codex_service_tier,
+                        )
                 except Exception as codex_err:  # noqa: BLE001 — mandatory fallback
                     logger.warning(
                         "[%s] Codex Fast unavailable (%s); falling back to mcp-agent",
@@ -2534,8 +2548,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     settings = resolve_sell_codex_settings()
                     logger.info(
                         "[CODEX_FAST] US sell requested_model=%s requested_effort=%s "
-                        "requested_tier=fast timeout_s=%s ticker=%s",
-                        settings.model, settings.reasoning_effort, settings.timeout, ticker or "?",
+                        "requested_tier=%s timeout_s=%s ticker=%s",
+                        settings.model, settings.reasoning_effort, codex_service_tier(),
+                        settings.timeout, ticker or "?",
                     )
                     codex_result = await generate_codex_fast_async(
                         system_prompt=instruction,
@@ -4923,7 +4938,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     translated_queue = []
                     for idx, message in enumerate(self.message_queue, 1):
                         logger.info(f"Translating US message {idx}/{len(self.message_queue)}")
-                        translated = await translate_telegram_message(message, model="gpt-5.6-luna")
+                        translated = await translate_telegram_message(message, model="gpt-6-luna")
                         translated_queue.append(translated)
                     self.message_queue = translated_queue
                     logger.info("All US messages translated successfully")
@@ -5047,7 +5062,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             logger.info(f"Translating US tracking message to {lang}")
                             translated_message = await translate_telegram_message(
                                 message,
-                                model="gpt-5.6-luna",
+                                model="gpt-6-luna",
                                 from_lang="ko",
                                 to_lang=lang
                             )
@@ -5311,6 +5326,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 logger.info("US tracking system batch execution complete")
                 return True
             finally:
+                # Let capped buy-model SHADOW runs finish (no-op when disabled).
+                await drain_buy_model_shadows()
                 # Wait for broadcast translation task before cleanup
                 if self._broadcast_task:
                     try:

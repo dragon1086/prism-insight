@@ -36,7 +36,7 @@ def spec_from_mcp_agent(agent: Any, *, model: str, params: LLMParams) -> AgentSp
 
     Args:
         agent:  Any object exposing .name, .instruction, and optionally .server_names.
-        model:  Model identifier string (e.g. "gpt-5.4-mini").
+        model:  Model identifier string (e.g. "gpt-6-luna").
         params: LLMParams instance with max_tokens / reasoning_effort / etc.
 
     Returns:

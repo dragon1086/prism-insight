@@ -3,7 +3,7 @@ insight_agent.py — /insight 명령을 처리하는 메인 에이전트.
 
 흐름:
   1. retrieval: persistent_insights (FTS + embedding) + weekly_summary + report_archive
-  2. synthesis: mcp-agent Agent + AnthropicAugmentedLLM (기본 claude-sonnet-5,
+  2. synthesis: mcp-agent Agent + AnthropicAugmentedLLM (기본 claude-sonnet-5-5,
                 INSIGHT_MODEL 로 교체 가능)
                 function calling으로 필요시 MCP 도구 자동 선택
                 (perplexity / firecrawl / yahoo_finance / kospi_kosdaq)
@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from anthropic import NOT_GIVEN, AsyncAnthropic
 from mcp_agent.agents.agent import Agent
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from mcp_agent.workflows.llm.augmented_llm_anthropic import AnthropicAugmentedLLM
@@ -48,7 +49,7 @@ logger = logging.getLogger(__name__)
 # Claude handles MCP function calling reliably in this repo (firecrawl pattern).
 # Overridable so model swaps don't need a code change — the report path already
 # works this way via REPORT_MODEL.
-DEFAULT_MODEL = os.getenv("INSIGHT_MODEL", "claude-sonnet-5")
+DEFAULT_MODEL = os.getenv("INSIGHT_MODEL", "claude-sonnet-5-5")
 _MAX_REPORTS_IN_CONTEXT = 6
 
 # 도구 루프 상한. mcp-agent 기본값은 10인데, 그 값을 다 쓰면 마지막 턴에
@@ -227,6 +228,26 @@ class InsightJSON(BaseModel):
     tickers_mentioned: List[str] = Field(default_factory=list)
     tools_used: List[str] = Field(default_factory=list)
     evidence_report_ids: List[int] = Field(default_factory=list)
+
+
+# Structured-output schema for InsightJSON. Written out rather than taken from
+# model_json_schema() because output_config.format needs every field required
+# and additionalProperties=false.
+_INSIGHT_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "key_takeaways": {"type": "array", "items": {"type": "string"}},
+        "tickers_mentioned": {"type": "array", "items": {"type": "string"}},
+        "tools_used": {"type": "array", "items": {"type": "string"}},
+        "evidence_report_ids": {"type": "array", "items": {"type": "integer"}},
+    },
+    "required": [
+        "answer", "key_takeaways", "tickers_mentioned", "tools_used",
+        "evidence_report_ids",
+    ],
+    "additionalProperties": False,
+}
 
 
 @dataclass
@@ -518,13 +539,43 @@ class InsightAgent:
         logger.warning("InsightAgent: 응답에서 JSON 을 찾지 못했다")
         return None
 
+    async def _generate_insight_json(self, llm, msg: str) -> Optional[InsightJSON]:
+        """One tool-free turn constrained to InsightJSON via structured outputs."""
+        cfg = getattr(getattr(llm.context, "config", None), "anthropic", None)
+        client = AsyncAnthropic(
+            api_key=getattr(cfg, "api_key", None),
+            base_url=getattr(cfg, "base_url", None),
+        )
+        async with client:
+            final = await client.messages.create(
+                model=self.model,
+                max_tokens=4000,
+                system=llm.instruction or NOT_GIVEN,
+                messages=[{"role": "user", "content": msg}],
+                # anthropic~=0.64 has no output_config kwarg yet.
+                extra_body={"output_config": {"format": {
+                    "type": "json_schema", "schema": _INSIGHT_JSON_SCHEMA,
+                }}},
+            )
+        if final.stop_reason != "end_turn":
+            logger.warning(
+                f"InsightAgent structured 복구 중단: stop_reason={final.stop_reason}"
+            )
+            return None
+        text = "".join(
+            b.text for b in final.content if getattr(b, "type", "") == "text"
+        )
+        return InsightJSON.model_validate_json(text)
+
     async def _repair_to_json(
         self, llm, question: str, context_str: str, draft: str,
     ) -> Optional[Dict[str, Any]]:
         """JSON 파싱이 실패했을 때의 복구 패스.
 
-        `generate_structured` 는 Anthropic 의 강제 tool_call 로 스키마를 받아내는
-        한 턴 호출이라 형식이 보장된다. 도구를 주지 않으므로 추가 유료 호출도 없다.
+        structured outputs(`output_config.format`)로 스키마를 받아내는 한 턴
+        호출이라 형식이 보장된다. 도구를 주지 않으므로 추가 유료 호출도 없다.
+        (mcp-agent 의 `generate_structured` 는 강제 tool_choice 를 보내는데
+        Sonnet 5.5 는 이를 400 으로 거절하므로 API 를 직접 호출한다.)
 
         **`use_history=False` 가 핵심이다.** 파싱이 깨지는 상황은 대개 도구 루프가
         중간에 끊긴 경우인데, 그때 이력의 마지막이 `tool_result` 없는 `tool_use` 로
@@ -558,16 +609,11 @@ class InsightAgent:
         )
 
         try:
-            result = await llm.generate_structured(
-                message=msg,
-                response_model=InsightJSON,
-                request_params=RequestParams(
-                    model=self.model, maxTokens=4000,
-                    max_iterations=1, use_history=False,
-                ),
-            )
+            result = await self._generate_insight_json(llm, msg)
         except Exception as e:
             logger.error(f"InsightAgent structured 복구 실패: {e}")
+            return None
+        if result is None:
             return None
 
         answer = _clean_answer_text(result.answer or "")

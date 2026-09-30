@@ -30,6 +30,8 @@ from prism_core.codex_config import (
     CodexFastError as CodexFastError,
     SUPPORTED_MODELS as SUPPORTED_MODELS,
     SUPPORTED_REASONING_EFFORTS as SUPPORTED_REASONING_EFFORTS,
+    active_oauth_email,
+    effort_for_account,
     validate_timeout as validate_timeout,
 )
 
@@ -230,11 +232,32 @@ def _resolve_codex_executable(candidate: str) -> str:
     return str(executable)
 
 
+def codex_service_tier() -> Literal["fast", "standard"]:
+    """Service tier for Codex trading calls, read per call so ops can flip it live.
+
+    PRISM_CODEX_SERVICE_TIER (fast|standard, default fast) is the default;
+    PRISM_CODEX_TIER_BY_ACCOUNT (``a@x=standard,b@y=fast``) overrides it for the
+    active OAuth login, like PRISM_CODEX_EFFORT_BY_ACCOUNT. Fast is sent upstream
+    as service_tier "priority" and drains a small plan's 5-hour window quickly.
+    """
+    tier = os.getenv("PRISM_CODEX_SERVICE_TIER", "fast")
+    mapping = os.getenv("PRISM_CODEX_TIER_BY_ACCOUNT")
+    by_account = effort_for_account(
+        mapping, active_oauth_email(os.getenv("PRISM_CODEX_AUTH_FILE")) if mapping else None
+    )
+    tier = (by_account if by_account is not None else tier).strip().lower()
+    if tier not in ("fast", "standard"):
+        logger.warning("[CODEX_FAST] invalid Codex service tier setting; using fast")
+        return "fast"
+    return tier
+
+
 def _command(
     codex_bin: str,
     model: str,
     mcp_profile: McpProfile | None,
     reasoning_effort: str | None = None,
+    fast_tier: bool | None = None,
 ) -> list[str]:
     if model not in SUPPORTED_MODELS:
         raise CodexFastError("Unsupported Codex model")
@@ -242,6 +265,8 @@ def _command(
         raise CodexFastError("Unsupported Codex MCP profile")
     if reasoning_effort is not None and reasoning_effort not in SUPPORTED_REASONING_EFFORTS:
         raise CodexFastError("Unsupported Codex reasoning effort")
+    if fast_tier is None:
+        fast_tier = codex_service_tier() == "fast"
     command = [
         codex_bin,
         "exec",
@@ -250,8 +275,10 @@ def _command(
         "--skip-git-repo-check",
         "--ignore-rules",
         "--model", model,
-        "-c", 'service_tier="fast"',
-        "-c", "features.fast_mode=true",
+        # config.toml enables fast; disabling the feature drops service_tier
+        # from the request entirely (standard processing).
+        *(("-c", 'service_tier="fast"', "-c", "features.fast_mode=true")
+          if fast_tier else ("-c", "features.fast_mode=false")),
         "--json",
         "-",
     ]

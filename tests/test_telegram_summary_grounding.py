@@ -198,7 +198,7 @@ def test_responses_workflow_runs_optimizer_and_structured_evaluator_without_tool
             optimizer=optimizer,
             evaluator=evaluator,
             message="report plus KIS evidence",
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             reasoning_effort="low",
             backend=backend,
             max_refinements=1,
@@ -211,7 +211,7 @@ def test_responses_workflow_runs_optimizer_and_structured_evaluator_without_tool
     evaluator_spec, evaluation_prompt = backend.calls[1]
     assert optimizer_spec.mcp_servers == ()
     assert evaluator_spec.mcp_servers == ()
-    assert optimizer_spec.model == evaluator_spec.model == "gpt-5.6-luna"
+    assert optimizer_spec.model == evaluator_spec.model == "gpt-6-luna"
     assert optimizer_spec.params.reasoning_effort == "low"
     assert evaluator_spec.params.reasoning_effort == "low"
     assert evaluator_spec.output_schema is workflow.EvaluationResult
@@ -234,7 +234,7 @@ def test_responses_workflow_returns_usable_summary_when_evaluator_is_unavailable
             optimizer=optimizer,
             evaluator=evaluator,
             message="grounded report",
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             reasoning_effort="low",
             backend=FakeBackend(),
         )
@@ -287,7 +287,7 @@ def test_responses_workflow_refines_below_threshold_and_rechecks_it():
             optimizer=optimizer,
             evaluator=evaluator,
             message="report with KIS evidence",
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             reasoning_effort="low",
             backend=backend,
             max_refinements=1,
@@ -299,7 +299,7 @@ def test_responses_workflow_refines_below_threshold_and_rechecks_it():
     assert backend.evaluator_count == 2
     refinement_spec, refinement_prompt = backend.calls[2]
     assert refinement_spec.mcp_servers == ()
-    assert refinement_spec.model == "gpt-5.6-luna"
+    assert refinement_spec.model == "gpt-6-luna"
     assert refinement_spec.params.reasoning_effort == "low"
     assert "Use the supplied KIS evidence" in refinement_prompt
 
@@ -337,7 +337,7 @@ def test_generator_prefetches_once_and_uses_same_evidence_for_both_agents(monkey
     assert result == "📊 grounded summary"
     assert captured["prefetch"] == ("005930", "20260918")
     workflow_call = captured["workflow"]
-    assert workflow_call["model"] == "gpt-5.6-luna"
+    assert workflow_call["model"] == "gpt-6-luna"
     assert workflow_call["reasoning_effort"] == "low"
     assert workflow_call["optimizer"].server_names == []
     assert workflow_call["evaluator"].server_names == []

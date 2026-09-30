@@ -1,7 +1,8 @@
 from cores.agents.report_agent import ReportAgent as Agent
 
 
-def create_company_status_agent(company_name, company_code, reference_date, urls, language: str = "ko"):
+def create_company_status_agent(company_name, company_code, reference_date, urls, language: str = "ko",
+                                quarterly_facts: str = ""):
     """Create company status analysis agent
 
     Args:
@@ -10,6 +11,7 @@ def create_company_status_agent(company_name, company_code, reference_date, urls
         reference_date: Analysis reference date (YYYYMMDD)
         urls: WiseReport URL dictionary
         language: Language code ("ko" or "en")
+        quarterly_facts: Pre-collected quarterly EPS facts (markdown), or "" when unavailable
 
     Returns:
         Agent: Company status analysis agent
@@ -201,6 +203,25 @@ def create_company_status_agent(company_name, company_code, reference_date, urls
                         - EPS 기준이 누락됐는지는 숫자 행뿐 아니라 같은 허용 페이지의 재무계정산식·도움말·주석까지 확인하세요. EPS 수치가 있어도 정의가 없으면 기존 최대 1개 보완 페이지 범위 안에서 확인합니다. EPS 기준(EPS_BASIS), 분모 정의(DENOMINATOR_DEFINITION), 분모 수치(DENOMINATOR_VALUE), 기준 출처(BASIS_SOURCE_URL)를 구분해 보존하고 보고서에는 읽기 쉬운 한국어 항목명으로 쓰세요. WiseReport에서 실제로 확인한 EPS 산식이 지배주주지분 순이익/수정평균발행주식수(보통주+우선주)라면 제공자 조정 기준(provider-adjusted-share)으로 표기하고 법정 기본·희석 EPS로 바꾸지 마세요. 산식 확인은 분모 정의의 확인이지 실제 주식 수의 확인이 아닙니다. 실제 주식 수가 없으면 수치만 UNKNOWN으로 남기세요. 반올림된 순이익/EPS에서 주식 수를 역산하거나 현재 상장주식 수로 대체하지 마세요. 다른 제공자나 읽지 못한 페이지에 이 산식을 가정하지 마세요. 법정 기본·희석 구분이나 분모 수치 누락은 새로운 필수 매수 조건이 아니며, 확인한 제공자 EPS와 SOURCE_REPORTED_YOY를 없던 근거로 만들지 마세요. 필요한 근거 없이 동일 기준 검증이나 직접 재계산을 했다고 표현하지 마세요.
                         - HTTP 200이나 HTML 자리표시자만으로 수집 성공을 판단하지 마세요. 실제 숫자가 있는 표의 행, 기간 헤더, 회계 기준을 확인하고 페이지 틀만 반환되면 해당 항목은 UNKNOWN으로 남기세요.
                         - 분석 대상은 {company_name} ({company_code})입니다. 모회사·자회사·별도 상장 법인을 구분하고 자회사 이익을 모회사 EPS로 사용하지 마세요. 보고 법인과 회계 범위를 명시하고 모회사 연결 실적으로 명시된 자료만 해당 기준으로 사용하세요.
+                        """
+
+    if quarterly_facts and language == "en":
+        instruction += f"""
+                        ## Pre-collected Data (Quarterly Results)
+                        The table below was pre-collected by code from the reported quarterly financial summary. Do not name its data vendor or site.
+                        - Use its figures and comparison lines as the reference for quarterly EPS and the prior-year quarter. Do not scrape supplemental pages for these items.
+                        - If a scraped page disagrees with this table, prefer this table. Keep only what the table lacks as UNKNOWN under the rules above.
+
+{quarterly_facts}
+                        """
+    elif quarterly_facts:
+        instruction += f"""
+                        ## 사전 수집된 데이터 (분기 실적)
+                        다음 표는 확정 분기 재무요약에서 코드로 사전 수집되었습니다. 자료 제공 업체나 사이트 이름은 쓰지 마세요.
+                        - 분기 EPS와 전년 동기 비교는 이 표의 수치와 비교 문구를 기준으로 사용하세요. 이 항목을 위해 보완 페이지를 조회하지 마세요.
+                        - 스크래핑한 페이지 값이 이 표와 다르면 이 표를 우선하세요. 이 표에 없는 항목만 위 규칙대로 UNKNOWN으로 남기세요.
+
+{quarterly_facts}
                         """
 
     return Agent(

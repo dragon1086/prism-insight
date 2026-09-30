@@ -474,17 +474,17 @@ def us_pulse_index_mode() -> str:
     return mode if mode in ("dual", "spx") else "dual"
 
 
-def combined_us_states(spx_bars, nasdaq_bars, MarketPulse):
+def combined_us_states(spx_bars, nasdaq_bars, MarketPulse, *, with_nasdaq=False):
     """Replay both indexes and combine per S&P 500 session.
 
     Returns ``(combined_states, spx_pulse)``; ``spx_pulse`` is the replayed S&P 500
-    machine (its distribution-day count stays the reported DD). The NASDAQ state
-    for a session is its latest state on or before that date.
+    machine. The NASDAQ state for a session is its latest state on or before that
+    date. ``with_nasdaq=True`` appends the NASDAQ machine (or ``None``).
     """
     spx = MarketPulse()
     spx_states = [spx.feed(bar) for bar in spx_bars]
     if nasdaq_bars is None:
-        return spx_states, spx
+        return (spx_states, spx, None) if with_nasdaq else (spx_states, spx)
     nasdaq = MarketPulse()
     by_date = {bar.date: nasdaq.feed(bar) for bar in nasdaq_bars}
     dates = sorted(by_date)
@@ -494,10 +494,10 @@ def combined_us_states(spx_bars, nasdaq_bars, MarketPulse):
             latest = by_date[dates[j]]
             j += 1
         combined.append(combine_us_pulse(state, latest))
-    return combined, spx
+    return (combined, spx, nasdaq) if with_nasdaq else (combined, spx)
 
 
-def _us_pulse_replay(DailyBar, MarketPulse):
+def _us_pulse_replay(DailyBar, MarketPulse, *, with_nasdaq=False):
     """US pulse series per :func:`us_pulse_index_mode`; NASDAQ failure keeps S&P only."""
     spx_bars = _fetch_us_bars(DailyBar)
     if not spx_bars or len(spx_bars) < 30:
@@ -511,7 +511,7 @@ def _us_pulse_replay(DailyBar, MarketPulse):
         except Exception as exc:  # noqa: BLE001 - degrade to the S&P 500 alone
             logger.warning("[MARKET_PULSE] NASDAQ unavailable, S&P 500 only: %s", exc)
             nasdaq_bars = None
-    return combined_us_states(spx_bars, nasdaq_bars, MarketPulse)
+    return combined_us_states(spx_bars, nasdaq_bars, MarketPulse, with_nasdaq=with_nasdaq)
 
 
 def get_market_pulse_state(market: str, use_cache: bool = True) -> Optional[str]:
@@ -593,10 +593,19 @@ def get_market_pulse_detail(market: str, use_cache: bool = True) -> Optional[Mar
         DailyBar = mp_mod.DailyBar
         dd_window = getattr(mp_mod, "DISTRIBUTION_WINDOW", 25)
 
+        dd_override = None
         if m == "us":
-            # State from both indexes; the reported DD stays the S&P 500 count.
-            states, mp = _us_pulse_replay(DailyBar, MarketPulse)
+            # State from both indexes (#833). The distribution count follows the
+            # same rule: new-buy caution needs distribution on BOTH indexes, so
+            # report the smaller count. On 2026-09-29 the S&P 500 had 6 and the
+            # NASDAQ 0, and the S&P alone stepped a moderate bull down to
+            # sideways for every new buy. `spx` mode keeps the S&P count.
+            states, mp, ndx = _us_pulse_replay(DailyBar, MarketPulse, with_nasdaq=True)
             state: Optional[str] = states[-1]
+            if ndx is not None:
+                dd_override = min(int(mp.distribution_days), int(ndx.distribution_days))
+                logger.info("[MARKET_PULSE_DETAIL] us distribution days spx=%s nasdaq=%s -> %s",
+                            mp.distribution_days, ndx.distribution_days, dd_override)
         elif m == "kr":
             bars = _fetch_kr_bars(DailyBar)
             if not bars or len(bars) < 30:
@@ -616,7 +625,7 @@ def get_market_pulse_detail(market: str, use_cache: bool = True) -> Optional[Mar
 
         detail = MarketPulseDetail(
             state=state,
-            distribution_days=int(mp.distribution_days),
+            distribution_days=int(mp.distribution_days) if dd_override is None else dd_override,
             window=int(dd_window),
         )
         _DETAIL_CACHE[m] = detail

@@ -102,3 +102,48 @@ assert resolve_buy_codex_settings({}).model == "gpt-5.6-sol"
 '''
     result = subprocess.run([sys.executable, "-c", script], cwd=root, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
+
+
+# --- account-aware effort (2026-09-30) -------------------------------------
+import base64 as _b64
+import json as _json
+
+
+def _auth_file(tmp_path, email):
+    claims = {"https://api.openai.com/profile": {"email": email}}
+    payload = _b64.urlsafe_b64encode(_json.dumps(claims).encode()).decode().rstrip("=")
+    path = tmp_path / "chatgpt_auth.json"
+    path.write_text(_json.dumps({"access_token": f"h.{payload}.s", "refresh_token": "r"}))
+    return str(path)
+
+
+MAPPING = "dragon1086@naver.com=medium,munsangrok@gmail.com=xhigh"
+
+
+def test_active_account_picks_the_effort_for_buy_and_sell(tmp_path):
+    from prism_core.codex_config import resolve_buy_codex_settings, resolve_sell_codex_settings
+    for email, expected in (("dragon1086@naver.com", "medium"), ("MunSangRok@gmail.com", "xhigh")):
+        env = {"PRISM_BUY_CODEX_MODEL": "gpt-6-astra", "PRISM_BUY_CODEX_EFFORT": "high",
+               "PRISM_SELL_CODEX_MODEL": "gpt-6-astra", "PRISM_SELL_CODEX_EFFORT": "high",
+               "PRISM_CODEX_EFFORT_BY_ACCOUNT": MAPPING, "PRISM_CODEX_AUTH_FILE": _auth_file(tmp_path, email)}
+        assert resolve_buy_codex_settings(env).reasoning_effort == expected
+        assert resolve_sell_codex_settings(env).reasoning_effort == expected
+
+
+def test_unknown_or_unreadable_account_keeps_the_configured_effort(tmp_path):
+    from prism_core.codex_config import resolve_buy_codex_settings
+    base = {"PRISM_BUY_CODEX_MODEL": "gpt-6-astra", "PRISM_BUY_CODEX_EFFORT": "high",
+            "PRISM_CODEX_EFFORT_BY_ACCOUNT": MAPPING}
+    assert resolve_buy_codex_settings({**base, "PRISM_CODEX_AUTH_FILE": _auth_file(tmp_path, "other@x.com")}).reasoning_effort == "high"
+    assert resolve_buy_codex_settings({**base, "PRISM_CODEX_AUTH_FILE": str(tmp_path / "missing.json")}).reasoning_effort == "high"
+    no_map = {k: v for k, v in base.items() if k != "PRISM_CODEX_EFFORT_BY_ACCOUNT"}
+    assert resolve_buy_codex_settings(no_map).reasoning_effort == "high"
+
+
+def test_mapping_to_an_unsupported_effort_is_rejected(tmp_path):
+    import pytest
+    from prism_core.codex_config import CodexFastError, resolve_buy_codex_settings
+    env = {"PRISM_BUY_CODEX_MODEL": "gpt-6-astra", "PRISM_CODEX_EFFORT_BY_ACCOUNT": "dragon1086@naver.com=turbo",
+           "PRISM_CODEX_AUTH_FILE": _auth_file(tmp_path, "dragon1086@naver.com")}
+    with pytest.raises(CodexFastError):
+        resolve_buy_codex_settings(env)

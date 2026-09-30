@@ -148,6 +148,15 @@ def render_flow_reference(evidence):
         lines.append('최근 ' + ', '.join(unavailable) + ' 누적은 비교에 필요한 자료가 충분하지 않아 제시하지 않았습니다.')
     if ratios_unavailable:
         lines.append('최근 ' + '·'.join(ratios_unavailable) + '관측일 구간은 거래량 자료가 충분하지 않아 거래량 대비 비율을 제시하지 않았습니다.')
-    lines.append('기업행위로 수량을 조정하지 않은 관측값입니다. 누적 순매수와 연속 순매수는 다르며, '
+    from prism_core.kr_flow_evidence import corporate_action_summary
+    status, events = corporate_action_summary(evidence)
+    if status == 'NONE':
+        action = '구간 안에 권리락·분할 등 기업행위 표시가 없어 수량을 그대로 비교할 수 있습니다. '
+    elif status == 'EVENT':
+        action = (', '.join(e.split('(')[0] for e in events)
+                  + '에 기업행위 표시가 있어 해당 구간은 수량 비교에 한계가 있습니다(수량 보정 미적용). ')
+    else:
+        action = '기업행위로 수량을 조정하지 않은 관측값입니다. '
+    lines.append(action + '누적 순매수와 연속 순매수는 다르며, '
                  '서로 겹치는 기간을 별도 매수 근거로 중복 계산하지 않습니다.')
     return '\n\n'.join(lines)

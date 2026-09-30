@@ -96,7 +96,7 @@ def _try_anthropic_sdk(prompt: str) -> Optional[str]:
         return None
     client = anthropic.Anthropic()
     msg = client.messages.create(
-        model=os.environ.get("BTC_POSTMORTEM_SDK_MODEL", "claude-sonnet-4-6"),
+        model=os.environ.get("BTC_POSTMORTEM_SDK_MODEL", "claude-sonnet-5-5"),
         max_tokens=4000,
         messages=[{"role": "user", "content": prompt}],
         timeout=LLM_TIMEOUT_SEC,

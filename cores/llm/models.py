@@ -18,11 +18,11 @@ _DEFAULT_MAPPING: dict[str, tuple[str, LLMParams]] = {
         LLMParams(reasoning_effort="high", max_tokens=30000),
     ),
     "journal": (
-        "gpt-5.4-mini",
+        "gpt-6-luna",
         LLMParams(reasoning_effort="none", max_tokens=16000),
     ),
     "summary": (
-        "gpt-5.6-luna",
+        "gpt-6-luna",
         LLMParams(reasoning_effort="low", max_tokens=16000),
     ),
 }

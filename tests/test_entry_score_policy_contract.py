@@ -40,10 +40,30 @@ def test_pilot_score_is_exact_not_integer_truncated(score):
     assert not is_rebound_pilot_entry(score, 5, "sideways", "UPTREND", "Enter")
 
 
-@pytest.mark.parametrize("regime,score", [("moderate_bull", 7), ("sideways", 7), ("moderate_bear", 8)])
+@pytest.mark.parametrize("regime,score", [("sideways", 7), ("moderate_bear", 8)])
 def test_distribution_downgrade_keeps_defensive_floor(regime, score):
     assert not gate(score, market_regime=regime, distribution_days=6,
                     pilot_budget_available=True)["allowed"]
+
+
+@pytest.mark.parametrize("regime", ["moderate_bull", "strong_bull"])
+def test_distribution_downgraded_bull_uses_the_stepped_rule_not_the_sideways_floor(regime):
+    """2026-09-30 ACVA: moderate bull + 6 distribution days demanded 8 (the genuine-
+    sideways strict floor). The one-step caution now keeps the stepped regime's rule."""
+    result = gate(7, market_regime=regime, distribution_days=6, market_pulse=None)
+    assert result["allowed"], result
+    assert result["score_policy"]["required_score"] <= 7
+    assert result["distribution_caution"] is True
+
+
+def test_distribution_downgraded_bull_still_blocks_below_the_stepped_rule():
+    result = gate(4, market_regime="moderate_bull", distribution_days=6, market_pulse=None)
+    assert not result["allowed"]
+
+
+def test_bull_without_distribution_caution_is_unchanged():
+    result = gate(5, market_regime="moderate_bull", distribution_days=5, market_pulse=None)
+    assert result["allowed"] and result["distribution_caution"] is False
 
 
 def test_distribution_caution_disables_pilot():

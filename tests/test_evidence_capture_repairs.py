@@ -101,10 +101,11 @@ def test_buy_prompt_reconciles_evidence_without_new_gate(market, language):
             # 2026-09-18 reviewed target-first/industry-scope/ownership wording repair.
             # 2026-09-27 reviewed O'Neil overhead-free breakout target (2a) in the target section.
             # 2026-09-29 reviewed: +1 line only (today's open-bar high is not a major resistance).
+            # 2026-09-30 reviewed: 3 US institutional-flow lines note the data is not supplied (never scored).
             # JSON output and unrelated execution rules retain their original hashes.
-            "ko": ("3acb62e4bb1c528d6716946c54cc4a370ee1d42619ac8f566e1c05b8eface29a",
+            "ko": ("2079b13a8e95c80b76537fb257215baa65581bc625c0a5a09c58693f0625f9a4",
                    "515130759f31ca1282749d6d3b2d10bc9704c69f86fc84484dd1a26c332ee646"),
-            "en": ("31ae78a5efd6284fac0169b8604c1ec6df9b02bdc6e9d198c76c31df0abd55da",
+            "en": ("1b1e25e5eb6175ec7020811579293ca968c331fe708c471694ba66e0e6ac6982",
                    "c73c9066e6b9a043d70102cf1912fc6f1608fc544d6ef96e1555322e0aa6e031"),
         }
         tool_heading = "## 도구 사용" if language == "ko" else "## Tool Usage"
