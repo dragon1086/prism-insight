@@ -172,6 +172,7 @@ def _import_from_main_cores(module_name: str, relative_path: str):
     return module
 
 
+from prism_core.buy_model_shadow import drain_buy_model_shadows, schedule_buy_model_shadow
 from prism_core.codex_config import resolve_buy_codex_settings, resolve_sell_codex_settings
 from prism_core.isolated_agent_runtime import (
     prepare_isolated_runtime, configured_mcp_app, attach_isolated_llm,
@@ -1570,6 +1571,18 @@ class USStockTrackingAgent:
                         logger.warning(
                             "[%s] Codex Fast parse failed; falling back to mcp-agent",
                             ticker_tag,
+                        )
+                    if scenario_json is not None:
+                        schedule_buy_model_shadow(
+                            market="US", ticker=ticker or "?",
+                            system_prompt=instruction, user_prompt=prompt_message,
+                            mcp_profile="us_trading", live_model=settings.model,
+                            live_effort=settings.reasoning_effort,
+                            live_result=codex_result, live_scenario=scenario_json,
+                            generate=generate_codex_fast_async,
+                            parse=lambda text: parse_llm_json(
+                                text, context="US buy model shadow"),
+                            service_tier=codex_service_tier,
                         )
                 except Exception as codex_err:  # noqa: BLE001 — mandatory fallback
                     logger.warning(
@@ -5313,6 +5326,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 logger.info("US tracking system batch execution complete")
                 return True
             finally:
+                # Let capped buy-model SHADOW runs finish (no-op when disabled).
+                await drain_buy_model_shadows()
                 # Wait for broadcast translation task before cleanup
                 if self._broadcast_task:
                     try:
