@@ -29,8 +29,9 @@ class TestTranslateRequest:
         # Codex receives system guidance via instructions, not an extra input turn.
         assert result["instructions"] == "You are a stock analyst."
         assert result["input"] == [{"role": "user", "content": "Analyze AAPL"}]
-        assert result["max_output_tokens"] == 4096
-        assert result["temperature"] == 0.7
+        # Codex rejects max_output_tokens (2026-10-01), so the limit is not forwarded.
+        assert "max_output_tokens" not in result
+        assert "temperature" not in result  # Codex rejects it (2026-10-01)
         assert result["store"] is False
         assert result["stream"] is True
         assert "messages" not in result
@@ -151,7 +152,7 @@ class TestTranslateRequest:
             "seed": 42,
         }
         result = translate_request(body)
-        assert result["temperature"] == 0.5
+        assert "temperature" not in result  # Codex rejects it
         assert result["top_p"] == 0.9
         assert result["stop"] == ["\n"]
         assert result["seed"] == 42

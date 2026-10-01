@@ -27,7 +27,13 @@ def test_buy_prompt_reconciles_evidence_without_new_gate(market, language):
     factory = "create_trading_scenario_agent" if market == "KR" else "create_us_trading_scenario_agent"
     prompt = namespace[factory](language).instruction
     if market == "US":
-        # Reviewed 2026-09-27 decision_inputs appendix is last; peel it first.
+        # Reviewed 2026-10-01 wording-only Korean rationale style appendix (same as KR) is last.
+        from messaging.korean_trading_message import korean_rationale_style_contract
+        style = korean_rationale_style_contract(language)
+        if style:
+            assert prompt.count(style) == 1 and prompt.endswith(style)
+            prompt = prompt[:-len(style)]
+        # Reviewed 2026-09-27 decision_inputs appendix; peel it next.
         from prism_core.decision_input_features import prompt_contract, prompt_facts_enabled
         facts_appendix = prompt_contract("ko" if language == "ko" else "en", market="US")
         if prompt_facts_enabled():

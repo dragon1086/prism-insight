@@ -47,6 +47,8 @@ def peer_valuation_summary(packet):
                "price_basis": packet.get("price_basis"), "target_per": target.get("per"), "target_pbr": target.get("pbr")}
         for field in ("per", "pbr"):
             values = sorted(p[field] for p in peers if isinstance(p.get(field), (int, float)) and p[field] > 0)
+            # Loss-making / missing peers drop out per metric; usability is judged on this count.
+            out["peer_valid_" + field] = len(values)
             median = None
             if values:
                 mid = len(values) // 2

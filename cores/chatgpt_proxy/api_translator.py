@@ -88,7 +88,7 @@ def translate_request(body: dict) -> dict:
 
     Key mappings:
     - messages -> input (with role translations)
-    - max_tokens -> max_output_tokens
+    - max_tokens dropped (Codex rejects max_output_tokens)
     - tools[].function.* -> tools[].* (flattened)
     - response_format -> text.format
     """
@@ -104,8 +104,9 @@ def translate_request(body: dict) -> dict:
     translated["instructions"] = "\n\n".join(system_parts) if system_parts else "You are a helpful assistant."
     translated["input"] = _translate_messages_to_input(non_system)
 
-    # Parameter passthrough
-    for key in ("temperature", "top_p", "stop", "seed"):
+    # Parameter passthrough. temperature is dropped: the Codex backend rejects it
+    # ("Unsupported parameter: temperature", telegram bot 2026-10-01 15:33).
+    for key in ("top_p", "stop", "seed"):
         if key in body:
             translated[key] = body[key]
 
@@ -115,9 +116,9 @@ def translate_request(body: dict) -> dict:
     if reasoning_effort and reasoning_effort != "none":
         translated["reasoning"] = {"effort": reasoning_effort}
 
-    # max_tokens -> max_output_tokens
-    if "max_tokens" in body:
-        translated["max_output_tokens"] = body["max_tokens"]
+    # max_tokens / max_completion_tokens are dropped: the Codex backend rejects
+    # max_output_tokens ("Unsupported parameter", observed 2026-10-01 on every
+    # translated Chat Completions call), as prepare_responses_passthrough strips.
 
     # Tools (flatten nested function structure)
     if body.get("tools"):

@@ -109,3 +109,29 @@ def test_rationale_style_rule_is_in_korean_trading_prompts():
     assert rule in create_sell_decision_agent('ko').instruction
     assert rule in create_trading_scenario_agent('ko').instruction
     assert '판단 근거 문장 작성 규칙' not in create_sell_decision_agent('en').instruction
+
+
+def test_hold_reason_shows_the_ai_blocking_rule():
+    from messaging.korean_trading_message import hold_reason_display, render_korean_trading_message
+
+    scenario = {"rejection_reason": "주요 지지선이 10% 이상 아래에 있어 진입 금지 규칙에 해당합니다. MA20 대비 +24%입니다."}
+    shown = hold_reason_display("AI 판단: Skip / 점수 부족 (7/8)", scenario)
+    assert shown == "AI 판단: Skip — 주요 지지선이 10% 이상 아래에 있어 진입 금지 규칙에 해당합니다. / 점수 부족 (7/8)"
+    assert "보류 사유: AI 판단: 미진입 — 주요 지지선" in render_korean_trading_message(f"보류 사유: {shown}")
+    # US labels render in Korean; no rejection reason keeps the original parts.
+    assert hold_reason_display("AI judgment: no_entry / Insufficient score (6/8)", {}) == \
+        "AI 판단: no_entry / 점수 부족 (6/8)"
+    assert hold_reason_display("점수 부족 (6/8)", {"rejection_reason": "R/R 0.45로 기준 미달"}) == \
+        "점수 부족 (6/8) / AI 차단 사유: R/R 0.45로 기준 미달"
+    long = hold_reason_display("AI 판단: Skip", {"rejection_reason": "가" * 300}, limit=20)
+    assert long.endswith("…") and len(long) < 50
+
+
+def test_prompt_plumbing_words_are_rendered_for_readers():
+    raw = ("15:00 주입 자료의 거래량 255,691주는 평균의 2.08배입니다. 20일선 괴리율은 당일 포함·제외 계산에 따라 "
+           "판정이 달라집니다. 주입된 팩트를 확인했습니다.")
+    out = render_korean_trading_message(raw)
+    assert "주입" not in out and "포함·제외 계산" not in out
+    assert "15:00 기준 자료의 거래량" in out and "당일 봉 포함 여부에 따라" in out and "제공된 자료를" in out
+    from messaging.korean_trading_message import korean_rationale_style_contract
+    assert "주입 자료" in korean_rationale_style_contract("ko")
