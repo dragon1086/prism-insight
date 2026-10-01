@@ -5,7 +5,8 @@ Telegram stay consistent. Safety-critical guards covered:
   - SHADOW (default): touches NO agent and places NO order, only logs.
   - LIVE: runs sell_stock (sim) -> async_sell_stock (KIS) -> send_telegram_message
     (telegram), in that order; reconciles qty against KIS first.
-  - Pyramided tickers (>1 row) are skipped (batch owns fractional sells).
+  - Pyramided tickers (>1 row) are protected per row with fractional sells
+    like the batch (skipped only under the KR pending-exit gate).
   - owner_lock exclusivity + inflight guard prevent double-selling.
   - TIER1-only: a winner is never sold by Hardstop.
 
@@ -716,19 +717,80 @@ def test_live_skips_kis_when_flat_but_still_closes_sim(tmp_db, monkeypatch):
     assert not any(c.startswith("kis:") for c in calls)   # no real order placed
 
 
-def test_pyramided_ticker_is_skipped(tmp_db, monkeypatch):
-    monkeypatch.setattr(la, "HARDSTOP_LIVE", False)
+class RowAgent(FakeAgent):
+    async def sell_stock(self, stock_data, sell_reason, **kwargs):
+        self.calls.append(f"sim:{stock_data.get('ticker')}#{stock_data.get('id')}")
+        return True
+
+
+def _live_pyramid(monkeypatch, tmp_db, rows, price, qty, *, pending=False):
+    monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "true" if pending else "false")
+    monkeypatch.setattr(la, "HARDSTOP_LIVE", True)
     monkeypatch.setattr(la, "HARDSTOP_ENABLED", True)
-    _seed(tmp_db, [_row(1, "005930", 100.0), _row(2, "005930", 110.0)])  # 2 rows = pyramided
-    calls = []
-    trader = FakeTrader({"005930": 80.0}, calls=calls)  # deep loss, but must be skipped
-    _patch(monkeypatch, trader, agent_holder=FakeAgent(calls))
+    _seed(tmp_db, rows)
+    calls, published = [], []
+    trader = FakeTrader({"005930": price}, holding_qty={"005930": qty}, calls=calls)
+    _patch(monkeypatch, trader, agent_holder=RowAgent(calls))
+
+    async def publish_loop_sell(**kwargs):
+        published.append(kwargs.get("sell_denominator"))
+
+    monkeypatch.setattr("sell_broadcast.publish_loop_sell", publish_loop_sell)
+    return calls, published
+
+
+def test_pyramided_rows_are_protected_by_their_own_stop(tmp_db, monkeypatch):
+    # Add-on row (buy 110, stop 104) breaks its stop at 102; the base row (-2%) holds.
+    calls, published = _live_pyramid(
+        monkeypatch, tmp_db, [_row(1, "005930", 100.0), _row(2, "005930", 110.0, stop_loss=104.0)],
+        price=102.0, qty=10)
+
+    summary = asyncio.run(la.run_market("KR", "run1"))
+
+    assert summary["pyramided_skipped"] == 0
+    assert summary["checked"] == 2 and summary["triggered"] == 1 and summary["sold"] == 1
+    assert [c for c in calls if c.startswith(("sim:", "kis:"))] == ["sim:005930#2", "kis:005930:5"]
+    assert published == [2]  # subscribers mirror half of the position
+
+
+def test_pyramided_rows_all_breached_sell_from_one_snapshot(tmp_db, monkeypatch):
+    calls, published = _live_pyramid(
+        monkeypatch, tmp_db, [_row(1, "005930", 100.0), _row(2, "005930", 110.0)],
+        price=80.0, qty=11)
+
+    summary = asyncio.run(la.run_market("KR", "run1"))
+
+    assert summary["sold"] == 2
+    # floor(11/2)=5 for the first row, the last row sweeps the snapshot remainder.
+    assert [c for c in calls if c.startswith(("sim:", "kis:"))] == [
+        "sim:005930#1", "kis:005930:5", "sim:005930#2", "kis:005930:6"]
+    assert published == [2, 1]
+    assert _inflight(tmp_db, "FILLED") == 2
+
+
+def test_pyramided_rows_stay_with_batch_under_pending_kr(tmp_db, monkeypatch):
+    calls, _ = _live_pyramid(
+        monkeypatch, tmp_db, [_row(1, "005930", 100.0), _row(2, "005930", 110.0)],
+        price=80.0, qty=10, pending=True)
 
     summary = asyncio.run(la.run_market("KR", "run1"))
 
     assert summary["pyramided_skipped"] == 1
-    assert summary["checked"] == 0 and summary["triggered"] == 0
-    assert calls == []
+    assert summary["checked"] == 0 and calls == []
+
+
+def test_same_ticker_in_two_accounts_is_two_single_positions(tmp_db, monkeypatch):
+    other = (2, "005930", "005930", 100.0, "2026-06-01 10:00:00", "{}", 0.0, 0.0, "acc2", "secondary")
+    calls, published = _live_pyramid(
+        monkeypatch, tmp_db, [_row(1, "005930", 100.0), other], price=92.0, qty=7)
+
+    summary = asyncio.run(la.run_market("KR", "run1"))
+
+    assert summary["pyramided_skipped"] == 0 and summary["sold"] == 2
+    # Each account sells its own full broker quantity.
+    assert [c for c in calls if c.startswith(("sim:", "kis:"))] == [
+        "sim:005930#1", "kis:005930:7", "sim:005930#2", "kis:005930:7"]
+    assert published == [1, 1]
 
 
 def test_shadow_record_does_not_block_second_trigger(tmp_db, monkeypatch):

@@ -47,3 +47,27 @@ def test_publish_loop_sell_forwards_args_and_profit_rate(monkeypatch):
         assert c["market"] == "KR"            # normalized upper
         assert c["sell_reason"] == "TIER1.5_MA50"
         assert round(c["profit_rate"], 1) == -10.0  # (90-100)/100*100
+        assert c["sell_denominator"] == 1  # whole position by default
+
+
+def test_publish_loop_sell_forwards_pyramided_denominator(monkeypatch):
+    """A pyramided row exit tells mirroring subscribers which fraction to sell."""
+    calls = []
+
+    async def fake_pub(**kwargs):
+        calls.append(kwargs)
+
+    fake_pkg = types.ModuleType("messaging")
+    redis_mod = types.ModuleType("messaging.redis_signal_publisher")
+    redis_mod.publish_sell_signal = fake_pub
+    gcp_mod = types.ModuleType("messaging.gcp_pubsub_signal_publisher")
+    gcp_mod.publish_sell_signal = fake_pub
+    monkeypatch.setitem(sys.modules, "messaging", fake_pkg)
+    monkeypatch.setitem(sys.modules, "messaging.redis_signal_publisher", redis_mod)
+    monkeypatch.setitem(sys.modules, "messaging.gcp_pubsub_signal_publisher", gcp_mod)
+
+    asyncio.run(lp.publish_loop_sell(
+        market="KR", ticker="005930", company_name="Samsung", price=90.0,
+        buy_price=100.0, sell_reason="TIER1_STOPLOSS", sell_denominator=3,
+    ))
+    assert [c["sell_denominator"] for c in calls] == [3, 3]

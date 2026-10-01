@@ -102,11 +102,13 @@ def test_buy_prompt_reconciles_evidence_without_new_gate(market, language):
             # 2026-09-27 reviewed O'Neil overhead-free breakout target (2a) in the target section.
             # 2026-09-29 reviewed: +1 line only (today's open-bar high is not a major resistance).
             # 2026-09-30 reviewed: 3 US institutional-flow lines note the data is not supplied (never scored).
-            # JSON output and unrelated execution rules retain their original hashes.
+            # 2026-10-01 reviewed: JSON tail only — sell_triggers hard stop / -7% lines describe the
+            # executed intraday hard stop (live price <= stop_loss x 0.995). Decision rules unchanged.
+            # Unrelated execution rules retain their original hashes.
             "ko": ("2079b13a8e95c80b76537fb257215baa65581bc625c0a5a09c58693f0625f9a4",
-                   "515130759f31ca1282749d6d3b2d10bc9704c69f86fc84484dd1a26c332ee646"),
+                   "2ebd835f36185c5b6411ea7a600c8549b07cd670e14c85deec71e4918cf931b6"),
             "en": ("1b1e25e5eb6175ec7020811579293ca968c331fe708c471694ba66e0e6ac6982",
-                   "c73c9066e6b9a043d70102cf1912fc6f1608fc544d6ef96e1555322e0aa6e031"),
+                   "da048b5f3c28327f95d7b0e7b7ab11c6db72096d1d203200d364569aec188543"),
         }
         tool_heading = "## 도구 사용" if language == "ko" else "## Tool Usage"
         json_heading = "## JSON 응답 형식" if language == "ko" else "## JSON Response Format"

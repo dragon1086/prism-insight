@@ -23,8 +23,12 @@ SAFETY (read before enabling):
   - Separate process, so the batch's in-process asyncio locks do NOT apply:
     guards via a SQLite owner_lock (BEGIN IMMEDIATE), an inflight-order
     uniqueness guard, and a fresh KIS holding-qty reconcile before every sell.
-  - Pyramided tickers (>1 holding row) are SKIPPED — the batch owns the
-    fractional-sell logic; Hardstop only handles clean single-row positions.
+  - Pyramided tickers (>1 holding row) are protected row by row with each
+    row's own stop, exactly like the batch: a triggered row closes only that
+    row and sells floor(snapshot_qty / remaining_rows) shares (the last row
+    sweeps the remainder). KR broker-first pending exits and US orders that
+    cannot execute now (market closed) still leave pyramided tickers to the
+    batch, whose pending/queued paths own those cases.
 
 Usage:
     python tools/hardstop_seller.py [--market kr|us|both] [--once]
@@ -296,13 +300,18 @@ async def run_market(market: str, run_id: str) -> Dict[str, Any]:
 
 
 async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
-    """Evaluate the TIER1 hard stop for every clean single-row holding.
+    """Evaluate the TIER1 hard stop for every holding row (pyramided rows per row).
 
     Never raises: any failure degrades to a no-op for that ticker/market.
     """
     summary = {"market": market, "checked": 0, "triggered": 0, "sold": 0,
                "shadow": 0, "skipped": 0, "pyramided_skipped": 0}
     from cores.oneil_fallback import SellInputs, evaluate_tier1_hardstop
+    from prism_core.loop_row_split import (
+        group_rows_by_account,
+        new_split_state,
+        pyramid_protectable,
+    )
     conn = _connect()
     agent = {"ref": None}  # lazily created on first LIVE sell
     oneil_observations = []
@@ -313,45 +322,53 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
             return summary
         try:
             async with _open_context(market) as trader:  # primary ctx, prices only (account-agnostic)
-                for ticker, rows in by_ticker.items():
-                    if len(rows) > 1:
-                        # Pyramided position -> leave to the batch's fractional logic.
-                        summary["pyramided_skipped"] += 1
-                        logger.info("[%s] %s pyramided (%d rows) -> skip (batch handles)",
-                                    market, ticker, len(rows))
-                        continue
-                    h = rows[0]
-                    try:
-                        buy_price = float(h.get("buy_price", 0) or 0)
-                        stop_loss = float(h.get("stop_loss", 0) or 0)
-                    except (TypeError, ValueError):
-                        continue
-                    if buy_price <= 0:
-                        continue
-                    try:
-                        info = await asyncio.to_thread(trader.get_current_price, ticker)
-                        cur_price = float((info or {}).get("current_price", 0) or 0)
-                    except Exception as e:
-                        logger.warning("[%s] %s price fetch failed: %s", market, ticker, e)
-                        continue
-                    if cur_price <= 0:
-                        continue
-                    summary["checked"] += 1
-                    should_sell, reason = evaluate_tier1_hardstop(
-                        SellInputs(buy_price=buy_price, current_price=cur_price, stop_loss=stop_loss)
-                    )
-                    if market == "US" and not should_sell:
-                        from observability.oneil_capture import holding_observation
-                        oneil_observations.append(holding_observation(
-                            position_id=f"legacy:US:{h.get('id')}", price=cur_price,
-                            scenario={"stop_loss": stop_loss}, source="us_mechanical_hardstop",
-                        ))
-                    if not should_sell:
-                        continue
-                    summary["triggered"] += 1
-                    h = dict(h)
-                    h["current_price"] = cur_price
-                    await _act_on_trigger(conn, market, ticker, h, reason, run_id, agent, summary)
+                for ticker, ticker_rows in by_ticker.items():
+                    row_scoped = len(ticker_rows) > 1
+                    cur_price = None
+                    for rows in group_rows_by_account(ticker_rows):
+                        split = None
+                        if len(rows) > 1:
+                            if not pyramid_protectable(market, trader):
+                                summary["pyramided_skipped"] += 1
+                                logger.info("[%s] %s pyramided (%d rows) -> skip (batch handles)",
+                                            market, ticker, len(rows))
+                                continue
+                            # Pyramided position: protect every row with its own stop (#288 batch parity).
+                            split = new_split_state(len(rows))
+                        for h in rows:
+                            try:
+                                buy_price = float(h.get("buy_price", 0) or 0)
+                                stop_loss = float(h.get("stop_loss", 0) or 0)
+                            except (TypeError, ValueError):
+                                continue
+                            if buy_price <= 0:
+                                continue
+                            if cur_price is None:
+                                try:
+                                    info = await asyncio.to_thread(trader.get_current_price, ticker)
+                                    cur_price = float((info or {}).get("current_price", 0) or 0)
+                                except Exception as e:
+                                    logger.warning("[%s] %s price fetch failed: %s", market, ticker, e)
+                                    cur_price = 0.0
+                            if cur_price <= 0:
+                                break
+                            summary["checked"] += 1
+                            should_sell, reason = evaluate_tier1_hardstop(
+                                SellInputs(buy_price=buy_price, current_price=cur_price, stop_loss=stop_loss)
+                            )
+                            if market == "US" and not should_sell:
+                                from observability.oneil_capture import holding_observation
+                                oneil_observations.append(holding_observation(
+                                    position_id=f"legacy:US:{h.get('id')}", price=cur_price,
+                                    scenario={"stop_loss": stop_loss}, source="us_mechanical_hardstop",
+                                ))
+                            if not should_sell:
+                                continue
+                            summary["triggered"] += 1
+                            h = dict(h)
+                            h["current_price"] = cur_price
+                            await _act_on_trigger(conn, market, ticker, h, reason, run_id, agent, summary,
+                                                  split=split, row_scoped=row_scoped)
         except Exception as e:  # context/credential failure -> skip whole market safely
             logger.warning("%s trading context failed: %s", market, e)
     finally:
@@ -633,7 +650,12 @@ async def _act_on_pending_kr_trigger(
 
 async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, Any],
                           reason: str, run_id: str, agent: Dict[str, Any],
-                          summary: Dict[str, Any]) -> None:
+                          summary: Dict[str, Any], split: Optional[Dict[str, Any]] = None,
+                          row_scoped: bool = False) -> None:
+    if split is not None or row_scoped:
+        # One lock/inflight token per closed row so later rows of the same ticker
+        # (pyramided or another account) can still be claimed in this run.
+        run_id = f"{run_id}:{stock_data.get('id')}"
     # Guard 1: an inflight SELL for this ticker already exists -> leave it alone.
     if has_open_inflight(conn, ticker, market):
         summary["skipped"] += 1
@@ -679,6 +701,7 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
             logger.error("[%s] %s sell_stock (sim) failed -> aborting, no KIS order", market, ticker)
             release_lock(conn, ticker, market, run_id, new_state="HOLDING")
             return
+        sell_denominator = split["remaining"] if split is not None else 1
 
         if market == "US" and stock_data.get("_oneil_owned_exit") is True:
             # The owned execution journal cancels pending BUYs and exits only
@@ -703,6 +726,11 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
             async with _open_context(market, account_name=stock_data.get("account_name")) as seller:
                 live_qty = await asyncio.to_thread(seller.get_holding_quantity, ticker)
                 sold_qty = int(live_qty or 0)
+                if split is not None:
+                    from prism_core.loop_row_split import split_sell_quantity
+                    sold_qty = split_sell_quantity(split, sold_qty)
+                    logger.info("[%s] %s pyramided row sell: %d shares (snapshot %s, remaining rows=%d)",
+                                market, ticker, sold_qty, split["snapshot"], split["remaining"])
                 if sold_qty <= 0:
                     logger.info("[%s] %s already flat at KIS (qty=0); sim closed", market, ticker)
                 else:
@@ -756,6 +784,8 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
             )
         except Exception as e:
             logger.error("[%s] %s KIS sell failed after sim close: %s", market, ticker, e)
+        if split is not None:
+            split["remaining"] -= 1  # this row is closed in the simulator
 
         # 3) flush the queued telegram message (instant notification).
         try:
@@ -775,6 +805,7 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
                 buy_price=float(stock_data.get("buy_price", 0) or 0),
                 sell_reason=reason,
                 trade_result={"success": bool(ok or sold_qty == 0), "order_no": order_no},
+                sell_denominator=sell_denominator,
             )
         except Exception as e:
             logger.warning("[%s] %s sell signal publish failed (non-critical): %s", market, ticker, e)
