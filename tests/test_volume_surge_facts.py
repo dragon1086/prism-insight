@@ -158,7 +158,7 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
-root, market = Path(sys.argv[1]), sys.argv[2]
+root, market, mode = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 sys.path[:0] = ([str(root / "prism-us"), str(root)] if market == "US" else [str(root)])
 
 def deny(*args, **kwargs):
@@ -208,7 +208,10 @@ with ExitStack() as stack:
             lambda name, path: regime_policy if path == "cores/regime_policy.py" else original_import(name, path)))
         agent, ticker = object.__new__(tracking.USStockTrackingAgent), "MDB"
     stack.enter_context(patch.object(tracking, "datetime", FrozenNow))
+    agent.trigger_mode = mode
     facts = agent._get_trend_facts(ticker)
+    prev_line = "오전 누적 거래량 ≥ 전일 거래량: 예 (당일 2026-09-28"
+    assert (prev_line in facts) == (mode == "morning"), facts
     assert "2026-09-28 장중 누적(미완성봉" in facts, facts
     assert "7.87배" in facts and "충족 확정" in facts, facts
     assert "2026-09-25 0.71배" in facts, facts
@@ -220,11 +223,33 @@ with ExitStack() as stack:
 '''
 
 
+@pytest.mark.parametrize("mode", ["morning", "afternoon"])
 @pytest.mark.parametrize("market", ["KR", "US"])
-def test_actual_trend_facts_producer_carries_the_partial_surge(market, tmp_path):
+def test_actual_trend_facts_producer_carries_the_partial_surge(market, mode, tmp_path):
     env = dict(os.environ, PRISM_DISABLE_SIGNAL_PUBLISH="1", TREND_RESEARCH_CAPTURE_ENABLED="false",
                PRISM_OBSERVABILITY_SPOOL=str(tmp_path / "events.jsonl"), PYTHONDONTWRITEBYTECODE="1")
-    result = subprocess.run([sys.executable, "-c", RUN, str(ROOT), market], cwd=tmp_path, env=env,
+    result = subprocess.run([sys.executable, "-c", RUN, str(ROOT), market, mode], cwd=tmp_path, env=env,
                             capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stdout[-3000:] + result.stderr[-5000:]
     assert f"{market} producer volume facts ok" in result.stdout
+
+
+# ------------------------------------------------- morning prev-day reference fact
+
+def test_prev_day_reference_fact_is_reference_only():
+    from prism_core.volume_surge_facts import render_prev_day_volume_fact
+
+    days = [date(2026, 9, 1) + timedelta(days=i) for i in range(25)]
+    now = datetime(2026, 9, 25, 9, 45)
+    reached = compute_volume_surge_facts(days, [100] * 23 + [400, 450], now_local=now, session_close=time(15, 30))
+    line = render_prev_day_volume_fact(reached)
+    assert "오전 누적 거래량 ≥ 전일 거래량: 예" in line and "450주" in line and "전일 2026-09-24 400주" in line
+    assert "신호 1 충족으로 세지 않는" in line
+    assert reached["signal1"] == "met"  # unchanged by the reference line (400 >= 2x avg)
+    below = compute_volume_surge_facts(days, [100] * 24 + [90], now_local=now, session_close=time(15, 30))
+    assert ": 아니오 (" in render_prev_day_volume_fact(below)
+    missing = compute_volume_surge_facts(days, [100] * 23 + [None, 90], now_local=now, session_close=time(15, 30))
+    assert "결측" in render_prev_day_volume_fact(missing)
+    closed = compute_volume_surge_facts(days, [100] * 25, now_local=datetime(2026, 9, 25, 16, 0),
+                                        session_close=time(15, 30))
+    assert render_prev_day_volume_fact(closed) == ""  # no open bar -> no line

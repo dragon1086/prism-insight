@@ -135,3 +135,24 @@ def render_volume_surge_facts(facts: dict, *, unit: str = "주") -> str:
     verdict = {"met": "충족", "not_met": "미충족", "undetermined": "미확정(충족으로 세지 않음)"}[facts["signal1"]]
     lines.append(f"  · 신호 1 판정: {verdict} — 거래량 수치는 이 줄을 인용하고, 당일 대량 거래를 생략하지 마십시오")
     return "\n".join(lines)
+
+
+def render_prev_day_volume_fact(facts: dict, *, unit: str = "주") -> str:
+    """Reference-only morning line: today's open-bar volume vs the previous full session.
+
+    kr-intraday-volume-pace-v1 H3(c) (holdout +5.9%p) found that a morning
+    cumulative volume already at or above yesterday's full volume marks
+    stronger setups. It is weaker evidence than signal 1, so it never counts
+    as signal 1 and changes no verdict. '' when there is no open bar.
+    """
+    part = facts.get("partial_session")
+    if not part:
+        return ""
+    sessions = facts.get("confirmed_sessions") or []
+    prev = sessions[0] if sessions else None
+    head = "  · 참고(오전 판단 전용, 모멘텀 신호 1과 별개): 오전 누적 거래량 ≥ 전일 거래량: "
+    if part.get("volume") is None or not prev or not prev.get("volume"):
+        return head + "결측(확인 불가이며 '아니오'가 아닙니다)"
+    reached = part["volume"] >= prev["volume"]
+    return (f"{head}{'예' if reached else '아니오'} (당일 {facts['captured_at']} 조회 누적 {part['volume']:,.0f}{unit} / "
+            f"전일 {prev['date']} {prev['volume']:,.0f}{unit}) — 신호 1 충족으로 세지 않는 참고 사실입니다")
