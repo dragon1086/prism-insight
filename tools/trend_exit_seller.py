@@ -52,8 +52,11 @@ SAFETY (read before enabling):
   - Separate process, so the batch's in-process asyncio locks do NOT apply:
     guards via a SQLite owner_lock (BEGIN IMMEDIATE), an inflight-order
     uniqueness guard, and a fresh KIS holding-qty reconcile before every sell.
-  - Pyramided tickers (>1 holding row) are SKIPPED — the batch owns the
-    fractional-sell logic; Trend-exit only handles clean single-row positions.
+  - Pyramided tickers (>1 holding row) are evaluated row by row like the batch:
+    an acted row closes only itself and sells floor(snapshot_qty /
+    remaining_rows) shares (prism_core.loop_row_split). The breach streak stays
+    per ticker; any row's trend signal counts for that day. KR broker-first
+    pending exits and closed US markets still leave pyramided tickers to the batch.
   - Trend-exit owns ONLY loop_b_* tables. It never touches existing tables nor
     Hardstop's loop_a_* tables.
   - ma_50 fetch failure / <50 closes -> ma_50=0.0, which makes TIER1.5 dormant
@@ -497,8 +500,8 @@ async def run_market(market: str, run_id: str) -> Dict[str, Any]:
 
 
 async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
-    """Evaluate the O'Neil trend-exit tiers (TIER1.5/2/3) for every clean
-    single-row holding, applying the close-confirmation / consecutive-breach gate.
+    """Evaluate the O'Neil trend-exit tiers (TIER1.5/2/3) for every holding row
+    (pyramided rows per row), applying the close-confirmation / consecutive-breach gate.
 
     Never raises: any failure degrades to a no-op for that ticker/market.
     """
@@ -506,6 +509,11 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                "sold": 0, "shadow": 0, "skipped": 0, "pyramided_skipped": 0,
                "gated": 0}
     from cores.oneil_fallback import SellInputs, evaluate_oneil_sell
+    from prism_core.loop_row_split import (
+        group_rows_by_account,
+        new_split_state,
+        pyramid_protectable,
+    )
     conn = _connect()
     agent = {"ref": None}  # lazily created on first LIVE sell
     ma50_cache: Dict[str, float] = {}  # one fetch per ticker per cycle
@@ -517,19 +525,26 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
             return summary
         try:
             async with _open_context(market) as trader:  # primary ctx, prices only (account-agnostic)
-                for ticker, rows in by_ticker.items():
-                    if len(rows) > 1:
-                        # Pyramided position -> leave to the batch's fractional logic.
-                        summary["pyramided_skipped"] += 1
-                        logger.info("[%s] %s pyramided (%d rows) -> skip (batch handles)",
-                                    market, ticker, len(rows))
-                        continue
-                    h = rows[0]
-                    try:
-                        buy_price = float(h.get("buy_price", 0) or 0)
-                    except (TypeError, ValueError):
-                        continue
-                    if buy_price <= 0:
+                for ticker, ticker_rows in by_ticker.items():
+                    row_scoped = len(ticker_rows) > 1
+                    positions = []
+                    for rows in group_rows_by_account(ticker_rows):
+                        if len(rows) > 1 and not pyramid_protectable(market, trader):
+                            # Pyramided position the loop cannot split now -> batch handles.
+                            summary["pyramided_skipped"] += 1
+                            logger.info("[%s] %s pyramided (%d rows) -> skip (batch handles)",
+                                        market, ticker, len(rows))
+                            continue
+                        valid = []
+                        for h in rows:
+                            try:
+                                if float(h.get("buy_price", 0) or 0) > 0:
+                                    valid.append(h)
+                            except (TypeError, ValueError):
+                                continue
+                        if valid:
+                            positions.append((rows, valid))
+                    if not positions:
                         continue
                     try:
                         info = await asyncio.to_thread(trader.get_current_price, ticker)
@@ -539,7 +554,6 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                         continue
                     if cur_price <= 0:
                         continue
-                    summary["checked"] += 1
 
                     # Compute LIVE regime once per market per cycle (lazy, best-effort).
                     if not regime["computed"]:
@@ -550,50 +564,59 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                         ma50_cache[ticker] = await asyncio.to_thread(_fetch_ma50, market, ticker)
                     ma_50 = ma50_cache[ticker]
 
-                    highest = holding_highest_price(h)
-                    inp = SellInputs(
-                        buy_price=buy_price,
-                        current_price=cur_price,
-                        stop_loss=float(h.get("stop_loss", 0) or 0),
-                        target_price=float(h.get("target_price", 0) or 0),
-                        highest_price=highest,
-                        market_condition=str(regime["value"] or ""),
-                        regime_is_live=bool(regime["value"]),
-                        ma_50=ma_50,
-                    )
-                    should_sell, reason = evaluate_oneil_sell(inp)
-                    had_signal = bool(should_sell) and _is_trend_exit_signal(reason)
+                    signals = []  # (all rows of the position, row, reason)
+                    for rows, valid in positions:
+                        for h in valid:
+                            summary["checked"] += 1
+                            inp = SellInputs(
+                                buy_price=float(h.get("buy_price", 0) or 0),
+                                current_price=cur_price,
+                                stop_loss=float(h.get("stop_loss", 0) or 0),
+                                target_price=float(h.get("target_price", 0) or 0),
+                                highest_price=holding_highest_price(h),
+                                market_condition=str(regime["value"] or ""),
+                                regime_is_live=bool(regime["value"]),
+                                ma_50=ma_50,
+                            )
+                            should_sell, reason = evaluate_oneil_sell(inp)
+                            if bool(should_sell) and _is_trend_exit_signal(reason):
+                                signals.append((rows, h, reason))
 
                     # Update the daily breach streak (increment once/day or reset).
-                    streak = update_breach_streak(conn, ticker, market, had_signal)
-                    if not had_signal:
+                    streak = update_breach_streak(conn, ticker, market, bool(signals))
+                    if not signals:
                         continue
                     summary["signaled"] += 1
 
-                    # Close-confirmation / consecutive-breach gate.
-                    # The close-window fast-path is DAMAGE CONTROL: "a breach still
-                    # standing at the closing bell is confirmed by the close — don't
-                    # carry a broken position overnight." A TIER3 target take-profit
-                    # is not damage control (the position is at a profit high), so it
-                    # is excluded from the fast-path and must earn the full N-day
-                    # confirmation. Without this, the close-window line (which runs
-                    # EVERY session) made CONFIRM_CHECKS dead for target take-profits
-                    # and liquidated winners same-day (2026-07-29 INCY, streak=0).
-                    is_target_take = reason.startswith("TIER3_TARGET")
-                    gate_open = (streak >= TREND_EXIT_CONFIRM_CHECKS) or (
-                        TREND_EXIT_CLOSE_WINDOW and not is_target_take)
-                    if not gate_open:
-                        summary["gated"] += 1
-                        logger.info("[%s] %s signal (%s) streak=%d < %d, close_window=%s, "
-                                    "target_take=%s -> gated",
-                                    market, ticker, reason, streak, TREND_EXIT_CONFIRM_CHECKS,
-                                    TREND_EXIT_CLOSE_WINDOW, is_target_take)
-                        continue
-                    summary["acted"] += 1
-                    h = dict(h)
-                    h["current_price"] = cur_price
-                    await _act_on_trigger(conn, market, ticker, h, reason, streak,
-                                          run_id, agent, summary)
+                    splits = {}
+                    for rows, h, reason in signals:
+                        # Close-confirmation / consecutive-breach gate.
+                        # The close-window fast-path is DAMAGE CONTROL: "a breach still
+                        # standing at the closing bell is confirmed by the close — don't
+                        # carry a broken position overnight." A TIER3 target take-profit
+                        # is not damage control (the position is at a profit high), so it
+                        # is excluded from the fast-path and must earn the full N-day
+                        # confirmation. Without this, the close-window line (which runs
+                        # EVERY session) made CONFIRM_CHECKS dead for target take-profits
+                        # and liquidated winners same-day (2026-07-29 INCY, streak=0).
+                        is_target_take = reason.startswith("TIER3_TARGET")
+                        gate_open = (streak >= TREND_EXIT_CONFIRM_CHECKS) or (
+                            TREND_EXIT_CLOSE_WINDOW and not is_target_take)
+                        if not gate_open:
+                            summary["gated"] += 1
+                            logger.info("[%s] %s signal (%s) streak=%d < %d, close_window=%s, "
+                                        "target_take=%s -> gated",
+                                        market, ticker, reason, streak, TREND_EXIT_CONFIRM_CHECKS,
+                                        TREND_EXIT_CLOSE_WINDOW, is_target_take)
+                            continue
+                        summary["acted"] += 1
+                        split = None
+                        if len(rows) > 1:
+                            split = splits.setdefault(id(rows), new_split_state(len(rows)))
+                        h = dict(h)
+                        h["current_price"] = cur_price
+                        await _act_on_trigger(conn, market, ticker, h, reason, streak,
+                                              run_id, agent, summary, split=split, row_scoped=row_scoped)
         except Exception as e:  # context/credential failure -> skip whole market safely
             logger.warning("%s trading context failed: %s", market, e)
     finally:
@@ -845,7 +868,12 @@ async def _act_on_pending_kr_trigger(
 
 async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, Any],
                           reason: str, streak: int, run_id: str, agent: Dict[str, Any],
-                          summary: Dict[str, Any]) -> None:
+                          summary: Dict[str, Any], split: Optional[Dict[str, Any]] = None,
+                          row_scoped: bool = False) -> None:
+    if split is not None or row_scoped:
+        # One lock/inflight token per closed row so later rows of the same ticker
+        # (pyramided or another account) can still be claimed in this run.
+        run_id = f"{run_id}:{stock_data.get('id')}"
     # Grace: 방금 산 포지션은 추세이탈 청산 제외(매수 배치 vs loop 청산 시간대 충돌로
     # 20초 만에 churn되던 것 방지). buy_date 기준 나이 < MIN_HOLD_MIN 이면 skip.
     if MIN_HOLD_MIN > 0:
@@ -900,6 +928,7 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
             logger.error("[%s] %s sell_stock (sim) failed -> aborting, no KIS order", market, ticker)
             release_lock(conn, ticker, market, run_id, new_state="HOLDING")
             return
+        sell_denominator = split["remaining"] if split is not None else 1
 
         if market == "US" and stock_data.get("_oneil_owned_exit") is True:
             # Ownership-specific cancellation/reconciliation belongs to the
@@ -924,6 +953,11 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
             async with _open_context(market, account_name=stock_data.get("account_name")) as seller:
                 live_qty = await asyncio.to_thread(seller.get_holding_quantity, ticker)
                 sold_qty = int(live_qty or 0)
+                if split is not None:
+                    from prism_core.loop_row_split import split_sell_quantity
+                    sold_qty = split_sell_quantity(split, sold_qty)
+                    logger.info("[%s] %s pyramided row sell: %d shares (snapshot %s, remaining rows=%d)",
+                                market, ticker, sold_qty, split["snapshot"], split["remaining"])
                 if sold_qty <= 0:
                     logger.info("[%s] %s already flat at KIS (qty=0); sim closed", market, ticker)
                 else:
@@ -977,6 +1011,8 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
             )
         except Exception as e:
             logger.error("[%s] %s KIS sell failed after sim close: %s", market, ticker, e)
+        if split is not None:
+            split["remaining"] -= 1  # this row is closed in the simulator
 
         # 3) flush the queued telegram message (instant notification).
         try:
@@ -996,6 +1032,7 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
                 buy_price=float(stock_data.get("buy_price", 0) or 0),
                 sell_reason=reason,
                 trade_result={"success": bool(ok or sold_qty == 0), "order_no": order_no},
+                sell_denominator=sell_denominator,
             )
         except Exception as e:
             logger.warning("[%s] %s sell signal publish failed (non-critical): %s", market, ticker, e)

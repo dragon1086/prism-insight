@@ -43,6 +43,8 @@ TRADING_DIR = PROJECT_ROOT / "trading"
 sys.path.insert(0, str(SCRIPT_DIR))  # examples/ folder (for translation_utils)
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from prism_core.slot_weight import weighted_profit_rate  # noqa: E402
+
 # yfinance import for market index data
 try:
     import yfinance as yf
@@ -1269,7 +1271,7 @@ class USDashboardDataGenerator:
         """
         Calculate daily Prism US simulator cumulative realized profit
 
-        - Calculate profit rate based on 10 slots (sum of profit_rate from sold stocks / 10)
+        - Calculate profit rate based on 10 slots (slot-fraction weighted sum of profit_rate from sold stocks / 10)
         - Return cumulative profit for each market trading day
         """
         if not market_data:
@@ -1292,8 +1294,8 @@ class USDashboardDataGenerator:
                 if ' ' in sell_date:
                     sell_date = sell_date.split(' ')[0]
 
-                profit_rate = trade.get('profit_rate', 0)
-                cumulative_profit += profit_rate
+                # Half-slot pilots / partial owned campaigns count by their slot fraction.
+                cumulative_profit += weighted_profit_rate(trade.get('profit_rate', 0), trade.get('scenario'))
                 cumulative_by_date[sell_date] = cumulative_profit
 
         # Generate Prism profit data for each market data date
