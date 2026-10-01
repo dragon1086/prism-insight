@@ -1314,7 +1314,7 @@ class USStockTrackingAgent:
                 from datetime import time as dt_time
                 from zoneinfo import ZoneInfo
                 from prism_core.volume_surge_facts import (
-                    compute_volume_surge_facts, render_volume_surge_facts,
+                    compute_volume_surge_facts, render_prev_day_volume_fact, render_volume_surge_facts,
                 )
                 _ny = "America/New_York"
                 _dates = [
@@ -1327,9 +1327,16 @@ class USStockTrackingAgent:
                     session_close=dt_time(16, 0),
                 )
                 lines.append(render_volume_surge_facts(_vf))
+                # Morning runs only: reference fact, signal 1 verdict unchanged (H3(c), 2026-10-01).
+                _mode = ((getattr(self, "trigger_info_map", {}) or {}).get(ticker) or {}).get("trigger_mode") \
+                    or getattr(self, "trigger_mode", "")
+                _prev_day_fact = render_prev_day_volume_fact(_vf) if _mode == "morning" else ""
+                if _prev_day_fact:
+                    lines.append(_prev_day_fact)
                 logger.info(
                     f"[VolumeFacts] {ticker} signal1={_vf['signal1']} "
-                    f"partial={(_vf['partial_session'] or {}).get('ratio')}"
+                    f"partial={(_vf['partial_session'] or {}).get('ratio')} "
+                    f"prev_day_fact={'shown' if _prev_day_fact else 'off'}"
                 )
             except Exception as _vfe:
                 logger.warning(f"[VolumeFacts] {ticker} failed, fail-open: {_vfe}")
