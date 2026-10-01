@@ -48,7 +48,22 @@ _PROTECTED = re.compile(r'(https?://[^\s<>]+|```[\s\S]*?```|\[exit-event: [^\]]+
 _PARTICLES = {'은': ('은', '는'), '는': ('은', '는'), '이': ('이', '가'), '가': ('이', '가'),
               '을': ('을', '를'), '를': ('을', '를'), '과': ('과', '와'), '와': ('과', '와'),
               '으로': ('으로', '로'), '로': ('으로', '로')}
-_RENDERED = sorted(set(_LABELS.values()) | {'필수 재무·사업 기준 4개', '하락 추세 차단 조건', '이동평균선'},
+_REGIMES = {'parabolic': '폭주 강세장', 'strong_bull': '강한 강세장', 'moderate_bull': '보통 강세장',
+            'sideways': '횡보장', 'moderate_bear': '보통 약세장', 'strong_bear': '강한 약세장'}
+_REGIME_CODE = re.compile(r'(?<![A-Za-z0-9_])(' + '|'.join(_REGIMES) + r')(?![A-Za-z0-9_])')
+# Score-adjustment reasons stay English at the source (observability parses them).
+_ADJUSTMENT_REASONS = (
+    (re.compile(r'Same stock (?:past|historical) (?:average|avg) (loss|profit) (-?[\d.]+%)'),
+     lambda m: f"같은 종목 과거 평균 {'손실' if m[1] == 'loss' else '수익'} {m[2]}"),
+    (re.compile(r'(\S+) sector (?:average|avg) (loss|profit) (-?[\d.]+%)'),
+     lambda m: f"{m[1]} 업종 과거 평균 {'손실' if m[2] == 'loss' else '수익'} {m[3]}"),
+    (re.compile(r"Trigger '([^']+)' actual trade win rate (low|high) (\d+%) \(n=(\d+)\)"),
+     lambda m: f"'{m[1]}' 트리거 실제 승률 {'낮음' if m[2] == 'low' else '높음'} {m[3]}(표본 {m[4]}건)"),
+    (re.compile(r'Recent stop-out ([\d.]+)h ago \((-?[\d.]+%)\) — churn guard'),
+     lambda m: f'최근 손절 {m[1]}시간 전({m[2]}) — 잦은 재진입 방지'),
+)
+_RENDERED = sorted(set(_LABELS.values()) | set(_REGIMES.values())
+                   | {'필수 재무·사업 기준 4개', '하락 추세 차단 조건', '이동평균선', '유효 점수', '손익비 하한'},
                    key=len, reverse=True)
 _LABEL_PARTICLE = re.compile(
     '(' + '|'.join(map(re.escape, _RENDERED)) + ')(으로|은|는|이|가|을|를|과|와|로)'
@@ -79,6 +94,10 @@ def _render_prose(text: str) -> str:
     text = re.sub(r'(\d{1,2}:\d{2}) 주입(?:된)? (?:자료|팩트|데이터)', r'\1 기준 자료', text)
     text = re.sub(r'주입(?:된)? (?:자료|팩트|데이터)', '제공된 자료', text)
     text = re.sub(r'당일 포함[·/ ]제외 계산', '당일 봉 포함 여부', text)
+    for pattern, render in _ADJUSTMENT_REASONS:
+        text = pattern.sub(render, text)
+    text = _REGIME_CODE.sub(lambda m: _REGIMES[m[1]], text)
+    text = text.replace('effective_score', '유효 점수').replace('R/R floor', '손익비 하한')
     text = text.replace('F1~F4', '필수 재무·사업 기준 4개').replace('F1–F4', '필수 재무·사업 기준 4개')
     text = text.replace('T1·T2', '하락 추세 차단 조건').replace('T1/T2', '하락 추세 차단 조건')
     text = re.sub(r'\bn=(\d+)\b', r'표본 \1건', text)

@@ -135,3 +135,22 @@ def test_prompt_plumbing_words_are_rendered_for_readers():
     assert "15:00 기준 자료의 거래량" in out and "당일 봉 포함 여부에 따라" in out and "제공된 자료를" in out
     from messaging.korean_trading_message import korean_rationale_style_contract
     assert "주입 자료" in korean_rationale_style_contract("ko")
+
+
+def test_hold_message_codes_render_in_korean():
+    # 2026-10-02 US afternoon LITE/MU hold messages.
+    raw = ("보류 사유: AI 판단: no_entry — effective_score 3점이 moderate_bull 최소 4점에 미달합니다. / 점수 부족 (2/4)\n"
+           "보류 사유: AI 판단: no_entry — R/R floor 미달: moderate_bull의 손익비 하한은 1.2입니다.\n"
+           "시장이 sideways는 아닙니다.\n"
+           "📊 경험 기반 점수조정: -1점 (Same stock past average loss -5.9%, Technology sector avg profit 2.1%, "
+           "Trigger 'Closing Strength Top' actual trade win rate low 30% (n=12), Recent stop-out 3.5h ago (-6.1%) — churn guard)")
+    out = render_korean_trading_message(raw)
+    for code in ("effective_score", "moderate_bull", "R/R floor", "sideways", "Same stock", "churn guard", "win rate"):
+        assert code not in out, (code, out)
+    assert "유효 점수 3점이 보통 강세장 최소 4점에 미달" in out
+    assert "손익비 하한 미달: 보통 강세장의 손익비 하한은 1.2" in out
+    assert "횡보장은" in out  # particle re-picked for the vowel-final label
+    assert "같은 종목 과거 평균 손실 -5.9%" in out and "Technology 업종 과거 평균 수익 2.1%" in out
+    assert "'Closing Strength Top' 트리거 실제 승률 낮음 30%(표본 12건)" in out
+    assert "최근 손절 3.5시간 전(-6.1%) — 잦은 재진입 방지" in out
+    assert "moderate_bullish" in render_korean_trading_message("moderate_bullish")  # whole codes only
