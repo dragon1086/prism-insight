@@ -898,11 +898,40 @@ def test_ledger_failure_after_broker_success_records_unknown(tmp_db, monkeypatch
 
 
 # ── Guards ─────────────────────────────────────────────────────────────────────
-def test_pyramided_ticker_is_skipped(tmp_db, monkeypatch):
-    _enable(monkeypatch, live=False, confirm=1, close_window=True)
-    _seed(tmp_db, [_row(1, "005930", 100.0), _row(2, "005930", 110.0)])  # 2 rows
+class RowAgent(FakeAgent):
+    async def sell_stock(self, stock_data, sell_reason, **kwargs):
+        self.calls.append(f"sim:{stock_data.get('ticker')}#{stock_data.get('id')}")
+        return True
+
+
+def test_pyramided_rows_are_protected_row_by_row(tmp_db, monkeypatch):
+    monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "false")
+    _enable(monkeypatch, live=True, confirm=1, close_window=True)
+    _seed(tmp_db, [_row(1, "005930", 100.0), _row(2, "005930", 101.0)])  # 2 rows
+    calls, published = [], []
+    trader = FakeTrader({"005930": 98.0}, holding_qty={"005930": 10}, calls=calls)
+    _patch(monkeypatch, trader, agent_holder=RowAgent(calls), ma50=105.0)
+
+    async def publish_loop_sell(**kwargs):
+        published.append(kwargs.get("sell_denominator"))
+
+    monkeypatch.setattr("sell_broadcast.publish_loop_sell", publish_loop_sell)
+
+    summary = asyncio.run(lb.run_market("KR", "run1"))
+
+    assert summary["pyramided_skipped"] == 0
+    assert summary["checked"] == 2 and summary["signaled"] == 1 and summary["sold"] == 2
+    assert [c for c in calls if c.startswith(("sim:", "kis:"))] == [
+        "sim:005930#1", "kis:005930:5", "sim:005930#2", "kis:005930:5"]
+    assert published == [2, 1]
+
+
+def test_pyramided_rows_stay_with_batch_under_pending_kr(tmp_db, monkeypatch):
+    monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "true")
+    _enable(monkeypatch, live=True, confirm=1, close_window=True)
+    _seed(tmp_db, [_row(1, "005930", 100.0), _row(2, "005930", 110.0)])
     calls = []
-    trader = FakeTrader({"005930": 80.0}, calls=calls)  # deep loss, but must skip
+    trader = FakeTrader({"005930": 80.0}, calls=calls)
     _patch(monkeypatch, trader, agent_holder=FakeAgent(calls), ma50=105.0)
 
     summary = asyncio.run(lb.run_market("KR", "run1"))

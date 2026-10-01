@@ -162,7 +162,8 @@ jobs:
           python -m pytest tests/test_stopout_reentry.py tests/test_reentry_shadow.py \
             tests/test_reentry_evidence_packet.py tests/test_decision_inputs.py \
             tests/test_decision_inputs_packet.py tests/test_replay_buy_decision_facts.py tests/test_pivot_reentry.py \
-            tests/test_position_peak.py tests/test_trend_exit_seller.py tests/test_reentry_v2_shadow.py -q
+            tests/test_position_peak.py tests/test_trend_exit_seller.py tests/test_reentry_v2_shadow.py \
+            tests/test_hardstop_seller.py tests/test_loop_publish.py -q
           python -m pytest prism-us/tests/test_trend_exit_seller_us.py -q
 
       - name: KIS-only provider and consumer boundary
