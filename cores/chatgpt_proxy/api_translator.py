@@ -104,8 +104,9 @@ def translate_request(body: dict) -> dict:
     translated["instructions"] = "\n\n".join(system_parts) if system_parts else "You are a helpful assistant."
     translated["input"] = _translate_messages_to_input(non_system)
 
-    # Parameter passthrough
-    for key in ("temperature", "top_p", "stop", "seed"):
+    # Parameter passthrough. temperature is dropped: the Codex backend rejects it
+    # ("Unsupported parameter: temperature", telegram bot 2026-10-01 15:33).
+    for key in ("top_p", "stop", "seed"):
         if key in body:
             translated[key] = body[key]
 
