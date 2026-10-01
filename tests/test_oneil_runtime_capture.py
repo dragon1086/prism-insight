@@ -113,7 +113,7 @@ def test_real_mechanical_loop_observes_only_after_protection(monkeypatch, enable
         yield SimpleNamespace(get_current_price=lambda ticker: {
             "current_price": 102 if ticker == "TEST" else 90})
     monkeypatch.setattr(loop, "_open_context", context)
-    async def action(*args):
+    async def action(*args, **_kwargs):
         events.append("protection")
         capture.capture_exit(position_id=f"legacy:US:{args[3]['id']}", price=90, source="exit")
         assert "exit" not in events
