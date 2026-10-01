@@ -132,7 +132,7 @@ jobs:
           python -m pytest tests/test_oneil_execution.py tests/test_oneil_dispatcher.py \
             tests/test_oneil_broker.py tests/test_oneil_routing.py tests/test_oneil_service.py \
             tests/test_oneil_config.py tests/test_oneil_owned_exit_guards.py \
-            tests/test_oneil_operational_cli.py -q
+            tests/test_oneil_operational_cli.py tests/test_slot_weighted_returns.py -q
           # Existing bootstrap creates only a fake example.com KIS config, removes it at exit.
           python -m pytest tests/test_multi_account_domestic.py \
             tests/test_astra_kr_safety.py tests/test_kr_buy_quote_validation.py \

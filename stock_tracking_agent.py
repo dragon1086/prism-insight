@@ -55,6 +55,7 @@ from prism_core.isolated_agent_runtime import (
     virtual_account_label, require_execution_runtime,
 )
 from prism_core.trading_scenario_contract import apply_buy_scenario_contract
+from prism_core.slot_weight import weighted_profit_sum
 from prism_core.sector_trading_criteria import buy_sector_block, f2_rule, sector_f2_mode, sector_profile_stamp
 from prism_core.isolated_strategy_effects import effects_for, EffectsFailure, observe_or_emit  # noqa: E402 - existing agent path bootstrap
 
@@ -4220,8 +4221,9 @@ class StockTrackingAgent:
             holdings = [dict(row) for row in self.cursor.fetchall()]
 
             # Calculate total profit from trading history
-            self.cursor.execute("SELECT SUM(profit_rate) FROM trading_history WHERE account_key = ?", (self._account_scope()[0],))
-            total_profit = self.cursor.fetchone()[0] or 0
+            # Half-slot pilots / partial owned campaigns count by the slot fraction they occupied.
+            self.cursor.execute("SELECT profit_rate, scenario FROM trading_history WHERE account_key = ?", (self._account_scope()[0],))
+            total_profit = weighted_profit_sum((row[0], row[1]) for row in self.cursor.fetchall())
 
             # Number of trades
             self.cursor.execute("SELECT COUNT(*) FROM trading_history WHERE account_key = ?", (self._account_scope()[0],))

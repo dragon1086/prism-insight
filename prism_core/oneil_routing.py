@@ -7,6 +7,7 @@ legacy full-size broker order. Strategy records remain independent of fills.
 import asyncio
 from copy import deepcopy
 from datetime import datetime, timezone
+from decimal import Decimal
 import json
 import os
 import time
@@ -338,6 +339,46 @@ def route_exit(agent, stock_data, reason):
         # An optional ownership lookup cannot suppress an unrelated legacy exit.
         # Every materialized owned row has the durable marker checked above.
         return False
+
+
+_UNSUBMITTED = frozenset({"NEVER_SUBMITTED_LOCAL_CAS", "PREFLIGHT_NOT_SUBMITTED"})
+
+
+def strategy_entry_from_orders(orders):
+    """Allocation-weighted strategy entry of an owned campaign.
+
+    Each submitted BUY step raises the target allocation at its reserved limit
+    price; like the legacy strategy row, the ledger is independent of broker
+    fills. Steps released before submission never happened. Returns
+    ``(entry_price, allocation)`` or None when no countable step exists.
+    """
+    steps = []
+    for order in orders or []:
+        intent = order.get("intent") or {}
+        if intent.get("side") != "BUY" or order.get("cancellation_basis") in _UNSUBMITTED:
+            continue
+        steps.append((order.get("reserved_at") or "", _num(order["target_allocation"], True),
+                      _num(intent["limit_price"], True)))
+    deployed, cost_units = Decimal(0), Decimal(0)
+    for _, target, price in sorted(steps, key=lambda step: step[0]):
+        if target <= deployed:
+            continue
+        cost_units += (target - deployed) / price
+        deployed = target
+    if not deployed or deployed > 1:
+        return None
+    return deployed / cost_units, deployed
+
+
+def owned_strategy_entry(scenario):
+    """Strategy entry/allocation for an owned row's exit record, or None."""
+    scenario = json.loads(scenario or "{}") if isinstance(scenario, str) else scenario
+    marker = (scenario or {}).get("_oneil_execution") if isinstance(scenario, dict) else None
+    if not marker:
+        return None
+    config = load(protection_only=True)
+    state = OneilExecution(config["live_db"], mode="LIVE").snapshot(marker["campaign_id"])
+    return strategy_entry_from_orders(state.get("orders"))
 
 
 def mark_owned_strategy_exit(stock_data):
