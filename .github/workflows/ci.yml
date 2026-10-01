@@ -132,7 +132,7 @@ jobs:
           python -m pytest tests/test_oneil_execution.py tests/test_oneil_dispatcher.py \
             tests/test_oneil_broker.py tests/test_oneil_routing.py tests/test_oneil_service.py \
             tests/test_oneil_config.py tests/test_oneil_owned_exit_guards.py \
-            tests/test_oneil_operational_cli.py -q
+            tests/test_oneil_operational_cli.py tests/test_slot_weighted_returns.py -q
           # Existing bootstrap creates only a fake example.com KIS config, removes it at exit.
           python -m pytest tests/test_multi_account_domestic.py \
             tests/test_astra_kr_safety.py tests/test_kr_buy_quote_validation.py \
@@ -162,7 +162,8 @@ jobs:
           python -m pytest tests/test_stopout_reentry.py tests/test_reentry_shadow.py \
             tests/test_reentry_evidence_packet.py tests/test_decision_inputs.py \
             tests/test_decision_inputs_packet.py tests/test_replay_buy_decision_facts.py tests/test_pivot_reentry.py \
-            tests/test_position_peak.py tests/test_trend_exit_seller.py tests/test_reentry_v2_shadow.py -q
+            tests/test_position_peak.py tests/test_trend_exit_seller.py tests/test_reentry_v2_shadow.py \
+            tests/test_hardstop_seller.py tests/test_loop_publish.py -q
           python -m pytest prism-us/tests/test_trend_exit_seller_us.py -q
 
       - name: KIS-only provider and consumer boundary

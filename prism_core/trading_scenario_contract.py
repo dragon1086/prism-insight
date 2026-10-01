@@ -28,8 +28,9 @@ _SELL_TRIGGERS_KO = (
     'sideways/moderate_bear/strong_bear에서는 기존 익절 규율을 적용합니다.'),
     ('추세 약화: 기존 종가·거래량·섹터/시장 조건에 따른 매도 에이전트의 규율을 적용합니다. '
     '매수 시나리오의 자유서술로 새로운 단독 매도 조건을 만들지 않습니다.'),
-    '하드 스탑: 종가 기준 stop_loss 이탈로 판단하며 장중 wick만으로 매도하지 않습니다.',
-    ('오닐 절대 손절: 종가 기준 매수가 대비 -7% 손실 기준과 기존 매도 에이전트의 '
+    ('하드 스탑: 장중 현재가가 stop_loss×0.995(0.5% 꼬리 버퍼) 이하가 되면 장중 하드스탑이 '
+    '즉시 전량 매도하며 종가 마감을 기다리지 않습니다.'),
+    ('오닐 절대 손절: 장중 현재가 기준 매수가 대비 -7% 손실 기준과 기존 매도 에이전트의 '
     '명시적인 우선순위·예외 규율을 적용합니다.'),
     '시간 점검: 보유 일수는 추세 점검 시점이지 독립적인 자동 매도 트리거가 아닙니다.',
 )
@@ -39,8 +40,9 @@ _SELL_TRIGGERS_EN = (
     'SELL agent trailing policy; otherwise use its existing profit-taking policy.'),
     ('Trend weakening follows the existing SELL closing-price, volume and '
     'sector/market rules. BUY free text cannot create a new standalone exit rule.'),
-    'Hard stop uses completed close below stop_loss, never an intraday wick alone.',
-    ('Apply the existing SELL absolute closing-loss -7% rule and its explicit '
+    ('Hard stop is intraday: a live price at or below stop_loss x 0.995 (0.5% wick '
+    'buffer) exits fully without waiting for the close.'),
+    ('Apply the existing SELL absolute live-price -7% loss rule and its explicit '
     'priority/exception contract, without deriving a new trailing percentage.'),
     'Holding time is a trend-review checkpoint, not an automatic exit trigger.',
 )

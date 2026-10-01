@@ -48,6 +48,7 @@ from prism_core.execution_service import (  # noqa: E402
     stance_declaration_count,
 )
 from prism_core.order_intents import OrderIntent  # noqa: E402
+from prism_core.slot_weight import weighted_profit_sum  # noqa: E402
 from prism_core.positions import (  # noqa: E402
     LegacyPositionWriteResult,
     PositionStore,
@@ -3360,6 +3361,21 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             sector = stock_data.get('sector', 'Unknown')
             account_key = stock_data.get("account_key") or self._account_scope()[0]
             account_name = stock_data.get("account_name") or self._account_scope()[1]
+            if stock_data.get("_oneil_owned_exit"):
+                # The owned row keeps the initial price; record the campaign's
+                # allocation-weighted entry and slot allocation instead.
+                try:
+                    from prism_core.oneil_routing import owned_strategy_entry
+                    owned_entry = owned_strategy_entry(scenario_json)
+                    if owned_entry is not None:
+                        entry_price, allocation = owned_entry
+                        saved = json.loads(scenario_json) if isinstance(scenario_json, str) else dict(scenario_json)
+                        saved["_oneil_execution"] = dict(saved["_oneil_execution"],
+                            strategy_entry_price=str(entry_price), strategy_allocation=str(allocation))
+                        buy_price = float(entry_price)
+                        scenario_json = json.dumps(saved, ensure_ascii=False)
+                except Exception as entry_error:  # never block a protective exit
+                    logger.warning("[ONEIL] strategy entry unavailable; recording initial row price: %s", entry_error)
 
             # ── Cross-cycle sell guard (single source of truth) ──────────────
             # EVERY sell path routes its real order + signal publish through
@@ -3951,8 +3967,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             holdings = [dict(row) for row in self.cursor.fetchall()]
 
             # Calculate total profit from trading history
-            self.cursor.execute("SELECT SUM(profit_rate) FROM us_trading_history WHERE account_key = ?", (self._account_scope()[0],))
-            total_profit = self.cursor.fetchone()[0] or 0
+            # Half-slot pilots / partial owned campaigns count by the slot fraction they occupied.
+            self.cursor.execute("SELECT profit_rate, scenario FROM us_trading_history WHERE account_key = ?", (self._account_scope()[0],))
+            total_profit = weighted_profit_sum((row[0], row[1]) for row in self.cursor.fetchall())
 
             # Number of trades
             self.cursor.execute("SELECT COUNT(*) FROM us_trading_history WHERE account_key = ?", (self._account_scope()[0],))

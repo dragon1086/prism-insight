@@ -69,9 +69,11 @@ def test_decision_rules_and_json_schema_are_byte_preserved(prompt):
     # 2026-09-29 reviewed: +1 line only (today's open-bar high is not a major resistance); JSON unchanged.
     # 2026-09-30 reviewed: tail hash only — the appended KR flow contract now says to repeat the
     # raw-share caveat only when a corporate action is flagged or unknown. Decision rules and JSON unchanged.
+    # 2026-10-01 reviewed: tail hash only — sell_triggers hard stop / -7% lines now describe the actual
+    # intraday hard stop (live price <= stop_loss x 0.995, no close wait). Decision rules unchanged.
     expected = {
-        "ko": ("9f17746b3d5907eeae5f8b7e390060cf587dc5721b95da47af291c6fd3aad2ed", "1c95edd8f67d4c93e0d0a79ffec851d8943d7fbbfa45ac20b15b2a78d5c7abbf"),
-        "en": ("6ff36200374211b6091826b708bbb2e00355310e009589fb8ffb9a96fea921e0", "f416a5232b88889f9185230aa274fcb02855096c3f590c320e101395a89c7a58"),
+        "ko": ("9f17746b3d5907eeae5f8b7e390060cf587dc5721b95da47af291c6fd3aad2ed", "96246810a487039fed91b8b44d68f1a8d9c99c3384f00a3a13400c9b7a45156e"),
+        "en": ("6ff36200374211b6091826b708bbb2e00355310e009589fb8ffb9a96fea921e0", "165a98f70fb92ff5d5c8d52577a7703172df08d1e37825866cebec7e4a4a2d56"),
     }
     assert hashlib.sha256(text.split(heading)[0].encode()).hexdigest() == expected[language][0]
     assert hashlib.sha256(text[text.index(json_heading):].encode()).hexdigest() == expected[language][1]
@@ -80,6 +82,8 @@ def test_decision_rules_and_json_schema_are_byte_preserved(prompt):
 def test_sell_factory_matches_reviewed_volume_prompt():
     # Intentional ko/en volume interpretation and KR completed-session guidance update.
     # 2026-09-28 reviewed: only appends the wording-only Korean rationale style rule.
+    # 2026-10-01 reviewed: Core-1 / tier-1 wording matches the executed intraday hard stop
+    # (stop_loss x 0.995, -7% on the live price); trailing stop stays closing-price based.
     source = SOURCE.read_text(encoding="utf-8")
     node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "create_sell_decision_agent")
-    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "3b07cc595f4066b4002c560bb7bb4bb4eb3625a07725c87084b7f38f0a990af2"
+    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "8793bcb5667adc0b78b1d135f58792919897e7a22feea2ec569c0929a488666e"

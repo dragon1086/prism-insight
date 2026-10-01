@@ -37,6 +37,8 @@ sys.path.insert(0, str(SCRIPT_DIR))  # Add examples/ folder for translation_util
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(TRADING_DIR))
 
+from prism_core.slot_weight import weighted_profit_rate  # noqa: E402
+
 # KIS market data import for market index data
 try:
     from cores.market_data import get_index_ohlcv_by_date
@@ -530,7 +532,7 @@ class DashboardDataGenerator:
         """
         날짜별 프리즘 시뮬레이터 누적 실현 수익률 계산
 
-        - 10개 슬롯 기준으로 수익률 계산 (매도된 종목의 profit_rate 합계 / 10)
+        - 10개 슬롯 기준으로 수익률 계산 (매도된 종목의 슬롯 비중 가중 profit_rate 합계 / 10)
         - 각 시장 거래일에 맞춰 해당일까지의 누적 수익률 반환
         """
         SEASON2_START_DATE = "2025-09-29"
@@ -552,8 +554,8 @@ class DashboardDataGenerator:
                 if ' ' in sell_date:
                     sell_date = sell_date.split(' ')[0]
 
-                profit_rate = trade.get('profit_rate', 0)
-                cumulative_profit += profit_rate
+                # Half-slot pilots / partial owned campaigns count by their slot fraction.
+                cumulative_profit += weighted_profit_rate(trade.get('profit_rate', 0), trade.get('scenario'))
                 cumulative_by_date[sell_date] = cumulative_profit
 
         # 시장 데이터의 각 날짜에 맞춰 프리즘 수익률 데이터 생성

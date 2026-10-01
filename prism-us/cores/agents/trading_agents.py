@@ -420,8 +420,8 @@ key_levels의 가격 필드 형식: `170` / `"170"` / `"170~180"` (범위는 중
         "sell_triggers": [
             "익절 마일스톤: 목표가·주요 저항선 도달은 1차 마일스톤이며 자동 매도 트리거가 아닙니다. parabolic/strong_bull/moderate_bull regime이면 즉시 매도 금지 — trailing stop으로 전환해 추세 지속 시 보유. sideways/moderate_bear/strong_bear regime에서만 도달 즉시 전량 매도",
             "추세 약화 (multi-condition AND): 종가 기준 ① 20일선 이탈 ② 거래량 평균 이상 동반 ③ 섹터/시장 동반 약세 — 이 중 2개 이상 동시 충족 시 전량 매도",
-            "하드 스탑: 종가 기준 stop_loss 이탈 시에만 전량 매도. 장중 wick(intraday low)으로 일시 이탈한 것은 매도 사유로 인정하지 않음",
-            "오닐 절대 룰: 종가 기준 -7% 이상 손실 도달 시 무조건 전량 매도",
+            "하드 스탑(장중): 현재가가 stop_loss×0.995(0.5% 꼬리 버퍼) 이하가 되면 장중 하드스탑이 즉시 전량 매도. 종가 마감을 기다리지 않으며, 버퍼 안의 일시 터치만으로는 매도하지 않음",
+            "오닐 절대 룰: 장중 현재가 기준 매수가 대비 -7% 이상 손실 도달 시 무조건 전량 매도",
             "시간 점검 (트리거 아님): 보유 N거래일 경과는 자동 매도 트리거가 아니라 추세 점검 시점일 뿐. 박스권 횡보가 종가·거래량 모두에서 명확히 확인될 때에만 매도 검토"
         ],
         "hold_conditions": [
@@ -807,8 +807,8 @@ Prohibited: `"$170"`, `"about $170"`, `"minimum 170"`.
         "sell_triggers": [
             "Take-profit milestone: hitting target / major resistance is a milestone, NOT an auto-sell trigger. In parabolic/strong_bull/moderate_bull regimes, switch to trailing stop and keep holding while trend persists. ONLY in sideways/moderate_bear/strong_bear regimes does target-hit trigger immediate full exit",
             "Trend weakness (multi-condition AND): on a closing-price basis, exit fully if 2 or more of these hold simultaneously — (1) close below 20d MA, (2) volume at or above average, (3) sector/market weakness in tandem",
-            "Hard stop (closing basis): exit fully ONLY when the closing price breaks stop_loss. An intraday wick that briefly pierces stop_loss is NOT a sell reason",
-            "O'Neil absolute rule: closing loss ≥ -7% triggers automatic full exit, no exceptions",
+            "Hard stop (intraday): the intraday hard stop exits fully as soon as the live price is at or below stop_loss × 0.995 (0.5% wick buffer). It does not wait for the close; a brief touch inside the buffer is NOT a sell reason",
+            "O'Neil absolute rule: a live-price loss of 7% or more from entry triggers automatic full exit, no exceptions",
             "Time review (NOT a trigger): N trading days elapsed is a trend-review checkpoint, not an auto-sell trigger. Only consider exit if both close and volume confirm clear range-bound drift"
         ],
         "hold_conditions": [
@@ -898,10 +898,10 @@ def create_us_sell_decision_agent(language: str = "ko"):
   공식 발표된 tender offer/going-private를 "최종 상폐일 미확정"을 이유로 미루지 말 것 — 이미 확정 사유다.
 - 이벤트가 없으면 아래 핵심-1~4의 기술적 판단을 정상 진행하십시오.
 
-**핵심-1) 종가 기준 (Closing-Price Rule):**
-- 모든 손절가·trailing stop 판단은 **종가(closing price)** 기준입니다.
-- 장중 저가가 stop_loss를 일시적으로 터치(intraday wick)한 것만으로는 절대 매도하지 마십시오.
-- 종가가 stop_loss 아래로 마감했을 때만 손절 발동합니다.
+**핵심-1) 손절은 장중, trailing stop은 종가 기준:**
+- 손절가(stop_loss)와 -7% 절대 손절은 **장중 현재가** 기준으로 자동 실행됩니다. 현재가가 stop_loss×0.995(0.5% 꼬리 버퍼) 이하이거나 매수가 대비 -7% 이하가 되면 장중 하드스탑이 즉시 전량 매도하며, 종가 마감을 기다리지 않습니다.
+- 버퍼 안(stop_loss와 stop_loss×0.995 사이)의 일시 터치만으로는 손절하지 않습니다.
+- trailing stop 판단은 **종가(closing price)** 기준입니다. 장중 저가가 trailing stop을 일시적으로 터치(intraday wick)한 것만으로는 매도하지 마십시오.
 - 실제 정규장·조기폐장 종료와 수집 자료의 완결성이 확인된 확정 종가만 사용하세요.
   마감 전 수집한 캐시와 마지막 1시간의 관측가격은 마감 후에도 당일 확정 종가가 아닙니다.
   당일 확정 관측이 없으면 최근 확인된 완료 세션을 사용하고 기준일을 명시하세요.
@@ -918,7 +918,7 @@ def create_us_sell_decision_agent(language: str = "ko"):
 - 이는 진입 직후 작은 변동으로 trailing stop이 진입가 아래로 내려가서 보호 기능을 잃는 현상을 방지합니다.
 
 **핵심-4) 매도 신호 우선순위 (single source of truth):**
-- 1단계: 절대 매도 (종가 기준 -7% 이상 손실 OR 종가 기준 stop_loss 이탈)
+- 1단계: 절대 매도 (장중 현재가 기준 -7% 이상 손실 OR 현재가 stop_loss×0.995 이하 — 장중 하드스탑이 자동 실행)
 - 2단계: trailing stop 종가 이탈 (활성화된 이후에만)
 - 3단계: 추세 종합 약화 (3거래일 연속 종가 하락 + 거래량 동반 + 20일선 종가 이탈, 3개 모두 충족)
 - 시간 조건은 매도 트리거가 아닙니다. 추세 점검 시점일 뿐이며, 매도 결정은 위 1~3단계에서만 발동합니다.
@@ -1124,10 +1124,10 @@ You are a professional analyst specializing in sell timing decisions for US stoc
   is unconfirmed" — that already qualifies as confirmed.
 - If no event, proceed normally with Core-1~4 technical judgement below.
 
-**Core-1) Closing-Price Rule:**
-- All stop_loss and trailing-stop judgements are based on the **closing price**.
-- An intraday low that briefly touches stop_loss (intraday wick) is NEVER a sell reason on its own.
-- Stop loss fires only when the closing price closes below stop_loss.
+**Core-1) Stop loss is intraday; trailing stop is closing-price based:**
+- stop_loss and the absolute -7% stop are executed automatically on the **live intraday price**: once the price is at or below stop_loss × 0.995 (0.5% wick buffer) or 7% or more below entry, the intraday hard stop exits fully without waiting for the close.
+- A brief touch inside the buffer (between stop_loss and stop_loss × 0.995) is not a stop-loss on its own.
+- Trailing-stop judgements are based on the **closing price**. An intraday low that briefly touches the trailing stop (intraday wick) is NEVER a sell reason on its own.
 - Use a confirmed close only after the actual regular/early close AND captured-data finality are verified.
   A price observed in the last hour or a cache captured before close is not today's confirmed close even when
   read after close. Otherwise use the latest verified completed session and state its date.
@@ -1145,7 +1145,7 @@ You are a professional analyst specializing in sell timing decisions for US stoc
 - This prevents post-entry noise from pushing the trailing stop below the entry price and losing its protective function.
 
 **Core-4) Sell-signal priority (single source of truth):**
-- Tier 1: Absolute sell (closing loss ≥ -7%, OR closing price breaks stop_loss).
+- Tier 1: Absolute sell (live-price loss ≥ -7%, OR live price at or below stop_loss × 0.995 — executed automatically by the intraday hard stop).
 - Tier 2: Trailing-stop closing breach (only if activated per Core-3).
 - Tier 3: Trend-weakness composite (3 consecutive daily-closing declines + above-average volume + close below 20d MA — ALL three required).
 - Time-based conditions are NOT sell triggers; they are trend-review checkpoints only. Sell decisions fire only via Tiers 1~3.

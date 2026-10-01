@@ -267,7 +267,8 @@ def test_us_live_sim_kis_telegram_order(tmp_db, monkeypatch):
     assert _inflight(tmp_db, "FILLED") == 1
 
 
-def test_us_pyramided_skipped(tmp_db, monkeypatch):
+def test_us_pyramided_skipped_when_market_closed(tmp_db, monkeypatch):
+    # A queued US order cannot carry a partial quantity -> the batch owns it.
     _enable(monkeypatch, live=False, confirm=1, close_window=True)
     _seed(tmp_db, [_row(1, "AAPL", 100.0), _row(2, "AAPL", 110.0)])
     calls = []
@@ -277,6 +278,23 @@ def test_us_pyramided_skipped(tmp_db, monkeypatch):
     summary = asyncio.run(lb.run_market(MKT, "run1"))
     assert summary["pyramided_skipped"] == 1 and summary["checked"] == 0
     assert calls == []
+
+
+def test_us_pyramided_rows_protected_while_market_open(tmp_db, monkeypatch):
+    _enable(monkeypatch, live=True, confirm=1, close_window=True)
+    _seed(tmp_db, [_row(1, "AAPL", 100.0), _row(2, "AAPL", 101.0)])
+    calls = []
+
+    class OpenTrader(FakeTrader):
+        def is_market_open(self):
+            return True
+
+    trader = OpenTrader({"AAPL": 98.0}, holding_qty={"AAPL": 9}, calls=calls)
+    _patch(monkeypatch, trader, agent_holder=FakeAgent(calls), ma50=105.0)
+
+    summary = asyncio.run(lb.run_market(MKT, "run1"))
+    assert summary["pyramided_skipped"] == 0 and summary["sold"] == 2
+    assert [c for c in calls if c.startswith("kis:")] == ["kis:AAPL:4", "kis:AAPL:5"]
 
 
 def test_us_inflight_guard(tmp_db, monkeypatch):
