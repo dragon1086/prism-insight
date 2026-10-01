@@ -140,6 +140,7 @@ RVOL = 2.0
 CHASE_PCT = 5.0            # O'Neil buy zone: up to 5% above the pivot (20-day high as a proxy)
 CHASE_ATR = 2.0
 EARNINGS_DAYS = 5
+PEER_MIN_VALID = 3
 
 
 def rubric_flags(features, peer=None, earnings=None):
@@ -152,7 +153,15 @@ def rubric_flags(features, peer=None, earnings=None):
     return {"volume_item_completed": None if completed is None else bool(completed >= RVOL),
             "chase_zone": None if high is None else bool(high > CHASE_PCT or (move_atr or 0) >= CHASE_ATR),
             "earnings_within_5d": None if days is None else bool(days <= EARNINGS_DAYS),
-            "peer_usable": peer.get("status") == "OK" and (peer.get("peer_count") or 0) >= 3}
+            # Per metric: valid (positive) peer values, not selected peers (2026-10-01 003160:
+            # 2 loss-making peers left a single PER behind a "3 peers" flag).
+            "peer_usable": _peer_metric_usable(peer, "per"),
+            "peer_usable_pbr": _peer_metric_usable(peer, "pbr")}
+
+
+def _peer_metric_usable(peer, field):
+    valid = peer.get("peer_valid_" + field)
+    return peer.get("status") == "OK" and isinstance(valid, int) and valid >= PEER_MIN_VALID
 
 
 def _yn(value, language):
@@ -177,6 +186,9 @@ def render_facts_block(result, peer=None, earnings=None, *, market, language="ko
     def _num(value, suffix="", digits=2):  # language-bound missing marker
         return _num_lang(value, suffix, digits, language)
 
+    def _count(value):
+        return str(value) if isinstance(value, int) else ("결측" if ko else "missing")
+
     asof = f.get("last_completed_date") or ("결측" if ko else "missing")
     lines = ["### 📐 보조 수치 팩트 (결정론적 계산 · decision_inputs_v1)" if ko
              else "### 📐 Supplementary numeric facts (deterministic · decision_inputs_v1)"]
@@ -198,14 +210,18 @@ def render_facts_block(result, peer=None, earnings=None, *, market, language="ko
     if peer.get("status") == "OK":
         lines.append(
             f"- 동종업계 밸류에이션(선정 비교기업 {peer.get('peer_count')}개, 재무 {peer.get('period')}, "
-            f"{peer.get('price_basis')} 기준): PER 중앙값 {_num(peer.get('peer_median_per'))}(본 종목 "
-            f"{_num(peer.get('target_per'))}, 할인 {_num(peer.get('per_discount_vs_median_pct'), '%')}), PBR 중앙값 "
-            f"{_num(peer.get('peer_median_pbr'))}(본 종목 {_num(peer.get('target_pbr'))}) → 업종 평균 대용 가능(비교군 3개 이상): "
-            f"{_yn(flags['peer_usable'], language)}" if ko else
+            f"{peer.get('price_basis')} 기준): PER 중앙값 {_num(peer.get('peer_median_per'))}(유효값 "
+            f"{_count(peer.get('peer_valid_per'))}개, 본 종목 {_num(peer.get('target_per'))}, 할인 "
+            f"{_num(peer.get('per_discount_vs_median_pct'), '%')}), PBR 중앙값 {_num(peer.get('peer_median_pbr'))}(유효값 "
+            f"{_count(peer.get('peer_valid_pbr'))}개, 본 종목 {_num(peer.get('target_pbr'))}) → 업종 평균 대용 가능"
+            f"(지표별 유효값 3개 이상): PER {_yn(flags['peer_usable'], language)} · PBR "
+            f"{_yn(flags['peer_usable_pbr'], language)}" if ko else
             f"- Peer valuation (selected {peer.get('peer_count')} peers, financials {peer.get('period')}): PER median "
-            f"{_num(peer.get('peer_median_per'))} (this {_num(peer.get('target_per'))}, discount "
-            f"{_num(peer.get('per_discount_vs_median_pct'), '%')}), PBR median {_num(peer.get('peer_median_pbr'))} "
-            f"→ usable as industry average (>=3 peers): {_yn(flags['peer_usable'], language)}")
+            f"{_num(peer.get('peer_median_per'))} ({_count(peer.get('peer_valid_per'))} valid, this "
+            f"{_num(peer.get('target_per'))}, discount {_num(peer.get('per_discount_vs_median_pct'), '%')}), PBR median "
+            f"{_num(peer.get('peer_median_pbr'))} ({_count(peer.get('peer_valid_pbr'))} valid) → usable as industry "
+            f"average (>=3 valid values per metric): PER {_yn(flags['peer_usable'], language)} · PBR "
+            f"{_yn(flags['peer_usable_pbr'], language)}")
     if market == "US":
         if (earnings or {}).get("status") == "OK":
             lines.append(f"- 다음 실적 발표 예정: {earnings['next_earnings_date']} (D-{earnings['calendar_days_to_earnings']}, 달력일, "
@@ -232,7 +248,8 @@ def prompt_contract(language="ko", market="KR"):
   진행 중인 당일 봉은 기존 기준대로 미확정으로 둡니다.
 - 4단계 'PER 30% 이상 저평가'와 미진입 단독 사유 2번(PER ≥ 업종 평균 2.5배): 보고서 2-1에 업종 평균이 없으면 블록의
   동종업계 중앙값을 업종 평균으로 씁니다. 비교군은 선정된 비교기업이며 업종 전체가 아님을 rationale에 밝히되, 자료 제공 업체명은 쓰지 마십시오.
-  '업종 평균 대용 가능: 아니오'면 참고만 하십시오.
+  '업종 평균 대용 가능'은 지표별(PER·PBR)로 판정합니다. 해당 지표가 '아니오'(유효값 3개 미만)면 그 중앙값은 참고만 하고
+  업종 평균으로 쓰지 마십시오.
 - 위치 수치는 기존 '추격 위험 검토'와 손절·목표 설정의 근거 수치입니다. 20일 고가는 오닐 피벗의 근사치이며,
   '예'만으로 미진입하지 말고 돌파 실패·가격 밀림 등 기존 추격 위험 조건과 함께 판단하십시오."""
         if us:
@@ -249,7 +266,8 @@ If an item is 'missing', judge from the report as before and never count the sam
   on completed sessions; the unfinished current bar stays unconfirmed as before.
 - Step 4 'PE discount >= 30%' and standalone No-Entry 2 (PE >= 2.5x industry average): when report 2-1 lacks an industry average,
   use the block's peer median and state in the rationale that it is a selected peer set, not the whole industry, without naming the data vendor.
-  If 'usable as industry average: no', use it for reference only.
+  Usability is judged per metric (PER, PBR). If a metric reads 'no' (fewer than 3 valid values), use that median
+  for reference only, never as the industry average.
 - Location figures support the existing chasing-risk assessment and stop/target placement. The 20-day high is only a proxy for
   the O'Neil pivot; do not reject on 'yes' alone, judge it together with the existing failed-breakout/price-retreat conditions."""
     if us:

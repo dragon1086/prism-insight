@@ -672,6 +672,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         )
 
                     reason = " / ".join(reason_parts) if reason_parts else "기타"
+                    from messaging.korean_trading_message import hold_reason_display
+                    display_reason = hold_reason_display(reason, scenario)
 
                     # Market condition info — translate regime label to Korean for display
                     market_condition_text = scenario.get("market_condition") or ""
@@ -690,7 +692,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     # decision line itself. The standalone "보류 사유" line several rows
                     # below is easy to miss, which made an Enter+hold look like a bug.
                     if decision == "Enter":
-                        decision_display = f"Enter (실제 보류 — 사유: {reason})"
+                        decision_display = f"Enter (실제 보류 — 사유: {display_reason})"
                     else:
                         decision_display = decision
 
@@ -701,7 +703,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                    f"결정: {decision_display}\n" \
                                    f"시장 상황: {market_condition_text}\n" \
                                    f"산업군: {scenario.get('sector', '알 수 없음')}\n" \
-                                   f"보류 사유: {reason}\n" \
+                                   f"보류 사유: {display_reason}\n" \
                                    f"분석 의견: {scenario.get('rationale', '정보 없음')}"
 
                     # Add trigger win rate

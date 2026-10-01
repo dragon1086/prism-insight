@@ -151,6 +151,7 @@ jobs:
         run: |
           python -m pytest tests/test_evidence_capture_repairs.py \
             tests/test_korean_trading_message.py tests/test_recent_strategy_exit_context.py \
+            tests/test_journal_translator_responses_llm.py \
             tests/test_company_evidence_contract.py \
             tests/test_micro_split_batch_linkage.py tests/test_telegram_delivery_safety.py \
             tests/test_telegram_delivery_diagnostics.py \

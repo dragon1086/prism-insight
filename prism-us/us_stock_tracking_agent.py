@@ -2314,13 +2314,14 @@ class USStockTrackingAgent:
                     break
 
             # Generate no-entry message (same format as Korean enhanced version)
+            from messaging.korean_trading_message import hold_reason_display
             skip_message = f"⚠️ 매수 보류: {company_name}({ticker})\n" \
                            f"현재가: ${current_price:,.2f}\n" \
                            f"매수 Score: {buy_score}/10\n" \
                            f"결정: Skip\n" \
                            f"시장 상황: {market_condition_display}\n" \
                            f"산업군: {sector}\n" \
-                           f"보류 사유: {skip_reason}\n" \
+                           f"보류 사유: {hold_reason_display(skip_reason, scenario)}\n" \
                            f"분석 의견: {rationale if rationale else '정보 없음'}"
 
             # Add trigger win rate
