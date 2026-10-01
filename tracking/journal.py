@@ -116,7 +116,11 @@ class JournalManager:
         try:
             from cores.agents.trading_journal_agent import create_trading_journal_agent
             from mcp_agent.workflows.llm.augmented_llm import RequestParams
-            from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
+
+            # Responses API (max_output_tokens), like the trading agents. Chat
+            # Completions sent max_tokens, which gpt-6 models reject with a 400
+            # that surfaced as an empty response (2026-10-01 RF 327260).
+            from cores.llm.openai_responses_llm import OpenAIResponsesLLM
 
             ticker = stock_data.get('ticker', '')
             company_name = stock_data.get('company_name', '')
@@ -164,12 +168,16 @@ class JournalManager:
                 response = result.text
             else:
                 async with journal_agent:
-                    llm = await journal_agent.attach_llm(OpenAIAugmentedLLM)
+                    llm = await journal_agent.attach_llm(OpenAIResponsesLLM)
                     response = await llm.generate_str(
                         message=prompt,
                         request_params=RequestParams(model="gpt-6-luna", reasoning_effort="none", maxTokens=16000)
                     )
-            logger.info(f"Journal agent response received: {len(response)} chars")
+            logger.info(f"Journal agent response received: {len(response or '')} chars")
+            if not (response or "").strip():
+                # Never persist a placeholder: retry_journal_entry.py can regenerate it.
+                logger.error(f"Journal agent returned an empty response for {ticker}; entry not saved")
+                return False
 
             # Parse and save
             journal_data = self._parse_response(response)

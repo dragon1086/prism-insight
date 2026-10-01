@@ -128,8 +128,12 @@ async def translate_telegram_message(
     Returns:
         str: Translated message
     """
-    from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
     from mcp_agent.workflows.llm.augmented_llm import RequestParams
+
+    # Responses API, like the trading agents: Chat Completions sent max_tokens,
+    # which gpt-6 models reject (400) and mcp_agent turned into an empty
+    # string that went out as an empty broadcast message (2026-10-01).
+    from cores.llm.openai_responses_llm import OpenAIResponsesLLM
 
     try:
         # Sanitize: strip control characters that break JSON serialization
@@ -141,7 +145,7 @@ async def translate_telegram_message(
         translator = create_telegram_translator_agent(from_lang=from_lang, to_lang=to_lang)
 
         # Attach LLM to the agent
-        llm = await translator.attach_llm(OpenAIAugmentedLLM)
+        llm = await translator.attach_llm(OpenAIResponsesLLM)
 
         # Generate translation
         translated = await llm.generate_str(
@@ -155,7 +159,10 @@ async def translate_telegram_message(
             )
         )
 
-        return translated.strip()
+        translated = (translated or "").strip()
+        if not translated:
+            raise ValueError("empty translation")
+        return translated
 
     except Exception as e:
         import logging

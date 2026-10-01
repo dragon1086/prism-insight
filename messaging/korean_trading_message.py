@@ -75,6 +75,10 @@ def _render_prose(text: str) -> str:
     text = re.sub(r'(?<=AI 판단: )Enter\b', '매수 판단', text)
     text = re.sub(r'(?<=결정: )(?:Skip|No Entry|no_entry)\b', '미진입', text)
     text = re.sub(r'(?<=AI 판단: )(?:Skip|No Entry|no_entry)\b', '미진입', text)
+    # Prompt-plumbing words the model sometimes echoes (2026-10-01 036810 hold message).
+    text = re.sub(r'(\d{1,2}:\d{2}) 주입(?:된)? (?:자료|팩트|데이터)', r'\1 기준 자료', text)
+    text = re.sub(r'주입(?:된)? (?:자료|팩트|데이터)', '제공된 자료', text)
+    text = re.sub(r'당일 포함[·/ ]제외 계산', '당일 봉 포함 여부', text)
     text = text.replace('F1~F4', '필수 재무·사업 기준 4개').replace('F1–F4', '필수 재무·사업 기준 4개')
     text = text.replace('T1·T2', '하락 추세 차단 조건').replace('T1/T2', '하락 추세 차단 조건')
     text = re.sub(r'\bn=(\d+)\b', r'표본 \1건', text)
@@ -103,6 +107,44 @@ def korean_rationale_style_contract(language="ko"):
 - rationale·sell_reason·조정 reason은 사람이 읽는 한국어 합쇼체 문장으로 쓰십시오.
 - 입력의 내부 코드·변수명·상태값(예: F1~F4, T1·T2, BAR_FINALITY_UNKNOWN, NOT_IN_INPUT, MCP, KIS, OHLCV)을
   그대로 옮기지 말고 '수익성 기준', '하락 추세 차단 조건', '마감 확정 전 가격', '시세 조회'처럼 풀어 쓰십시오.
+- 입력이 전달된 방식('주입 자료', '주입된 팩트', '블록')이나 계산 내부 사정('당일 포함·제외 계산')을 쓰지 말고
+  '15:00 기준 장중 누적 거래량', '당일 봉을 포함하는지에 따라'처럼 독자가 이해할 사실로 쓰십시오.
 - 조사는 바로 앞 단어의 받침에 맞추십시오(예: 기준은·조건이·이동평균선을·비율로).
 - 이 규칙은 표현만 정하며 수치·점수·매매 판단을 바꾸지 않습니다.
 """
+
+
+_US_REASON_LABELS = (
+    ('AI judgment:', 'AI 판단:'),
+    ('Insufficient score', '점수 부족'),
+    ('Sector concentration', '섹터 집중'),
+    ('Deterministic gate:', '결정론적 게이트:'),
+    ('Recent risk-exit re-entry cooldown', '최근 손절 후 재진입 대기'),
+)
+_AI_PART = re.compile(r'(AI 판단: [^/]+?)(\s*/|$)')
+
+
+def _first_sentence(text, limit):
+    text = re.sub(r'\s+', ' ', str(text or '')).strip()
+    match = re.search(r'(?<=[.!?。])\s', text)
+    if match and match.start() <= limit:
+        text = text[:match.start()]
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + '…'
+
+
+def hold_reason_display(reason, scenario=None, limit=100):
+    """'보류 사유' line for a Korean hold message; the stored skip_reason is unchanged.
+
+    The AI's own rejection_reason (its actual blocking rule) is shown next to the
+    'AI 판단' part instead of only the decision label and score.
+    """
+    text = str(reason or '기타')
+    for english, korean in _US_REASON_LABELS:
+        text = text.replace(english, korean)
+    rejection = (scenario or {}).get('rejection_reason') if isinstance(scenario, dict) else None
+    short = _first_sentence(rejection, limit) if isinstance(rejection, str) else ''
+    if not short:
+        return text
+    if _AI_PART.search(text):
+        return _AI_PART.sub(lambda m: f'{m[1].rstrip()} — {short}{m[2]}', text, count=1)
+    return f'{text} / AI 차단 사유: {short}'

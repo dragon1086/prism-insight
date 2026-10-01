@@ -145,10 +145,28 @@ def test_peer_and_earnings_lines_and_missing_wording():
     peer = {"status": "OK", "peer_count": 2, "period": "2025/12", "price_basis": "전일종가", "peer_median_per": 10,
             "target_per": 6, "per_discount_vs_median_pct": 40, "peer_median_pbr": 1, "target_pbr": 0.8}
     block, flags = F.render_facts_block({"features": {}}, peer, {"status": "MISSING"}, market="US", language="ko")
-    assert flags["peer_usable"] is False and "업종 평균 대용 가능(비교군 3개 이상): 아니오" in block
+    assert flags["peer_usable"] is False and "업종 평균 대용 가능(지표별 유효값 3개 이상): PER 아니오 · PBR 아니오" in block
     assert "일정이 없다는 뜻이 아닙니다" in block
     block_kr, _ = F.render_facts_block({"features": {}}, None, None, market="KR", language="en")
     assert "earnings" not in block_kr.lower() and "missing" in block_kr
+
+
+def test_peer_usability_counts_valid_values_per_metric():
+    # 2026-10-01 003160: 3 selected peers, 2 loss-making -> one PER left (11.74).
+    packet = {"ready": True, "period": "2025/12", "price_basis": "전일종가", "peers": [
+        {"per": 40.0, "pbr": 3.0},                    # target
+        {"per": 11.74, "pbr": 1.5}, {"per": -8.0, "pbr": 1.1}, {"per": None, "pbr": 2.2}]}
+    summary = D.peer_valuation_summary(packet)
+    assert summary["peer_count"] == 3 and summary["peer_valid_per"] == 1 and summary["peer_valid_pbr"] == 3
+    block, flags = F.render_facts_block({"features": {}}, summary, None, market="KR", language="ko")
+    assert flags["peer_usable"] is False and flags["peer_usable_pbr"] is True
+    assert "PER 중앙값 11.74(유효값 1개" in block and "PER 아니오 · PBR 예" in block
+    block_en, _ = F.render_facts_block({"features": {}}, summary, None, market="KR", language="en")
+    assert "(1 valid," in block_en and "PER no · PBR yes" in block_en
+
+    full = dict(packet, peers=packet["peers"][:2] + [{"per": 9.0, "pbr": 1.0}, {"per": 14.0, "pbr": 2.0}])
+    assert F.rubric_flags({}, D.peer_valuation_summary(full))["peer_usable"] is True
+    assert F.rubric_flags({}, {"status": "OK", "peer_count": 5})["peer_usable"] is False  # count unknown
 
 
 def test_prompt_facts_is_fail_open_and_caches_what_prompt_saw(monkeypatch):

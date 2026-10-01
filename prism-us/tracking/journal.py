@@ -134,7 +134,12 @@ class USJournalManager:
             )
             create_trading_journal_agent = _journal_module.create_trading_journal_agent
             from mcp_agent.workflows.llm.augmented_llm import RequestParams
-            from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
+
+            # Responses API (max_output_tokens), like the trading agents. Chat
+            # Completions sent max_tokens, which gpt-6 models reject with a 400.
+            OpenAIResponsesLLM = _import_from_main_cores(
+                "openai_responses_llm", "cores/llm/openai_responses_llm.py"
+            ).OpenAIResponsesLLM
 
             ticker = stock_data.get('ticker', '')
             company_name = stock_data.get('company_name', '')
@@ -156,7 +161,7 @@ class USJournalManager:
             journal_agent = create_trading_journal_agent(self.language, market="US")
 
             async with journal_agent:
-                llm = await journal_agent.attach_llm(OpenAIAugmentedLLM)
+                llm = await journal_agent.attach_llm(OpenAIResponsesLLM)
 
                 prompt = self._build_analysis_prompt(
                     company_name, ticker, buy_price, buy_date,
@@ -167,7 +172,11 @@ class USJournalManager:
                     message=prompt,
                     request_params=RequestParams(model="gpt-6-luna", reasoning_effort="none", maxTokens=16000)
                 )
-                logger.info(f"US Journal agent response received: {len(response)} chars")
+                logger.info(f"US Journal agent response received: {len(response or '')} chars")
+            if not (response or "").strip():
+                # Never persist a placeholder entry for an empty response.
+                logger.error(f"US Journal agent returned an empty response for {ticker}; entry not saved")
+                return False
 
             # Parse and save
             journal_data = self._parse_response(response)
