@@ -94,7 +94,6 @@ def test_valid_plan_keeps_scenarios_and_a_stable_hash():
     (_scenario(target=0.45), "TARGET_NOT_ABOVE_ALLOCATION"),
     (_scenario(target=1.05), "INVALID_TARGET"),
     (_scenario(kind="moonshot"), "UNKNOWN_TYPE"),
-    (_scenario(lens=("soros",)), "UNKNOWN_LENS"),
     (_scenario(zone_low=9800, zone_high=9900), "ZONE_INCOMPLETE"),
     (_scenario(zone_low=9900, zone_high=9800, reclaim_above=10000), "ZONE_ORDER"),
     (_scenario(volume_pace_min=2), "NO_TRIGGER_LEVEL"),
@@ -453,3 +452,13 @@ def test_close_phase_runs_once_per_session(live_worker):
     first = _plan_rows(worker.once())
     assert [r["phase"] for r in first] == ["CLOSE"] and first[0]["reason"] == "NO_SCENARIO_QUALIFIED"
     assert _plan_rows(worker.once()) == []  # once per session
+
+
+def test_lens_labels_are_normalized_and_never_drop_a_scenario():
+    # 2026-10-02 production e2e: "druck enmiller" dropped an executable scenario.
+    plan, issues = _plan(_scenario(lens=("oneil", "druck enmiller", "Quant-Risk", "soros")),
+                         _scenario("accel_1", "acceleration", 0.65, gap_up_min_pct=3))
+    assert issues == [] and [s["id"] for s in plan["scenarios"]] == ["breakout_1", "accel_1"]
+    assert plan["scenarios"][0]["lens"] == ["oneil", "druckenmiller", "quant_risk"]
+    plan, _ = _plan(_scenario(lens=("soros",)), _scenario("accel_1", "acceleration", 0.65, gap_up_min_pct=3))
+    assert plan["scenarios"][0]["lens"] == []

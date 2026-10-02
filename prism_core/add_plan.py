@@ -42,6 +42,7 @@ MIN_PACE_SAMPLES = 10
 SESSIONS = {"KR": (ZoneInfo("Asia/Seoul"), time(9, 0), time(15, 30), time(12, 0)),
             "US": (ZoneInfo("America/New_York"), time(9, 30), time(16, 0), time(9, 30))}
 _ID = re.compile(r"[A-Za-z0-9_-]{1,40}")
+_LENS_ALIASES = {"quantrisk": "quant_risk", "oneill": "oneil", "o'neil": "oneil"}
 TYPE_LABELS = {"breakout": ("돌파", "breakout"), "pullback_reclaim": ("눌림 회복", "pullback reclaim"),
                "new_closing_high": ("종가 신고가", "new closing high"), "acceleration": ("가속", "acceleration")}
 
@@ -152,8 +153,13 @@ def _validate_scenario(raw, allocation, last_step):
         return _drop("UNKNOWN_TYPE", sid)
     lens = raw.get("lens")
     lens = [lens] if isinstance(lens, str) else lens
-    if not isinstance(lens, list) or not lens or any(item not in LENSES for item in lens):
-        return _drop("UNKNOWN_LENS", sid)
+    if not isinstance(lens, list):
+        lens = []
+    # Lens is an explanation label, never a condition: normalize spelling ("druck enmiller",
+    # "Quant-Risk") and drop unknown labels instead of the executable scenario (2026-10-02 e2e).
+    lens = list(dict.fromkeys(
+        _LENS_ALIASES.get(key, key) for key in (re.sub(r"[\s_\-]", "", str(item)).lower() for item in lens)
+        if _LENS_ALIASES.get(key, key) in LENSES))
     trigger = raw.get("trigger")
     if not isinstance(trigger, dict) or not trigger:
         return _drop("TRIGGER_MISSING", sid)
