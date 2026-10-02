@@ -216,12 +216,23 @@ def _extract_json_string(response: str) -> Optional[str]:
     if markdown_match:
         return markdown_match.group(1)
 
-    # Strategy 2: JSON object with nested braces support
+    # Strategy 2: a complete JSON object from the first '{' at any nesting depth
+    # (the regex below only balances three levels, e.g. scenario -> add_plan -> scenarios -> trigger is four).
+    start = response.find('{')
+    if start >= 0:
+        try:
+            value, end = json.JSONDecoder().raw_decode(response, start)
+            if isinstance(value, dict):
+                return response[start:end]
+        except ValueError:
+            pass
+
+    # Strategy 3: JSON object with nested braces support
     json_match = re.search(r'(\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\})', response, re.DOTALL)
     if json_match:
         return json_match.group(1)
 
-    # Strategy 3: Full response is JSON
+    # Strategy 4: Full response is JSON
     clean = response.strip()
     if clean.startswith('{') and clean.endswith('}'):
         return clean

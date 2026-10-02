@@ -198,7 +198,8 @@ def test_worker_stamps_the_decision_after_the_market_snapshot(env, restore_gates
     assert store.snapshot(state["campaign_id"])["legs"][-1]["kind"] == "ADD"
 
 
-def test_worker_routes_live_campaign_adds_to_the_live_executor(env, restore_gates, monkeypatch):
+def test_fixed_ladder_never_orders_for_live_campaigns(env, restore_gates, monkeypatch):
+    # 2026-10-02: the +2%/+4% ladder stays a virtual (SHADOW) ledger; LIVE adds come from add_plan only.
     _, db = env
     monkeypatch.setenv("MICRO_SPLIT_LIVE_ENABLED", "true")
     state = capture.capture_entry(_agent(), market="KR", ticker="005930", account_key="acc",
@@ -213,6 +214,5 @@ def test_worker_routes_live_campaign_adds_to_the_live_executor(env, restore_gate
         status="EXECUTED", allocation=0.8, cash=1, broker={"success": True})
     result = worker.once()
     assert result["rows"][0]["status"] == "ADD" and result["rows"][0]["mode"] == "LIVE"
-    assert result["rows"][0]["live"]["status"] == "EXECUTED" and result["orders_submitted"] == 1
-    campaign, decision = calls[0]
-    assert campaign["campaign_id"] == state["campaign_id"] and decision["bar_end"]
+    assert "live" not in result["rows"][0] and result["orders_submitted"] == 0 and calls == []
+    assert store.snapshot(state["campaign_id"])["legs"][-1]["kind"] == "ADD"  # virtual leg only

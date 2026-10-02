@@ -25,13 +25,14 @@ def live_enabled(market):
     return flag and str(market).upper() in markets
 
 
-def adds_enabled(market):
-    """Fixed-ladder LIVE adds (+2%/+4%); paused by default since 2026-10-02.
+def plan_adds_enabled(market):
+    """Scenario-based (add_plan) LIVE adds; on with micro-split LIVE.
 
-    The user judged the intraday ladder too hasty for an O'Neil-style hold; adds
-    wait for the scenario-based add plan. The fractional first entry stays LIVE.
+    ``MICRO_SPLIT_LIVE_ADDS_ENABLED=false`` is the emergency kill switch for adds
+    only (the fractional first entry stays LIVE). The fixed +2%/+4% ladder never
+    places LIVE orders since 2026-10-02 (docs/micro-split/ADD_SCENARIOS_DESIGN_ko.md).
     """
-    flag = os.getenv("MICRO_SPLIT_LIVE_ADDS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    flag = os.getenv("MICRO_SPLIT_LIVE_ADDS_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
     return flag and live_enabled(market)
 
 
@@ -84,8 +85,11 @@ def weighted_entry(legs):
     return total / units
 
 
-def apply_add(scenario, *, delta, price, at, bar_end, intent_id=None):
-    """Return (new_scenario, new_buy_price) after an in-slot add; never above one slot."""
+def apply_add(scenario, *, delta, price, at, bar_end, intent_id=None, extra=None):
+    """Return (new_scenario, new_buy_price) after an in-slot add; never above one slot.
+
+    ``extra`` (scenario id, lens, plan hash, session) is recorded on the add leg.
+    """
     updated = deepcopy(scenario)
     block = record(updated)
     if block is None:
@@ -95,8 +99,8 @@ def apply_add(scenario, *, delta, price, at, bar_end, intent_id=None):
         raise ValueError("add would exceed one slot")
     if any(leg.get("bar_end") == bar_end for leg in block["legs"]):
         raise ValueError("bar already used for an add")
-    block["legs"].append({"kind": "ADD", "allocation": str(_dec(delta)), "price": str(_dec(price)), "at": at,
-                          "bar_end": bar_end, "intent_id": intent_id})
+    block["legs"].append(dict(extra or {}, kind="ADD", allocation=str(_dec(delta)), price=str(_dec(price)), at=at,
+                              bar_end=bar_end, intent_id=intent_id))
     block["allocation"] = str(target)
     return updated, float(weighted_entry(block["legs"]))
 
@@ -129,6 +133,7 @@ def prepare_entry(agent, *, market, ticker, current_price, scenario, decision_re
         updated = dict(scenario)
         updated[SCENARIO_KEY] = entry_record(plan=plan, unit_amount=unit, market=market,
                                              entered_at=plan["created_at"])
+        attach_buy_add_plan(updated, market=market, ticker=ticker, raw=updated.pop("add_plan", None), logger=logger)
         if logger:
             logger.warning("[MICRO_SPLIT][%s] %s initial=%s cash=%s", market, ticker, plan["initial_nominal"], cash)
         return plan, cash, updated
@@ -138,26 +143,166 @@ def prepare_entry(agent, *, market, ticker, current_price, scenario, decision_re
         return None, None, scenario
 
 
+def attach_buy_add_plan(scenario, *, market, ticker, raw, logger=None):
+    """Validate the BUY agent's ``add_plan`` and store it on the new micro_split block (in place).
+
+    An invalid or missing plan leaves the position without adds until the next
+    holdings review provides one.
+    """
+    from prism_core import add_plan
+
+    block = scenario[SCENARIO_KEY]
+    created = block["legs"][0]["at"]
+    if raw is None:
+        plan, issues = None, [{"id": None, "reason": "PLAN_MISSING"}]
+    else:
+        plan, issues = add_plan.validate_plan(
+            raw, market=market, source="BUY", created_at=created, valid_for=add_plan.buy_valid_for(market, created),
+            allocation=block["allocation"], last_step=block["allocation"])
+    add_plan.store(block, plan, issues, raw=raw, source="BUY", created_at=created)
+    _emit_planned(market=market, ticker=ticker, position_id=None, block=block, plan=plan, issues=issues)
+    if logger:
+        logger.warning("[MICRO_SPLIT][%s] %s add_plan source=BUY status=%s scenarios=%s dropped=%s", market, ticker,
+                       (plan or {}).get("status", "INVALID"), [s["id"] for s in (plan or {}).get("scenarios", [])],
+                       [i["reason"] for i in issues])
+    return plan
+
+
+def _emit_planned(*, market, ticker, position_id, block, plan, issues):
+    try:
+        from observability.events import emit_event
+        scenarios = (plan or {}).get("scenarios", [])
+        emit_event("micro_split.add_planned", service=f"prism-{str(market).lower()}-micro-split",
+                   market=str(market).upper(), ticker=ticker, position_id=position_id,
+                   attributes={"slot_allocation": float(block["allocation"]), "plan_hash": (plan or {}).get("plan_hash"),
+                               "plan_status": (plan or {}).get("status", "INVALID"),
+                               "plan_source": (plan or {}).get("source"), "valid_for": (plan or {}).get("valid_for"),
+                               "scenario_ids": [s["id"] for s in scenarios],
+                               "lens": sorted({x for s in scenarios for x in s["lens"]}),
+                               "dropped": [i["reason"] for i in issues]})
+    except Exception as error:  # noqa: BLE001 - observability never affects trading
+        import logging
+        logging.getLogger(__name__).warning("[MICRO_SPLIT][%s] add_planned event skipped: %s", market, error)
+
+
 def entry_message_line(scenario, market):
-    """Buy-message line for a micro-split entry, or ''."""
+    """Buy-message line for a micro-split entry (allocation and the add scenarios), or ''."""
+    from prism_core import add_plan
+
     block = record(scenario)
     if block is None:
         return ""
+    us = str(market).upper() == "US"
     pct = round(float(block["allocation"]) * 100)
-    if not adds_enabled(market):
-        if str(market).upper() == "US":
-            return (f"Micro-split allocation: {pct}% of one slot — adds are paused until scenario-based add plans "
-                    "go live; a stop exits the whole position. Whole shares are rounded down.\n")
-        return (f"초분할 비중: {pct}% (1슬롯 기준) — 추가 매수는 증액 시나리오 도입 전까지 멈춰 있고, 손절 시 "
-                "전량 매도합니다. 정수 수량 내림으로 실제 체결 비중은 조금 낮을 수 있습니다.\n")
-    two_steps = float(block["allocation"]) < 0.8  # an initial 80% has only the +4% -> 100% step left
-    if str(market).upper() == "US":
-        ladder = "adds to 80%/100% only after +2%/+4%" if two_steps else "adds to 100% only after +4%"
-        return (f"Micro-split allocation: {pct}% of one slot — {ladder} above entry is confirmed; "
-                "a stop exits the whole position. Whole shares are rounded down.\n")
-    ladder = "+2%·+4% 상승이 확인되면 80%·100%까지" if two_steps else "+4% 상승이 확인되면 100%까지"
-    return (f"초분할 비중: {pct}% (1슬롯 기준) — 진입가 대비 {ladder} "
-            "추가 매수하고, 손절 시 전량 매도합니다. 정수 수량 내림으로 실제 체결 비중은 조금 낮을 수 있습니다.\n")
+    plan = block.get("add_plan") or {}
+    labels = [add_plan.scenario_label(s, market, "en" if us else "ko") for s in plan.get("scenarios") or []]
+    if not plan_adds_enabled(market):
+        adds = "adds are currently paused" if us else "추가 매수는 현재 멈춰 있고"
+    elif labels:
+        adds = (f"add scenarios: {'; '.join(labels)} (adds only when a scenario is confirmed)" if us
+                else f"증액 시나리오: {'; '.join(labels)} (조건이 확인될 때만 증액하며)")
+    else:
+        adds = ("no add scenario yet; the next holdings review sets one" if us
+                else "증액 시나리오는 다음 보유 점검에서 세우며")
+    if us:
+        return (f"Micro-split allocation: {pct}% of one slot — {adds}; a stop exits the whole position. "
+                "Whole shares are rounded down.\n")
+    return (f"초분할 비중: {pct}% (1슬롯 기준) — {adds}, 손절 시 전량 매도합니다. "
+            "정수 수량 내림으로 실제 체결 비중은 조금 낮을 수 있습니다.\n")
+
+
+def _utc_now():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+def review_prompt_block(scenario, *, market, language, now=None, stop_loss=None):
+    """Holdings-review appendix for a micro-split holding while LIVE is on, else ''."""
+    if not live_enabled(market):
+        return ""
+    try:
+        loaded = json.loads(scenario or "{}") if isinstance(scenario, str) else scenario
+        block = record(loaded)
+        if block is None:
+            return ""
+        from prism_core import add_plan, add_plan_prompts
+        return add_plan_prompts.review_block(block, market=market, language=language,
+                                             valid_for=add_plan.review_valid_for(market, now or _utc_now()),
+                                             stop_loss=stop_loss)
+    except Exception:  # noqa: BLE001 - a broken record never breaks the sell review
+        return ""
+
+
+def add_plan_buy_block(agent, *, market, ticker, language):
+    """BUY appendix asking for add_plan while micro-split LIVE is on, else ''."""
+    if not live_enabled(market):
+        return ""
+    from prism_core import add_plan_prompts
+    return add_plan_prompts.buy_block(market, language, expected_initial=_expected_initial(agent, market, ticker))
+
+
+def _expected_initial(agent, market, ticker):
+    """B3 first allocation estimated from the decision-time daily bars (None when unavailable)."""
+    try:
+        from datetime import datetime, timezone
+
+        from observability.b3_ae_capture import atr14
+        from prism_core.oneil_adaptive_policy import MARKETS, initial_sizing
+        captured = (getattr(agent, "_decision_input_bars", {}) or {}).get(ticker)
+        if not captured or captured.get("market") != str(market).upper():
+            return None
+        today = datetime.now(timezone.utc).astimezone(MARKETS[str(market).upper()][0]).date()
+        atr, _ = atr14(captured["bars"], today)
+        return float(initial_sizing(captured["bars"][-1]["close"], round(atr, 6))[1])
+    except Exception:  # noqa: BLE001 - the estimate is optional prompt context
+        return None
+
+
+def apply_review(agent, *, market, row_id, ticker, decision, now=None, logger=None):
+    """Store the review's next_session_add_plan on a micro-split holding (BEGIN IMMEDIATE row update).
+
+    A sell decision cancels the stored plan (no add on a sell day). A missing key
+    keeps the stored plan, which is valid for its own session only. Returns the status.
+    """
+    if not live_enabled(market) or row_id is None or not isinstance(decision, dict):
+        return "SKIPPED"
+    if getattr(agent, "_no_order_effects", None) is not None:
+        return "SKIPPED"
+    from prism_core import add_plan
+
+    market, now = str(market).upper(), now or _utc_now()
+    selling = bool(decision.get("should_sell"))
+    raw = {"cancel": True, "reason": "SELL_DECISION"} if selling else decision.get("next_session_add_plan")
+    if raw is None:
+        return "NO_PLAN_KEY"
+    agent.conn.commit()
+    agent.conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = agent.cursor.execute(_SCENARIO_SQL[market], (row_id,)).fetchone()
+        scenario = json.loads((row[0] if row else None) or "{}")
+        block = record(scenario)
+        if block is None:
+            agent.conn.rollback()
+            return "NOT_MICRO_SPLIT"
+        valid_for = add_plan.review_valid_for(market, now)
+        if selling:  # a sell decision also cancels the plan of the session in progress
+            valid_for = (block.get("add_plan") or {}).get("valid_for") or valid_for
+        plan, issues = add_plan.validate_plan(
+            raw, market=market, source="SELL_DECISION" if selling else "REVIEW", created_at=now,
+            valid_for=valid_for, allocation=block["allocation"], last_step=block["legs"][-1]["allocation"])
+        add_plan.store(block, plan, issues, raw=raw, source="REVIEW", created_at=now)
+        agent.cursor.execute(_UPDATE_SQL[market], (json.dumps(scenario, ensure_ascii=False), row_id))
+        agent.conn.commit()
+    except Exception:
+        agent.conn.rollback()
+        raise
+    _emit_planned(market=market, ticker=ticker, position_id=f"legacy:{market}:{row_id}", block=block, plan=plan,
+                  issues=issues)
+    status = (plan or {}).get("status", "INVALID")
+    if logger:
+        logger.warning("[MICRO_SPLIT][%s] %s row=%s add_plan source=REVIEW status=%s valid_for=%s dropped=%s", market,
+                       ticker, row_id, status, valid_for, [i["reason"] for i in issues])
+    return status
 
 
 _ROW_SQL = {
@@ -176,21 +321,33 @@ _SCENARIO_SQL = {
 }
 
 
-def add_message(*, market, company_name, ticker, before, after, price, average, order_status):
+def add_message(*, market, company_name, ticker, before, after, price, average, order_status, scenario=None):
     """Telegram text for an executed in-slot add (KR Korean, US English like other US trade texts)."""
+    from prism_core.add_plan import TYPE_LABELS
+
     old, new = round(before * 100), round(after * 100)
-    if str(market).upper() == "US":
+    us = str(market).upper() == "US"
+    why = ""
+    if scenario:
+        name = TYPE_LABELS.get(scenario.get("scenario_type"), ("", ""))[1 if us else 0]
+        rationale = (scenario.get("rationale") or "")[:80]
+        why = (f"Scenario: {name} ({scenario.get('scenario_id')})" if us else
+               f"시나리오: {name} ({scenario.get('scenario_id')})") + (f" — {rationale}" if rationale else "") + "\n"
+    if us:
         return (f"📈 Micro-split Add: {company_name}({ticker})\n"
                 f"Allocation: {old}% → {new}% of one slot\nAdd Price: ${price:,.2f}\n"
-                f"Average Entry: ${average:,.2f}\nOrder: {order_status}\n")
+                f"Average Entry: ${average:,.2f}\n{why}Order: {order_status}\n")
     return (f"📈 초분할 추가 매수: {company_name}({ticker})\n"
             f"비중: {old}% → {new}% (1슬롯 기준)\n추가 매수가: {price:,.0f}원\n"
-            f"평균 매수가: {average:,.0f}원\n주문: {order_status}\n")
+            f"평균 매수가: {average:,.0f}원\n{why}주문: {order_status}\n")
 
 
 async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
-    """Apply a qualified B3 add LIVE: holding row (strategy ledger) -> KIS add order -> message/event.
+    """Apply a qualified add-plan add LIVE: holding row (strategy ledger) -> KIS add order -> message/event.
 
+    Only scenario-based decisions (``decision["add_plan"]``) are executed, and only
+    while the row still carries the same plan; the key (plan session + scenario id)
+    is the leg's ``bar_end``, so a scenario adds at most once per session.
     The holding row's scenario is updated first and independently of the broker
     fill, like the legacy entry. ``buy_price`` stays the initial entry (positions
     mirror, -7% stop basis and SHADOW parity); the cost-weighted entry is recorded
@@ -203,6 +360,9 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
     from prism_core.order_intents import OrderIntent
 
     market = str(market).upper()
+    meta = decision.get("add_plan")
+    if not isinstance(meta, dict) or not meta.get("plan_hash") or not meta.get("scenario_id"):
+        return {"status": "NOT_A_PLAN_ADD"}  # the fixed ladder never orders LIVE
     row_id = int(str(campaign["position_id"]).rsplit(":", 1)[1])
     account = next(a for a in agent.account_configs if a.get("account_key") == campaign["account_key"])
     agent._set_active_account(account)
@@ -219,10 +379,17 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
         if block is None:
             agent.conn.rollback()
             return {"status": "NOT_MICRO_SPLIT"}
+        if (block.get("add_plan") or {}).get("plan_hash") != meta["plan_hash"]:
+            agent.conn.rollback()
+            return {"status": "PLAN_CHANGED"}
         before = float(block["allocation"])
         delta = _dec(decision["target_allocation"]) - _dec(block["allocation"])
         price = float(_dec(decision["price"]))
-        updated, average = apply_add(scenario, delta=delta, price=price, at=now, bar_end=decision["bar_end"])
+        extra = {k: meta.get(k) for k in ("scenario_id", "scenario_type", "lens", "plan_hash", "session",
+                                          "trigger_price")}
+        extra["source"] = "add_plan"
+        updated, average = apply_add(scenario, delta=delta, price=price, at=now, bar_end=decision["bar_end"],
+                                     extra=extra)
         agent.cursor.execute(_UPDATE_SQL[market], (json.dumps(updated, ensure_ascii=False), row_id))
         agent.conn.commit()
     except Exception:
@@ -250,13 +417,15 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
         else f"Not filled ({result.get('reason_code') or result.get('message')})")
     agent.message_queue.append(add_message(market=market, company_name=row.get("company_name") or campaign["symbol"],
                                            ticker=campaign["symbol"], before=before, after=after, price=price,
-                                           average=average, order_status=status))
+                                           average=average, order_status=status, scenario=meta))
     agent._msg_types.append("analysis")
     if chat_id:
         await agent.send_telegram_message(chat_id, await_broadcast=True)
     emit_event("micro_split.add_executed", service=f"prism-{market.lower()}-micro-split", market=market,
                ticker=campaign["symbol"], position_id=campaign["position_id"],
                attributes={"campaign_id": campaign["campaign_id"], "slot_allocation": after,
+                           "scenario_id": meta["scenario_id"], "scenario_type": meta.get("scenario_type"),
+                           "lens": meta.get("lens"), "plan_hash": meta["plan_hash"],
                            "allocation_before": before,
                            "allocation_after": after, "add_price": price, "average_entry": average,
                            "order_cash": cash, "intent_id": intent.id, "broker_success": bool(result.get("success")),
@@ -300,6 +469,21 @@ def allocation_line(scenario, *, profit_rate=None, current_price=None, market="K
 def used_slots(scenarios):
     """Sum of slot allocations over holdings (each legacy row counts as 1)."""
     return sum(slot_fraction(s) for s in scenarios)
+
+
+def keep_fresh_record(cursor, market, row_id, scenario):
+    """Before rewriting a holding's scenario from an older snapshot (e.g. the highest_price ratchet),
+    carry over the row's current micro_split block so a worker add or plan written meanwhile is not lost."""
+    if row_id is None or not isinstance(scenario, dict) or SCENARIO_KEY not in scenario:
+        return scenario
+    try:
+        row = cursor.execute(_SCENARIO_SQL[str(market).upper()], (row_id,)).fetchone()
+        fresh = record(json.loads(row[0])) if row and row[0] else None
+    except (ValueError, TypeError):
+        fresh = None
+    if fresh is not None:
+        scenario[SCENARIO_KEY] = fresh
+    return scenario
 
 
 def exit_basis(cursor, market, holding_ids, scenario):

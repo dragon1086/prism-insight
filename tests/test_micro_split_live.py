@@ -147,6 +147,9 @@ def test_execute_add_updates_row_orders_delta_and_reports(live_on, monkeypatch, 
     scenario = {"stop_loss": 93, "micro_split": live.entry_record(
         plan={"initial_nominal": "0.5", "policy_version": "v3", "plan_hash": "h", "entry_reference": price / 1.02},
         unit_amount=unit, market=market, entered_at="t0")}
+    scenario["micro_split"]["add_plan"] = {"plan_hash": "ph", "status": "ACTIVE"}
+    meta = {"plan_hash": "ph", "scenario_id": "breakout_1", "scenario_type": "breakout", "lens": ["oneil"],
+            "session": "2026-10-05", "trigger_price": price, "rationale": "prior high reclaimed on volume"}
     conn = sqlite3.connect(tmp_path / "h.sqlite")
     conn.row_factory = sqlite3.Row
     conn.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, ticker TEXT, company_name TEXT, "
@@ -161,15 +164,31 @@ def test_execute_add_updates_row_orders_delta_and_reports(live_on, monkeypatch, 
     monkeypatch.setattr(execution_service.ExecutionService, "domestic", _FakeTrading, raising=False)
     monkeypatch.setattr(execution_service.ExecutionService, "us", _FakeTrading, raising=False)
     _FakeTrading.calls.clear()
+    campaign = {"position_id": f"legacy:{market}:7", "account_key": "acc", "symbol": "ABC", "campaign_id": "c1"}
+
+    # The fixed ladder (no add_plan meta) and a stale plan never order.
+    for decision, status in (({"target_allocation": "0.8", "price": price, "bar_end": "b1"}, "NOT_A_PLAN_ADD"),
+                             ({"target_allocation": "0.8", "price": price, "bar_end": "b1",
+                               "add_plan": dict(meta, plan_hash="old")}, "PLAN_CHANGED")):
+        assert asyncio.run(live.execute_add(agent, market=market, campaign=campaign, decision=decision,
+                                            now="t1"))["status"] == status
+    assert _FakeTrading.calls == [] and agent.message_queue == []
 
     result = asyncio.run(live.execute_add(
-        agent, market=market, campaign={"position_id": f"legacy:{market}:7", "account_key": "acc", "symbol": "ABC",
-                                        "campaign_id": "c1"},
-        decision={"target_allocation": "0.8", "price": price, "bar_end": "b1"}, now="t1"))
+        agent, market=market, campaign=campaign,
+        decision={"target_allocation": "0.8", "price": price, "bar_end": "add-plan:2026-10-05:breakout_1",
+                  "add_plan": meta}, now="t1"))
 
     assert result["status"] == "EXECUTED" and result["allocation"] == pytest.approx(0.8)
     stored = conn.execute(f"SELECT scenario, buy_price FROM {table} WHERE id=7").fetchone()
     assert json.loads(stored["scenario"])["micro_split"]["allocation"] == "0.8"
+    leg = json.loads(stored["scenario"])["micro_split"]["legs"][-1]
+    assert (leg["scenario_id"], leg["plan_hash"], leg["session"], leg["source"]) == (
+        "breakout_1", "ph", "2026-10-05", "add_plan")
+    with pytest.raises(ValueError, match="bar already used"):  # one add per scenario and session
+        asyncio.run(live.execute_add(agent, market=market, campaign=campaign, now="t2", decision={
+            "target_allocation": "0.9", "price": price, "bar_end": "add-plan:2026-10-05:breakout_1",
+            "add_plan": meta}))
     assert stored["buy_price"] == pytest.approx(price / 1.02)  # initial entry stays (positions mirror, stop basis)
     average, fresh = live.exit_basis(conn.cursor(), market, [7], "{}")
     assert price / 1.02 < average < price and json.loads(fresh)["micro_split"]["allocation"] == "0.8"
@@ -179,9 +198,13 @@ def test_execute_add_updates_row_orders_delta_and_reports(live_on, monkeypatch, 
     assert order["buy_amount"] == live.scaled_cash(unit, "0.3", market)
     assert order["strict_budget"] is True and order["limit_price"] == price
     assert "50% → 80%" in agent.message_queue[0] and agent._msg_types == ["analysis"]
+    assert ("Scenario: breakout (breakout_1)" if market == "US" else "시나리오: 돌파 (breakout_1)") in \
+        agent.message_queue[0] and "prior high reclaimed" in agent.message_queue[0]
     name, kw = emitted[0]
     assert name == "micro_split.add_executed"
     assert kw["attributes"]["allocation_before"] == 0.5 and kw["attributes"]["allocation_after"] == 0.8
+    assert kw["attributes"]["scenario_id"] == "breakout_1" and kw["attributes"]["plan_hash"] == "ph"
+    assert kw["attributes"]["lens"] == ["oneil"]
 
 
 def test_exit_basis_ignores_legacy_rows():
@@ -221,28 +244,98 @@ def test_dashboard_signal_and_context_fields_carry_allocation(live_on, monkeypat
     assert sent[0]["position_fraction"] == pytest.approx(0.7777)
 
 
-def test_us_korean_summary_uses_dollars_and_an_80pct_entry_has_one_step_left(live_on):
+def test_us_korean_summary_uses_dollars(live_on):
     scenario = {"micro_split": live.entry_record(
         plan={"initial_nominal": "0.8", "policy_version": "v3", "plan_hash": "h", "entry_reference": 230},
         unit_amount=1000, market="US", entered_at="t0")}
-    assert "+4% above entry" in live.entry_message_line(scenario, "US") and "80%/100%" not in \
-        live.entry_message_line(scenario, "US")
-    assert "+4% 상승이 확인되면 100%까지" in live.entry_message_line(scenario, "KR")
     added, _ = live.apply_add(scenario, delta="0.2", price=235, at="t", bar_end="b")
     line = live.allocation_line(added, current_price=240, market="US", language="ko")
     assert "평균 매수가 $" in line and "원" not in line and "슬롯 기준 손익" in line
 
 
-def test_fixed_ladder_adds_are_paused_by_default(monkeypatch):
+PLAN = {"thesis_check": "intact", "invalidation": {"close_below": 9500},
+        "scenarios": [{"id": "breakout_1", "lens": ["oneil"], "type": "breakout",
+                       "trigger": {"price_above": 10500, "volume_pace_min": 1.5}, "target_allocation": 0.95},
+                      {"id": "pullback_1", "lens": ["minervini"], "type": "pullback_reclaim",
+                       "trigger": {"zone_low": 9800, "zone_high": 9950, "reclaim_above": 10100,
+                                   "confirm": "daily_close"}, "target_allocation": 0.9}]}
+
+
+def test_buy_add_plan_is_validated_onto_the_entry_record_and_summarized(live_on):
+    _, _, scenario = live.prepare_entry(
+        _agent(), market="KR", ticker="005930", current_price=10000,
+        scenario={"stop_loss": 9300, "add_plan": PLAN}, decision_ref="report:x.pdf",
+        account={"buy_amount_krw": 1_000_000})
+    block = scenario["micro_split"]
+    assert "add_plan" not in scenario and block["add_plan"]["status"] == "ACTIVE"
+    assert block["add_plan"]["source"] == "BUY" and [s["id"] for s in block["add_plan"]["scenarios"]] == [
+        "breakout_1", "pullback_1"]
+    assert block["add_plan"]["valid_for"] > block["legs"][0]["at"][:10]  # never the entry session
+    assert block["add_plan_history"][-1]["plan_hash"] == block["add_plan"]["plan_hash"]
+    line = live.entry_message_line(scenario, "KR")
+    assert "증액 시나리오: 돌파 10,500원 → 95%; 눌림 회복 10,100원 → 90%" in line and "+2%" not in line
+    assert "add scenarios: breakout $10,500.00 → 95%" in live.entry_message_line(scenario, "US")
+    # Missing or invalid plan: the entry stays, the position has no adds until a review sets one.
+    _, _, bare = live.prepare_entry(_agent(), market="KR", ticker="005930", current_price=10000,
+                                    scenario={"stop_loss": 9300, "add_plan": {"scenarios": []}},
+                                    decision_ref="r", account={"buy_amount_krw": 1_000_000})
+    assert "add_plan" not in bare["micro_split"] and bare["micro_split"]["add_plan_history"][0]["issues"]
+    assert "다음 보유 점검에서 세우며" in live.entry_message_line(bare, "KR")
+
+
+def test_plan_adds_follow_live_with_an_adds_only_kill_switch(monkeypatch):
     monkeypatch.setenv("MICRO_SPLIT_LIVE_ENABLED", "true")
     monkeypatch.delenv("MICRO_SPLIT_LIVE_ADDS_ENABLED", raising=False)
-    assert live.live_enabled("KR") and not live.adds_enabled("KR")
+    monkeypatch.delenv("MICRO_SPLIT_LIVE_MARKETS", raising=False)
+    assert live.plan_adds_enabled("KR") and live.plan_adds_enabled("US")
+    monkeypatch.setenv("MICRO_SPLIT_LIVE_ADDS_ENABLED", "false")
+    assert live.live_enabled("KR") and not live.plan_adds_enabled("KR")
     _, cash, scenario = _prepared()
     assert cash == 777_700  # the fractional first entry stays LIVE
     assert "멈춰 있고" in live.entry_message_line(scenario, "KR")
-    assert "adds are paused" in live.entry_message_line(scenario, "US")
+    assert "adds are currently paused" in live.entry_message_line(scenario, "US")
+    monkeypatch.setenv("MICRO_SPLIT_LIVE_ENABLED", "false")
     monkeypatch.setenv("MICRO_SPLIT_LIVE_ADDS_ENABLED", "true")
-    assert live.adds_enabled("US") and "+2%·+4%" in live.entry_message_line(scenario, "KR")
+    assert not live.plan_adds_enabled("KR")
+    assert live.add_plan_buy_block(_agent(), market="KR", ticker="005930", language="ko") == ""
+    assert live.review_prompt_block(json.dumps(scenario), market="KR", language="ko") == ""
+
+
+def test_review_stores_next_session_plan_and_a_sell_cancels_it(live_on, tmp_path):
+    _, _, scenario = _prepared()
+    conn = sqlite3.connect(tmp_path / "r.sqlite")
+    conn.execute("CREATE TABLE stock_holdings (id INTEGER PRIMARY KEY, scenario TEXT)")
+    conn.execute("INSERT INTO stock_holdings VALUES (3, ?)", (json.dumps(scenario),))
+    conn.commit()
+    agent = SimpleNamespace(conn=conn, cursor=conn.cursor())
+
+    def block():
+        return json.loads(conn.execute("SELECT scenario FROM stock_holdings").fetchone()[0])["micro_split"]
+
+    plan = {**PLAN, "scenarios": [dict(s, target_allocation=0.95) for s in PLAN["scenarios"]]}
+    now = datetime(2026, 10, 5, 14, 46, tzinfo=SEOUL).astimezone(timezone.utc).isoformat()
+    review = dict(market="KR", row_id=3, ticker="005930", now=now)
+    assert live.apply_review(agent, decision={"should_sell": False, "next_session_add_plan": plan},
+                             **review) == "ACTIVE"
+    assert block()["add_plan"]["valid_for"] == "2026-10-06" and block()["add_plan"]["source"] == "REVIEW"
+    # A missing key keeps the stored plan; a sell decision cancels it, including the same session.
+    assert live.apply_review(agent, decision={"should_sell": False}, **review) == "NO_PLAN_KEY"
+    assert live.apply_review(agent, decision={"should_sell": True}, **review) == "CANCELLED"
+    assert block()["add_plan"]["status"] == "CANCELLED" and block()["add_plan"]["valid_for"] == "2026-10-06"
+    assert [h["source"] for h in block()["add_plan_history"]] == ["BUY", "REVIEW", "SELL_DECISION"]
+
+
+def test_peak_ratchet_keeps_an_add_written_after_its_snapshot(live_on):
+    _, _, scenario = _prepared()
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE stock_holdings (id INTEGER PRIMARY KEY, scenario TEXT)")
+    added, _ = live.apply_add(scenario, delta="0.0223", price=10200, at="t", bar_end="b1")
+    conn.execute("INSERT INTO stock_holdings VALUES (5, ?)", (json.dumps(added),))
+    stale = json.loads(json.dumps(scenario))
+    stale["highest_price"] = 10300
+    live.keep_fresh_record(conn.cursor(), "KR", 5, stale)
+    assert stale["micro_split"]["allocation"] == "0.8000" and stale["highest_price"] == 10300
+    assert live.keep_fresh_record(conn.cursor(), "KR", 5, {"highest_price": 1}) == {"highest_price": 1}
 
 
 def test_score_floor_relaxes_only_verified_micro_split_entries(live_on, monkeypatch):

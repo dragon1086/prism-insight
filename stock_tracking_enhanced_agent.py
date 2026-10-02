@@ -1459,11 +1459,13 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                     # Persist a raised OR newly initialised peak (initialised peaks were never saved before).
                     if persist_peak:
-                        updated_scenario_str = json.dumps(scenario_data, ensure_ascii=False)
                         # Pyramiding (#288): scope by row id so only THIS row's
                         # scenario is updated (multi-row tickers). Fall back to
                         # ticker when id is unavailable (legacy callers).
                         row_id = stock_data.get('id')
+                        from prism_core.micro_split_live import keep_fresh_record
+                        keep_fresh_record(self.cursor, "KR", row_id, scenario_data)  # keep a worker add
+                        updated_scenario_str = json.dumps(scenario_data, ensure_ascii=False)
                         if row_id is not None:
                             self.cursor.execute(
                                 "UPDATE stock_holdings SET scenario = ? WHERE id = ?",
@@ -1639,6 +1641,11 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 **Important**: If stop loss/target price adjustment is needed, return it via portfolio_adjustment JSON only. Do NOT directly UPDATE the DB.
                 """
 
+            # Micro-split holdings: next-session add plan request; '' unless micro-split LIVE is on.
+            from prism_core.micro_split_live import review_prompt_block
+            prompt_message += review_prompt_block(scenario_str, market="KR", language=self.language,
+                                                  stop_loss=stop_loss)
+
             response = None
             codex_sell_enabled = os.environ.get(
                 "PRISM_KR_CODEX_FAST_SELL",
@@ -1728,6 +1735,12 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     return await self._fallback_sell_decision(stock_data)
 
                 logger.info(f"Sell decision parse successful: {json.dumps(decision_json, ensure_ascii=False)[:500]}")
+                try:  # micro-split add plan for the next session (LIVE only; never affects the sell decision)
+                    from prism_core.micro_split_live import apply_review
+                    apply_review(self, market="KR", row_id=stock_data.get('id'), ticker=ticker,
+                                 decision=decision_json, logger=logger)
+                except Exception as plan_err:  # noqa: BLE001
+                    logger.warning(f"{ticker} micro-split add plan not stored: {plan_err}")
 
                 # Extract results - use existing single format
                 should_sell = decision_json.get("should_sell", False)

@@ -36,7 +36,7 @@ def live_add_provider(market):
     def live_add(campaign, decision, now):
         if not micro_split_live.live_enabled(market):
             return {"status": "LIVE_OFF"}
-        if not micro_split_live.adds_enabled(market):
+        if not micro_split_live.plan_adds_enabled(market):
             return {"status": "ADDS_PAUSED"}
         payload = json.dumps({"campaign": campaign, "decision": decision, "now": now}, default=str)
         try:
