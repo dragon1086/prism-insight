@@ -243,3 +243,42 @@ def test_fixed_ladder_adds_are_paused_by_default(monkeypatch):
     assert "adds are paused" in live.entry_message_line(scenario, "US")
     monkeypatch.setenv("MICRO_SPLIT_LIVE_ADDS_ENABLED", "true")
     assert live.adds_enabled("US") and "+2%·+4%" in live.entry_message_line(scenario, "KR")
+
+
+def test_score_floor_relaxes_only_verified_micro_split_entries(live_on, monkeypatch):
+    agent = _agent()
+    base = {"stop_loss": 9300, "buy_score": 6}
+    floor, scenario = live.relaxed_min_score(agent, market="KR", ticker="005930", current_price=10000,
+                                             scenario=base, min_score=8, is_add=False, rebound_pilot=False)
+    assert floor == 5.0 and live.gate_score_override(scenario) == 5.0
+    assert scenario[live.SCORE_POLICY_KEY]["legacy_required_score"] == 8.0
+    for kwargs in ({"is_add": True, "rebound_pilot": False}, {"is_add": False, "rebound_pilot": True}):
+        assert live.relaxed_min_score(agent, market="KR", ticker="005930", current_price=10000, scenario=base,
+                                      min_score=8, **kwargs) == (8, base)
+    assert live.relaxed_min_score(agent, market="KR", ticker="005930", current_price=10000, scenario=base,
+                                  min_score=4, is_add=False, rebound_pilot=False) == (4, base)
+    no_bars = SimpleNamespace(_decision_input_bars={})
+    assert live.relaxed_min_score(no_bars, market="KR", ticker="005930", current_price=10000, scenario=base,
+                                  min_score=8, is_add=False, rebound_pilot=False) == (8, base)
+    monkeypatch.setenv("MICRO_SPLIT_MIN_SCORE", "off")
+    assert live.score_floor("KR") is None and live.buy_prompt_block("KR") == ""
+    monkeypatch.delenv("MICRO_SPLIT_LIVE_ENABLED")
+    monkeypatch.setenv("MICRO_SPLIT_MIN_SCORE", "5")
+    assert live.score_floor("US") is None and live.buy_prompt_block("US", "en") == ""
+
+
+def test_buy_prompt_block_and_gate_override(live_on):
+    assert "시장 국면과 관계없이 5점" in live.buy_prompt_block("KR", "ko")
+    assert "minimum entry score is 5" in live.buy_prompt_block("US", "en")
+    from cores.buy_gate import evaluate_production_buy_gate
+    scenario = {"decision": "Enter", "buy_score": 6, "min_score": 8, "target_price": 12000, "stop_loss": 9500,
+                "momentum_signal_count": 2, "additional_confirmation_count": 1}
+    kwargs = dict(current_price=10000, market_regime="sideways", score_override=6, market_pulse="UNDER_PRESSURE")
+    codes = lambda r: {f["code"] for f in r.get("findings", [])}  # noqa: E731
+    assert "score_below_floor" in codes(evaluate_production_buy_gate(scenario, **kwargs))
+    relaxed = evaluate_production_buy_gate(scenario, required_score_override=5, **kwargs)
+    assert "score_below_floor" not in codes(relaxed)
+    assert "score_below_floor" in codes(evaluate_production_buy_gate(dict(scenario, buy_score=4), **{
+        **kwargs, "score_override": 4}, required_score_override=5))
+    assert "score_below_floor" in codes(evaluate_production_buy_gate(scenario, required_score_override=5,
+                                                                      is_add=True, **kwargs))

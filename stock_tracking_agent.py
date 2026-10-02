@@ -304,6 +304,16 @@ def _capture_entry_quality_context(*, cursor, scenario, current_price, trigger_t
         return None
 
 
+def _micro_split_gate_score(scenario):
+    """Relaxed required score of a verified micro-split entry (None keeps the regime floor)."""
+    try:
+        from prism_core.micro_split_live import gate_score_override
+        return gate_score_override(scenario)
+    except Exception as error:  # noqa: BLE001 - fail closed: the regular floor applies
+        logger.warning("[MICRO_SPLIT_SCORE] gate override unavailable: %s", error)
+        return None
+
+
 class StockTrackingAgent:
     """Stock Tracking and Trading Agent"""
 
@@ -1277,6 +1287,9 @@ class StockTrackingAgent:
             sector_mode = sector_f2_mode()
             sector_stamp = sector_profile_stamp(sector_profile)
             prompt_message += buy_sector_block(sector_profile, self.language, sector_mode)
+            # Micro-split LIVE: entry threshold 5 in every regime ('' when off -> byte-identical).
+            from prism_core.micro_split_live import buy_prompt_block as _micro_split_buy_block
+            prompt_message += _micro_split_buy_block("KR", self.language)
             logger.info(
                 "[SECTOR_BUY][KR] ticker=%s kind=%s subtype=%s basis=%s mode=%s f2_rule=%s f4_rule=%s",
                 ticker or "?", sector_stamp["kind"], sector_stamp["subtype"], sector_stamp["basis"],
@@ -3099,6 +3112,7 @@ class StockTrackingAgent:
                 score_override=score_override,
                 trend_facts=str(scenario.get("_deterministic_trend_facts") or ""),
                 is_add=is_add,
+                required_score_override=_micro_split_gate_score(scenario),
             )
             if result.get("score_policy"):
                 logger.info("[ENTRY_SCORE_POLICY][KR] regime=%s pulse=%s policy=%s", computed_regime, pulse, result["score_policy"])
