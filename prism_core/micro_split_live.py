@@ -134,10 +134,13 @@ def entry_message_line(scenario, market):
     if block is None:
         return ""
     pct = round(float(block["allocation"]) * 100)
+    two_steps = float(block["allocation"]) < 0.8  # an initial 80% has only the +4% -> 100% step left
     if str(market).upper() == "US":
-        return (f"Micro-split allocation: {pct}% of one slot — adds to 80%/100% only after +2%/+4% above entry "
-                "is confirmed; a stop exits the whole position. Whole shares are rounded down.\n")
-    return (f"초분할 비중: {pct}% (1슬롯 기준) — 진입가 대비 +2%·+4% 상승이 확인되면 80%·100%까지 "
+        ladder = "adds to 80%/100% only after +2%/+4%" if two_steps else "adds to 100% only after +4%"
+        return (f"Micro-split allocation: {pct}% of one slot — {ladder} above entry is confirmed; "
+                "a stop exits the whole position. Whole shares are rounded down.\n")
+    ladder = "+2%·+4% 상승이 확인되면 80%·100%까지" if two_steps else "+4% 상승이 확인되면 100%까지"
+    return (f"초분할 비중: {pct}% (1슬롯 기준) — 진입가 대비 {ladder} "
             "추가 매수하고, 손절 시 전량 매도합니다. 정수 수량 내림으로 실제 체결 비중은 조금 낮을 수 있습니다.\n")
 
 
@@ -245,12 +248,13 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
     return {"status": "EXECUTED", "allocation": after, "cash": cash, "broker": result}
 
 
-def allocation_line(scenario, *, profit_rate=None, current_price=None, market="KR", indent=""):
+def allocation_line(scenario, *, profit_rate=None, current_price=None, market="KR", indent="", language=None):
     """Allocation line for partial positions ('' for a full slot), e.g.
     '비중 80% (35%→80%) (1슬롯 기준) / 평균 매수가 10,100원 / 슬롯 기준 손익 +1.58%'.
 
     With adds, the return is measured from the cost-weighted entry when
     ``current_price`` is given (the row's buy_price stays the initial entry).
+    ``market`` picks the currency; ``language`` ("ko"/"en", default by market) the labels.
     """
     if isinstance(scenario, str):
         try:
@@ -261,12 +265,14 @@ def allocation_line(scenario, *, profit_rate=None, current_price=None, market="K
     block = record(scenario)
     if fraction >= 1 and block is None:
         return ""
-    us = str(market).upper() == "US"
+    usd = str(market).upper() == "US"
+    us = (language or ("en" if usd else "ko")) == "en"
     label = display(scenario) or f"비중 {round(fraction * 100)}%"
     parts = [label.replace("비중", "Allocation") + " of one slot" if us else label + " (1슬롯 기준)"]
     if block is not None and len(block["legs"]) > 1:
         average = float(weighted_entry(block["legs"]))
-        parts.append(f"Average entry ${average:,.2f}" if us else f"평균 매수가 {average:,.0f}원")
+        price = f"${average:,.2f}" if usd else f"{average:,.0f}원"
+        parts.append(f"Average entry {price}" if us else f"평균 매수가 {price}")
         if current_price:
             profit_rate = (float(current_price) / average - 1) * 100
     if profit_rate is not None:
