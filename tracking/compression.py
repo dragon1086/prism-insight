@@ -34,6 +34,16 @@ _MATERIAL_QUALIFIERS = {
 }
 
 
+def _slot_note(entry):
+    """' (slot 35%)' for partial positions (micro-split / pilot), '' for a full slot."""
+    try:
+        from prism_core.slot_weight import slot_fraction
+        fraction = slot_fraction(entry.get("buy_scenario") or "{}")
+    except Exception:  # noqa: BLE001 - compression never fails on a note
+        return ""
+    return f" (slot {fraction:.0%})" if fraction < 1 else ""
+
+
 class CompressionManager:
     """Manages trading memory compression operations."""
 
@@ -338,7 +348,7 @@ class CompressionManager:
             profit_emoji = "✅" if entry.get('profit_rate', 0) > 0 else "❌"
             line = (
                 f"[ID:{entry['id']}] {entry.get('company_name', '')}({entry.get('ticker', '')}) "
-                f"{profit_emoji} {entry.get('profit_rate', 0):.1f}% | "
+                f"{profit_emoji} {entry.get('profit_rate', 0):.1f}%{_slot_note(entry)} | "
                 f"Summary: {entry.get('one_line_summary', 'N/A')} | Lessons: {lessons_str} | Tags: {tags_str}"
             )
 
@@ -379,7 +389,7 @@ class CompressionManager:
             profit_emoji = "✅" if entry.get('profit_rate', 0) > 0 else "❌"
             formatted.append(
                 f"[ID:{entry['id']}] {entry.get('company_name', '')} | Sector: {sector} | "
-                f"{profit_emoji} {entry.get('profit_rate', 0):.1f}% | "
+                f"{profit_emoji} {entry.get('profit_rate', 0):.1f}%{_slot_note(entry)} | "
                 f"Summary: {entry.get('compressed_summary', 'N/A')} | Tags: {tags_str}"
             )
         return "\n".join(formatted)

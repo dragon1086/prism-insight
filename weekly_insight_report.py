@@ -74,24 +74,39 @@ def _get_primary_account_key(market: str) -> str | None:
         return None
 
 
+def _slot_suffix(scenario, buy_price, price) -> str:
+    """' · 비중 35% (슬롯 기준 +1.2%)' for micro-split / pilot positions; '' for a full slot."""
+    try:
+        from prism_core.micro_split_live import dashboard_fields
+        fields = dashboard_fields(scenario, buy_price=buy_price, current_price=price)
+    except Exception:  # noqa: BLE001 - the weekly text never fails on an annotation
+        return ""
+    if fields["allocation"] >= 1 and not fields["add_count"]:
+        return ""
+    text = f" · {fields['allocation_label'] or '비중 100%'}"
+    if fields.get("slot_profit_rate") is not None:
+        text += f" (슬롯 기준 {fields['slot_profit_rate']:+.1f}%)"
+    return text
+
+
 def _get_weekly_trades(cursor, week_start_str: str) -> str:
     """Get weekly trade summary for KR and US markets."""
     kr_account_key = _get_primary_account_key("kr")
     us_account_key = _get_primary_account_key("us")
     kr_sells = _safe_query_all(cursor, """
-        SELECT ticker, company_name, buy_price, sell_price, profit_rate, holding_days
+        SELECT ticker, company_name, buy_price, sell_price, profit_rate, holding_days, scenario
         FROM trading_history WHERE sell_date >= ? AND account_key = ? ORDER BY sell_date DESC
     """, (week_start_str, kr_account_key)) if kr_account_key else None
     kr_buys = _safe_query_all(cursor, """
-        SELECT ticker, company_name, buy_price, buy_date, current_price
+        SELECT ticker, company_name, buy_price, buy_date, current_price, scenario
         FROM stock_holdings WHERE buy_date >= ? AND account_key = ?
     """, (week_start_str, kr_account_key)) if kr_account_key else None
     us_sells = _safe_query_all(cursor, """
-        SELECT ticker, company_name, buy_price, sell_price, profit_rate, holding_days
+        SELECT ticker, company_name, buy_price, sell_price, profit_rate, holding_days, scenario
         FROM us_trading_history WHERE sell_date >= ? AND account_key = ? ORDER BY sell_date DESC
     """, (week_start_str, us_account_key)) if us_account_key else None
     us_buys = _safe_query_all(cursor, """
-        SELECT ticker, company_name, buy_price, buy_date, current_price
+        SELECT ticker, company_name, buy_price, buy_date, current_price, scenario
         FROM us_stock_holdings WHERE buy_date >= ? AND account_key = ?
     """, (week_start_str, us_account_key)) if us_account_key else None
 
@@ -110,27 +125,31 @@ def _get_weekly_trades(cursor, week_start_str: str) -> str:
 
     if kr_buys or kr_sells:
         lines.append("🇰🇷 한국시장")
-        for ticker, name, buy_price, _date, current_price in kr_buys:
+        for ticker, name, buy_price, _date, current_price, scenario in kr_buys:
             if current_price and buy_price:
                 pnl = (current_price - buy_price) / buy_price * 100
-                lines.append(f"  매수: {name}({ticker}) {buy_price:,.0f}원 → 현재 {current_price:,.0f}원 ({pnl:+.1f}%)")
+                lines.append(f"  매수: {name}({ticker}) {buy_price:,.0f}원 → 현재 {current_price:,.0f}원 ({pnl:+.1f}%)"
+                             + _slot_suffix(scenario, buy_price, current_price))
             else:
-                lines.append(f"  매수: {name}({ticker}) {buy_price:,.0f}원")
-        for ticker, name, _buy_p, sell_p, profit, days in kr_sells:
-            lines.append(f"  매도: {name}({ticker}) {sell_p:,.0f}원 → {profit:+.1f}% ({days}일 보유)")
+                lines.append(f"  매수: {name}({ticker}) {buy_price:,.0f}원" + _slot_suffix(scenario, buy_price, None))
+        for ticker, name, _buy_p, sell_p, profit, days, scenario in kr_sells:
+            lines.append(f"  매도: {name}({ticker}) {sell_p:,.0f}원 → {profit:+.1f}% ({days}일 보유)"
+                         + _slot_suffix(scenario, _buy_p, sell_p))
 
     if us_buys or us_sells:
         if lines:
             lines.append("")
         lines.append("🇺🇸 미국시장")
-        for ticker, name, buy_price, _date, current_price in us_buys:
+        for ticker, name, buy_price, _date, current_price, scenario in us_buys:
             if current_price and buy_price:
                 pnl = (current_price - buy_price) / buy_price * 100
-                lines.append(f"  매수: {ticker} ${buy_price:,.2f} → 현재 ${current_price:,.2f} ({pnl:+.1f}%)")
+                lines.append(f"  매수: {ticker} ${buy_price:,.2f} → 현재 ${current_price:,.2f} ({pnl:+.1f}%)"
+                             + _slot_suffix(scenario, buy_price, current_price))
             else:
-                lines.append(f"  매수: {ticker} ${buy_price:,.2f}")
-        for ticker, name, _buy_p, sell_p, profit, days in us_sells:
-            lines.append(f"  매도: {ticker} ${sell_p:,.2f} → {profit:+.1f}% ({days}일 보유)")
+                lines.append(f"  매수: {ticker} ${buy_price:,.2f}" + _slot_suffix(scenario, buy_price, None))
+        for ticker, name, _buy_p, sell_p, profit, days, scenario in us_sells:
+            lines.append(f"  매도: {ticker} ${sell_p:,.2f} → {profit:+.1f}% ({days}일 보유)"
+                         + _slot_suffix(scenario, _buy_p, sell_p))
 
     return "\n".join(lines)
 

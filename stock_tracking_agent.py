@@ -2328,6 +2328,15 @@ class StockTrackingAgent:
             position_id = legacy_position_id("KR", legacy_holding_id)
             sell_price = float(stock_data.get("current_price") or 0)
             buy_price = float(live.get("buy_price") or 0)
+            try:
+                from prism_core.micro_split_live import exit_basis
+                _micro = exit_basis(self.cursor, "KR", [legacy_holding_id], live.get("scenario"))
+                if _micro is not None:
+                    # Micro-split row keeps the initial price; record the cost-weighted entry.
+                    buy_price, live["scenario"] = _micro
+                    live["buy_price"] = buy_price
+            except Exception as micro_error:  # noqa: BLE001 - never block a protective exit
+                logger.warning("[MICRO_SPLIT][KR] pending exit basis unavailable: %s", micro_error)
             if buy_price <= 0 or sell_price <= 0:
                 raise ValueError("buy_price and current_price must be positive")
             buy_date = str(live.get("buy_date") or "")
@@ -3566,8 +3575,10 @@ class StockTrackingAgent:
 
             # Create trading journal entry for retrospective analysis
             try:
+                from prism_core.micro_split_live import journal_stock_data
                 await self._create_journal_entry(
-                    stock_data=stock_data,
+                    # Recorded (cost-weighted) entry and fresh scenario, same as trading_history.
+                    stock_data=journal_stock_data(stock_data, buy_price=buy_price, scenario=scenario_json),
                     sell_price=current_price,
                     profit_rate=profit_rate,
                     holding_days=holding_days,

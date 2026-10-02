@@ -210,6 +210,8 @@ class JournalManager:
         holding_days: int, sell_reason: str
     ) -> str:
         """Build prompt for retrospective analysis."""
+        from prism_core.micro_split_live import journal_position_line
+        position_line = journal_position_line(scenario_data, profit_rate)
         if self.language == "ko":
             return f"""
 Please review the following completed trade:
@@ -231,7 +233,7 @@ Please review the following completed trade:
 - Sell Price: {sell_price:,.0f} KRW
 - Profit Rate: {profit_rate:.2f}%
 - Holding Days: {holding_days} days
-- Sell Reason: {sell_reason}
+{position_line}- Sell Reason: {sell_reason}
 
 ## Analysis Request
 1. Use kospi_kosdaq tools to check current market conditions and stock trends
@@ -260,7 +262,7 @@ Please review the following completed trade:
 - Sell Price: {sell_price:,.0f} KRW
 - Profit Rate: {profit_rate:.2f}%
 - Holding Days: {holding_days} days
-- Sell Reason: {sell_reason}
+{position_line}- Sell Reason: {sell_reason}
 
 ## Analysis Request
 1. Use kospi_kosdaq tools to check current market and stock trends

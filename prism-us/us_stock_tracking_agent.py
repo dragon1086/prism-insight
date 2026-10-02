@@ -3590,8 +3590,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             # Create trading journal entry (if enabled)
             if self.enable_journal and self.journal_manager:
                 try:
+                    from prism_core.micro_split_live import journal_stock_data
                     await self.journal_manager.create_entry(
-                        stock_data=stock_data,
+                        # Recorded (cost-weighted) entry and fresh scenario, same as us_trading_history.
+                        stock_data=journal_stock_data(stock_data, buy_price=buy_price, scenario=scenario_json),
                         sell_price=current_price,
                         profit_rate=profit_rate,
                         holding_days=holding_days,
