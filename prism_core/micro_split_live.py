@@ -180,8 +180,9 @@ def _emit_planned(*, market, ticker, position_id, block, plan, issues):
                                "scenario_ids": [s["id"] for s in scenarios],
                                "lens": sorted({x for s in scenarios for x in s["lens"]}),
                                "dropped": [i["reason"] for i in issues]})
-    except Exception:  # noqa: BLE001, S110 - observability never affects trading
-        pass
+    except Exception as error:  # noqa: BLE001 - observability never affects trading
+        import logging
+        logging.getLogger(__name__).warning("[MICRO_SPLIT][%s] add_planned event skipped: %s", market, error)
 
 
 def entry_message_line(scenario, market):
