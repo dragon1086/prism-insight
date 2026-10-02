@@ -379,6 +379,18 @@ def score_candidates_by_agent_criteria(candidates_df: pd.DataFrame, trade_date: 
 
 # === Morning Triggers (Market Open Snapshot) ===
 
+def _drop_below_previous_close(snap: pd.DataFrame, trade_date: str, trigger: str) -> None:
+    """Log rows closing below the previous close that a trigger is about to exclude."""
+    below = snap["DailyChange"] < 0.0
+    rejected = int(below.sum())
+    if rejected:
+        logger.info(
+            "[SCREENING-FILTER] market=US trigger=%s trade_date=%s reason=close_below_previous_close "
+            "rejected=%d sample=%s",
+            trigger, trade_date, rejected, ",".join(str(t) for t in snap.index[below][:20]),
+        )
+
+
 def trigger_morning_volume_surge(trade_date: str, snapshot: pd.DataFrame,
                                  prev_snapshot: pd.DataFrame, cap_df: pd.DataFrame = None,
                                  top_n: int = 10) -> pd.DataFrame:
@@ -416,6 +428,12 @@ def trigger_morning_volume_surge(trade_date: str, snapshot: pd.DataFrame,
     snap = snap[snap["DailyChange"] <= 20.0]
 
     snap["IsRising"] = snap["Close"] > snap["Open"]
+
+    # A gap-down bounce is "rising" against the open while still trading below
+    # the previous close (STX -11.5% on 2026-10-02).  A volume surge on a down
+    # day is distribution, not the momentum this trigger looks for.
+    _drop_below_previous_close(snap, trade_date, "morning_volume_surge")
+    snap = snap[snap["DailyChange"] >= 0.0]
 
     # Volume increase >= 30% filter
     snap = snap[snap["VolumeIncreaseRate"] >= 30.0]
@@ -702,6 +720,11 @@ def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame,
 
     snap["VolumeIncreased"] = (snap["Volume"] - prev["Volume"].replace(0, np.nan)) > 0
     snap["IsRising"] = snap["Close"] > snap["Open"]
+
+    # Mirrors KR closing strength: a gap-down recovery that still closes below
+    # the previous session is not closing strength.
+    _drop_below_previous_close(snap, trade_date, "afternoon_closing_strength")
+    snap = snap[snap["DailyChange"] >= 0.0]
 
     # Primary filter: Volume increase stocks
     candidates = snap[snap["VolumeIncreased"]].copy()
