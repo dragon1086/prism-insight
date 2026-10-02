@@ -4072,7 +4072,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     message += f"  Target: ${target_price:.2f} / Stop: ${stop_loss:.2f}\n"
                     message += f"  수익률: {arrow} {profit_rate:.2f}% / 보유기간: {days_passed}일\n"
                     message += allocation_line(scenario_str, profit_rate=profit_rate, current_price=current_price,
-                                               market="KR", indent="  ")
+                                               market="US", language="ko", indent="  ")
                     message += "\n"
 
                 # Add sector distribution
