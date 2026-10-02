@@ -46,29 +46,41 @@ def atr14(bars, before):
     return sum(ranges) / 14, window[-1]["date"]
 
 
+def build_plan(agent, *, market, ticker, entry_price, stop_loss, decision_ref, entered_at=None):
+    """v3-ae plan from the actual entry and ATR14 of the decision-time daily bars (raises)."""
+    from prism_core.b3_ae_shadow import plan_for_entry
+    from prism_core.oneil_adaptive_policy import MARKETS
+    captured = (getattr(agent, "_decision_input_bars", {}) or {}).get(ticker)
+    if not captured or captured.get("market") != market:
+        raise ValueError("DECISION_BARS_UNAVAILABLE")
+    entered_at = entered_at or datetime.now(timezone.utc).isoformat()
+    local_day = datetime.fromisoformat(entered_at).astimezone(MARKETS[market][0]).date()
+    atr, last_trade_date = atr14(captured["bars"], local_day)
+    return plan_for_entry(
+        market=market, symbol=ticker, entry_price=entry_price, initial_stop=stop_loss,
+        decision_ref=decision_ref, entered_at=entered_at, atr14=round(atr, 6),
+        atr14_source_ref=f"decision-input-bars:{market}:{ticker}:{captured['captured_at']}",
+        atr14_as_of=captured["captured_at"], atr14_last_trade_date=last_trade_date,
+        price_basis_ref=PRICE_BASIS[market])
+
+
 def capture_entry(agent, *, market, ticker, account_key, position_id, entry_price, stop_loss,
-                  decision_ref, entered_at=None):
-    """Open the SHADOW campaign for an actual first entry; returns the state or None."""
-    if not enabled():
+                  decision_ref, entered_at=None, plan=None, mode="SHADOW"):
+    """Open the campaign for an actual first entry; returns the state or None.
+
+    ``mode="LIVE"`` campaigns (micro-split LIVE) are opened whenever LIVE is on for
+    the market, with the plan that sized the real order; SHADOW needs its own flag.
+    """
+    from prism_core import micro_split_live
+    if not (enabled() or (mode == "LIVE" and micro_split_live.live_enabled(market))):
         return None
     try:
-        from prism_core.b3_ae_shadow import plan_for_entry
-        from prism_core.oneil_adaptive_policy import MARKETS
-        captured = (getattr(agent, "_decision_input_bars", {}) or {}).get(ticker)
-        if not captured or captured.get("market") != market:
-            raise ValueError("DECISION_BARS_UNAVAILABLE")
-        entered_at = entered_at or datetime.now(timezone.utc).isoformat()
-        local_day = datetime.fromisoformat(entered_at).astimezone(MARKETS[market][0]).date()
-        atr, last_trade_date = atr14(captured["bars"], local_day)
-        plan = plan_for_entry(
-            market=market, symbol=ticker, entry_price=entry_price, initial_stop=stop_loss,
-            decision_ref=decision_ref, entered_at=entered_at, atr14=round(atr, 6),
-            atr14_source_ref=f"decision-input-bars:{market}:{ticker}:{captured['captured_at']}",
-            atr14_as_of=captured["captured_at"], atr14_last_trade_date=last_trade_date,
-            price_basis_ref=PRICE_BASIS[market])
+        if plan is None:
+            plan = build_plan(agent, market=market, ticker=ticker, entry_price=entry_price, stop_loss=stop_loss,
+                              decision_ref=decision_ref, entered_at=entered_at)
         state = _store().open_campaign(account_key=str(account_key), position_id=str(position_id),
-                                       plan=plan, entered_at=entered_at)
-        logger.info("[B3_AE][%s] %s opened initial=%s", market, ticker, plan["initial_nominal"])
+                                       plan=plan, entered_at=plan["created_at"], mode=mode)
+        logger.info("[B3_AE][%s] %s opened mode=%s initial=%s", market, ticker, mode, plan["initial_nominal"])
         return state
     except Exception as error:  # noqa: BLE001 - SHADOW never affects the entry
         logger.warning("[B3_AE][%s] %s entry capture skipped: %s", market, ticker, error)
@@ -77,7 +89,8 @@ def capture_entry(agent, *, market, ticker, account_key, position_id, entry_pric
 
 def capture_exit(*, market, account_key, position_ids, exit_price, exit_at=None, reason=""):
     """Close campaigns of the exited legacy rows with the same price/time."""
-    if not enabled():
+    from prism_core import micro_split_live
+    if not (enabled() or micro_split_live.live_enabled(market)):
         return
     try:
         store = _store()

@@ -144,7 +144,11 @@ export function MetricsCards({
       label: t("metrics.simCurrentProfit"),
       value: formatPercent(summary.portfolio.total_profit || 0),
       change: `${t("metrics.holding")} ${summary.portfolio.total_stocks || 0}${t("metrics.stocks")} (${t("metrics.avgProfit")} ${formatPercent(summary.portfolio.avg_profit_rate || 0)})`,
-      changeValue: `${t("metrics.slotUsage")} ${summary.portfolio.slot_usage}`,
+      changeValue: `${t("metrics.slotUsage")} ${summary.portfolio.slot_usage}` +
+        (summary.portfolio.allocated_slots !== undefined &&
+        summary.portfolio.allocated_slots < (summary.portfolio.total_stocks || 0)
+          ? ` (${t("metrics.allocatedSlots")} ${summary.portfolio.allocated_slots.toFixed(2)})`
+          : ""),
       description: t("metrics.currentProfitDesc"),
       isPositive: (summary.portfolio.total_profit || 0) >= 0,
       icon: Zap,

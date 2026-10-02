@@ -89,7 +89,8 @@ def setup_logging(log_file: str = None) -> logging.Logger:
     return logger
 
 
-async def execute_buy_trade(ticker: str, company_name: str, logger: logging.Logger) -> Dict[str, Any]:
+async def execute_buy_trade(ticker: str, company_name: str, logger: logging.Logger,
+                            position_fraction: float = 1.0) -> Dict[str, Any]:
     """
     Execute actual buy order (async)
 
@@ -105,7 +106,9 @@ async def execute_buy_trade(ticker: str, company_name: str, logger: logging.Logg
         from trading.domestic_stock_trading import AsyncTradingContext
 
         async with AsyncTradingContext() as trading:
-            trade_result = await trading.async_buy_stock(stock_code=ticker)
+            # Micro-split / pilot entries carry position_fraction < 1.0: buy that share of one slot.
+            buy_amount = int(trading.buy_amount * position_fraction) if 0 < position_fraction < 1 else None
+            trade_result = await trading.async_buy_stock(stock_code=ticker, buy_amount=buy_amount)
 
         if trade_result['success']:
             logger.info(f"✅ Actual buy successful: {company_name}({ticker}) - {trade_result['message']}")
@@ -288,7 +291,11 @@ def main():
             # Execute actual buy
             if not args.dry_run:
                 logger.info(f"🚀 Executing buy order: {company_name}({ticker})")
-                trade_result = asyncio.run(execute_buy_trade(ticker, company_name, logger))
+                try:
+                    fraction = float(signal.get("position_fraction", 1) or 1)
+                except (TypeError, ValueError):
+                    fraction = 1.0
+                trade_result = asyncio.run(execute_buy_trade(ticker, company_name, logger, position_fraction=fraction))
             else:
                 logger.info(f"🔸 [DRY-RUN] Buy skipped: {company_name}({ticker})")
 

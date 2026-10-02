@@ -35,6 +35,11 @@ def slot_fraction(scenario: Any) -> float:
             return 1.0
     if not isinstance(scenario, dict):
         return 1.0
+    live = scenario.get("micro_split")
+    if isinstance(live, dict) and live.get("contract") == "micro-split-live-v1":
+        allocation = _fraction(live.get("allocation"))
+        if allocation is not None:
+            return allocation
     owned = scenario.get("_oneil_execution")
     if isinstance(owned, dict):
         allocation = _fraction(owned.get("strategy_allocation"))

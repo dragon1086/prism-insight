@@ -200,6 +200,10 @@ class SignalPublisher:
                 signal_data["sector"] = scenario.get("sector", "")
                 signal_data["rationale"] = scenario.get("rationale", "")
                 signal_data["buy_score"] = scenario.get("buy_score", 0)
+                # Slot fraction of the entry (micro-split / rebound pilot < 1.0):
+                # subscribers size buy_amount = their unit amount x position_fraction.
+                from prism_core.slot_weight import slot_fraction
+                signal_data["position_fraction"] = slot_fraction(scenario)
                 # market MUST propagate: BUY signals carry market via scenario.
                 # Without this it was dropped here, so the subscriber defaulted to
                 # "KR" and mis-routed US buys (APH/MU/UNH) to the domestic KIS API

@@ -226,6 +226,9 @@ def _stored_pyramid_ownership(raw):
             raw = json.loads(raw)
         if not isinstance(raw, dict):
             return "UNKNOWN"
+        if isinstance(raw.get("micro_split"), dict):
+            # In-slot B3 adds own this position; legacy pyramid rows stay out (100% cap).
+            return "MICRO_SPLIT"
         policy = raw.get("regime_entry_policy")
         pilot = raw.get("pilot")
         policy = {} if policy is None else policy
@@ -296,7 +299,8 @@ def get_existing_position_for_ticker(
         cursor.execute(query, (ticker, account_key) if account_key else (ticker,))
         rows = cursor.fetchall()
         ownership = {_stored_pyramid_ownership(row[1] if len(row) > 1 else None) for row in rows}
-        summary = "SPLIT_PILOT" if "SPLIT_PILOT" in ownership else ("UNKNOWN" if "UNKNOWN" in ownership else "LEGACY_OR_UNOWNED")
+        summary = ("MICRO_SPLIT" if "MICRO_SPLIT" in ownership else "SPLIT_PILOT" if "SPLIT_PILOT" in ownership
+                   else ("UNKNOWN" if "UNKNOWN" in ownership else "LEGACY_OR_UNOWNED"))
         prices = [float(r[0]) for r in rows if r[0] is not None]
         row_count = len(prices)
         avg_buy_price = (sum(prices) / row_count) if row_count else 0.0
@@ -343,6 +347,8 @@ def pyramid_add_possible_ignoring_regime(
     """
     if ownership == "SPLIT_PILOT":
         return False, "LEGACY_PYRAMID_BLOCKED_SPLIT_PILOT"
+    if ownership == "MICRO_SPLIT":
+        return False, "LEGACY_PYRAMID_BLOCKED_MICRO_SPLIT"
     if ownership == "UNKNOWN":
         return False, "LEGACY_PYRAMID_OWNERSHIP_UNKNOWN"
     if existing_row_count >= max_rows:
@@ -379,6 +385,8 @@ def evaluate_pyramid_add_gate(
     """
     if ownership == "SPLIT_PILOT":
         return False, "LEGACY_PYRAMID_BLOCKED_SPLIT_PILOT"
+    if ownership == "MICRO_SPLIT":
+        return False, "LEGACY_PYRAMID_BLOCKED_MICRO_SPLIT"
     if ownership == "UNKNOWN":
         return False, "LEGACY_PYRAMID_OWNERSHIP_UNKNOWN"
     regime = _regime_label(market_condition)

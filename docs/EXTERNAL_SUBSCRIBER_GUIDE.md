@@ -135,9 +135,16 @@ python examples/messaging/gcp_pubsub_subscriber_example.py
   "buy_score": 8,
   "source": "AI분석",
   "trade_success": true,
-  "trade_message": "매수 완료"
+  "trade_message": "매수 완료",
+  "position_fraction": 1.0
 }
 ```
+
+`position_fraction`은 이번 진입이 1슬롯 중 차지하는 비중입니다(0~1). 일반 진입은 1.0, 반등 시험매수는 0.5,
+초분할(B3) 진입은 0.30~0.80입니다. 자동매매 구독자는 `매수금액 = 본인 1슬롯 금액 × position_fraction`으로
+주문하십시오(예제 구독자는 이미 반영). 이 필드가 없는 과거 메시지는 1.0으로 취급합니다. 초분할 추가 매수는
+별도 시그널로 보내지 않습니다(기존 구독자가 추가 매수를 1슬롯 신규 매수로 오인하지 않도록). 매도는 보유 수량
+전량 기준이며 `sell_denominator`를 그대로 따릅니다.
 
 ### 매도 시그널 (SELL)
 

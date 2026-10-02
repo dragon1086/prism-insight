@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from observability.events import emit_event
+from prism_core.slot_weight import slot_fraction
 
 CONTEXT_SCHEMA_VERSION = 1
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -167,6 +168,8 @@ def build_trading_context(
         },
         "policy_context": {
             "regime_entry_policy": parsed.get("regime_entry_policy"),
+            "micro_split": parsed.get("micro_split"),
+            "slot_allocation": slot_fraction(parsed),
             "score_adjustment": parsed.get("score_adjustment"),
             "macro_adjustment": parsed.get("macro_adjustment"),
             "journal_reflection": parsed.get("journal_reflection"),
@@ -237,6 +240,7 @@ def emit_trading_context(
             "exit_kind": decision_snapshot.get("exit_kind"),
             "profit_rate_pct": decision_snapshot.get("profit_rate_pct"),
             "holding_days": decision_snapshot.get("holding_days"),
+            "slot_allocation": context["policy_context"]["slot_allocation"],
             **context,
         }
         if event_type == "candidate.evaluated" and research_context is not None:

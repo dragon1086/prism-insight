@@ -37,6 +37,7 @@ sys.path.insert(0, str(SCRIPT_DIR))  # Add examples/ folder for translation_util
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(TRADING_DIR))
 
+from prism_core.micro_split_live import dashboard_fields  # noqa: E402
 from prism_core.slot_weight import weighted_profit_rate  # noqa: E402
 
 # KIS market data import for market index data
@@ -242,6 +243,8 @@ class DashboardDataGenerator:
                 holding['profit_rate'] = ((current_price - buy_price) / buy_price) * 100
             else:
                 holding['profit_rate'] = 0
+            # Slot allocation (micro-split / pilot < 1.0) and cost-weighted entry after adds
+            holding.update(dashboard_fields(holding['scenario'], buy_price=buy_price, current_price=current_price))
             
             # 투자 기간 계산
             buy_date = holding.get('buy_date', '')
@@ -274,6 +277,8 @@ class DashboardDataGenerator:
             
             # scenario JSON 파싱
             trade['scenario'] = self.parse_json_field(trade.get('scenario', ''))
+            trade.update(dashboard_fields(trade['scenario'], buy_price=trade.get('buy_price'),
+                                          current_price=trade.get('sell_price')))
             
             history.append(trade)
         
@@ -445,6 +450,9 @@ class DashboardDataGenerator:
             'avg_profit_rate': avg_profit_rate,
             'slot_usage': f'{len(holdings)}/10',
             'slot_percentage': (len(holdings) / 10) * 100,
+            # Σ slot allocation (micro-split / pilot rows count by their fraction)
+            'allocated_slots': round(sum(h.get('allocation', 1.0) for h in holdings), 4),
+            'slot_weighted_profit': sum(h.get('slot_profit_rate', h.get('profit_rate', 0)) for h in holdings),
             'sector_distribution': sector_distribution,
             'period_distribution': period_distribution
         }

@@ -139,8 +139,15 @@ class B3AeWorker:
                         continue
                     decision = self.store.evaluate(campaign["campaign_id"], evidence["evidence"], now=current,
                                                    current_stop=row["stop_loss"] or campaign["plan"]["initial_stop"])
-                    result["rows"].append(dict(campaign_id=campaign["campaign_id"], status=decision["action"],
-                                               reason=decision["reason"], target=decision["target_allocation"]))
+                    row_result = dict(campaign_id=campaign["campaign_id"], status=decision["action"],
+                                      reason=decision["reason"], target=decision["target_allocation"],
+                                      mode=campaign.get("mode", "SHADOW"))
+                    if (decision["action"] == "ADD" and campaign.get("mode") == "LIVE"
+                            and "live_add" in self.providers):
+                        live = self.providers["live_add"](campaign, decision, current)
+                        row_result["live"] = {k: live.get(k) for k in ("status", "allocation", "cash")}
+                        result["orders_submitted"] += int(bool((live.get("broker") or {}).get("success")))
+                    result["rows"].append(row_result)
                 except Exception as error:  # noqa: BLE001 - one campaign never stops the others
                     result["rows"].append(dict(campaign_id=campaign["campaign_id"], status="ERROR",
                                                error_type=type(error).__name__, detail=str(error)[:120]))
