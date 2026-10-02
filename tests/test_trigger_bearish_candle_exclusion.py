@@ -308,3 +308,67 @@ def test_kr_volume_surge_still_excludes_bearish_candle():
     result = trigger_batch.trigger_morning_volume_surge("20260804", snapshot, prev, cap)
 
     assert "BEAR" not in result.index
+
+
+# --- 전일 종가 아래 갭하락 반등 (2026-10-02 STX) ----------------------------
+#
+# STX 는 전일 대비 -11.5% 였는데 시가보다 조금 올라 "상승"으로 분류돼
+# US Volume Surge Top 에 잡혔다. 장중 양봉 검사(``Close > Open``)만으로는
+# 갭하락 반등을 구분하지 못하므로 전일 종가 대비 >= 0 을 함께 본다.
+
+
+def test_kr_volume_surge_excludes_gap_down_bounce_below_previous_close(caplog):
+    snapshot = _frame(
+        {
+            "BULL": {"Open": 101.0, "Close": 104.0, "Volume": 2_000_000, "Amount": KR_AMOUNT},
+            "FLAT": {"Open": 98.0, "Close": 100.0, "Volume": 2_000_000, "Amount": KR_AMOUNT},
+            "GAPDOWN": {"Open": 85.0, "Close": 89.0, "Volume": 3_000_000, "Amount": KR_AMOUNT},
+        }
+    )
+    prev = _frame(
+        {t: {"Open": 100.0, "Close": 100.0, "Volume": 1_000_000, "Amount": KR_AMOUNT}
+         for t in ("BULL", "FLAT", "GAPDOWN")}
+    )
+    cap = pd.DataFrame({"시가총액": {t: KR_CAP_FLOOR * 2 for t in ("BULL", "FLAT", "GAPDOWN")}})
+
+    with caplog.at_level("INFO", logger="trigger_batch"):
+        result = trigger_batch.trigger_morning_volume_surge("20261002", snapshot, prev, cap)
+
+    assert "GAPDOWN" not in result.index
+    assert {"BULL", "FLAT"} <= set(result.index)  # 전일 종가 회복(0%)은 통과
+    assert "reason=close_below_previous_close" in caplog.text
+    assert "sample=GAPDOWN" in caplog.text
+
+
+_US_GAP_DOWN_SCENARIO = f"""
+import sys
+sys.path.insert(0, {str(REPO_ROOT / "prism-us")!r})
+
+import pandas as pd
+import us_trigger_batch as us
+
+A = {US_AMOUNT}
+row = lambda o, h, l, c, v: {{"Open": o, "High": h, "Low": l, "Close": c, "Volume": v, "Amount": A}}
+snapshot = pd.DataFrame.from_dict({{
+    "BULL": row(101.0, 105.0, 100.0, 104.0, 2_000_000),
+    "GAPDOWN": row(85.0, 89.5, 84.0, 89.0, 3_000_000),
+}}, orient="index")
+prev = pd.DataFrame.from_dict({{t: row(100.0, 101.0, 99.0, 100.0, 1_000_000) for t in ("BULL", "GAPDOWN")}},
+                              orient="index")
+cap = pd.DataFrame({{"MarketCap": {{"BULL": 5e10, "GAPDOWN": 5e10}}}})
+
+for name, fn in (("VOLUME", us.trigger_morning_volume_surge), ("CLOSING", us.trigger_afternoon_closing_strength)):
+    result = fn("20261002", snapshot, prev, cap)
+    print(name + "=" + ",".join(str(t) for t in result.index))
+"""
+
+
+def test_us_volume_surge_and_closing_strength_exclude_gap_down_bounce():
+    stdout = _run_us_scenario(_US_GAP_DOWN_SCENARIO)
+    lines = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line
+                 and line.split("=", 1)[0] in ("VOLUME", "CLOSING"))
+
+    for name in ("VOLUME", "CLOSING"):
+        selected = [t for t in lines[name].split(",") if t]
+        assert "GAPDOWN" not in selected, name
+        assert "BULL" in selected, name

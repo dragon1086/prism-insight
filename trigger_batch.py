@@ -414,6 +414,18 @@ def _compute_ma20(ticker: str, trade_date: str, lookback_days: int = 20) -> floa
 
 
 # --- Morning trigger functions (based on market open snapshot) ---
+def _drop_below_previous_close(snap: pd.DataFrame, trade_date: str, trigger: str, change_col: str) -> None:
+    """Log rows closing below the previous close that a trigger is about to exclude."""
+    below = snap[change_col] < 0.0
+    rejected = int(below.sum())
+    if rejected:
+        logger.info(
+            "[SCREENING-FILTER] market=KR trigger=%s trade_date=%s reason=close_below_previous_close "
+            "rejected=%d sample=%s",
+            trigger, trade_date, rejected, ",".join(str(t) for t in snap.index[below][:20]),
+        )
+
+
 def trigger_morning_volume_surge(trade_date: str, snapshot: pd.DataFrame, prev_snapshot: pd.DataFrame, cap_df: pd.DataFrame = None, top_n: int = 10) -> pd.DataFrame:
     """
     [Morning Trigger 1] Top stocks with intraday volume surge
@@ -470,6 +482,12 @@ def trigger_morning_volume_surge(trade_date: str, snapshot: pd.DataFrame, prev_s
             logger.debug(f"Error during debugging: {e}")
 
     snap["is_rising"] = snap["Close"] > snap["Open"]
+
+    # A gap-down bounce is "rising" against the open while still trading below
+    # the previous close (STX -11.5% on 2026-10-02).  A volume surge on a down
+    # day is distribution, not the momentum this trigger looks for.
+    _drop_below_previous_close(snap, trade_date, "morning_volume_surge", "prev_day_change_rate")
+    snap = snap[snap["prev_day_change_rate"] >= 0.0]
 
     # Filter for volume increase rate 30% or more
     snap = snap[snap["volume_increase_rate"] >= 30.0]
