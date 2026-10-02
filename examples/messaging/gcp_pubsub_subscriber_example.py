@@ -474,6 +474,35 @@ def _position_fraction(signal: Dict[str, Any]) -> float:
     return fraction if 0 < fraction <= 1 else 1.0
 
 
+DEFAULT_MAX_SIGNAL_AGE_MINUTES = 30.0
+
+
+def _max_signal_age_minutes() -> Optional[float]:
+    """Stale-signal cutoff from SUBSCRIBER_MAX_SIGNAL_AGE_MINUTES; None disables the guard."""
+    raw = os.getenv("SUBSCRIBER_MAX_SIGNAL_AGE_MINUTES", "").strip().lower()
+    if raw in ("0", "off", "false", "no"):
+        return None
+    try:
+        value = float(raw) if raw else DEFAULT_MAX_SIGNAL_AGE_MINUTES
+    except ValueError:
+        value = DEFAULT_MAX_SIGNAL_AGE_MINUTES
+    return value if value > 0 else None
+
+
+def _stale_signal_age(publish_time, now: Optional[datetime] = None) -> Optional[float]:
+    """Minutes since publish when older than the cutoff, else None.
+
+    Pub/Sub keeps unacked messages for days, so a subscriber that was down replays
+    old BUY/SELL signals on restart, unordered and at stale prices.
+    """
+    limit = _max_signal_age_minutes()
+    if limit is None or publish_time is None:
+        return None
+    now = now or datetime.now(publish_time.tzinfo)
+    age = (now - publish_time).total_seconds() / 60
+    return age if age > limit else None
+
+
 async def execute_buy_trade(ticker: str, company_name: str, logger: logging.Logger, limit_price: Optional[int] = None,
                             position_fraction: float = 1.0) -> Dict[str, Any]:
     """Execute actual buy order (async)
@@ -953,6 +982,19 @@ def main():
         """GCP Pub/Sub message callback"""
         try:
             signal = json.loads(message.data.decode("utf-8"))
+            stale_age = _stale_signal_age(getattr(message, "publish_time", None))
+            if stale_age is not None:
+                note = (f"[STALE_SIGNAL] skipped {signal.get('market', 'KR')} {signal.get('type', 'UNKNOWN')} "
+                        f"{signal.get('company_name', '')}({signal.get('ticker', '')}) "
+                        f"published {stale_age:.0f} min ago (> {_max_signal_age_minutes():.0f} min) - no order")
+                logger.warning(note)
+                try:
+                    from tools.subscriber_healthcheck import send_alert
+                    send_alert(f"⚠️ {note}")
+                except Exception as alert_err:
+                    logger.error(f"[STALE_SIGNAL] Could not send alert: {alert_err}")
+                message.ack()
+                return
             handle_signal(signal)
             message.ack()
         except Exception as e:

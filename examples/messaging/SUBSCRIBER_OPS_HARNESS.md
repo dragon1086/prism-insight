@@ -122,6 +122,16 @@ env -i date                    # 셸 TZ 오염 없이 시스템 시간 확인
 ```
 
 텔레그램 경보를 받으려면 `.env`에: `OAUTH_ALERT_BOT_TOKEN`, `SUBSCRIBER_ALERT_CHAT_ID`.
+둘 중 하나라도 없으면 healthcheck는 DOWN을 로그에만 남기고 **경보를 보내지 못한다**
+(2026-09-16 재부팅 후 17일간 다운을 아무도 몰랐던 원인).
+
+**재부팅 후 자동 기동**: tmux 세션은 재부팅에서 살아남지 않는다. macOS는 로그인 시
+`~/work/restart_subscriber.sh`를 실행하는 LaunchAgent(`RunAtLoad`)를 등록한다.
+
+**오래된 신호 건너뛰기**: Pub/Sub는 ack 안 된 메시지를 7일 보관하므로, 다운됐던 subscriber를
+재시작하면 지난 BUY/SELL이 순서 없이 옛 가격으로 재생된다. subscriber는 발행 후
+`SUBSCRIBER_MAX_SIGNAL_AGE_MINUTES`(기본 30분)가 지난 신호를 주문 없이 ack하고
+`[STALE_SIGNAL]` 경고·텔레그램 경보를 남긴다. 놓친 매매는 PRISM 보유와 계좌 잔고를 비교해 사람이 정리한다.
 
 **[검증 게이트]** `tail logs/subscriber_healthcheck.log` 에 `status=ALIVE`.
 
