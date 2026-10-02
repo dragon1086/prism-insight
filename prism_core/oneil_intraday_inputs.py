@@ -13,6 +13,8 @@ from zoneinfo import ZoneInfo
 VERSION = "oneil-intraday-inputs-v1"
 STEP = timedelta(minutes=5)
 NY = ZoneInfo("America/New_York")
+# Regular session per market (same table as the adaptive policy).
+SESSIONS = {"US": (NY, (9, 30), (16, 0)), "KR": (ZoneInfo("Asia/Seoul"), (9, 0), (15, 30))}
 
 
 def _time(value):
@@ -38,7 +40,7 @@ def _number(value, positive=False):
 
 def build_intraday_inputs(*, symbol, bars, calendar, as_of, retrieved_at,
                           price_basis_ref, source_ref, kind, retrieval_started_at=None,
-                          volume_required=True):
+                          volume_required=True, market="US", prior_session_closes=None):
     """Require all 21 exact regular-session prefixes, never fill missing bars.
 
     ``calendar`` has ``calendar_ref`` and exactly 21 chronological ``sessions``
@@ -49,6 +51,10 @@ def build_intraday_inputs(*, symbol, bars, calendar, as_of, retrieved_at,
     current-session prefix strict but makes the matched-volume block best-effort:
     an unmatched comparison (short/half-day prior session, prior prefix gap or a
     zero prior denominator) yields ``volume=None`` instead of a non-OK status.
+
+    ``market`` selects the local regular session (US 09:30-16:00 New York, KR
+    09:00-15:30 Seoul). ``prior_session_closes`` (trade_date -> completed daily
+    close) supplies the 20-session trend when only today's bars are fetched.
     """
     result = {"contract_version": VERSION, "symbol": symbol, "kind": kind,
               "source_ref": source_ref, "price_basis_ref": price_basis_ref,
@@ -63,6 +69,7 @@ def build_intraday_inputs(*, symbol, bars, calendar, as_of, retrieved_at,
         return result
 
     try:
+        zone, (open_h, open_m), (close_h, close_m) = SESSIONS[market]
         for value in (symbol, price_basis_ref, source_ref):
             _ref(value)
         if kind not in ("LIVE_CAPTURE", "RECONSTRUCTED_REPLAY"):
@@ -85,13 +92,13 @@ def build_intraday_inputs(*, symbol, bars, calendar, as_of, retrieved_at,
         for session in sessions:
             day = date.fromisoformat(session["trade_date"])
             opened, closed = _time(session["open_at"]), _time(session["close_at"])
-            local_open, local_close = opened.astimezone(NY), closed.astimezone(NY)
+            local_open, local_close = opened.astimezone(zone), closed.astimezone(zone)
             if (day.weekday() >= 5 or local_open.date() != day or local_close.date() != day
                     or (local_open.hour, local_open.minute, local_open.second,
-                        local_open.microsecond) != (9, 30, 0, 0)
-                    or local_close.hour > 16
-                    or (local_close.hour == 16 and (local_close.minute or local_close.second
-                                                   or local_close.microsecond))
+                        local_open.microsecond) != (open_h, open_m, 0, 0)
+                    or (local_close.hour, local_close.minute) > (close_h, close_m)
+                    or ((local_close.hour, local_close.minute) == (close_h, close_m)
+                        and (local_close.second or local_close.microsecond))
                     or not timedelta(0) < closed - opened <= timedelta(minutes=390)
                     or (closed - opened) % STEP
                     or (previous is not None and day <= previous)):
@@ -119,7 +126,7 @@ def build_intraday_inputs(*, symbol, bars, calendar, as_of, retrieved_at,
             # Future/current-forming and unrelated sessions cannot affect evidence.
             if stamp + STEP > now:
                 continue
-            period = period_by_date.get(stamp.astimezone(NY).date().isoformat())
+            period = period_by_date.get(stamp.astimezone(zone).date().isoformat())
             if period is None or not period[0] <= stamp < period[1]:
                 continue
             if (stamp - period[0]) % STEP:
@@ -130,7 +137,7 @@ def build_intraday_inputs(*, symbol, bars, calendar, as_of, retrieved_at,
                     action_unknown = True
                 elif _number(raw[field]):
                     action_present = True
-            day = stamp.astimezone(NY).date().isoformat()
+            day = stamp.astimezone(zone).date().isoformat()
             if day != current_day and stamp + STEP == period[1]:
                 # Final regular bar of a completed prior session = its daily close.
                 # A duplicate/invalid one only removes trend evidence, never the
@@ -190,6 +197,13 @@ def build_intraday_inputs(*, symbol, bars, calendar, as_of, retrieved_at,
         # Completed-daily trend for adaptive adds: the 20 sessions strictly before
         # the current trade date. Any missing close leaves it absent, never true.
         prior = periods[:-1]
+        if prior_session_closes is not None:
+            session_closes = {}
+            for day, _, _ in prior:
+                try:
+                    session_closes[day] = _number(prior_session_closes[day], True)
+                except (KeyError, ValueError, TypeError, InvalidOperation):
+                    session_closes[day] = None
         if all(session_closes.get(day) is not None for day, _, _ in prior):
             result["trend"] = {"basis": "COMPLETED_DAILY_CLOSE_SMA20",
                                "as_of": prior[-1][2].isoformat(),

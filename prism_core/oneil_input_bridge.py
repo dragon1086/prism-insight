@@ -3,7 +3,7 @@
 from copy import deepcopy
 
 from prism_core.oneil_adaptive_policy import (
-    VERSION,
+    V1_VERSION,
     _hash,
     _num,
     _time,
@@ -45,7 +45,7 @@ def assemble_evidence(
             or intraday_input["price_basis_ref"] != plan["setup"]["price_basis_ref"]
         ):
             return fail("INTRADAY_IDENTITY_MISMATCH")
-        if plan["policy_version"] != VERSION and intraday_input.get("volume") is None:
+        if plan["policy_version"] == V1_VERSION and intraday_input.get("volume") is None:
             # Frozen v1 plans keep the strict matched-volume input contract.
             return fail("MATCHED_VOLUME_REQUIRED_FOR_V1")
         as_of = _time(intraday_input["as_of"])
@@ -100,8 +100,8 @@ def assemble_evidence(
                 for k in ("bars", "volume", "market_window")
             }
         )
-        if plan["policy_version"] == VERSION:
-            # Absent trend stays absent; the policy blocks adds, not the first entry.
+        if plan["policy_version"] != V1_VERSION:
+            # B3 (v2/v3-ae): absent trend stays absent; the policy blocks adds, not the first entry.
             facts["trend"] = deepcopy(intraday_input.get("trend"))
         return dict(
             result,

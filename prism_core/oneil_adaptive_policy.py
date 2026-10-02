@@ -1,6 +1,6 @@
 """Isolated caller-attested research policy. No orders, I/O or stop mutation."""
 from copy import deepcopy
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 import hashlib
 import json
@@ -12,10 +12,20 @@ EVIDENCE_VERSION = "oneil-adaptive-evidence-v2"
 V1_VERSION = "oneil-adaptive-v1"
 V1_EVIDENCE_VERSION = "oneil-adaptive-evidence-v1"
 VERSIONS = (V1_VERSION, VERSION)
+# B3 for every actual entry (2026-10-02): v2 adds/ladder, initial allocation filled
+# at the actual entry, no setup-review attestation, US and KR sessions. SHADOW only.
+V3_AE_VERSION = "oneil-adaptive-v3-ae"
+V3_AE_EVIDENCE_VERSION = "oneil-adaptive-evidence-v3-ae"
+ALL_VERSIONS = VERSIONS + (V3_AE_VERSION,)
 NY = ZoneInfo("America/New_York")
+# Regular session per market: local timezone, open, close (both 390 minutes).
+MARKETS = {"US": (NY, time(9, 30), time(16, 0)),
+           "KR": (ZoneInfo("Asia/Seoul"), time(9, 0), time(15, 30))}
 _SETUP_V1 = frozenset({"proper_base", "pivot", "as_of", "source_ref", "price_basis_ref",
                        "fundamental_leader", "fundamental_source_ref", "fundamental_as_of"})
 _SETUP_V2 = _SETUP_V1 | {"atr14", "atr14_source_ref", "atr14_as_of", "atr14_last_trade_date"}
+_SETUP_V3_AE = frozenset({"basis", "pivot", "as_of", "source_ref", "price_basis_ref",
+                          "atr14", "atr14_source_ref", "atr14_as_of", "atr14_last_trade_date"})
 
 
 def _num(value, positive=False):
@@ -49,7 +59,32 @@ def _hash(value):
 
 
 def evidence_version(plan):
+    if plan["policy_version"] == V3_AE_VERSION:
+        return V3_AE_EVIDENCE_VERSION
     return V1_EVIDENCE_VERSION if plan["policy_version"] == V1_VERSION else EVIDENCE_VERSION
+
+
+def market_zone(plan):
+    """Local timezone of the plan's market; v1/v2 plans are always US."""
+    return MARKETS[plan.get("market", "US")][0]
+
+
+def _check_atr(setup, created, zone):
+    # ATR14 is frozen point-in-time evidence: its 14 completed sessions end
+    # strictly before both its own observation date and the plan's local date.
+    _ref(setup["atr14_source_ref"])
+    atr_as_of = _time(setup["atr14_as_of"])
+    if not isinstance(setup["atr14_last_trade_date"], str):
+        raise ValueError("ATR session date required")
+    last_trade_date = date.fromisoformat(setup["atr14_last_trade_date"])
+    if (atr_as_of > created or last_trade_date >= created.astimezone(zone).date()
+            or last_trade_date >= atr_as_of.astimezone(zone).date()):
+        raise ValueError("future or same-session ATR")
+    # Bound staleness independently of the setup builder: observed within a day
+    # of the plan, ending no more than 5 calendar days before the plan's local date.
+    if (created - atr_as_of > timedelta(days=1)
+            or (created.astimezone(zone).date() - last_trade_date).days > 5):
+        raise ValueError("stale ATR")
 
 
 def initial_sizing(entry_reference, atr14):
@@ -62,16 +97,25 @@ def initial_sizing(entry_reference, atr14):
 
 
 def create_plan(*, symbol, entry_reference, initial_stop, source_decision_ref,
-                created_at, setup, entry_eligible, fee_bps=10, policy_version=VERSION):
-    """Freeze explicit proper-base and leader attestations, never infer them."""
+                created_at, setup, entry_eligible, fee_bps=10, policy_version=VERSION,
+                market="US"):
+    """Freeze explicit proper-base and leader attestations, never infer them.
+
+    v3-ae instead freezes the actual entry (pivot = entry) and ATR14 only.
+    """
     entry, stop = _num(entry_reference, True), _num(initial_stop, True)
     created, fee = _time(created_at), _num(fee_bps) / 10000
-    if policy_version not in VERSIONS:
+    if policy_version not in ALL_VERSIONS:
         raise ValueError("registered policy version required")
     if entry_eligible is not True or stop >= entry or fee_bps not in (10, 25):
         raise ValueError("eligible entry, valid stop and registered fee required")
     _ref(symbol)
     _ref(source_decision_ref)
+    if policy_version == V3_AE_VERSION:
+        return _create_v3_ae_plan(symbol=symbol, entry=entry, stop=stop, created=created, fee=fee,
+                                  source_decision_ref=source_decision_ref, setup=setup, market=market)
+    if market != "US":
+        raise ValueError("v1/v2 plans are US only")
     if setup["proper_base"] != "VERIFIED" or setup["fundamental_leader"] is not True:
         raise ValueError("explicit base and leader evidence required")
     if set(setup) != (_SETUP_V1 if policy_version == V1_VERSION else _SETUP_V2):
@@ -93,21 +137,7 @@ def create_plan(*, symbol, entry_reference, initial_stop, source_decision_ref,
                 "authority": "CALLER_ATTESTED_NOT_AUTHENTICATED"}
         plan["plan_hash"] = _hash(plan)
         return plan
-    # ATR14 is frozen point-in-time evidence: its 14 completed sessions end
-    # strictly before both its own observation date and the plan's NY date.
-    _ref(setup["atr14_source_ref"])
-    atr_as_of = _time(setup["atr14_as_of"])
-    if not isinstance(setup["atr14_last_trade_date"], str):
-        raise ValueError("ATR session date required")
-    last_trade_date = date.fromisoformat(setup["atr14_last_trade_date"])
-    if (atr_as_of > created or last_trade_date >= created.astimezone(NY).date()
-            or last_trade_date >= atr_as_of.astimezone(NY).date()):
-        raise ValueError("future or same-session ATR")
-    # Bound staleness independently of the setup builder: observed within a day
-    # of the plan, ending no more than 5 calendar days before the plan's NY date.
-    if (created - atr_as_of > timedelta(days=1)
-            or (created.astimezone(NY).date() - last_trade_date).days > 5):
-        raise ValueError("stale ATR")
+    _check_atr(setup, created, NY)
     stop_proxy, initial = initial_sizing(entry, setup["atr14"])
     plan = {"policy_version": VERSION, "mode": "RESEARCH_ONLY", "market": "US",
             "symbol": symbol, "entry_reference": str(entry), "initial_stop": str(stop),
@@ -123,10 +153,36 @@ def create_plan(*, symbol, entry_reference, initial_stop, source_decision_ref,
     return plan
 
 
+def _create_v3_ae_plan(*, symbol, entry, stop, created, fee, source_decision_ref, setup, market):
+    if market not in MARKETS:
+        raise ValueError("unsupported market")
+    if set(setup) != _SETUP_V3_AE or setup["basis"] != "ACTUAL_ENTRY":
+        raise ValueError("strict actual-entry setup required")
+    if _num(setup["pivot"], True) != entry:
+        raise ValueError("actual-entry pivot must equal the entry")
+    for key in ("source_ref", "price_basis_ref"):
+        _ref(setup[key])
+    if _time(setup["as_of"]) > created:
+        raise ValueError("future setup")
+    _check_atr(setup, created, MARKETS[market][0])
+    stop_proxy, initial = initial_sizing(entry, setup["atr14"])
+    plan = {"policy_version": V3_AE_VERSION, "mode": "RESEARCH_ONLY", "market": market,
+            "symbol": symbol, "entry_reference": str(entry), "initial_stop": str(stop),
+            "source_decision_ref": source_decision_ref, "created_at": created.isoformat(),
+            # Same 14 calendar-day add window as v2 (about 10 sessions).
+            "expires_at": (created + timedelta(days=14)).isoformat(),
+            "setup": deepcopy(setup), "fee_rate": str(fee),
+            "risk_limit": str((entry - stop) / entry),
+            "stop_proxy": str(stop_proxy), "initial_nominal": str(initial),
+            "authority": "CALLER_ATTESTED_NOT_AUTHENTICATED"}
+    plan["plan_hash"] = _hash(plan)
+    return plan
+
+
 def _validate(plan):
     content = deepcopy(plan)
     digest = content.pop("plan_hash", None)
-    if content.get("policy_version") not in VERSIONS or digest != _hash(content):
+    if content.get("policy_version") not in ALL_VERSIONS or digest != _hash(content):
         raise ValueError("plan version or hash mismatch")
     rebuilt = create_plan(symbol=plan["symbol"], entry_reference=plan["entry_reference"],
                           initial_stop=plan["initial_stop"],
@@ -134,12 +190,13 @@ def _validate(plan):
                           created_at=plan["created_at"], setup=plan["setup"],
                           entry_eligible=True,
                           fee_bps=int(_num(plan["fee_rate"]) * 10000),
-                          policy_version=plan["policy_version"])
+                          policy_version=plan["policy_version"],
+                          market=plan.get("market", "US"))
     if rebuilt != plan:
         raise ValueError("noncanonical plan")
 
 
-def _trend_above_sma20(trend, today, opened, calendar_ref):
+def _trend_above_sma20(trend, today, opened, calendar_ref, zone=NY):
     """Latest completed daily close versus SMA20 of the last 20 completed sessions.
 
     Every session ends strictly before the current trade date and comes from the
@@ -156,7 +213,7 @@ def _trend_above_sma20(trend, today, opened, calendar_ref):
            for day in days):
         raise ValueError("future trend session")
     as_of = _time(trend["as_of"])
-    if (as_of.astimezone(NY).date() != date.fromisoformat(days[-1]) or as_of > opened
+    if (as_of.astimezone(zone).date() != date.fromisoformat(days[-1]) or as_of > opened
             or opened - as_of > timedelta(days=5)):
         raise ValueError("stale or future trend")
     values = [_num(close, True) for close in closes]
@@ -168,7 +225,9 @@ def evaluate_target(plan, evidence, *, now, cumulative_allocation, remaining_all
                     last_add_bar_end=None, add_permission="AVAILABLE"):
     """Return a sizing intent only; persisted last-add clock is caller-owned."""
     _validate(plan)
-    v2 = plan["policy_version"] == VERSION
+    v3_ae = plan["policy_version"] == V3_AE_VERSION
+    v2 = plan["policy_version"] == VERSION or v3_ae  # v3-ae keeps the B3 ladder
+    zone, session_open, session_close = MARKETS[plan.get("market", "US")]
     current = _time(now)
     deployed, remaining, units, cost, stop = map(_num, (
         cumulative_allocation, remaining_allocation, normalized_units, remaining_entry_cost, current_stop))
@@ -218,6 +277,9 @@ def evaluate_target(plan, evidence, *, now, cumulative_allocation, remaining_all
         return result("ADD_NOT_AVAILABLE")
     if not _time(plan["created_at"]) <= current < _time(plan["expires_at"]):
         return result("PLAN_NOT_ACTIVE")
+    if v3_ae and not deployed:
+        # The initial allocation is filled only at the actual entry, never later.
+        return result("INITIAL_FILLED_AT_ENTRY_ONLY")
     try:
         if facts["source"] not in ("regular", "mechanical"):
             raise ValueError("source")
@@ -225,14 +287,12 @@ def evaluate_target(plan, evidence, *, now, cumulative_allocation, remaining_all
         _ref(session["source_ref"])
         opened, closed = _time(session["open_at"]), _time(session["close_at"])
         today = date.fromisoformat(session["trade_date"])
-        local_open, local_close = (stamp.astimezone(NY) for stamp in (opened, closed))
+        local_open, local_close = (stamp.astimezone(zone) for stamp in (opened, closed))
         if session["verified"] is not True or not opened <= current < closed:
             raise ValueError("regular session")
         if (local_open.date() != today or local_close.date() != today or today.weekday() >= 5
-                or (local_open.hour, local_open.minute, local_open.second, local_open.microsecond)
-                != (9, 30, 0, 0) or local_close.hour > 16
-                or (local_close.hour == 16 and (local_close.minute or local_close.second
-                                               or local_close.microsecond))
+                or local_open.timetz().replace(tzinfo=None) != session_open
+                or local_close.timetz().replace(tzinfo=None) > session_close
                 or not timedelta(0) < closed - opened <= timedelta(hours=6, minutes=30)):
             raise ValueError("session period")
         bars = facts["bars"]
@@ -273,7 +333,7 @@ def evaluate_target(plan, evidence, *, now, cumulative_allocation, remaining_all
                 trend = facts.get("trend")
                 if trend is None:
                     return result("MISSING_TREND_EVIDENCE", evidence_status="MISSING")
-                if not _trend_above_sma20(trend, today, opened, session["source_ref"]):
+                if not _trend_above_sma20(trend, today, opened, session["source_ref"], zone):
                     return result("TREND_NOT_CONFIRMED", evidence_status="CONDITION_NOT_MET")
         else:
             volume = facts["volume"]
