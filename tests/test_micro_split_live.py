@@ -147,7 +147,7 @@ def test_execute_add_updates_row_orders_delta_and_reports(live_on, monkeypatch, 
     scenario = {"stop_loss": 93, "micro_split": live.entry_record(
         plan={"initial_nominal": "0.5", "policy_version": "v3", "plan_hash": "h", "entry_reference": price / 1.02},
         unit_amount=unit, market=market, entered_at="t0")}
-    scenario["micro_split"]["add_plan"] = {"plan_hash": "ph", "status": "ACTIVE"}
+    scenario["micro_split"]["add_plan"] = {"plan_hash": "ph", "status": "ACTIVE", "valid_for": "2026-10-05"}
     meta = {"plan_hash": "ph", "scenario_id": "breakout_1", "scenario_type": "breakout", "lens": ["oneil"],
             "session": "2026-10-05", "trigger_price": price, "rationale": "prior high reclaimed on volume"}
     conn = sqlite3.connect(tmp_path / "h.sqlite")

@@ -462,3 +462,29 @@ def test_lens_labels_are_normalized_and_never_drop_a_scenario():
     assert plan["scenarios"][0]["lens"] == ["oneil", "druckenmiller", "quant_risk"]
     plan, _ = _plan(_scenario(lens=("soros",)), _scenario("accel_1", "acceleration", 0.65, gap_up_min_pct=3))
     assert plan["scenarios"][0]["lens"] == []
+
+
+def test_tomorrows_review_plan_does_not_replace_todays_plan():
+    # 2026-10-02: US reviews run at 10:15/14:30 ET (in session) and plan the next session.
+    today, tomorrow = "2026-10-05", "2026-10-06"
+    block = {"allocation": "0.45", "legs": []}
+    plan_today, _ = _plan(valid_for=today)
+    P.store(block, plan_today, [], raw={"x": 1}, source="BUY", created_at="t1")
+    plan_next, _ = _plan(valid_for=tomorrow, source="REVIEW")
+    P.store(block, plan_next, [], raw={"x": 2}, source="REVIEW", created_at="t2")
+    assert P.plan_for_session(block, today)["plan_hash"] == plan_today["plan_hash"]
+    assert P.plan_for_session(block, tomorrow)["plan_hash"] == plan_next["plan_hash"]
+    assert block["add_plan"]["valid_for"] == tomorrow  # latest plan for messages
+    assert P.plan_for_session(block, "2026-10-07") is None
+    # A sell decision cancels every pending plan.
+    cancelled, _ = P.validate_plan({"cancel": True, "reason": "SELL_DECISION"}, market="KR",
+                                   source="SELL_DECISION", created_at="t3", valid_for=today,
+                                   allocation="0.45", last_step="0.45")
+    P.store(block, cancelled, [], raw={"cancel": True}, source="REVIEW", created_at="t3")
+    assert {p["status"] for p in block["add_plans"].values()} == {"CANCELLED"}
+    assert P.plan_for_session(block, tomorrow)["status"] == "CANCELLED"
+    # Only the newest three sessions are kept.
+    for day in ("2026-10-07", "2026-10-08", "2026-10-09"):
+        plan, _ = _plan(valid_for=day, source="REVIEW")
+        P.store(block, plan, [], raw={"d": day}, source="REVIEW", created_at=day)
+    assert sorted(block["add_plans"]) == ["2026-10-07", "2026-10-08", "2026-10-09"]

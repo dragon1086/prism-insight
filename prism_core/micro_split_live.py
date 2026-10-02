@@ -379,7 +379,8 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
         if block is None:
             agent.conn.rollback()
             return {"status": "NOT_MICRO_SPLIT"}
-        if (block.get("add_plan") or {}).get("plan_hash") != meta["plan_hash"]:
+        from prism_core.add_plan import plan_for_session
+        if (plan_for_session(block, meta.get("session")) or {}).get("plan_hash") != meta["plan_hash"]:
             agent.conn.rollback()
             return {"status": "PLAN_CHANGED"}
         before = float(block["allocation"])

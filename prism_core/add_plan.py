@@ -33,6 +33,7 @@ MAX_STEP = Decimal("0.25")
 MAX_CHASE_PCT = Decimal("2.0")
 MIN_SCENARIOS, MAX_SCENARIOS = 2, 4
 HISTORY_LIMIT = 30
+SESSION_PLANS = 3  # stored plans per holding (today, next session, one spare)
 ZONE_WINDOW = 10  # completed sessions searched for the pullback touch
 DRY_UP_WINDOW = 5  # completed sessions searched for the volume dry-up
 AVERAGE_WINDOW = 20
@@ -310,8 +311,24 @@ def store(block, plan, issues, *, raw, source, created_at):
     history.append(entry)
     block["add_plan_history"] = history[-HISTORY_LIMIT:]
     if plan is not None:
-        block["add_plan"] = plan
+        # Plans are kept per session: a review issuing tomorrow's plan during today's session
+        # (US 10:15/14:30 ET, KR 14:46) must not replace the plan valid today (2026-10-02).
+        plans = dict(block.get("add_plans") or {})
+        if plan.get("status") == "CANCELLED":
+            plans = {session: plan for session in plans}  # a sell decision cancels every pending plan
+        plans[plan["valid_for"]] = plan
+        block["add_plans"] = dict(sorted(plans.items())[-SESSION_PLANS:])
+        block["add_plan"] = plan  # latest plan (messages, dashboard)
     return block
+
+
+def plan_for_session(block, session_date):
+    """The stored plan valid for ``session_date`` (latest per session), or None."""
+    plan = (block.get("add_plans") or {}).get(session_date)
+    if plan is None:
+        latest = block.get("add_plan") or {}
+        plan = latest if latest.get("valid_for") == session_date else None
+    return plan
 
 
 # ---------------------------------------------------------------- evaluation
