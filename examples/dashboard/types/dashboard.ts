@@ -7,6 +7,9 @@ export interface PortfolioSummary {
   avg_profit_rate: number
   slot_usage: string
   slot_percentage: number
+  /** Σ slot allocation (micro-split / pilot rows count by their fraction) */
+  allocated_slots?: number
+  slot_weighted_profit?: number
   sector_distribution: Record<string, number>
   period_distribution: Record<string, number>
 }
@@ -64,6 +67,13 @@ export interface Holding {
   value?: number
   profit?: number
   weight?: number
+  /** Slot allocation 0..1 (micro-split / pilot < 1) */
+  allocation?: number
+  allocation_label?: string | null
+  /** Cost-weighted entry after micro-split adds */
+  average_entry?: number
+  add_count?: number
+  slot_profit_rate?: number
   scenario?: {
     portfolio_analysis?: string
     valuation_analysis?: string
@@ -97,6 +107,11 @@ export interface Trade {
   sell_date: string
   profit_rate: number
   holding_days: number
+  allocation?: number
+  allocation_label?: string | null
+  average_entry?: number
+  add_count?: number
+  slot_profit_rate?: number
   scenario?: {
     target_price?: number
     stop_loss?: number

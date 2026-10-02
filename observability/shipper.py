@@ -154,6 +154,7 @@ def build_otlp_payload(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
                         "prism.context_schema_version": payload_attributes.get("context_schema_version"),
                         "prism.feedback_mode": payload_attributes.get("mode"),
                         "prism.applied_adjust": payload_attributes.get("applied_adjust"),
+                        "prism.slot_allocation": payload_attributes.get("slot_allocation"),
                     }
                 ),
                 "traceId": event.get("trace_id"),

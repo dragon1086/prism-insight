@@ -2018,6 +2018,8 @@ class USStockTrackingAgent:
             entry_policy = scenario.get("regime_entry_policy") or {}
             if entry_policy.get("mode") == "rebound_pilot":
                 message += "Order budget cap: 50% of normal budget (rebound pilot)\nWhole shares are rounded down; unused budget may remain. This is not a guaranteed 50% fill allocation.\n"
+            from prism_core.micro_split_live import entry_message_line
+            message += entry_message_line(scenario, "US")
 
             # Add trigger win rate
             trigger_win_rate = self._get_trigger_win_rate(trigger_type)
@@ -2773,15 +2775,18 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         """Keep account funding failures outside strategy eligibility."""
         from prism_core.order_budget import whole_share_quantity
 
-        if (scenario.get("regime_entry_policy") or {}).get("mode") != "rebound_pilot":
+        micro_split = bool(scenario.get("micro_split"))
+        if (scenario.get("regime_entry_policy") or {}).get("mode") != "rebound_pilot" and not micro_split:
             return None
         if whole_share_quantity(amount, price) > 0:
             return None
         return {
             "success": False,
             "status": "blocked_budget",
-            "reason_code": "pilot_budget_unavailable_or_below_one_share",
-            "message": "Pilot broker budget unavailable or below one share; strategy entry preserved",
+            "reason_code": ("micro_split_budget_below_one_share" if micro_split
+                            else "pilot_budget_unavailable_or_below_one_share"),
+            "message": ("Micro-split budget below one share; strategy entry preserved" if micro_split
+                        else "Pilot broker budget unavailable or below one share; strategy entry preserved"),
             "quantity": 0,
         }
 
@@ -3424,6 +3429,15 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 return False
             # ─────────────────────────────────────────────────────────────────
 
+            try:
+                from prism_core.micro_split_live import exit_basis
+                _micro = exit_basis(self.cursor, "US", legacy_holding_ids, scenario_json)
+                if _micro is not None:
+                    # Micro-split row keeps the initial price; record the cost-weighted entry.
+                    buy_price, scenario_json = _micro
+            except Exception as micro_error:  # noqa: BLE001 - never block a protective exit
+                logger.warning("[MICRO_SPLIT][US] exit basis unavailable; recording row price: %s", micro_error)
+
             # Calculate profit rate
             profit_rate = ((current_price - buy_price) / buy_price) * 100 if buy_price > 0 else 0
 
@@ -3544,6 +3558,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                       "Simulator prices; not broker-confirmed realized P&L\n" \
                       f"Holding Period: {holding_period_text}\n" \
                       f"Sell Reason: {sell_reason}"
+            from prism_core.micro_split_live import allocation_line
+            _alloc = allocation_line(scenario_json, profit_rate=profit_rate, market="US")
+            if _alloc:
+                message += "\n" + _alloc.rstrip("\n")
 
             # Add trigger win rate
             trigger_type = stock_data.get('trigger_type', '')
@@ -3992,6 +4010,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
             # 1. Portfolio summary
             message += f"🔸 Current Holdings: {len(holdings) if holdings else 0}/{self.max_slots}\n"
+            from prism_core.micro_split_live import allocation_line, used_slots
+            _used = used_slots([h.get("scenario") for h in holdings or []])
+            if holdings and _used < len(holdings):
+                message += f"🔸 사용 비중: {_used:.2f}/{self.max_slots} 슬롯 (초분할·시험매수 반영)\n"
 
             # Best profit/loss stock information (if any)
             if holdings and len(holdings) > 0:
@@ -4048,7 +4070,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     message += f"- {company_name}({ticker}) [{sector}]\n"
                     message += f"  Buy: ${buy_price:.2f} / Current: ${current_price:.2f}\n"
                     message += f"  Target: ${target_price:.2f} / Stop: ${stop_loss:.2f}\n"
-                    message += f"  수익률: {arrow} {profit_rate:.2f}% / 보유기간: {days_passed}일\n\n"
+                    message += f"  수익률: {arrow} {profit_rate:.2f}% / 보유기간: {days_passed}일\n"
+                    message += allocation_line(scenario_str, profit_rate=profit_rate, current_price=current_price,
+                                               market="KR", indent="  ")
+                    message += "\n"
 
                 # Add sector distribution
                 message += "🔸 Sector Distribution:\n"
@@ -4576,6 +4601,16 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             buy_count += int(owned_initial["strategy_recorded"])
                             state["skip_reason"] = owned_initial["reason"]
                             continue
+                        micro_plan = None
+                        if not is_add and not rebound_pilot:
+                            # Micro-split LIVE: B3 first allocation sizes the real order (legacy full slot if OFF/unavailable).
+                            from prism_core import micro_split_live
+                            micro_plan, micro_cash, scenario = micro_split_live.prepare_entry(
+                                self, market="US", ticker=ticker, current_price=current_price, scenario=scenario,
+                                decision_ref=scenario.get("_decision_id") or source_decision_id,
+                                account=account, logger=logger)
+                            if micro_plan is not None:
+                                entry_cash_amount = micro_cash
                         buy_result = await self._buy_stock_with_position(
                             ticker,
                             company_name,
@@ -4630,6 +4665,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                         position_id=legacy_position_id("US", buy_result.legacy_holding_id),
                                         entry_price=current_price, stop_loss=scenario.get("stop_loss"),
                                         decision_ref=scenario.get("_decision_id") or source_decision_id,
+                                        plan=micro_plan, mode="LIVE" if micro_plan is not None else "SHADOW",
                                     )
                                 except Exception as b3_error:  # noqa: BLE001 - SHADOW must never affect the trade
                                     logger.warning("[B3_AE] capture unavailable: %s", b3_error)
@@ -4695,7 +4731,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                                 limit_price=broker_price,
                                                 intent=order_intent,
                                                 quote_validator=self._buy_quote_validator(scenario, score_override=adjusted_score, is_add=is_add, ticker=ticker, account_key=order_intent.account_id),
-                                                **({"strict_budget": True} if (scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" else {}),
+                                                **({"strict_budget": True} if ((scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" or scenario.get("micro_split")) else {}),
                                             )
 
                                     persisted_intent_id = trade_result.get("intent_id")

@@ -168,6 +168,20 @@ export function HoldingsTable({ holdings, onStockClick, title = "보유 종목",
                       <>
                         <TableCell className="text-right text-muted-foreground">
                           {formatCurrency(buyPrice)}
+                          {(holding.allocation ?? 1) < 1 || (holding.add_count || 0) > 0 ? (
+                            <div className="mt-1 flex flex-col items-end gap-0.5">
+                              <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                                {language === "ko"
+                                  ? holding.allocation_label || `비중 ${Math.round((holding.allocation ?? 1) * 100)}%`
+                                  : (holding.allocation_label || `${Math.round((holding.allocation ?? 1) * 100)}%`).replace("비중", "Alloc")}
+                              </Badge>
+                              {(holding.add_count || 0) > 0 && holding.average_entry ? (
+                                <span className="text-[10px]">
+                                  {language === "ko" ? "평균 " : "Avg "}{formatCurrency(holding.average_entry)}
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : null}
                         </TableCell>
                         <TableCell className="text-right font-medium">
                           {formatCurrency(holding.current_price)}
@@ -189,6 +203,11 @@ export function HoldingsTable({ holdings, onStockClick, title = "보유 종목",
                               {formatPercent(holding.profit_rate)}
                             </span>
                           </div>
+                          {(holding.allocation ?? 1) < 1 && holding.slot_profit_rate !== undefined ? (
+                            <div className="text-[10px] text-muted-foreground">
+                              {language === "ko" ? "슬롯 기준 " : "Slot "}{formatPercent(holding.slot_profit_rate)}
+                            </div>
+                          ) : null}
                         </TableCell>
                         <TableCell className="text-right text-muted-foreground">
                           {holding.holding_days || 0}{t("common.days")}

@@ -196,3 +196,23 @@ def test_worker_stamps_the_decision_after_the_market_snapshot(env, restore_gates
     rows = _worker(db, store, now, market_at=True).once()["rows"]
     assert rows[0]["status"] == "ADD", rows
     assert store.snapshot(state["campaign_id"])["legs"][-1]["kind"] == "ADD"
+
+
+def test_worker_routes_live_campaign_adds_to_the_live_executor(env, restore_gates, monkeypatch):
+    _, db = env
+    monkeypatch.setenv("MICRO_SPLIT_LIVE_ENABLED", "true")
+    state = capture.capture_entry(_agent(), market="KR", ticker="005930", account_key="acc",
+                                  position_id="legacy:KR:7", entry_price=10000, stop_loss=9300,
+                                  decision_ref="report:x.pdf", entered_at=_iso(ENTERED), mode="LIVE")
+    assert state["mode"] == "LIVE"
+    store = B3AeShadowStore(capture.store_path())
+    now = datetime(2026, 10, 6, 10, 0, 30, tzinfo=SEOUL).astimezone(timezone.utc)
+    worker = _worker(db, store, now)
+    calls = []
+    worker.providers["live_add"] = lambda campaign, decision, at: calls.append((campaign, decision)) or dict(
+        status="EXECUTED", allocation=0.8, cash=1, broker={"success": True})
+    result = worker.once()
+    assert result["rows"][0]["status"] == "ADD" and result["rows"][0]["mode"] == "LIVE"
+    assert result["rows"][0]["live"]["status"] == "EXECUTED" and result["orders_submitted"] == 1
+    campaign, decision = calls[0]
+    assert campaign["campaign_id"] == state["campaign_id"] and decision["bar_end"]

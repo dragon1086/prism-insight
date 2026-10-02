@@ -465,7 +465,17 @@ def setup_logging(log_file: str = None) -> logging.Logger:
     return logger
 
 
-async def execute_buy_trade(ticker: str, company_name: str, logger: logging.Logger, limit_price: Optional[int] = None) -> Dict[str, Any]:
+def _position_fraction(signal: Dict[str, Any]) -> float:
+    """Slot fraction of a BUY (micro-split / pilot entries are < 1.0); 1.0 if absent or invalid."""
+    try:
+        fraction = float(signal.get("position_fraction", 1) or 1)
+    except (TypeError, ValueError):
+        return 1.0
+    return fraction if 0 < fraction <= 1 else 1.0
+
+
+async def execute_buy_trade(ticker: str, company_name: str, logger: logging.Logger, limit_price: Optional[int] = None,
+                            position_fraction: float = 1.0) -> Dict[str, Any]:
     """Execute actual buy order (async)
 
     Args:
@@ -485,7 +495,9 @@ async def execute_buy_trade(ticker: str, company_name: str, logger: logging.Logg
                 if price_info:
                     effective_limit_price = int(price_info['current_price'])
 
-            trade_result = await trading.async_buy_stock(stock_code=ticker, limit_price=effective_limit_price)
+            buy_amount = int(trading.buy_amount * position_fraction) if position_fraction < 1 else None
+            trade_result = await trading.async_buy_stock(stock_code=ticker, buy_amount=buy_amount,
+                                                         limit_price=effective_limit_price)
 
         if trade_result['success']:
             logger.info(f"✅ Actual buy successful: {company_name}({ticker}) - {trade_result['message']}")
@@ -564,7 +576,8 @@ async def execute_sell_trade(ticker: str, company_name: str, logger: logging.Log
         return {"success": False, "message": str(e)}
 
 
-async def execute_us_buy_trade(ticker: str, company_name: str, logger: logging.Logger, limit_price: Optional[float] = None) -> Dict[str, Any]:
+async def execute_us_buy_trade(ticker: str, company_name: str, logger: logging.Logger, limit_price: Optional[float] = None,
+                               position_fraction: float = 1.0) -> Dict[str, Any]:
     """Execute actual US stock buy order (async)
 
     Args:
@@ -585,7 +598,9 @@ async def execute_us_buy_trade(ticker: str, company_name: str, logger: logging.L
             if price_info:
                 effective_limit_price = price_info['current_price']
 
-        trade_result = await trading.async_buy_stock(ticker=ticker, limit_price=effective_limit_price)
+        buy_amount = round(trading.buy_amount * position_fraction, 2) if position_fraction < 1 else None
+        trade_result = await trading.async_buy_stock(ticker=ticker, buy_amount=buy_amount,
+                                                     limit_price=effective_limit_price)
 
         if trade_result['success']:
             logger.info(f"✅ 🇺🇸 US buy successful: {company_name}({ticker}) - {trade_result['message']}")
@@ -750,13 +765,15 @@ def main():
                 if signal_type == "SELL":
                     return asyncio.run(execute_us_sell_trade(ticker, company_name, logger, limit_price=limit_price, sell_denominator=sell_denominator))
                 else:  # BUY
-                    return asyncio.run(execute_us_buy_trade(ticker, company_name, logger, limit_price=limit_price))
+                    return asyncio.run(execute_us_buy_trade(ticker, company_name, logger, limit_price=limit_price,
+                                                            position_fraction=_position_fraction(signal)))
             else:  # KR (default)
                 limit_price = int(price) if price else None
                 if signal_type == "SELL":
                     return asyncio.run(execute_sell_trade(ticker, company_name, logger, limit_price=limit_price, sell_denominator=sell_denominator))
                 else:  # BUY
-                    return asyncio.run(execute_buy_trade(ticker, company_name, logger, limit_price=limit_price))
+                    return asyncio.run(execute_buy_trade(ticker, company_name, logger, limit_price=limit_price,
+                                                         position_fraction=_position_fraction(signal)))
 
         # Start background scheduler
         scheduled_order_manager.start_scheduler(execute_scheduled_order)
@@ -854,9 +871,11 @@ def main():
                     # Live trading or market hours: execute immediately
                     logger.info(f"🚀 Executing buy order: {market_label} {company_name}({ticker})")
                     if market == "US":
-                        asyncio.run(execute_us_buy_trade(ticker, company_name, logger, limit_price=float(price) if price else None))
+                        asyncio.run(execute_us_buy_trade(ticker, company_name, logger, limit_price=float(price) if price else None,
+                                                         position_fraction=_position_fraction(signal)))
                     else:
-                        asyncio.run(execute_buy_trade(ticker, company_name, logger, limit_price=int(price) if price else None))
+                        asyncio.run(execute_buy_trade(ticker, company_name, logger, limit_price=int(price) if price else None,
+                                                      position_fraction=_position_fraction(signal)))
             else:
                 logger.info(f"🔸 [DRY-RUN] Buy skipped: {market_label} {company_name}({ticker})")
 

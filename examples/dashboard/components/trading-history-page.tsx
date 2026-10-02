@@ -811,6 +811,14 @@ export function TradingHistoryPage({ history, summary, prismPerformance = [], ma
                         <p className={`text-2xl font-bold ${trade.profit_rate >= 0 ? "text-success" : "text-destructive"}`}>
                           {formatPercent(trade.profit_rate)}
                         </p>
+                        {(trade.allocation ?? 1) < 1 || (trade.add_count || 0) > 0 ? (
+                          <p className="text-xs text-muted-foreground mt-1">
+                            {language === "ko"
+                              ? `${trade.allocation_label || `비중 ${Math.round((trade.allocation ?? 1) * 100)}%`} · 슬롯 기준 ${formatPercent(trade.slot_profit_rate ?? trade.profit_rate * (trade.allocation ?? 1))}`
+                              : `${(trade.allocation_label || `${Math.round((trade.allocation ?? 1) * 100)}%`).replace("비중", "Alloc")} · slot ${formatPercent(trade.slot_profit_rate ?? trade.profit_rate * (trade.allocation ?? 1))}`}
+                            {(trade.add_count || 0) > 0 ? (language === "ko" ? " · 매수가는 평균" : " · avg entry") : ""}
+                          </p>
+                        ) : null}
                       </div>
                     </div>
 

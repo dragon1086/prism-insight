@@ -24,6 +24,29 @@ def write_health(path, value):
     os.replace(temporary, path)
 
 
+def live_add_provider(market):
+    """Each LIVE in-slot add runs in tools/run_micro_split_add.py (own market path isolation)."""
+    import subprocess  # nosec B404 - fixed argv below, no shell
+
+    from prism_core import micro_split_live
+
+    argv = {"KR": "kr", "US": "us"}[market]  # only two fixed values reach the child argv
+    command = [sys.executable, str(ROOT / "tools/run_micro_split_add.py"), "--market", argv]
+
+    def live_add(campaign, decision, now):
+        if not micro_split_live.live_enabled(market):
+            return {"status": "LIVE_OFF"}
+        payload = json.dumps({"campaign": campaign, "decision": decision, "now": now}, default=str)
+        try:
+            done = subprocess.run(  # nosec B603  # nosemgrep - static interpreter/script argv, data via stdin
+                command, input=payload, capture_output=True, text=True, timeout=180, cwd=str(ROOT), check=False)
+            lines = [line for line in done.stdout.splitlines() if line.startswith("{")]
+            return json.loads(lines[-1]) if lines else {"status": "ERROR", "error": done.stderr[-300:]}
+        except Exception as error:  # noqa: BLE001 - one failed add never stops the loop
+            return {"status": "ERROR", "error": f"{type(error).__name__}: {str(error)[:160]}"}
+    return live_add
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--market", choices=["kr", "us"], required=True)
@@ -41,15 +64,18 @@ def main():
     worker = None
     while True:
         try:
-            if not b3_ae_capture.enabled():
+            from prism_core import micro_split_live
+            if not (b3_ae_capture.enabled() or micro_split_live.live_enabled(market)):
                 result = dict(contract="b3-ae-worker-v1", market=market, at=utc_now(), status="OFF", rows=[])
             else:
                 if worker is None:
                     path = b3_ae_capture.store_path()
                     path.parent.mkdir(parents=True, exist_ok=True)
+                    providers = kr_providers() if market == "KR" else us_providers()
+                    providers["live_add"] = live_add_provider(market)
                     worker = B3AeWorker(market, store=B3AeShadowStore(path),
                                         holdings_db=os.getenv("STOCK_TRACKING_DB") or ROOT / "stock_tracking_db.sqlite",
-                                        providers=kr_providers() if market == "KR" else us_providers())
+                                        providers=providers)
                 result = worker.once()
         except Exception as error:  # noqa: BLE001 - keep the SHADOW loop alive, record the failure
             result = dict(contract="b3-ae-worker-v1", market=market, at=utc_now(), status="ERROR",

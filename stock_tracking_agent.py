@@ -2103,7 +2103,7 @@ class StockTrackingAgent:
                 intent=prepared.intent,
                 reservation=prepared.reservation,
                 quote_validator=self._buy_quote_validator(prepared.scenario, is_add=prepared.is_add, ticker=prepared.symbol, account_key=prepared.account_id),
-                **({"strict_budget": True} if (prepared.scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" else {}),
+                **({"strict_budget": True} if ((prepared.scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" or prepared.scenario.get("micro_split")) else {}),
             )
 
     def _queue_message(
@@ -2888,6 +2888,8 @@ class StockTrackingAgent:
             entry_policy = scenario.get("regime_entry_policy") or {}
             if entry_policy.get("mode") == "rebound_pilot":
                 message += "주문 예산 상한: 정상 예산의 50% (상승 전환 파일럿)\n정수 수량 내림으로 미사용 예산이 남을 수 있으며, 체결 비중 50%를 보장하지 않습니다.\n"
+            from prism_core.micro_split_live import entry_message_line
+            message += entry_message_line(scenario, "KR")
 
             # Add trigger win rate
             trigger_win_rate = self._get_trigger_win_rate(trigger_type)
@@ -3039,15 +3041,18 @@ class StockTrackingAgent:
         """Keep account funding failures outside strategy eligibility."""
         from prism_core.order_budget import whole_share_quantity
 
-        if (scenario.get("regime_entry_policy") or {}).get("mode") != "rebound_pilot":
+        micro_split = bool(scenario.get("micro_split"))
+        if (scenario.get("regime_entry_policy") or {}).get("mode") != "rebound_pilot" and not micro_split:
             return None
         if whole_share_quantity(amount, price) > 0:
             return None
         return {
             "success": False,
             "status": "blocked_budget",
-            "reason_code": "pilot_budget_unavailable_or_below_one_share",
-            "message": "Pilot broker budget unavailable or below one share; strategy entry preserved",
+            "reason_code": ("micro_split_budget_below_one_share" if micro_split
+                            else "pilot_budget_unavailable_or_below_one_share"),
+            "message": ("Micro-split budget below one share; strategy entry preserved" if micro_split
+                        else "Pilot broker budget unavailable or below one share; strategy entry preserved"),
             "quantity": 0,
         }
 
@@ -3408,6 +3413,15 @@ class StockTrackingAgent:
                 return False
             # ─────────────────────────────────────────────────────────────────
 
+            try:
+                from prism_core.micro_split_live import exit_basis
+                _micro = exit_basis(self.cursor, "KR", legacy_holding_ids, scenario_json)
+                if _micro is not None:
+                    # Micro-split row keeps the initial price; record the cost-weighted entry.
+                    buy_price, scenario_json = _micro
+            except Exception as micro_error:  # noqa: BLE001 - never block a protective exit
+                logger.warning("[MICRO_SPLIT][KR] exit basis unavailable; recording row price: %s", micro_error)
+
             # Calculate profit rate
             profit_rate = ((current_price - buy_price) / buy_price) * 100
 
@@ -3518,6 +3532,10 @@ class StockTrackingAgent:
                       f"수익률: {arrow} {abs(profit_rate):.2f}%\n" \
                       f"보유기간: {holding_days}일\n" \
                       f"매도이유: {sell_reason}"
+            from prism_core.micro_split_live import allocation_line
+            _alloc = allocation_line(scenario_json, profit_rate=profit_rate, market="KR")
+            if _alloc:
+                message += "\n" + _alloc.rstrip("\n")
 
             # Add trigger win rate
             trigger_type = stock_data.get('trigger_type', '')
@@ -4252,6 +4270,10 @@ class StockTrackingAgent:
 
             # 1. Portfolio summary
             message += f"🔸 현재 보유: {len(holdings) if holdings else 0}/{self.max_slots}개\n"
+            from prism_core.micro_split_live import allocation_line, used_slots
+            _used = used_slots([h.get("scenario") for h in holdings or []])
+            if holdings and _used < len(holdings):
+                message += f"🔸 사용 비중: {_used:.2f}/{self.max_slots} 슬롯 (초분할·시험매수 반영)\n"
 
             # Best profit/loss stock information (if any)
             if holdings and len(holdings) > 0:
@@ -4308,7 +4330,10 @@ class StockTrackingAgent:
                     message += f"- {company_name}({ticker}) [{sector}]\n"
                     message += f"  매수가: {buy_price:,.0f}원 / 현재가: {current_price:,.0f}원\n"
                     message += f"  목표가: {target_price:,.0f}원 / 손절가: {stop_loss:,.0f}원\n"
-                    message += f"  수익률: {arrow} {profit_rate:.2f}% / 보유기간: {days_passed}일\n\n"
+                    message += f"  수익률: {arrow} {profit_rate:.2f}% / 보유기간: {days_passed}일\n"
+                    message += allocation_line(scenario_str, profit_rate=profit_rate, current_price=current_price,
+                                               market="KR", indent="  ")
+                    message += "\n"
 
                 # Add sector distribution
                 message += "🔸 섹터 분포:\n"

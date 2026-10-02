@@ -865,6 +865,17 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                 or "unknown"
                             ),
                         )
+                    micro_plan = None
+                    if effects is None and not is_add and not rebound_pilot:
+                        # Micro-split LIVE: B3 first allocation sizes the real order (legacy full slot if OFF/unavailable).
+                        from prism_core import micro_split_live
+                        micro_plan, micro_cash, scenario = micro_split_live.prepare_entry(
+                            self, market="KR", ticker=ticker, current_price=current_price, scenario=scenario,
+                            decision_ref=scenario.get("_decision_id") or source_decision_id,
+                            account=getattr(self, "active_account", None), logger=logger)
+                        if micro_plan is not None:
+                            entry_cash_amount = micro_cash
+                            analysis_result["scenario"] = scenario
                     if effects is not None:
                         if is_add or await self._is_ticker_in_holdings(ticker):
                             raise EffectsFailure("Existing strategy campaign requires explicit lifecycle transition")
@@ -942,6 +953,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                         position_id=getattr(prepared.intent, "source_position_id", None),
                                         entry_price=current_price, stop_loss=scenario.get("stop_loss"),
                                         decision_ref=scenario.get("_decision_id") or source_decision_id,
+                                        plan=micro_plan, mode="LIVE" if micro_plan is not None else "SHADOW",
                                     )
                                 except Exception as b3_error:  # noqa: BLE001 - SHADOW must never affect the trade
                                     logger.warning("[B3_AE] capture unavailable: %s", b3_error)
@@ -1039,6 +1051,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                     position_id=opened_position_id, entry_price=current_price,
                                     stop_loss=scenario.get("stop_loss"),
                                     decision_ref=scenario.get("_decision_id") or source_decision_id,
+                                    plan=micro_plan, mode="LIVE" if micro_plan is not None else "SHADOW",
                                 )
                             except Exception as b3_error:  # noqa: BLE001 - SHADOW must never affect the trade
                                 logger.warning("[B3_AE] capture unavailable: %s", b3_error)
@@ -1070,7 +1083,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                         limit_price=current_price,
                                         intent=order_intent,
                                         quote_validator=self._buy_quote_validator(scenario, is_add=is_add, ticker=ticker, account_key=order_intent.account_id),
-                                        **({"strict_budget": True} if (scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" else {}),
+                                        **({"strict_budget": True} if ((scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" or scenario.get("micro_split")) else {}),
                                     )
                         except OrderOutcomeUnknown as error:
                             self._link_position_entry_intent(

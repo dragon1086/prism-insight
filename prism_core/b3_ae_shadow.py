@@ -112,7 +112,7 @@ class B3AeShadowStore:
         db.execute("INSERT OR IGNORE INTO b3_events VALUES (?,?,?,?,?)",
                    (event_id, campaign_id, at, kind, json.dumps(data, sort_keys=True)))
 
-    def open_campaign(self, *, account_key, position_id, plan, entered_at):
+    def open_campaign(self, *, account_key, position_id, plan, entered_at, mode="SHADOW"):
         """Idempotent per (market, account, position); initial fill at the actual entry."""
         _validate(plan)
         if plan["policy_version"] != V3_AE_VERSION or plan["market"] not in MARKETS:
@@ -125,7 +125,9 @@ class B3AeShadowStore:
                              (plan["market"], account_key, position_id)).fetchone()
             if row:
                 return json.loads(row[0])
-            state = dict(contract=CONTRACT, campaign_id=cid, market=plan["market"], account_key=account_key,
+            if mode not in ("SHADOW", "LIVE"):
+                raise ValueError("unknown campaign mode")
+            state = dict(contract=CONTRACT, campaign_id=cid, mode=mode, market=plan["market"], account_key=account_key,
                          position_id=position_id, symbol=plan["symbol"], plan=plan, status="ACTIVE",
                          legs=[dict(kind="INITIAL", allocation=plan["initial_nominal"],
                                     price=plan["entry_reference"], at=plan["created_at"])],
