@@ -13,6 +13,16 @@ from typing import Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _slot_note(entry):
+    """' (slot 35%)' for partial positions (micro-split / pilot), '' for a full slot."""
+    try:
+        from prism_core.slot_weight import slot_fraction
+        fraction = slot_fraction(entry.get("buy_scenario") or "{}")
+    except Exception:  # noqa: BLE001 - compression never fails on a note
+        return ""
+    return f" (slot {fraction:.0%})" if fraction < 1 else ""
+
+
 class USCompressionManager:
     """Manages memory compression for US trading data."""
 
@@ -134,7 +144,7 @@ class USCompressionManager:
             # Compress Layer 1 → Layer 2 for US
             self.cursor.execute("""
                 SELECT id, ticker, company_name, profit_rate, holding_days,
-                       one_line_summary, lessons, pattern_tags, sell_price
+                       one_line_summary, lessons, pattern_tags, sell_price, buy_scenario
                 FROM trading_journal
                 WHERE compression_layer = 1 AND trade_date < ? AND market = ?
             """, (cutoff_layer1, self.MARKET))
@@ -169,6 +179,9 @@ class USCompressionManager:
                     # Update to Layer 2 with optional hindsight in compressed_summary
                     summary = entry[5] or ""  # one_line_summary
                     compressed_summary = (summary + hindsight_note) if hindsight_note else summary
+                    slot_note = _slot_note({"buy_scenario": entry[9] if len(entry) > 9 else None})
+                    if slot_note and compressed_summary:
+                        compressed_summary += slot_note
 
                     self.cursor.execute("""
                         UPDATE trading_journal

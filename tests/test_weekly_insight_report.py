@@ -31,8 +31,8 @@ def report(monkeypatch):
 def make_db(path):
     with sqlite3.connect(path) as conn:
         for prefix in ("", "us_"):
-            conn.execute(f"CREATE TABLE {prefix}trading_history (ticker, company_name, buy_price, sell_price, profit_rate, holding_days, sell_date, account_key)")
-            conn.execute(f"CREATE TABLE {prefix}stock_holdings (ticker, company_name, buy_price, buy_date, current_price, account_key)")
+            conn.execute(f"CREATE TABLE {prefix}trading_history (ticker, company_name, buy_price, sell_price, profit_rate, holding_days, sell_date, account_key, scenario)")
+            conn.execute(f"CREATE TABLE {prefix}stock_holdings (ticker, company_name, buy_price, buy_date, current_price, account_key, scenario)")
         conn.execute("CREATE TABLE analysis_performance_tracker (trigger_type, tracking_status, tracked_30d_return, was_traded, analyzed_date)")
         conn.execute("CREATE TABLE us_analysis_performance_tracker (trigger_type, return_30d, was_traded, analysis_date)")
         conn.execute("CREATE TABLE trading_principles (market, is_active, created_at)")
@@ -128,7 +128,7 @@ def test_invalid_sell_prices_are_unknown(report, tmp_path, monkeypatch, market, 
     current_price = invalid if field == "current" else 236.32
     table = "trading_history" if market == "KR" else "us_trading_history"
     with sqlite3.connect(path) as conn:
-        conn.execute(f"INSERT INTO {table} VALUES ('DGX', 'Quest', 236, ?, -1.5, 1, ?, 'demo')", (sell_price, datetime.now().isoformat()))
+        conn.execute(f"INSERT INTO {table} VALUES ('DGX', 'Quest', 236, ?, -1.5, 1, ?, 'demo', NULL)", (sell_price, datetime.now().isoformat()))
     yf = types.ModuleType("yfinance")
     yf.download = lambda *a, **kw: {"Close": types.SimpleNamespace(iloc={-1: current_price})}
     monkeypatch.setitem(sys.modules, "yfinance", yf)
@@ -150,7 +150,7 @@ def test_sell_observation_rendered_without_network(report, tmp_path, monkeypatch
     path = tmp_path / "sell.sqlite"
     make_db(path)
     with sqlite3.connect(path) as conn:
-        conn.execute("INSERT INTO us_trading_history VALUES ('DGX', 'Quest', 236, 232.46, -1.5, 1, ?, 'demo')", (datetime.now().isoformat(),))
+        conn.execute("INSERT INTO us_trading_history VALUES ('DGX', 'Quest', 236, 232.46, -1.5, 1, ?, 'demo', NULL)", (datetime.now().isoformat(),))
     yf = types.ModuleType("yfinance")
 
     def download(*args, **kwargs):
@@ -187,10 +187,10 @@ def test_weekly_trades_preserve_available_market(report, tmp_path, monkeypatch, 
     path = tmp_path / "partial.sqlite"
     make_db(path)
     with sqlite3.connect(path) as conn:
-        conn.execute("INSERT INTO trading_history VALUES ('005930', '삼성전자', 70000, 72000, 2.9, 1, ?, 'demo')", (datetime.now().isoformat(),))
+        conn.execute("INSERT INTO trading_history VALUES ('005930', '삼성전자', 70000, 72000, 2.9, 1, ?, 'demo', NULL)", (datetime.now().isoformat(),))
         if unavailable == "table":
             conn.execute("DROP TABLE us_stock_holdings")
-            conn.execute("INSERT INTO us_trading_history VALUES ('DGX', 'Quest', 236, 232.46, -1.5, 1, ?, 'demo')", (datetime.now().isoformat(),))
+            conn.execute("INSERT INTO us_trading_history VALUES ('DGX', 'Quest', 236, 232.46, -1.5, 1, ?, 'demo', NULL)", (datetime.now().isoformat(),))
     if unavailable == "account":
         monkeypatch.setattr(report, "_get_primary_account_key", lambda market: "demo" if market == "kr" else None)
     with sqlite3.connect(path) as conn:

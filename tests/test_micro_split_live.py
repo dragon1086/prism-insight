@@ -282,3 +282,33 @@ def test_buy_prompt_block_and_gate_override(live_on):
         **kwargs, "score_override": 4}, required_score_override=5))
     assert "score_below_floor" in codes(evaluate_production_buy_gate(scenario, required_score_override=5,
                                                                       is_add=True, **kwargs))
+
+
+def test_journal_and_compression_carry_position_size(live_on):
+    _, _, scenario = _prepared()
+    added, average = live.apply_add(scenario, delta="0.0223", price=10200, at="t", bar_end="b1")
+    line = live.journal_position_line(added, profit_rate=5.0)
+    assert "80% of one slot" in line and "initial 78%, 1 add(s)" in line and "slot-weighted return +4.00%" in line
+    assert live.journal_position_line({"sector": "IT"}, 5.0) == ""
+    data = live.journal_stock_data({"ticker": "A", "buy_price": 10000}, buy_price=average, scenario=json.dumps(added))
+    assert data["buy_price"] == average and json.loads(data["scenario"])["micro_split"]["allocation"] == "0.8000"
+
+    from tracking.journal import JournalManager
+    manager = JournalManager.__new__(JournalManager)
+    manager.language = "ko"
+    full = manager._build_analysis_prompt("A", "000001", 10000, "2026-10-02", {}, 10500, 5.0, 3, "target")
+    partial = manager._build_analysis_prompt("A", "000001", average, "2026-10-02", added, 10500, 5.0, 3, "target")
+    assert "Position Size" not in full and "Position Size (micro-split)" in partial
+
+    from tracking.compression import _slot_note
+    assert _slot_note({"buy_scenario": json.dumps(added)}) == " (slot 80%)"
+    assert _slot_note({"buy_scenario": "{}"}) == ""
+
+
+def test_weekly_report_marks_partial_positions(live_on):
+    import weekly_insight_report as weekly
+    _, _, scenario = _prepared()
+    added, _ = live.apply_add(scenario, delta="0.0223", price=10200, at="t", bar_end="b1")
+    suffix = weekly._slot_suffix(json.dumps(added), 10000, 10500)
+    assert suffix.startswith(" · 비중 80% (78%→80%)") and "슬롯 기준" in suffix
+    assert weekly._slot_suffix("{}", 10000, 10500) == "" and weekly._slot_suffix(None, 10000, None) == ""

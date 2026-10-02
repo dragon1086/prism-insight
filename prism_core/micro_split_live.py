@@ -420,7 +420,7 @@ def buy_prompt_block(market, language="ko"):
         return (
             "\n\n### 초분할 진입 기준 (결정론적)\n"
             f"이번 신규 진입은 초분할로 1슬롯의 30~80%만 먼저 매수합니다. 그래서 진입 최소 점수는 시장 국면과 관계없이 "
-            f"{value}점입니다. min_score에는 {value}을 쓰고, buy_score가 {value}점 이상이며 미진입 단독 사유와 1단계 "
+            f"{value}점입니다. min_score 필드에는 {value}점을 쓰고, buy_score가 {value}점 이상이며 미진입 단독 사유와 1단계 "
             "펀더멘털·추세 게이트에 걸리지 않으면 진입으로 판단하십시오. 점수 산정 기준·스키마·손절·손익비 규칙은 바뀌지 않습니다.\n")
     return (
         "\n\n### Micro-split entry threshold (deterministic)\n"
@@ -428,3 +428,38 @@ def buy_prompt_block(market, language="ko"):
         f"{value} in every market regime. Write {value} in min_score and decide Enter when buy_score >= {value} and no "
         "standalone no-entry reason, Stage-1 fundamental gate or trend gate applies. Scoring rules, schema, stop and "
         "R/R rules are unchanged.\n")
+
+
+def journal_position_line(scenario, profit_rate=None):
+    """Journal/compression line on position size for partial positions; '' for a full slot.
+
+    The retrospective must know a stop on 35% of a slot is not a full-slot loss and that
+    adds changed the average entry (lessons and compressed intuitions inherit this)."""
+    if isinstance(scenario, str):
+        try:
+            scenario = json.loads(scenario or "{}")
+        except ValueError:
+            scenario = {}
+    fraction = slot_fraction(scenario)
+    block = record(scenario)
+    if fraction >= 1 and block is None:
+        return ""
+    parts = [f"{fraction:.0%} of one slot"]
+    if block is not None:
+        legs = block.get("legs") or []
+        first = float(legs[0]["allocation"]) if legs else fraction
+        adds = max(len(legs) - 1, 0)
+        parts.append(f"initial {first:.0%}, {adds} add(s)")
+        if adds:
+            parts.append(f"cost-weighted entry {float(weighted_entry(legs)):,.2f}")
+    if profit_rate is not None:
+        parts.append(f"slot-weighted return {profit_rate * fraction:+.2f}%")
+    return "- Position Size (micro-split): " + "; ".join(parts) + "\n"
+
+
+def journal_stock_data(stock_data, *, buy_price, scenario):
+    """stock_data for the journal with the recorded (cost-weighted) entry and fresh scenario."""
+    data = dict(stock_data or {})
+    data["buy_price"] = buy_price
+    data["scenario"] = scenario
+    return data
