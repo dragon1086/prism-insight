@@ -49,4 +49,17 @@
 
 ## 롤백
 
-설정 `mode=OFF` 또는 워커 중지. 캡처 훅은 fail-open이며 원래 매수·매도에 영향이 없다.
+`.env`의 `B3_AE_SHADOW_ENABLED=false` 또는 워커 중지. 캡처 훅은 fail-open이며 원래 매수·매도에 영향이 없다.
+
+## 운영
+
+- 켜기: db-server `.env`에 `B3_AE_SHADOW_ENABLED=true`(기본 false). 원장 `runtime/b3-ae-shadow.sqlite`
+  (`B3_AE_SHADOW_DB`로 변경 가능).
+- 진입 캡처: KR 강화 에이전트(레거시·pending 경로), US 에이전트의 최초 진입 직후, 브로커 주문 전. 피라미딩 추가·반슬롯
+  시험매수 제외. ATR14는 같은 배치가 결정 시점에 캡처한 일봉(`_decision_input_bars`)으로 계산한다.
+- 청산: KR/US `sell_stock` 커밋 직후 같은 가격·시각으로 종료. 훅이 빠지면 워커가 매매이력(진입 ±10분)으로 대사한다.
+- 워커: `systemctl enable --now prism-b3-ae-shadow@kr prism-b3-ae-shadow@us`(템플릿
+  `deploy/systemd/prism-b3-ae-shadow@.service`). 60초 주기, 5분 경계 뒤 90초 안에서만 증액 판단.
+  상태 `runtime/b3-ae-health-{kr,us}.json`. 주문·보유 DB 쓰기 0(`orders_submitted=0`).
+- KR 입력은 2026-10-02 09:12 운영 읽기 전용 점검 통과: XKRX 21세션, KIS 1분→5분봉, 락구분 확인, 원주가 20종가,
+  현재가, 국면/Pulse.

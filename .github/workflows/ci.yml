@@ -119,7 +119,7 @@ jobs:
             tests/test_scenario_shadow_capture.py \
             tests/test_strategy_ledger_effects_cas.py tests/test_isolated_strategy_effects.py -q
           python -m pytest tests/test_oneil_adaptive_policy.py tests/test_oneil_adaptive_ledger.py \
-            tests/test_oneil_adaptive_v2.py tests/test_oneil_adaptive_v2_compat.py tests/test_b3_ae_shadow.py -q
+            tests/test_oneil_adaptive_v2.py tests/test_oneil_adaptive_v2_compat.py tests/test_b3_ae_shadow.py tests/test_b3_ae_runtime.py -q
           python -m pytest tests/test_oneil_intraday_inputs.py tests/test_oneil_setup_inputs.py \
             tests/test_oneil_input_bridge.py tests/test_oneil_input_collection.py -q
           python -m pytest tests/test_oneil_auto_review.py tests/test_oneil_auto_review_pipeline.py -q
