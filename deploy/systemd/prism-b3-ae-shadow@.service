@@ -10,7 +10,8 @@ Type=simple
 User=root
 WorkingDirectory=/root/prism-insight
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/root/.pyenv/shims/python3 /root/prism-insight/tools/run_b3_ae_shadow.py --market %i
+# pyenv shims are not executable under systemd (203/EXEC); use the versioned interpreter.
+ExecStart=/bin/sh -c "exec /root/.pyenv/versions/3.11.11/bin/python3 /root/prism-insight/tools/run_b3_ae_shadow.py --market %i"
 Restart=on-failure
 RestartSec=30
 TimeoutStopSec=30
