@@ -182,6 +182,11 @@ class B3AeShadowStore:
                                                    "bar_end", "evidence_hash", "evidence_status")})
             return decision
 
+    def record_event(self, campaign_id, at, kind, data):
+        """Append an audit event (e.g. ``add_plan.qualified``) to the campaign; idempotent per content."""
+        with self._db() as db:
+            self._event(db, campaign_id, at, kind, data)
+
     def close(self, *, market, account_key, position_id, exit_price, exit_at, reason):
         """Close with the original strategy exit (same price/time); idempotent."""
         with self._db() as db:

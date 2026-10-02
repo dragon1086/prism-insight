@@ -1290,6 +1290,9 @@ class StockTrackingAgent:
             # Micro-split LIVE: entry threshold 5 in every regime ('' when off -> byte-identical).
             from prism_core.micro_split_live import buy_prompt_block as _micro_split_buy_block
             prompt_message += _micro_split_buy_block("KR", self.language)
+            # Micro-split add scenarios (add_plan); '' unless micro-split LIVE is on for KR.
+            from prism_core.micro_split_live import add_plan_buy_block
+            prompt_message += add_plan_buy_block(self, market="KR", ticker=ticker, language=self.language)
             logger.info(
                 "[SECTOR_BUY][KR] ticker=%s kind=%s subtype=%s basis=%s mode=%s f2_rule=%s f4_rule=%s",
                 ticker or "?", sector_stamp["kind"], sector_stamp["subtype"], sector_stamp["basis"],

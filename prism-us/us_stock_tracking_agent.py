@@ -1548,6 +1548,9 @@ class USStockTrackingAgent:
             # Micro-split LIVE: entry threshold 5 in every regime ('' when off -> byte-identical).
             from prism_core.micro_split_live import buy_prompt_block as _micro_split_buy_block
             prompt_message += _micro_split_buy_block("US", getattr(self, "language", "ko"))
+            # Micro-split add scenarios (add_plan); '' unless micro-split LIVE is on for US.
+            from prism_core.micro_split_live import add_plan_buy_block
+            prompt_message += add_plan_buy_block(self, market="US", ticker=ticker, language="en")
             from prism_core.buy_report_depth_evidence import report_depth_evidence_active
             depth_on = report_depth_evidence_active(getattr(self.trading_agent, "instruction", ""))
             logger.info(f"[BUY_REPORT_DEPTH] enabled={str(depth_on).lower()} ticker={ticker_tag}")
@@ -2430,10 +2433,12 @@ class USStockTrackingAgent:
 
                     # Persist a raised OR newly initialised peak (initialised peaks were never saved before).
                     if persist_peak:
-                        updated_scenario_str = json.dumps(scenario_data, ensure_ascii=False)
                         # Pyramiding (#288): scope by row id so only THIS row's
                         # scenario is updated. Fall back to ticker when id missing.
                         row_id = stock_data.get('id')
+                        from prism_core.micro_split_live import keep_fresh_record
+                        keep_fresh_record(self.cursor, "US", row_id, scenario_data)  # keep a worker add
+                        updated_scenario_str = json.dumps(scenario_data, ensure_ascii=False)
                         if row_id is not None:
                             self.cursor.execute(
                                 "UPDATE us_stock_holdings SET scenario = ? WHERE id = ?",
@@ -2556,6 +2561,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 **Market regime**: Treat the "Current Market Regime (LIVE)" above as the authoritative market environment for step-0 분석 (강세장/약세장 판단). It is system-computed from S&P500/VIX this cycle; prefer it over the stored buy-time scenario. Only if it shows "unavailable", fall back to fetching ^GSPC/^VIX via yahoo_finance yourself.
 **Important**: If stop loss/target price adjustment is needed, return it via portfolio_adjustment JSON only. Do NOT directly UPDATE the DB.
 """
+            # Micro-split holdings: next-session add plan request; '' unless micro-split LIVE is on.
+            from prism_core.micro_split_live import review_prompt_block
+            prompt_message += review_prompt_block(scenario_str, market="US", language="en", stop_loss=stop_loss)
 
             response = None
             codex_sell_enabled = os.environ.get(
@@ -2642,6 +2650,14 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             markdown_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', response, re.DOTALL)
             if markdown_match:
                 json_str = markdown_match.group(1)
+            if not json_str and '{' in response:
+                # Any nesting depth (next_session_add_plan nests four levels; the regex balances three).
+                try:
+                    start = response.index('{')
+                    value, end = json.JSONDecoder().raw_decode(response, start)
+                    json_str = response[start:end] if isinstance(value, dict) else None
+                except ValueError:
+                    json_str = None
             if not json_str:
                 json_match = re.search(r'(\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\})', response, re.DOTALL)
                 if json_match:
@@ -2669,6 +2685,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             portfolio_adjustment = decision_json.get("portfolio_adjustment", {})
             logger.info(f"{ticker}({company_name}) AI sell decision: {'Sell' if should_sell else 'Hold'} (confidence: {confidence}/10)")
             logger.info(f"Sell reason: {sell_reason}")
+            try:  # micro-split add plan for the next session (LIVE only; never affects the sell decision)
+                from prism_core.micro_split_live import apply_review
+                apply_review(self, market="US", row_id=stock_data.get('id'), ticker=ticker,
+                             decision=decision_json, logger=logger)
+            except Exception as plan_err:  # noqa: BLE001
+                logger.warning(f"{ticker} micro-split add plan not stored: {plan_err}")
 
             # Process portfolio_adjustment when holding (not selling)
             if not should_sell and portfolio_adjustment.get("needed", False):

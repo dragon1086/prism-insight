@@ -135,3 +135,32 @@ class MarketSnapshot:
                      source_asof=asof)
         value["source_ref"] = _hash(["kr-market-snapshot", value])
         return value
+
+
+def daily_bars(source, ticker, start_day, end_day):
+    """Completed raw daily OHLCV [{date, open, high, low, close, volume}] between two ISO dates."""
+    frame = source.price_history(ticker, start_day.replace("-", ""), end_day.replace("-", ""), adjusted=False)
+    return [dict(date=ix.date().isoformat(), open=float(row["Open"]), high=float(row["High"]),
+                 low=float(row["Low"]), close=float(row["Close"]), volume=float(row["Volume"]))
+            for ix, row in frame.iterrows()]
+
+
+def prior_minute_volumes(source, ticker, sessions):
+    """Per prior session [(minutes since open, volume)] from 1-minute rows; incomplete sessions are skipped.
+
+    Feeds the add-plan volume pace (same elapsed time versus prior sessions). One
+    walk-back per session, so callers cache it for the trading day.
+    """
+    curves = []
+    for session in sessions:
+        opened = datetime.fromisoformat(session["open_at"]).astimezone(SEOUL)
+        rows = minute_rows(source, ticker, datetime.fromisoformat(session["close_at"]) - timedelta(seconds=1))
+        if not rows or min(rows) > opened.strftime("%H%M%S"):
+            continue
+        curve = []
+        for label, row in rows.items():
+            minute = int(label[:2]) * 60 + int(label[2:4]) - (opened.hour * 60 + opened.minute)
+            if minute >= 0:
+                curve.append((minute, float(row.get("cntg_vol") or 0)))
+        curves.append(sorted(curve))
+    return curves
