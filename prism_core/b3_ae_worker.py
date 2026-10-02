@@ -164,8 +164,8 @@ class B3AeWorker:
         cid, symbol = campaign["campaign_id"], campaign["symbol"]
         out = dict(campaign_id=cid, kind="add_plan", phase=phase)
         block = micro_split_live.record(json.loads(row["scenario"] or "{}"))
-        plan = (block or {}).get("add_plan") or {}
         today = _time(now).astimezone(add_plan.SESSIONS[self.market][0]).date().isoformat()
+        plan = add_plan.plan_for_session(block or {}, today) or {}
         if block is None or plan.get("status") != "ACTIVE" or plan.get("valid_for") != today:
             return dict(out, status="WAIT", reason="NO_ACTIVE_PLAN_FOR_SESSION")
         evidence = self.providers["add_inputs"](symbol, now, phase, plan)
