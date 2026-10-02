@@ -218,3 +218,15 @@ def test_dashboard_signal_and_context_fields_carry_allocation(live_on, monkeypat
     monkeypatch.setattr("messaging.redis_signal_publisher.signal_publishing_disabled", lambda: False)
     asyncio.run(publisher.publish_buy_signal(ticker="005930", company_name="삼성전자", price=10000, scenario=scenario))
     assert sent[0]["position_fraction"] == pytest.approx(0.7777)
+
+
+def test_us_korean_summary_uses_dollars_and_an_80pct_entry_has_one_step_left():
+    scenario = {"micro_split": live.entry_record(
+        plan={"initial_nominal": "0.8", "policy_version": "v3", "plan_hash": "h", "entry_reference": 230},
+        unit_amount=1000, market="US", entered_at="t0")}
+    assert "+4% above entry" in live.entry_message_line(scenario, "US") and "80%/100%" not in \
+        live.entry_message_line(scenario, "US")
+    assert "+4% 상승이 확인되면 100%까지" in live.entry_message_line(scenario, "KR")
+    added, _ = live.apply_add(scenario, delta="0.2", price=235, at="t", bar_end="b")
+    line = live.allocation_line(added, current_price=240, market="US", language="ko")
+    assert "평균 매수가 $" in line and "원" not in line and "슬롯 기준 손익" in line
