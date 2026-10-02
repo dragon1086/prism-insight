@@ -334,16 +334,9 @@ def _simulate_intraday(trade, sessions, session_idx, bar_by, feat_by, minutes_st
             prev5_close = None
             continue
 
-        # This is a candidate day — check minute data presence
-        key = f"{trade['ticker']}_{day.replace('-', '')}"
-        min_data = minutes_store.get(key)
-        if not isinstance(min_data, dict) or not min_data or "error" in min_data:
-            n_missing += 1
-            prev5_close = None
-            continue
-
+        # Daily gates first: a day where this arm can never add needs no minute data,
+        # so it must not count as MISSING (that would inflate the INCONCLUSIVE ratio).
         if not regime_allows:
-            # No add possible for this arm on this day, but minutes exist; keep looping
             prev5_close = None
             continue
 
@@ -358,6 +351,14 @@ def _simulate_intraday(trade, sessions, session_idx, bar_by, feat_by, minutes_st
 
         # M1 sideways: strong-stock gate
         if arm == "M1" and regime == "sideways" and not _is_strong_stock(feat):
+            prev5_close = None
+            continue
+
+        # Add-eligible candidate day — minute data is now required
+        key = f"{trade['ticker']}_{day.replace('-', '')}"
+        min_data = minutes_store.get(key)
+        if not isinstance(min_data, dict) or not min_data or "error" in min_data:
+            n_missing += 1
             prev5_close = None
             continue
 
