@@ -56,7 +56,8 @@ def test_flag_on_adds_evidence_sources_only(market, lang, flag, monkeypatch):
     assert on.count(depth.MARKER) == 1
     # Leader row and F4 cite the competitor table in both markets.
     assert "(+ '경쟁사 비교 분석'" in on
-    assert "| 2-2 (+ 경쟁사 비교 분석) |" in on
+    # 2026-10-02 F4 row cites 2-2 and DART 5 (2-2·5 / 2-2, 5) plus the competitor table.
+    assert "5 (+ 경쟁사 비교 분석) |" in on and "| F4 " in on
     # Step 4 and 2.5x lines both allow the >=3 positive-PER peer median, else 2-1.
     peer_clause = "3개 이상인 '경쟁사 비교 분석'" if lang == "ko" else "≥3 peers having positive"
     assert on.count(peer_clause) == 2

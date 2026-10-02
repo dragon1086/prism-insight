@@ -24,6 +24,10 @@ _KSIC_FINANCIAL = (
     (re.compile(r'신용카드|할부금융|여신|리스업|대부업'), 'card_capital'),
 )
 _HOLDING = '지주회사'
+# Some non-financial holding companies file under the KSIC head-office class (e.g. 솔브레인홀딩스,
+# 2026-10-02). Consulting firms share that name, so the official legal name must also say so.
+_HOLDING_HQ = '회사 본부 및 경영 컨설팅 서비스업'
+_HOLDING_LEGAL_NAME = re.compile(r'홀딩스|지주|홀딩')
 # Observed: 도로/토목/아파트/주거용 건물/건물/비주거용 건물 건설업. Specialty trades end in 공사업.
 _KSIC_CONSTRUCTION = re.compile(r'건설업$')
 # Observed: 기타 선박 건조업, 선박 및 수상 부유 구조물 건조업 (parts makers are
@@ -148,12 +152,15 @@ def classify_issuer(industry_name, sources, *, legal_name=None):
     catalog = _primary_catalog(sources or [])
     labels = _statement_labels(catalog) if catalog is not None else None
     base = {'industry_name': industry or None}
-    if industry == _HOLDING:
+    hq_holding = (industry == _HOLDING_HQ and isinstance(legal_name, str)
+                  and bool(_HOLDING_LEGAL_NAME.search(legal_name)))
+    if industry == _HOLDING or hq_holding:
         if labels is None:
             return {**GENERAL, **base, 'basis': 'holding_without_statement_layout'}
         if _financial_layout(labels):
             return {'kind': 'financial', 'subtype': 'financial_group', **base, 'basis': 'ksic_holding+financial_layout'}
-        return {'kind': 'holding', 'subtype': None, **base, 'basis': 'ksic_holding+industrial_layout'}
+        basis = 'ksic_company_hq+holding_name' if hq_holding else 'ksic_holding'
+        return {'kind': 'holding', 'subtype': None, **base, 'basis': basis + '+industrial_layout'}
     for pattern, subtype in _KSIC_FINANCIAL:
         if pattern.search(industry):
             # Statements, when readable, must agree; an industrial layout wins.
@@ -327,6 +334,10 @@ def sector_lens(profile, language='ko'):
             '비지배지분을 구분하고, 상장·비상장 자회사 지분가치(NAV)와 지주회사 할인, 지주회사 자체의 수익원'
             '(배당금·브랜드 사용료·지분법손익)과 차입·이중레버리지, 자회사 지분 취득·매각 같은 포트폴리오 변화를 '
             '중심으로 판단하세요. 자회사 사업의 세부 실적은 지주회사 가치에 영향을 주는 경로와 함께 설명하세요. '
+            '사업 경쟁력은 연결 자회사뿐 아니라 장부금액·지분법이익·배당 기여가 큰 관계회사를 포함한 핵심 회사(상위 1~3개)의 '
+            '사업·제품·주요 고객·시장 지위로 서술하고, 지분율·장부금액·이익 기여를 함께 밝히세요. 관계회사라는 이유로 경쟁력 '
+            '서술에서 빼지 마세요. 지분법이익은 영업외로 표시될 수 있으므로 연결 영업이익률만으로 일반 제조업 비교기업과 '
+            '수익성을 비교하지 말고, 비교표가 지주회사가 아닌 기업으로 구성됐다면 그 한계를 밝히세요. '
             'NAV·할인율 수치는 제공된 자료에 있을 때만 쓰고 추정하지 마세요.\n'
             if ko else
             'Sector lens (holding company): the issuer is an officially classified holding company with an industrial '
@@ -334,8 +345,13 @@ def sector_lens(profile, language='ko'):
             'holding-company shareholders. Separate owners-of-parent profit from non-controlling interests and focus on '
             'the value of listed and unlisted stakes (NAV) and the holding discount, the parent\'s own income '
             '(dividends, brand royalties, equity-method income), parent debt and double leverage, and portfolio changes. '
-            'Explain subsidiary results through their effect on holding-company value. Use NAV or discount figures only '
-            'when supplied; never estimate them.\n')
+            'Explain subsidiary results through their effect on holding-company value. Describe competitiveness through '
+            'the core companies (top one to three by book value, equity-method income or dividends), including '
+            'equity-method affiliates, with their business, products, key customers and market position, and state the '
+            'stake, book value and earnings contribution; do not drop an affiliate from that description because it is '
+            'not consolidated. Equity-method income may sit below operating profit, so do not compare profitability with '
+            'industrial peers on consolidated operating margin alone, and say so when the peer table holds no holding '
+            'companies. Use NAV or discount figures only when supplied; never estimate them.\n')
     subtype = profile.get('subtype')
     name = _SUBTYPE_LABELS.get(subtype, ('금융업', 'financial institution'))[0 if ko else 1]
     focus = _SUBTYPE_FOCUS.get(subtype, ('', ''))[0 if ko else 1]

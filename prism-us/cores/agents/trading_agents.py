@@ -125,7 +125,7 @@ B) 결정론적 값이 명시적으로 없을 때만 S&P 500 (^GSPC) + VIX 최�
 | F1 수익성        | 최근 2개 분기 영업이익 흑자 (또는 흑자 전환 신호 명확) | 2-1 |
 | F2 재무 건전성   | 부채비율 < 200% OR 업종 평균 이하 | 2-1 |
 | F3 성장성        | ROE ≥ 5% OR 최근 2년 매출 성장 ≥ 10% | 2-1 |
-| F4 사업 명확성   | 사업 모델 + 경쟁우위가 보고서에서 식별됨 | 2-2 |
+| F4 사업 명확성   | 사업 모델·매출원(주요 제품·고객·부문)이 식별되고 구조적 경쟁력 훼손의 출처 근거가 없음 (경쟁우위 미확인은 미달 아님) | 2-2·5 |
 
 게이트 통과 = 종목 품질 베이스라인 확보 → 아래 매트릭스를 자신감 있게 적용하십시오.
 
@@ -333,16 +333,15 @@ risk_reward_ratio  = expected_return_pct / expected_loss_pct
 - `sqlite`: `describe_table` 먼저 실행하고, account_id 컬럼이 있으면 `account_id = 'primary'`로 필터링하십시오. 미국 포트폴리오는 us_stock_holdings 테이블입니다.
 
 ### EVIDENCE_RECONCILIATION
-- 최종 응답 전에 전체 보고서·주입 팩트·반환된 도구 결과와 각 fundamental_check 판정을 대조하십시오.
-  F4_business_clarity와 rationale에는 절·출처와 구체적인 사업 모델·경쟁우위 통과 근거를 쓰고,
-  설명 없이 F1~F4 모두 통과라고 단정하지 마십시오.
-- 경쟁사 순위의 INCOMPARABLE이나 시장 지배력 미입증은 식별 가능한 경쟁우위의 부재와 다릅니다.
-  출처가 있는 제품 차별성·유통 우위·전환 비용은 시장 리더 입증 없이도 기존 F4 기준의 근거가 될 수
-  있습니다. 순위 누락을 새로운 진입 게이트로 만들거나 price_RS·섹터 호재를 사업 경쟁우위의 대체
-  근거로 쓰지 마십시오.
-- 보고서가 경쟁우위 자체를 미입증으로 판단했다면 이 반대 근거를 명시하십시오. 실제 확인한 근거의
-  법인·기간·산정 기준을 들어 모순이 해소되는 이유를 설명하고, 해소되지 않으면 통과 근거를 만들어내지
-  말고 한계를 남기십시오. 기존 F1–F4 기준·스키마·점수·시장별 하한·독립 게이트는 유지하십시오.
+- 최종 응답 전에 전체 보고서·주입 팩트·반환된 도구 결과와 각 fundamental_check 판정을 대조하십시오. F4_business_clarity와 rationale에는 절·출처와 함께
+  식별한 사업 모델·매출원(주요 제품·고객·부문)을 쓰고, 확인된 경우 경쟁우위 근거(제품 차별성·주요 고객 확대·유통 우위·전환 비용·수주잔고·생산능력 등)를 덧붙이십시오. 설명 없이 F1~F4
+  모두 통과라고 단정하지 마십시오.
+- F4는 사업 모델·매출원이 식별되고 구조적 경쟁력 훼손의 출처 근거가 없으면 통과입니다. 경쟁우위·시장점유율·순위·시장 지배력이 입력이나 보완 조회에서 확인되지 않은
+  것(NOT_IN_INPUT·SOURCE_UNAVAILABLE·INCOMPARABLE)과 보고서의 "경쟁력 미확인"·"리더 여부 확인 불가" 서술은 자료 한계일 뿐 F4 미달 사유가 아닙니다. 이
+  경우 "경쟁우위 미확인"을 한계로 적고 통과로 판정하십시오.
+- F4 미달은 다음 경우뿐입니다: (a) 주력 사업이나 매출원을 식별할 수 없음, (b) 출처가 있는 구조적 훼손 근거 — 주요 고객 이탈, 점유율·수주 감소, 범용화 등으로 본업 매출 감소와
+  영업손실이 함께 이어짐, (c) 본업 실체가 없음. price_RS·섹터 호재를 사업 근거로 대신 쓰지 말고, 순위 누락을 새로운 진입 게이트로 만들지 마십시오. 기존 F1–F3
+  기준·스키마·점수·시장별 하한·독립 게이트는 유지하십시오.
   NOT_IN_INPUT은 입력에 없음, NOT_REQUESTED는 미조회, SOURCE_UNAVAILABLE은 실제 조회 실패·미제공,
   INCOMPARABLE은 법인·기간·산정 기준 불일치입니다. 이들은 근거 상태이지 새로운 자동 통과·실패 규칙이나
   어디에도 데이터가 없다는 증명이 아닙니다.
@@ -494,7 +493,7 @@ Four binary checks. Fail any one and the stock is treated as fundamentally weak:
 | F1 Profitability        | Operating profit positive in latest 2 quarters (or clear turnaround signal) | 2-1 |
 | F2 Balance sheet        | Debt ratio < 200% OR ≤ industry average | 2-1 |
 | F3 Growth               | ROE ≥ 5% OR 2-year revenue growth ≥ 10%   | 2-1 |
-| F4 Business clarity     | Business model + competitive edge identifiable in report | 2-2 |
+| F4 Business clarity     | Business model and revenue drivers (main products, customers, segments) identifiable, no sourced evidence of structural competitive decline (an unconfirmed edge is not a fail) | 2-2, 5 |
 
 Passing the gate = quality baseline established → matrix below is applied with confidence.
 
@@ -719,16 +718,20 @@ If the resulting R/R is below the matrix floor for the current regime → No Ent
 
 ### EVIDENCE_RECONCILIATION
 - Before finalizing, reconcile each fundamental_check result with the whole report, injected facts and
-  returned tools. In F4_business_clarity and rationale cite the section/source and concrete business-model/
-  competitive-edge pass evidence; do not merely assert F1~F4 all pass.
-- An INCOMPARABLE peer ranking or unproven market dominance is not the same as no identifiable competitive
-  edge. A sourced product advantage, distribution advantage or switching cost may support the existing F4
-  criterion without proving market leadership. Do not turn missing peer ranking into a new entry gate or
-  substitute price_RS/sector tailwind for business evidence.
-- If the report says the edge itself is unproven, acknowledge that contrary evidence. Explain with identified
-  evidence and its entity/period/basis why an apparent contradiction is resolved; otherwise state the unresolved
-  limitation rather than fabricate pass evidence. Preserve existing F1–F4 criteria, schema, scoring, regime
-  floors and independent gates. NOT_IN_INPUT means absent from supplied inputs; NOT_REQUESTED means not queried;
+  returned tools. In F4_business_clarity and rationale cite the section/source and the identified business
+  model and revenue drivers (main products, customers, segments), plus competitive-edge evidence when found
+  (product differentiation, growing key customers, distribution advantage, switching costs, order backlog,
+  capacity); do not merely assert F1~F4 all pass.
+- F4 passes when the business model and revenue drivers are identifiable and there is no sourced evidence of
+  structural competitive decline. An edge, market share, ranking or dominance that the inputs or the lookup do
+  not confirm (NOT_IN_INPUT, SOURCE_UNAVAILABLE, INCOMPARABLE), and a report remark that competitiveness or
+  leadership is unconfirmed, are data limits, not an F4 failure: record "competitive edge unconfirmed" as a
+  limitation and pass F4.
+- F4 fails only when (a) the core business or revenue source cannot be identified, (b) sourced evidence shows
+  structural impairment - key-customer loss, falling share or orders, or commoditization with shrinking core
+  revenue together with operating losses - or (c) there is no real core business. Do not substitute
+  price_RS/sector tailwind for business evidence or turn missing peer ranking into a new entry gate. Preserve
+  existing F1–F3 criteria, schema, scoring, regime floors and independent gates. NOT_IN_INPUT means absent from supplied inputs; NOT_REQUESTED means not queried;
   SOURCE_UNAVAILABLE requires an actual failed/unproductive query; INCOMPARABLE means incompatible entity,
   period or basis. These describe evidence, not a new automatic pass/fail rule or proof that data exists nowhere.
 - The full report (including filing and financial-risk commentary, the competitor comparison table and the appendix)

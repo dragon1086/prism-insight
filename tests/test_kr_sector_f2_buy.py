@@ -1,4 +1,4 @@
-"""Roadmap stage 4: financial-only F2 rule reaches the KR BUY prompt; others stay byte-identical."""
+"""Roadmap stage 4: financial F2 and holding F1/F4 rules reach the KR BUY prompt; others stay byte-identical."""
 import asyncio
 import json
 import os
@@ -11,14 +11,14 @@ import pytest
 from test_agent_virtual_initialization import SCRIPT as INITIALIZATION_SCRIPT
 
 from prism_core.sector_trading_criteria import (
-    MODE_ENV, buy_sector_block, f2_rule, sector_f2_mode, sector_profile_stamp,
+    MODE_ENV, buy_sector_block, f2_rule, f4_rule, sector_f2_mode, sector_profile_stamp,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
 BANK = {'kind': 'financial', 'subtype': 'bank', 'industry_name': '국내 은행', 'basis': 'ksic_financial+financial_layout'}
 NON_FINANCIAL = [
     None, {}, {'kind': 'general', 'subtype': None, 'basis': 'ksic_general'},
-    {'kind': 'construction', 'subtype': None}, {'kind': 'holding', 'subtype': None},
+    {'kind': 'construction', 'subtype': None},
     {'kind': 'order_backlog', 'subtype': 'shipbuilding'}, {'kind': 'loss_biotech', 'subtype': None},
     {'kind': 'reit', 'subtype': None}, {'kind': 'financial', 'subtype': 'unknown_subtype'},
 ]
@@ -35,7 +35,21 @@ def test_mode_is_live_only_when_explicit():
 @pytest.mark.parametrize('language', ['ko', 'en'])
 def test_non_financial_issuers_get_no_block_even_when_live(profile, language):
     assert buy_sector_block(profile, language, 'live') == ''
-    assert f2_rule(profile, 'live') == 'default'
+    assert f2_rule(profile, 'live') == 'default' and f4_rule(profile, 'live') == 'default'
+
+
+HOLDING = {'kind': 'holding', 'subtype': None, 'basis': 'ksic_company_hq+holding_name+industrial_layout'}
+
+
+def test_holding_block_judges_f1_f4_look_through_only_when_live():
+    assert buy_sector_block(HOLDING, 'ko', 'off') == '' and f4_rule(HOLDING, 'off') == 'default'
+    ko = buy_sector_block(HOLDING, 'ko', 'live')
+    assert ko.startswith('\n\n### 업종별 F1·F4 기준: 지주회사') and HOLDING['basis'] in ko
+    assert '관계회사' in ko and '지분법' in ko and '빼지 마십시오' in ko and '추정하지 마십시오' in ko
+    assert 'F2·F3' in ko and '`perplexity-ask`' in ko and '최대 1회' in ko
+    en = buy_sector_block(HOLDING, 'en', 'live')
+    assert en.startswith('\n\n### Sector-specific F1/F4 rule: holding company') and 'equity-method' in en
+    assert f4_rule(HOLDING, 'live') == 'holding_look_through' and f2_rule(HOLDING, 'live') == 'default'
 
 
 @pytest.mark.parametrize('subtype, marker', [
@@ -116,7 +130,7 @@ async def main():
     assert "_sector_profile" not in base_result
     others = [None, {"kind": "general", "subtype": None, "basis": "ksic_general"},
               {"kind": "construction", "subtype": None, "basis": "x"}, {"kind": "reit", "subtype": None, "basis": "x"},
-              {"kind": "holding", "subtype": None, "basis": "x"}, {"kind": "loss_biotech", "subtype": None, "basis": "x"}]
+              {"kind": "loss_biotech", "subtype": None, "basis": "x"}]
     for mode in (None, "off", "live"):
         for profile in others:
             (sys_prompt, prompt), result = await prompt_for(mode, profile, sector_profile=profile)
@@ -129,7 +143,15 @@ async def main():
             assert result["_sector_profile"]["f2_rule"] == "financial_capital_ratio"
         else:
             assert prompt == baseline
-            assert result["_sector_profile"] == {**BANK, "f2_rule": "default"}
+            assert result["_sector_profile"] == {**BANK, "f2_rule": "default", "f4_rule": "default"}
+        holding = {"kind": "holding", "subtype": None, "basis": "ksic_holding+industrial_layout"}
+        (sys_prompt, prompt), result = await prompt_for(mode, holding, sector_profile=dict(holding))
+        assert sys_prompt == system
+        if mode == "live":
+            assert prompt[len(baseline):] == module_block(sys.argv[3], holding) and prompt.startswith(baseline)
+            assert result["_sector_profile"]["f4_rule"] == "holding_look_through"
+        else:
+            assert prompt == baseline and result["_sector_profile"]["f4_rule"] == "default"
 
     # The pre-pass hands report_meta to the scenario by ticker.
     seen = []
@@ -157,9 +179,9 @@ async def main():
     agent.conn.close()
     print(json.dumps({"instruction_sha256": hashlib.sha256(system.encode()).hexdigest(), "ok": True}))
 
-def module_block(language):
+def module_block(language, profile=BANK):
     from prism_core.sector_trading_criteria import buy_sector_block
-    return buy_sector_block(BANK, language, "live")
+    return buy_sector_block(profile, language, "live")
 
 asyncio.run(main())
 '''

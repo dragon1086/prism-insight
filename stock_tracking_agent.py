@@ -56,7 +56,7 @@ from prism_core.isolated_agent_runtime import (
 )
 from prism_core.trading_scenario_contract import apply_buy_scenario_contract
 from prism_core.slot_weight import weighted_profit_sum
-from prism_core.sector_trading_criteria import buy_sector_block, f2_rule, sector_f2_mode, sector_profile_stamp
+from prism_core.sector_trading_criteria import buy_sector_block, f2_rule, f4_rule, sector_f2_mode, sector_profile_stamp
 from prism_core.isolated_strategy_effects import effects_for, EffectsFailure, observe_or_emit  # noqa: E402 - existing agent path bootstrap
 
 # Core agent imports
@@ -1273,14 +1273,14 @@ class StockTrackingAgent:
 
             from prism_core.report_research_context import market_context_for_buy
             prompt_message += market_context_for_buy(getattr(self, "_pipeline_market_context", None))
-            # Sector-specific F2 (financial issuers only); '' keeps every other prompt byte-identical.
+            # Sector-specific rules (financial F2, holding F1/F4); '' keeps every other prompt byte-identical.
             sector_mode = sector_f2_mode()
             sector_stamp = sector_profile_stamp(sector_profile)
             prompt_message += buy_sector_block(sector_profile, self.language, sector_mode)
             logger.info(
-                "[SECTOR_BUY][KR] ticker=%s kind=%s subtype=%s basis=%s mode=%s f2_rule=%s",
+                "[SECTOR_BUY][KR] ticker=%s kind=%s subtype=%s basis=%s mode=%s f2_rule=%s f4_rule=%s",
                 ticker or "?", sector_stamp["kind"], sector_stamp["subtype"], sector_stamp["basis"],
-                sector_mode, f2_rule(sector_profile, sector_mode),
+                sector_mode, f2_rule(sector_profile, sector_mode), f4_rule(sector_profile, sector_mode),
             )
             from prism_core.buy_report_depth_evidence import report_depth_evidence_active
             depth_on = report_depth_evidence_active(getattr(self.trading_agent, "instruction", ""))
@@ -1372,7 +1372,8 @@ class StockTrackingAgent:
                     scenario_json["_decision_input_facts"] = decision_facts
                 if isinstance(sector_profile, dict):
                     scenario_json["_sector_profile"] = {
-                        **sector_stamp, "f2_rule": f2_rule(sector_profile, sector_mode)}
+                        **sector_stamp, "f2_rule": f2_rule(sector_profile, sector_mode),
+                        "f4_rule": f4_rule(sector_profile, sector_mode)}
                 # Persist the experience-based score adjustment alongside the scenario.
                 # It rides inside the scenario JSON, which is stored in
                 # stock_holdings.scenario and copied to trading_history.scenario on sell —

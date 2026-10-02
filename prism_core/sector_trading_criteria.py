@@ -1,10 +1,12 @@
 """Sector-specific BUY criteria for KR issuers (roadmap stage 4).
 
 The report pipeline classifies each issuer with ``classify_issuer``; this
-module turns that profile into per-report BUY guidance. Only financial
-institutions change, and only F2: their liquidity-order balance sheets fail
+module turns that profile into per-report BUY guidance. Financial
+institutions change only F2: their liquidity-order balance sheets fail
 the industrial debt-ratio test by construction, so F2 is judged on a
-disclosed regulatory capital ratio instead. DART periodic reports carry the
+disclosed regulatory capital ratio instead. Non-financial holding companies
+change F1 and F4 (2026-10-02): their value and competitiveness sit in core
+subsidiaries and equity-method affiliates, so both are judged look-through. DART periodic reports carry the
 ratio only for pure banks, so when the inputs lack it the BUY agent may look
 it up within its existing single perplexity query; a ratio that is still
 missing or stale fails F2.
@@ -66,8 +68,51 @@ def f2_rule(profile, mode):
     return 'default'
 
 
+def f4_rule(profile, mode):
+    """Reason code for the F1/F4 rule actually applied to this issuer."""
+    if mode == 'live' and isinstance(profile, dict) and profile.get('kind') == 'holding':
+        return 'holding_look_through'
+    return 'default'
+
+
+_HOLDING_BLOCK = (
+    '\n\n### 업종별 F1·F4 기준: 지주회사 (결정론적 업종 판별)\n'
+    '이 종목은 DART 공식 업종명·법인명과 재무상태표 구조로 비금융 지주회사로 판별되었습니다(근거: {basis}). '
+    '지주회사의 가치와 경쟁력은 핵심 자회사·관계회사에서 나오므로, 이 종목에 한해 다음처럼 판정하십시오.\n'
+    '- F4 사업 명확성: 연결 자회사와 지분법 관계회사 가운데 장부금액·지분법이익·배당 기여가 큰 핵심 회사(상위 1~3개)의 '
+    '사업 모델·제품·주요 고객·시장 지위를 지주회사의 사업 근거로 인정합니다. 관계회사라는 이유만으로 근거에서 빼지 마십시오. '
+    '근거에는 회사명, 지분율 또는 장부금액, 이익 기여(지분법이익·배당)와 출처를 쓰십시오. 핵심 회사의 사업이 식별되고 구조적 '
+    '훼손 근거가 없으면 통과입니다.\n'
+    '- F1 수익성: 연결 영업이익만으로 판정하지 말고, 최근 2개 분기 지배기업 소유주 귀속 순이익 또는 영업이익+지분법손익이 '
+    '흑자면 통과입니다. 자산 처분이익 같은 일회성 이익은 빼고 판단하십시오.\n'
+    '- 비교: 일반 제조업 비교기업과의 영업이익률 비교는 지주회사의 수익성·경쟁력 판단 근거가 아닙니다. NAV 대비 할인, 배당·'
+    '브랜드 수익은 입력에 있을 때만 참고하고 추정하지 마십시오.\n'
+    '- 보완 조회: 핵심 관계회사의 경쟁 근거가 입력에 없으면 기존 `perplexity-ask` 통합 질의 최대 1회 안에 포함하십시오.\n'
+    'F2·F3, buy_score 기준, 시장별 하한, 추세 게이트, 손절·R/R 등 다른 기준과 스키마는 바뀌지 않습니다.\n',
+    '\n\n### Sector-specific F1/F4 rule: holding company (deterministic issuer classification)\n'
+    'This issuer is classified as a non-financial holding company from its official DART industry name, legal name '
+    'and balance-sheet layout (basis: {basis}). Its value and competitiveness sit in its core subsidiaries and '
+    'affiliates, so for this issuer only judge as follows.\n'
+    '- F4 Business clarity: accept the business model, products, key customers and market position of the core '
+    'companies (top one to three by book value, equity-method income or dividends), including equity-method '
+    'affiliates, as the holding company\'s business evidence. Do not drop an affiliate because it is not consolidated. '
+    'Cite the company, stake or book value, earnings contribution (equity-method income, dividends) and source. Pass '
+    'when the core companies\' business is identifiable and there is no evidence of structural impairment.\n'
+    '- F1 Profitability: do not judge on consolidated operating profit alone; pass when owners-of-parent net income, or '
+    'operating profit plus equity-method income, was positive in the latest two quarters, excluding one-off gains such '
+    'as asset disposals.\n'
+    '- Peers: an operating-margin comparison with industrial peers is not evidence of a holding company\'s '
+    'profitability or competitiveness. Use NAV discount, dividends and brand income only when supplied; never estimate.\n'
+    '- Lookup: if the core affiliates\' competitive evidence is missing, include it within the existing at-most-one '
+    '`perplexity-ask` query.\n'
+    'F2, F3, buy_score rules, regime floors, the trend gate, stop/R-R rules and the schema are unchanged.\n',
+)
+
+
 def buy_sector_block(profile, language='ko', mode='off'):
-    """Per-report BUY guidance; '' unless the financial F2 rule is live for this issuer."""
+    """Per-report BUY guidance; '' unless a sector rule is live for this issuer."""
+    if f4_rule(profile, mode) == 'holding_look_through':
+        return _HOLDING_BLOCK[0 if language == 'ko' else 1].format(basis=profile.get('basis') or 'unknown')
     if f2_rule(profile, mode) != 'financial_capital_ratio':
         return ''
     subtype = profile['subtype']

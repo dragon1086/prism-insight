@@ -100,6 +100,17 @@ def test_buy_prompt_reconciles_evidence_without_new_gate(market, language):
               '''- **Closing hour onward**: today's data is settled. All technical indicators are usable.
 - When the analysis runs after US market close (KST morning), use the most recent settled session.''')]
         )
+        # 2026-10-02 reviewed F4 row (same wording as KR): reverse it to keep the legacy hashes.
+        replacements += (
+            [("| F4 사업 명확성   | 사업 모델·매출원(주요 제품·고객·부문)이 식별되고 구조적 경쟁력 훼손의 출처 근거가 없음 "
+              "(경쟁우위 미확인은 미달 아님) | 2-2·5 |",
+              "| F4 사업 명확성   | 사업 모델 + 경쟁우위가 보고서에서 식별됨 | 2-2 |")]
+            if language == "ko" else
+            [("| F4 Business clarity     | Business model and revenue drivers (main products, customers, segments) "
+              "identifiable, no sourced evidence of structural competitive decline (an unconfirmed edge is not a "
+              "fail) | 2-2, 5 |",
+              "| F4 Business clarity     | Business model + competitive edge identifiable in report | 2-2 |")]
+        )
         for current, previous in replacements:
             assert legacy_prompt.count(current) == 1
             legacy_prompt = legacy_prompt.replace(current, previous)
@@ -122,8 +133,9 @@ def test_buy_prompt_reconciles_evidence_without_new_gate(market, language):
         assert hashlib.sha256(legacy_prompt[legacy_prompt.index(json_heading):].encode()).hexdigest() == expected[language][1]
     for marker in ("EVIDENCE_RECONCILIATION", "INCOMPARABLE", "F4_business_clarity", "rationale"):
         assert marker in prompt
-    for marker in (("시장 지배력", "새로운 진입 게이트", "반대 근거", "통과 근거") if language == "ko" else
-                   ("market dominance", "new entry gate", "contrary evidence", "pass evidence")):
+    # 2026-10-02: an unconfirmed edge is a recorded data limit, not an F4 failure.
+    for marker in (("시장 지배력", "새로운 진입 게이트", "경쟁우위 미확인", "구조적 훼손") if language == "ko" else
+                   ("dominance", "new entry gate", "competitive edge unconfirmed", "structural impairment")):
         assert marker in prompt
 
 
