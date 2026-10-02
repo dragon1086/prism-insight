@@ -26,18 +26,20 @@ def write_health(path, value):
 
 def live_add_provider(market):
     """Each LIVE in-slot add runs in tools/run_micro_split_add.py (own market path isolation)."""
-    import subprocess
+    import subprocess  # nosec B404 - fixed argv below, no shell
 
     from prism_core import micro_split_live
+
+    argv = {"KR": "kr", "US": "us"}[market]  # only two fixed values reach the child argv
+    command = [sys.executable, str(ROOT / "tools/run_micro_split_add.py"), "--market", argv]
 
     def live_add(campaign, decision, now):
         if not micro_split_live.live_enabled(market):
             return {"status": "LIVE_OFF"}
         payload = json.dumps({"campaign": campaign, "decision": decision, "now": now}, default=str)
         try:
-            done = subprocess.run([sys.executable, str(ROOT / "tools/run_micro_split_add.py"), "--market",
-                                   market.lower()], input=payload, capture_output=True, text=True, timeout=180,
-                                  cwd=str(ROOT), check=False)
+            done = subprocess.run(  # nosec B603  # nosemgrep - static interpreter/script argv, data via stdin
+                command, input=payload, capture_output=True, text=True, timeout=180, cwd=str(ROOT), check=False)
             lines = [line for line in done.stdout.splitlines() if line.startswith("{")]
             return json.loads(lines[-1]) if lines else {"status": "ERROR", "error": done.stderr[-300:]}
         except Exception as error:  # noqa: BLE001 - one failed add never stops the loop
