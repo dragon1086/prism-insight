@@ -101,8 +101,8 @@ class B3AeWorker:
         started = self.clock()
         intraday = self.providers["intraday"](plan["symbol"], as_of, started)
         quote = dict(_identity(plan, position_id), **self.providers["quote"](plan, position_id, self.clock()))
-        current = self.clock()
         market = self.providers["market"]()
+        current = self.clock()  # after every input, so none is observed in the future
         gates = current_gates(plan=plan, position_id=position_id, scenario=scenario, quote=quote,
                               portfolio=self._portfolio(db, campaign["account_key"], current),
                               market=market, now=current, phase="ADD")

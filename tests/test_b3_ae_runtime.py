@@ -99,14 +99,28 @@ def _kr_intraday(now, closes):
         prior_session_closes=prior)
 
 
-def _worker(db, store, now, *, closes=(10450, 10460), price=10460, pulse="UPTREND", session=True):
-    gates = lambda **kw: dict(observed_at=kw["now"], source_ref="g", admission=True, risk=True, RR=True,
-                              sector=True, slot=True, market_pulse=pulse, regime="moderate_bull")
+def _worker(db, store, now, *, closes=(10450, 10460), price=10460, pulse="UPTREND", session=True,
+            market_at=None):
+    def gates(**kw):
+        # Same freshness rule as the real current_gates: no snapshot from the future.
+        if datetime.fromisoformat(kw["market"]["observed_at"]) > datetime.fromisoformat(kw["now"]):
+            raise ValueError("CURRENT_SNAPSHOT_UNAVAILABLE")
+        return dict(observed_at=kw["now"], source_ref="g", admission=True, risk=True, RR=True,
+                    sector=True, slot=True, market_pulse=pulse, regime="moderate_bull")
     import prism_core.oneil_runtime_inputs as inputs
     inputs.current_gates = gates
     providers = dict(session_open=lambda moment: session, intraday=_kr_intraday(now, closes),
                      quote=lambda plan, position_id, at: dict(price=str(price), observed_at=at, source_ref="q"),
                      market=lambda: dict(observed_at=now.isoformat(), source_ref="m"))
+    if market_at:  # the market snapshot takes time: it advances the shared clock
+        moment = [now]
+
+        def market():
+            moment[0] = moment[0] + timedelta(seconds=2)
+            return dict(observed_at=moment[0].isoformat(), source_ref="m")
+        providers["market"] = market
+        return B3AeWorker("KR", store=store, holdings_db=db, providers=providers,
+                          clock=lambda: moment[0].isoformat())
     return B3AeWorker("KR", store=store, holdings_db=db, providers=providers, clock=lambda: now.isoformat())
 
 
@@ -171,3 +185,14 @@ def test_exit_hook_and_reconcile_close_with_the_original_exit(env, restore_gates
     assert result["rows"] == [dict(campaign_id=second["campaign_id"], status="CLOSED")]
     reconciled = store.snapshot(second["campaign_id"])
     assert Decimal(reconciled["exit"]["price"]) == 10800 and reconciled["exit"]["reason"] == "RECONCILED:trend_exit"
+
+
+def test_worker_stamps_the_decision_after_the_market_snapshot(env, restore_gates):
+    # 2026-10-02 live smoke: the KR snapshot was observed after the decision clock.
+    _, db = env
+    state = _open()
+    store = B3AeShadowStore(capture.store_path())
+    now = datetime(2026, 10, 6, 10, 0, 30, tzinfo=SEOUL).astimezone(timezone.utc)
+    rows = _worker(db, store, now, market_at=True).once()["rows"]
+    assert rows[0]["status"] == "ADD", rows
+    assert store.snapshot(state["campaign_id"])["legs"][-1]["kind"] == "ADD"
