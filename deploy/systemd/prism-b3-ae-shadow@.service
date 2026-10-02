@@ -1,0 +1,21 @@
+[Unit]
+Description=PRISM B3 all-entries SHADOW worker (%i market, no orders)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/prism-insight
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/.pyenv/shims/python3 /root/prism-insight/tools/run_b3_ae_shadow.py --market %i
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=30
+KillSignal=SIGINT
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

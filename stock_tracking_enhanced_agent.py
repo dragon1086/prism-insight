@@ -933,6 +933,18 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                 continue
                             self._complete_pending_kr_entry(prepared)
                             self._record_broker_entry_observation(ticker, source_decision_id, getattr(prepared.intent, "source_position_id", None), prepared.intent.id, trade_result)
+                            if not is_add and not rebound_pilot:
+                                try:  # fail-open: never affects the entry
+                                    from observability.b3_ae_capture import capture_entry as _b3_ae_entry
+                                    _b3_ae_entry(
+                                        self, market="KR", ticker=ticker,
+                                        account_key=self._account_scope()[0],
+                                        position_id=getattr(prepared.intent, "source_position_id", None),
+                                        entry_price=current_price, stop_loss=scenario.get("stop_loss"),
+                                        decision_ref=scenario.get("_decision_id") or source_decision_id,
+                                    )
+                                except Exception as b3_error:  # noqa: BLE001 - SHADOW must never affect the trade
+                                    logger.warning("[B3_AE] capture unavailable: %s", b3_error)
                         except asyncio.CancelledError:
                             logger.critical(
                                 "[POSITION-PENDING][KR] enhanced entry cancelled "
@@ -1018,6 +1030,18 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         opened_position_id = legacy_position_id(
                             "KR", buy_result.legacy_holding_id
                         )
+                        if not is_add and not rebound_pilot:
+                            # B3 all-entries SHADOW: fail-open, before the broker order.
+                            try:  # fail-open: never affects the entry
+                                from observability.b3_ae_capture import capture_entry as _b3_ae_entry
+                                _b3_ae_entry(
+                                    self, market="KR", ticker=ticker, account_key=account_key,
+                                    position_id=opened_position_id, entry_price=current_price,
+                                    stop_loss=scenario.get("stop_loss"),
+                                    decision_ref=scenario.get("_decision_id") or source_decision_id,
+                                )
+                            except Exception as b3_error:  # noqa: BLE001 - SHADOW must never affect the trade
+                                logger.warning("[B3_AE] capture unavailable: %s", b3_error)
                         order_intent = OrderIntent.create(
                             market="KR",
                             account_id=account_key,

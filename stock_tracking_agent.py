@@ -3481,6 +3481,13 @@ class StockTrackingAgent:
 
             # Save changes
             self.conn.commit()
+            try:  # B3 all-entries SHADOW: fail-open, never affects the sell
+                from observability.b3_ae_capture import capture_exit as _b3_ae_exit
+                _b3_ae_exit(market="KR", account_key=account_key,
+                            position_ids=[legacy_position_id("KR", i) for i in legacy_holding_ids],
+                            exit_price=current_price, reason=sell_reason)
+            except Exception as b3_error:  # noqa: BLE001 - SHADOW must never affect the trade
+                logger.warning("[B3_AE] capture unavailable: %s", b3_error)
             try:
                 self._emit_exit_context_snapshot(
                     ticker=ticker,

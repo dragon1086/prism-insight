@@ -3492,6 +3492,13 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     closed_at=now,
                 )
             self.conn.commit()
+            try:  # B3 all-entries SHADOW: fail-open, never affects the sell
+                from observability.b3_ae_capture import capture_exit as _b3_ae_exit
+                _b3_ae_exit(market="US", account_key=account_key,
+                            position_ids=[legacy_position_id("US", i) for i in legacy_holding_ids],
+                            exit_price=current_price, reason=sell_reason)
+            except Exception as b3_error:  # noqa: BLE001 - SHADOW must never affect the trade
+                logger.warning("[B3_AE] capture unavailable: %s", b3_error)
             try:
                 if stock_data.get("_oneil_owned_exit"):
                     from prism_core.oneil_routing import mark_owned_strategy_exit
@@ -4614,6 +4621,18 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 )
                             except Exception:  # noqa: BLE001 - optional capture cannot fail trading
                                 logger.warning("[SCENARIO_SHADOW] initial capture unavailable")
+                            if not is_add and not rebound_pilot:
+                                # B3 all-entries SHADOW: fail-open, before the broker order.
+                                try:  # fail-open: never affects the entry
+                                    from observability.b3_ae_capture import capture_entry as _b3_ae_entry
+                                    _b3_ae_entry(
+                                        self, market="US", ticker=ticker, account_key=self._account_scope()[0],
+                                        position_id=legacy_position_id("US", buy_result.legacy_holding_id),
+                                        entry_price=current_price, stop_loss=scenario.get("stop_loss"),
+                                        decision_ref=scenario.get("_decision_id") or source_decision_id,
+                                    )
+                                except Exception as b3_error:  # noqa: BLE001 - SHADOW must never affect the trade
+                                    logger.warning("[B3_AE] capture unavailable: %s", b3_error)
                             trade_result = {'success': False, 'message': 'Trading not executed'}
 
                             if current_price > 0:
