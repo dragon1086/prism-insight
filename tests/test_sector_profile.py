@@ -50,6 +50,27 @@ def test_classification(industry, labels, kind, subtype):
     assert (profile['kind'], profile['subtype']) == (kind, subtype)
 
 
+@pytest.mark.parametrize('legal_name,labels,kind,basis', [
+    ('솔브레인홀딩스(주)', INDUSTRIAL, 'holding', 'ksic_company_hq+holding_name+industrial_layout'),
+    ('(주)예시지주', INDUSTRIAL, 'holding', 'ksic_company_hq+holding_name+industrial_layout'),
+    ('예시홀딩스(주)', FINANCIAL, 'financial', 'ksic_holding+financial_layout'),
+    ('예시홀딩스(주)', None, 'general', 'holding_without_statement_layout'),
+    ('(주)예시컨설팅', INDUSTRIAL, 'general', 'ksic_general'),      # consultancies share the KSIC name
+    (None, INDUSTRIAL, 'general', 'ksic_general'),
+])
+def test_head_office_class_is_holding_only_with_holding_legal_name(legal_name, labels, kind, basis):
+    # 2026-10-02: 솔브레인홀딩스 files under the KSIC head-office class, not 지주회사.
+    profile = classify_issuer('회사 본부 및 경영 컨설팅 서비스업', statement(labels) if labels else [],
+                              legal_name=legal_name)
+    assert (profile['kind'], profile['basis']) == (kind, basis)
+
+
+def test_holding_lens_describes_competitiveness_look_through():
+    ko = sector_lens({'kind': 'holding'})
+    assert '관계회사' in ko and '지분법이익' in ko and '빼지 마세요' in ko and '비교표' in ko
+    assert 'equity-method affiliates' in sector_lens({'kind': 'holding'}, 'en')
+
+
 def test_lens_is_empty_for_general_and_specific_otherwise():
     assert sector_lens({'kind': 'general'}) == '' and sector_lens(None) == ''
     bank = sector_lens({'kind': 'financial', 'subtype': 'bank'})

@@ -71,9 +71,11 @@ def test_decision_rules_and_json_schema_are_byte_preserved(prompt):
     # raw-share caveat only when a corporate action is flagged or unknown. Decision rules and JSON unchanged.
     # 2026-10-01 reviewed: tail hash only — sell_triggers hard stop / -7% lines now describe the actual
     # intraday hard stop (live price <= stop_loss x 0.995, no close wait). Decision rules unchanged.
+    # 2026-10-02 reviewed: rules hash only — the F4 table row now passes an identified business model and
+    # revenue drivers without sourced structural decline (an unconfirmed edge is not a fail). JSON unchanged.
     expected = {
-        "ko": ("9f17746b3d5907eeae5f8b7e390060cf587dc5721b95da47af291c6fd3aad2ed", "96246810a487039fed91b8b44d68f1a8d9c99c3384f00a3a13400c9b7a45156e"),
-        "en": ("6ff36200374211b6091826b708bbb2e00355310e009589fb8ffb9a96fea921e0", "165a98f70fb92ff5d5c8d52577a7703172df08d1e37825866cebec7e4a4a2d56"),
+        "ko": ("22a77d5bc5f7c919bca59340776dbb4d9bedb7015de5ddd9d6e775eee5cd2862", "96246810a487039fed91b8b44d68f1a8d9c99c3384f00a3a13400c9b7a45156e"),
+        "en": ("dbb97996d729d1f7da893dda24d47b57bff7eb2e7cc7124447f5f12fde56b168", "165a98f70fb92ff5d5c8d52577a7703172df08d1e37825866cebec7e4a4a2d56"),
     }
     assert hashlib.sha256(text.split(heading)[0].encode()).hexdigest() == expected[language][0]
     assert hashlib.sha256(text[text.index(json_heading):].encode()).hexdigest() == expected[language][1]

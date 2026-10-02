@@ -58,7 +58,7 @@ async def main():
     assert (MARKER in system_prompt) is flag_on
     if flag_on:
         assert "| 2-1 (+ DART 5-1) |" in system_prompt
-        assert "| 2-2 (+ 경쟁사 비교 분석) |" in system_prompt
+        assert "5 (+ 경쟁사 비교 분석) |" in system_prompt  # F4 row: 2-2·5 / 2-2, 5 (2026-10-02)
         assert ("5-1 실적·현금흐름·차입과 회계 판단" if language == "ko" else "5-1 earnings/cash flow") in system_prompt
     else:
         assert "DART 5-1" not in system_prompt and "경쟁사 비교 분석" not in system_prompt
