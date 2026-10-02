@@ -125,8 +125,12 @@ def evaluate_production_buy_gate(
     is_add: bool = False,
     market_pulse: str | None = None,
     pilot_budget_available: bool = False,
+    required_score_override: float | None = None,
 ) -> dict[str, Any]:
     """Evaluate one candidate immediately before the simulator buy call.
+
+    ``required_score_override`` replaces the regime score floor for a verified
+    micro-split entry (KR/US, 2026-10-02); every other gate is unchanged.
 
     ``market_regime`` must be the programmatically computed regime.  A missing
     regime is a hard stop for a new buy: a data outage may reduce opportunity,
@@ -175,6 +179,10 @@ def evaluate_production_buy_gate(
             rule_min_score=float(rule["min_score"]),
         )
         required_score = max(scenario_min, score_policy["required_score"])
+        override = _number(required_score_override)
+        if override is not None and not is_add:
+            required_score = override
+            score_policy = {**score_policy, "required_score": override, "micro_split_floor": True}
         if score < required_score:
             findings.append(_finding(
                 "score_below_floor",

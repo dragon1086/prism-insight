@@ -589,6 +589,15 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 except Exception as _fe:
                     logger.warning(f"[REGIME_MIN_SCORE_FLOOR] fail-open, LLM min_score 유지: {_fe}")
 
+                # Micro-split entries (30-80% of a slot) need only score >= 5 in every regime
+                # (2026-10-02); only when the fractional plan can really be built.
+                if effects is None:
+                    from prism_core import micro_split_live
+                    min_score, scenario = micro_split_live.relaxed_min_score(
+                        self, market="KR", ticker=ticker, current_price=current_price, scenario=scenario,
+                        min_score=min_score, is_add=is_add, rebound_pilot=rebound_pilot, logger=logger)
+                    analysis_result["scenario"] = scenario
+
                 rationale = scenario.get("rationale", "") or ""
                 logger.info(f"Buy score check: {company_name}({ticker}) - Score: {buy_score}, Min required score: {min_score}")
                 logger.info(
@@ -876,6 +885,11 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         if micro_plan is not None:
                             entry_cash_amount = micro_cash
                             analysis_result["scenario"] = scenario
+                        elif micro_split_live.gate_score_override(scenario) is not None:
+                            # Admitted only by the micro-split score floor: never buy a full slot.
+                            logger.warning("[MICRO_SPLIT_SCORE][KR] %s(%s) plan unavailable at order time; "
+                                           "relaxed-score entry skipped", company_name, ticker)
+                            continue
                     if effects is not None:
                         if is_add or await self._is_ticker_in_holdings(ticker):
                             raise EffectsFailure("Existing strategy campaign requires explicit lifecycle transition")

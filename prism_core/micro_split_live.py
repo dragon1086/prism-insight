@@ -340,3 +340,91 @@ def dashboard_fields(scenario, *, buy_price=None, current_price=None):
     if current_price and entry:
         fields["slot_profit_rate"] = (float(current_price) / float(entry) - 1) * 100 * fraction
     return fields
+
+
+SCORE_POLICY_KEY = "_entry_score_policy"
+
+
+def score_floor(market):
+    """Required buy score for micro-split entries (KR/US); None when not applicable.
+
+    2026-10-02 user decision: a micro-split entry starts at 30-80% of a slot, so it
+    enters at score >= 5 in every regime instead of the full-slot regime floors
+    (sideways/moderate_bear 8, strong_bear 9). MICRO_SPLIT_MIN_SCORE=off restores them.
+    """
+    if not live_enabled(market):
+        return None
+    raw = os.getenv("MICRO_SPLIT_MIN_SCORE", "5").strip().lower()
+    if raw in {"", "off", "false", "no", "0"}:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if 1 <= value <= 10 else None
+
+
+def plan_available(agent, *, market, ticker, current_price, stop_loss):
+    """True when a v3-ae plan (hence a fractional order) can be built for this entry."""
+    try:
+        from observability.b3_ae_capture import build_plan
+        build_plan(agent, market=str(market).upper(), ticker=ticker, entry_price=current_price,
+                   stop_loss=stop_loss, decision_ref="score-floor-check")
+        return True
+    except Exception:  # noqa: BLE001 - no plan means the legacy floor stays
+        return False
+
+
+def relaxed_min_score(agent, *, market, ticker, current_price, scenario, min_score, is_add, rebound_pilot,
+                      logger=None):
+    """(required_score, scenario) for a new entry; relaxes to the micro-split floor only when
+    the entry will really be fractional. Adds, pilots and plan-less entries keep min_score."""
+    floor = score_floor(market)
+    try:
+        current = float(min_score or 0)
+    except (TypeError, ValueError):
+        current = 0.0
+    if floor is None or is_add or rebound_pilot or current <= floor:
+        return min_score, scenario
+    if not plan_available(agent, market=market, ticker=ticker, current_price=current_price,
+                          stop_loss=(scenario or {}).get("stop_loss")):
+        if logger:
+            logger.info("[MICRO_SPLIT_SCORE][%s] %s no plan; legacy floor %s kept", market, ticker, current)
+        return min_score, scenario
+    updated = dict(scenario or {})
+    updated[SCORE_POLICY_KEY] = {"mode": "micro_split_floor", "required_score": floor,
+                                 "legacy_required_score": current}
+    if logger:
+        logger.info("[MICRO_SPLIT_SCORE][%s] %s min_score %s->%s (micro-split entry)", market, ticker, current, floor)
+    return floor, updated
+
+
+def gate_score_override(scenario):
+    """Required score the final buy gate must use for a relaxed micro-split entry, or None."""
+    policy = (scenario or {}).get(SCORE_POLICY_KEY) if isinstance(scenario, dict) else None
+    if isinstance(policy, dict) and policy.get("mode") == "micro_split_floor":
+        try:
+            return float(policy["required_score"])
+        except (KeyError, TypeError, ValueError):
+            return None
+    return None
+
+
+def buy_prompt_block(market, language="ko"):
+    """Per-report BUY guidance while micro-split LIVE is on; '' otherwise (byte-identical prompts)."""
+    floor = score_floor(market)
+    if floor is None:
+        return ""
+    value = int(floor) if float(floor).is_integer() else floor
+    if language == "ko":
+        return (
+            "\n\n### 초분할 진입 기준 (결정론적)\n"
+            f"이번 신규 진입은 초분할로 1슬롯의 30~80%만 먼저 매수합니다. 그래서 진입 최소 점수는 시장 국면과 관계없이 "
+            f"{value}점입니다. min_score에는 {value}을 쓰고, buy_score가 {value}점 이상이며 미진입 단독 사유와 1단계 "
+            "펀더멘털·추세 게이트에 걸리지 않으면 진입으로 판단하십시오. 점수 산정 기준·스키마·손절·손익비 규칙은 바뀌지 않습니다.\n")
+    return (
+        "\n\n### Micro-split entry threshold (deterministic)\n"
+        f"This new entry is a micro-split: only 30-80% of one slot is bought first, so the minimum entry score is "
+        f"{value} in every market regime. Write {value} in min_score and decide Enter when buy_score >= {value} and no "
+        "standalone no-entry reason, Stage-1 fundamental gate or trend gate applies. Scoring rules, schema, stop and "
+        "R/R rules are unchanged.\n")

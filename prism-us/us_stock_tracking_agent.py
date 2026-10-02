@@ -676,6 +676,16 @@ def _capture_entry_quality_context(
 # US Stock Tracking Agent
 # =============================================================================
 
+def _micro_split_gate_score(scenario):
+    """Relaxed required score of a verified micro-split entry (None keeps the regime floor)."""
+    try:
+        from prism_core.micro_split_live import gate_score_override
+        return gate_score_override(scenario)
+    except Exception as error:  # noqa: BLE001 - fail closed: the regular floor applies
+        logger.warning("[MICRO_SPLIT_SCORE] gate override unavailable: %s", error)
+        return None
+
+
 class USStockTrackingAgent:
     """US Stock Tracking and Trading Agent"""
 
@@ -1535,6 +1545,9 @@ class USStockTrackingAgent:
             ticker_tag = ticker or "?"
             from prism_core.report_research_context import market_context_for_buy
             prompt_message += market_context_for_buy(getattr(self, "_pipeline_market_context", None))
+            # Micro-split LIVE: entry threshold 5 in every regime ('' when off -> byte-identical).
+            from prism_core.micro_split_live import buy_prompt_block as _micro_split_buy_block
+            prompt_message += _micro_split_buy_block("US", getattr(self, "language", "ko"))
             from prism_core.buy_report_depth_evidence import report_depth_evidence_active
             depth_on = report_depth_evidence_active(getattr(self.trading_agent, "instruction", ""))
             logger.info(f"[BUY_REPORT_DEPTH] enabled={str(depth_on).lower()} ticker={ticker_tag}")
@@ -2829,6 +2842,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 score_override=score_override,
                 trend_facts=str(scenario.get("_deterministic_trend_facts") or ""),
                 is_add=is_add,
+                required_score_override=_micro_split_gate_score(scenario),
             )
             if result.get("score_policy"):
                 logger.info("[ENTRY_SCORE_POLICY][US] regime=%s pulse=%s policy=%s", computed_regime, pulse, result["score_policy"])
@@ -4432,6 +4446,15 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 entry_cash_amount,
                             )
 
+                    # Micro-split entries (30-80% of a slot) need only score >= 5 in every regime
+                    # (2026-10-02, same as KR); only when the fractional plan can really be built.
+                    if getattr(self, "_no_order_effects", None) is None:
+                        from prism_core import micro_split_live
+                        min_score, scenario = micro_split_live.relaxed_min_score(
+                            self, market="US", ticker=ticker, current_price=current_price, scenario=scenario,
+                            min_score=min_score, is_add=is_add, rebound_pilot=rebound_pilot, logger=logger)
+                        analysis_result["scenario"] = scenario
+
                     rationale = scenario.get("rationale", "") or ""
                     logger.info(
                         f"Scenario decision: {company_name} ({ticker}) - "
@@ -4611,6 +4634,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 account=account, logger=logger)
                             if micro_plan is not None:
                                 entry_cash_amount = micro_cash
+                            elif micro_split_live.gate_score_override(scenario) is not None:
+                                # Admitted only by the micro-split score floor: never buy a full slot.
+                                logger.warning("[MICRO_SPLIT_SCORE][US] %s plan unavailable at order time; "
+                                               "relaxed-score entry skipped", ticker)
+                                state["skip_reason"] = state["skip_reason"] or "micro_split_plan_unavailable"
+                                continue
                         buy_result = await self._buy_stock_with_position(
                             ticker,
                             company_name,
