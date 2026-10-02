@@ -943,8 +943,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                         entry_price=current_price, stop_loss=scenario.get("stop_loss"),
                                         decision_ref=scenario.get("_decision_id") or source_decision_id,
                                     )
-                                except Exception:  # noqa: BLE001
-                                    pass
+                                except Exception as b3_error:  # noqa: BLE001 - SHADOW must never affect the trade
+                                    logger.warning("[B3_AE] capture unavailable: %s", b3_error)
                         except asyncio.CancelledError:
                             logger.critical(
                                 "[POSITION-PENDING][KR] enhanced entry cancelled "
@@ -1040,8 +1040,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                     stop_loss=scenario.get("stop_loss"),
                                     decision_ref=scenario.get("_decision_id") or source_decision_id,
                                 )
-                            except Exception:  # noqa: BLE001
-                                pass
+                            except Exception as b3_error:  # noqa: BLE001 - SHADOW must never affect the trade
+                                logger.warning("[B3_AE] capture unavailable: %s", b3_error)
                         order_intent = OrderIntent.create(
                             market="KR",
                             account_id=account_key,

@@ -3486,8 +3486,8 @@ class StockTrackingAgent:
                 _b3_ae_exit(market="KR", account_key=account_key,
                             position_ids=[legacy_position_id("KR", i) for i in legacy_holding_ids],
                             exit_price=current_price, reason=sell_reason)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as b3_error:  # noqa: BLE001 - SHADOW must never affect the trade
+                logger.warning("[B3_AE] capture unavailable: %s", b3_error)
             try:
                 self._emit_exit_context_snapshot(
                     ticker=ticker,

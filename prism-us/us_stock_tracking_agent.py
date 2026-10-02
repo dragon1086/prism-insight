@@ -3497,8 +3497,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 _b3_ae_exit(market="US", account_key=account_key,
                             position_ids=[legacy_position_id("US", i) for i in legacy_holding_ids],
                             exit_price=current_price, reason=sell_reason)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as b3_error:  # noqa: BLE001 - SHADOW must never affect the trade
+                logger.warning("[B3_AE] capture unavailable: %s", b3_error)
             try:
                 if stock_data.get("_oneil_owned_exit"):
                     from prism_core.oneil_routing import mark_owned_strategy_exit
@@ -4631,8 +4631,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                         entry_price=current_price, stop_loss=scenario.get("stop_loss"),
                                         decision_ref=scenario.get("_decision_id") or source_decision_id,
                                     )
-                                except Exception:  # noqa: BLE001
-                                    pass
+                                except Exception as b3_error:  # noqa: BLE001 - SHADOW must never affect the trade
+                                    logger.warning("[B3_AE] capture unavailable: %s", b3_error)
                             trade_result = {'success': False, 'message': 'Trading not executed'}
 
                             if current_price > 0:

@@ -16,6 +16,23 @@ from zoneinfo import ZoneInfo
 from prism_core.oneil_adaptive_policy import _hash, _time
 
 TABLES = {"KR": ("stock_holdings", "trading_history"), "US": ("us_stock_holdings", "us_trading_history")}
+# Complete literal statements per market; no query text is built at runtime.
+_PORTFOLIO_SQL = {
+    "KR": "SELECT id, ticker, scenario FROM stock_holdings WHERE account_key=?",
+    "US": "SELECT id, ticker, scenario FROM us_stock_holdings WHERE account_key=?",
+}
+_HOLDING_SQL = {
+    "KR": "SELECT id, ticker, account_key, scenario, stop_loss FROM stock_holdings "
+          "WHERE id=? AND ticker=? AND account_key=?",
+    "US": "SELECT id, ticker, account_key, scenario, stop_loss FROM us_stock_holdings "
+          "WHERE id=? AND ticker=? AND account_key=?",
+}
+_HISTORY_SQL = {
+    "KR": "SELECT buy_date, sell_date, sell_price, exit_kind FROM trading_history "
+          "WHERE ticker=? AND account_key=? ORDER BY sell_date",
+    "US": "SELECT buy_date, sell_date, sell_price, exit_kind FROM us_trading_history "
+          "WHERE ticker=? AND account_key=? ORDER BY sell_date",
+}
 DB_LOCAL = ZoneInfo("Asia/Seoul")  # legacy rows store server-local (KST) timestamps for both markets
 EVALUATION_WINDOW = timedelta(seconds=90)  # live-capture clock allows 120 s incl. fetch
 
@@ -47,9 +64,7 @@ class B3AeWorker:
         return db
 
     def _portfolio(self, db, account_key, now):
-        table = TABLES[self.market][0]
-        rows = db.execute(f"SELECT id, ticker, scenario FROM {table} WHERE account_key=?",
-                          (account_key,)).fetchall()
+        rows = db.execute(_PORTFOLIO_SQL[self.market], (account_key,)).fetchall()
         positions, sectors = [], []
         for row in rows:
             scenario = json.loads(row["scenario"] or "{}")
@@ -64,11 +79,8 @@ class B3AeWorker:
 
     def _reconcile_exit(self, db, campaign):
         """Legacy row gone: close with the first recorded strategy exit after the entry."""
-        table = TABLES[self.market][1]
         entered = _time(campaign["plan"]["created_at"])
-        for row in db.execute(f"SELECT buy_date, sell_date, sell_price, exit_kind FROM {table} "
-                              "WHERE ticker=? AND account_key=? ORDER BY sell_date",
-                              (campaign["symbol"], campaign["account_key"])):
+        for row in db.execute(_HISTORY_SQL[self.market], (campaign["symbol"], campaign["account_key"])):
             try:
                 bought, sold = _local(row["buy_date"]), _local(row["sell_date"])
             except (TypeError, ValueError):
@@ -107,12 +119,10 @@ class B3AeWorker:
         evaluate = session_open and moment - boundary <= EVALUATION_WINDOW
         db = self._reader()
         try:
-            table = TABLES[self.market][0]
             for campaign in self.store.active(self.market):
                 match = re.fullmatch(rf"legacy:{self.market}:(\d+)", campaign["position_id"])
                 row = None if match is None else db.execute(
-                    f"SELECT id, ticker, account_key, scenario, stop_loss FROM {table} "
-                    "WHERE id=? AND ticker=? AND account_key=?",
+                    _HOLDING_SQL[self.market],
                     (int(match.group(1)), campaign["symbol"], campaign["account_key"])).fetchone()
                 if row is None:
                     closed = self._reconcile_exit(db, campaign)
