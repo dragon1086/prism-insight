@@ -57,6 +57,9 @@ def main():
     if not micro_split_live.live_enabled(market):
         print(json.dumps({"status": "LIVE_OFF"}))
         return 0
+    if not micro_split_live.adds_enabled(market):
+        print(json.dumps({"status": "ADDS_PAUSED"}))
+        return 0
     result = asyncio.run(run(market, json.loads(sys.stdin.read())))
     print(json.dumps(result, default=str, ensure_ascii=False), flush=True)
     return 0

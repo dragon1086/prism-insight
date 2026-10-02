@@ -25,6 +25,16 @@ def live_enabled(market):
     return flag and str(market).upper() in markets
 
 
+def adds_enabled(market):
+    """Fixed-ladder LIVE adds (+2%/+4%); paused by default since 2026-10-02.
+
+    The user judged the intraday ladder too hasty for an O'Neil-style hold; adds
+    wait for the scenario-based add plan. The fractional first entry stays LIVE.
+    """
+    flag = os.getenv("MICRO_SPLIT_LIVE_ADDS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    return flag and live_enabled(market)
+
+
 def _dec(value):
     number = Decimal(str(value))
     if not number.is_finite() or number <= 0:
@@ -134,6 +144,12 @@ def entry_message_line(scenario, market):
     if block is None:
         return ""
     pct = round(float(block["allocation"]) * 100)
+    if not adds_enabled(market):
+        if str(market).upper() == "US":
+            return (f"Micro-split allocation: {pct}% of one slot — adds are paused until scenario-based add plans "
+                    "go live; a stop exits the whole position. Whole shares are rounded down.\n")
+        return (f"초분할 비중: {pct}% (1슬롯 기준) — 추가 매수는 증액 시나리오 도입 전까지 멈춰 있고, 손절 시 "
+                "전량 매도합니다. 정수 수량 내림으로 실제 체결 비중은 조금 낮을 수 있습니다.\n")
     two_steps = float(block["allocation"]) < 0.8  # an initial 80% has only the +4% -> 100% step left
     if str(market).upper() == "US":
         ladder = "adds to 80%/100% only after +2%/+4%" if two_steps else "adds to 100% only after +4%"

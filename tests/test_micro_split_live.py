@@ -30,6 +30,7 @@ def _agent(market="KR", ticker="005930"):
 @pytest.fixture
 def live_on(monkeypatch):
     monkeypatch.setenv("MICRO_SPLIT_LIVE_ENABLED", "true")
+    monkeypatch.setenv("MICRO_SPLIT_LIVE_ADDS_ENABLED", "true")
     monkeypatch.delenv("MICRO_SPLIT_LIVE_MARKETS", raising=False)
 
 
@@ -220,7 +221,7 @@ def test_dashboard_signal_and_context_fields_carry_allocation(live_on, monkeypat
     assert sent[0]["position_fraction"] == pytest.approx(0.7777)
 
 
-def test_us_korean_summary_uses_dollars_and_an_80pct_entry_has_one_step_left():
+def test_us_korean_summary_uses_dollars_and_an_80pct_entry_has_one_step_left(live_on):
     scenario = {"micro_split": live.entry_record(
         plan={"initial_nominal": "0.8", "policy_version": "v3", "plan_hash": "h", "entry_reference": 230},
         unit_amount=1000, market="US", entered_at="t0")}
@@ -230,3 +231,15 @@ def test_us_korean_summary_uses_dollars_and_an_80pct_entry_has_one_step_left():
     added, _ = live.apply_add(scenario, delta="0.2", price=235, at="t", bar_end="b")
     line = live.allocation_line(added, current_price=240, market="US", language="ko")
     assert "평균 매수가 $" in line and "원" not in line and "슬롯 기준 손익" in line
+
+
+def test_fixed_ladder_adds_are_paused_by_default(monkeypatch):
+    monkeypatch.setenv("MICRO_SPLIT_LIVE_ENABLED", "true")
+    monkeypatch.delenv("MICRO_SPLIT_LIVE_ADDS_ENABLED", raising=False)
+    assert live.live_enabled("KR") and not live.adds_enabled("KR")
+    _, cash, scenario = _prepared()
+    assert cash == 777_700  # the fractional first entry stays LIVE
+    assert "멈춰 있고" in live.entry_message_line(scenario, "KR")
+    assert "adds are paused" in live.entry_message_line(scenario, "US")
+    monkeypatch.setenv("MICRO_SPLIT_LIVE_ADDS_ENABLED", "true")
+    assert live.adds_enabled("US") and "+2%·+4%" in live.entry_message_line(scenario, "KR")
