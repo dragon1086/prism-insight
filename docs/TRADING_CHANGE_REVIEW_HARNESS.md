@@ -122,6 +122,51 @@ This checkpoint adds no runtime process, network query, or LLM call to trading.
 것을 “기존 전략 보존”이라고 부르지 않는다. 반대로 손절·비중·선발 기준을 실질적으로
 바꾸면서 단순 버그 수정이라는 이름으로 이 검토를 건너뛰지도 않는다.
 
+## Prompt framing and logical-consistency review (LLM 매매 프롬프트 변경 시 필수)
+
+BUY/SELL/보유 점검 프롬프트를 바꾸거나 부록을 추가할 때마다 적용한다. 사용자 요청
+(2026-10-03): 프레이밍의 중요성을 하네스에 명시하고, 업데이트할 때마다 기존 프롬프트와의
+논리 모순을 찾아 해결하며, 모순은 사용자와 함께 결정한다.
+
+### 프레이밍은 방향을 정한다
+
+- 같은 게이트라도 프레이밍이 재량 판단의 기울기를 바꾼다. 기존 예: 약세 국면은
+  리스크 관리(분산일 Kill Switch로 한 단계 보수화), 강세 국면은 기회비용("다음 기회는
+  없다", parabolic "풀 가동"), 초분할 진입은 정찰병 진입(오류 비용 비대칭: 틀린 진입은
+  작게 잘리고 놓친 진입은 되돌릴 수 없으므로 불확실성은 미진입이 아니라 비중이 처리).
+- 새 프레이밍은 **기준 안의 재량 판단**(경계선 점수, 근거 해석, "확인 후" 류 회피)에만
+  작용하게 쓰고, 바뀌지 않는 게이트·floor·손절 규칙을 같은 블록에 명시한다. 게이트를
+  우회하는 수단으로 프레이밍을 쓰지 않는다.
+- 프레이밍은 그것이 맞는 조건에서만 붙는 가장 좁은 층(예: 초분할 LIVE일 때만 붙는
+  per-report 부록)에 둔다. 다른 종목·모드의 프롬프트는 바이트 동일하게 유지한다.
+
+### 프롬프트를 프로그램처럼 펼쳐 모순을 찾는다
+
+1. 실제 조립 순서를 펼친다: 공유 instruction → instruction에 붙는 계약(출력·근거, 수급,
+   보고서 깊이, 결정 입력, 문체) → per-report 메시지(포트폴리오·트리거·팩트·일지·보고서)
+   → per-report 부록(시장 증거, 초분할 기준·프레임, add_plan, 업종 블록, 음수 자본 F2 등).
+2. 각 규칙을 "조건 → 결과"로 적고, 같은 항목을 두 곳 이상이 말하면 어느 쪽이 우선인지
+   확인한다. 부록이 공유 규칙을 덮어쓰면 부록 안에 "무엇을 대신하는지"를 명시한다.
+3. 점검 목록(2026-10-03에 실제로 발견된 유형):
+   - 새 구조가 기존 전제를 거짓으로 만든다 (초분할 vs 시스템 제약 "분할매매 불가·올인/올아웃").
+   - 결정 규칙·점수·스키마 값이 서로 다르다 (부록 min_score 5 vs 매트릭스·JSON 예시값,
+     buy_score vs effective_score, 부록 결정 규칙에서 손익비·모멘텀 조건 누락).
+   - 죽은 경로 (강세장 F 1개 미달 보완 경로 vs 채점표 "펀더 미달 = 1~2점";
+     "3~4점 진입 검토" vs 매트릭스 모멘텀 1개+ 요구).
+   - 사유의 전제가 다른 규칙 때문에 거짓이다 (단독 사유 1 "지지선 -10%면 손절 불가" vs
+     손절 규칙 "최대 손절폭과 지지선 중 타이트한 쪽").
+   - 목표·청산 모델 불일치 (강세 국면 목표 도달 = trailing 전환인데 손익비는 그 목표를
+     수익의 끝으로 계산, 초분할에서는 그 저항 돌파가 증액 조건).
+   - 새로 쓴 부록 자체의 자기모순 ("바뀌지 않는 것" 목록과 예외 규칙의 충돌).
+4. **방향이 갈리는 해결(완화 vs 강화, 경로를 살림 vs 닫음)은 사용자에게 묻고 함께
+   결정한다.** 선택지마다 실제 사례·데이터(있으면)와 경제적 영향을 붙인다. 경제적 효과가
+   없는 표현 정리만 바로 고친다.
+5. 해결 위치는 가장 좁은 층을 우선한다. 공유 instruction을 고치면 리뷰된 프롬프트 해시
+   테스트를 갱신하고 날짜·이유 주석을 남긴다.
+6. 같은 후보 A/B(운영 서버, DB 복사본, 주문 없음, 같은 시각 같은 입력)로 기존/신규
+   판단을 비교해, 게이트 종목의 결정은 그대로이고 의도한 재량 판단만 바뀌는지 확인한다.
+7. 발견한 모순·결정·A/B 결과를 PR 본문과 위 "최소 검토 기록" 3번 항목에 남긴다.
+
 ## Review lenses
 
 - **William O'Neil / CAN SLIM**: market direction, leadership, accumulation versus
@@ -154,6 +199,9 @@ data or a falsifiable test.
    screening-only, deterministic gate, and prompt guidance in that order.
 5. **Change one decision layer.** Do not encode the same penalty in screening,
    a buy gate, and an LLM prompt unless each layer has a distinct measured job.
+   For any LLM trading-prompt change, run the prompt framing and
+   logical-consistency review above and decide direction-splitting
+   contradictions with the user.
 6. **Protect both sides with tests.** Add one rejected counterexample and one
    valid retained example. Verify unrelated triggers remain unchanged.
 7. **Make the effect observable and reversible.** Log a stable reason code,
