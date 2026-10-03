@@ -564,7 +564,10 @@ class ScenarioDemoBroker(ScenarioExecution):
                     self.conn.execute("ROLLBACK TO SAVEPOINT scenario_notice_capture")
                     self.conn.execute("RELEASE SAVEPOINT scenario_notice_capture")
                 except Exception:
-                    pass  # Do not replace verified broker evidence with a notice failure.
+                    # Core evidence was committed before the optional savepoint.
+                    # Fall back to a full rollback rather than leave partial
+                    # notification writes available to a later unrelated commit.
+                    self.conn.rollback()
         return dict(intents=items,settlement=settlement,observation=observed,scenario_id=active["scenario_id"],notices=notices,
                     notice_error=notice_error,
                     protection_confirmed=protection,

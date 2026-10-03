@@ -318,6 +318,34 @@ def test_paused_flat_account_still_has_verified_no_exposure(live):
     assert not e.writes
 
 
+def test_notice_savepoint_failure_falls_back_to_optional_transaction_rollback(live,monkeypatch):
+    import live.scenario_notice as notice
+    b,e=live
+    b.execute(persist(b),"a1")
+    link=next(iter(e.orders));e.fill(link,.05);e.fill(link,.05)
+    original=b.conn
+    class Connection:
+        def __getattr__(self,name):return getattr(original,name)
+        def execute(self,sql,*args):
+            if sql.startswith("ROLLBACK TO SAVEPOINT scenario_notice_capture"):
+                raise sqlite3.OperationalError("savepoint unavailable")
+            return original.execute(sql,*args)
+    b.conn=Connection()
+    render=notice.render_notice;calls=[]
+    def fail_second(event):
+        calls.append(event)
+        if len(calls)==2:raise ValueError("invalid optional notice")
+        return render(event)
+    monkeypatch.setattr(notice,"render_notice",fail_second)
+    writes=list(e.writes)
+    result=b.reconcile()
+    assert result["protection_confirmed"] is True
+    assert result["notice_error"]=="optional_notice_capture_failed"
+    assert original.execute("SELECT count(*) FROM llm_scenario_broker_notices").fetchone()[0]==0
+    assert original.execute("SELECT count(*) FROM llm_scenario_broker_evidence WHERE kind='scenario_accounting'").fetchone()[0]>0
+    assert not original.in_transaction and e.writes==writes
+
+
 def test_entry_is_durable_before_submit_and_native_protected(live):
     b, e = live
     original = e.place_order
