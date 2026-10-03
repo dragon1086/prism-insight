@@ -161,6 +161,11 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
     root_conn = tracking.get_connection(root_db_path)
     try:
         tracking.ensure_schema(root_conn)
+        if mode == "demo":
+            from live.scenario_control import legacy_management_allowed
+            if not legacy_management_allowed(root_conn):
+                result["strategy_owner"] = "llm_scenario"
+                return result
         _record_code_version(root_conn, mode)
         if mode == "demo":
             result["shared_entry_policy"] = _observe_shared_entry_policy(root_conn, mode)

@@ -242,6 +242,9 @@ class ExchangeBackend:
     def open(self, side: str, qty: float, sl: float,
              hint_price: float) -> Optional[float]:
         """시장가에 SL을 동반한다. None은 무체결 확정이 아니라 진입 미확정이다."""
+        from live.scenario_control import legacy_entries_allowed
+        if not legacy_entries_allowed(self.conn):
+            return None
         self.last_open_snapshot = {}
         attached = native_stop_params(side, hint_price, sl)
         sl = float(attached["stopLoss"])
@@ -1285,6 +1288,9 @@ def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
                s1: pd.DataFrame, equity: float,
                main_mode: str, notice_jobs=None) -> Optional[tracking.PositionRow]:
     """4h 확정봉에서 진입 평가. 성공 시 저장된 PositionRow, 아니면 None."""
+    from live.scenario_control import legacy_entries_allowed
+    if not legacy_entries_allowed(conn):
+        return None
     if tracking.get_meta(conn, "swing_close_pending", MODE):
         return None
     if len(s4) < 36 or s1.empty:
@@ -1526,6 +1532,9 @@ def _process_locked(root_conn, tf_data: dict, main_mode: str = "shadow",
     backend 미지정 시 자동 선택 (스윙 키 존재+demo/live → 실집행, 아니면 가상).
     """
     result = {"events": 0}
+    from live.scenario_control import legacy_management_allowed
+    if not legacy_management_allowed(root_conn):
+        return result
     _notify_unresolved_entry(root_conn, main_mode)
     if not SWING_ENABLED:
         return result

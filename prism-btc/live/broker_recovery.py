@@ -144,6 +144,9 @@ def _recover_main_entry(adapter, pending, position, open_orders, now):
 
 def reconcile_main(adapter, now):
     with mutation_lock(adapter.conn):
+        from live.scenario_control import legacy_management_allowed
+        if not legacy_management_allowed(adapter.conn):
+            return
         try:
             _reconcile_main(adapter, now)
         except Exception:
@@ -196,6 +199,9 @@ def reconcile_swing(conn, main_mode, now, backend=None):
     notice_jobs = []
     try:
         with mutation_lock(conn):
+            from live.scenario_control import legacy_management_allowed
+            if not legacy_management_allowed(conn):
+                return
             return _reconcile_swing(conn, main_mode, now, backend, notice_jobs=notice_jobs)
     finally:
         _flush_notices(notice_jobs)
