@@ -324,6 +324,9 @@ class DemoAdapter:
                              stop_price: float, native_mode: str = "Full",
                              pending_payload: dict | None = None) -> Optional[str]:
         """Attached SL is mandatory; never retry as a naked entry."""
+        from live.scenario_control import legacy_entries_allowed
+        if not legacy_entries_allowed(self.conn):
+            return None
         params = native_stop_params(side, float(_pstr(price)), stop_price, mode=native_mode)
         if not math.isfinite(qty) or float(_qstr(qty)) <= 0:
             raise ValueError("invalid entry quantity")
@@ -1704,6 +1707,9 @@ class DemoAdapter:
     @serialized
     def _process_bar_inner(self, bar_time: pd.Timestamp, bar: pd.Series,
                            new_4h_confirmed: bool, cur_4h_ns: Optional[int]) -> None:
+        from live.scenario_control import legacy_management_allowed
+        if not legacy_management_allowed(self.conn):
+            return
         mode = self.mode
         conn = self.conn
         bar_close = float(bar["close"])
@@ -2037,7 +2043,8 @@ class DemoAdapter:
             tracking.log_event(conn, "protection",
                 "Exposure protection unconfirmed; new entries and additions blocked",
                 level="warning", mode=mode, ts=bar_time_str)
-        if pending is None and protection_verified:
+        from live.scenario_control import legacy_entries_allowed
+        if pending is None and protection_verified and legacy_entries_allowed(conn):
             snapshot = _build_snapshot_at(self.tf_data, bar_time)
             if snapshot is not None:
                 sig = generate_signal(snapshot) if new_4h_confirmed else Signal(
@@ -2239,6 +2246,9 @@ class DemoAdapter:
         or (3) falls back to a market reduce if a stop was missing while the
         10m bar had already crossed the local structural stop.
         """
+        from live.scenario_control import legacy_management_allowed
+        if not legacy_management_allowed(self.conn):
+            return
         try:
             if self.sess is None:
                 tracking.log_event(
