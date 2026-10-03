@@ -319,9 +319,13 @@ class ScenarioRuntime:
                                   (_json(snap), _json(ctx), slot))
                 self.conn.commit()
             payload = self.propose(snap, ctx)  # No broker mutation lock held.
+            # Audit-only write: an already-claimed slot is owned by this caller.
+            # Persist the proposal even if independent protection owns the trading
+            # mutex when the model returns. This does NOT authorize execution.
+            self.conn.execute("UPDATE llm_scenario_decisions SET proposal=? WHERE slot=? AND proposal IS NULL",
+                              (_json(payload), slot))
+            self.conn.commit()
             with mutation_lock(self.conn):
-                self.conn.execute("UPDATE llm_scenario_decisions SET proposal=? WHERE slot=?", (_json(payload), slot))
-                self.conn.commit()
                 state = self.state()
                 self._reconcile(state)
                 fresh = self._context(state)
@@ -384,8 +388,9 @@ class ScenarioRuntime:
         outcome = self._tick(claimed)
         # Do not overwrite the original audit with a duplicate caller's status.
         if claimed:
-            with mutation_lock(self.conn):
-                self.conn.execute("UPDATE llm_scenario_decisions SET outcome=? WHERE slot=? AND outcome IS NULL",
-                                  (_json(outcome), claimed[0]))
-                self.conn.commit()
+            # Metadata only, atomic in SQLite; never contend with the execution
+            # mutex a second time while recording an intentional lock_busy skip.
+            self.conn.execute("UPDATE llm_scenario_decisions SET outcome=? WHERE slot=? AND outcome IS NULL",
+                              (_json(outcome), claimed[0]))
+            self.conn.commit()
         return outcome
