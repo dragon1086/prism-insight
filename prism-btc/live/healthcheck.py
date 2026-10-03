@@ -84,12 +84,41 @@ def _kst_time(dt: datetime) -> str:
 def _completion_context(conn, mode: str, last_error: datetime, now: datetime) -> str:
     """Corroborate a recent completed tick, not that every issue is resolved."""
     try:
-        row = conn.execute(
+        rows = conn.execute(
             "SELECT ts,message FROM btc_events WHERE mode=? AND kind='heartbeat' "
-            "ORDER BY id DESC LIMIT 1", (mode,),
-        ).fetchone()
-        completed = _parse_ts(row["ts"]) if row else None
-        if (row and str(row["message"]).startswith("tick ok: protection=")
+            "ORDER BY id DESC LIMIT 200", (mode,),
+        ).fetchall()
+        recent = []
+        for row in rows:
+            stamp = _parse_ts(row["ts"])
+            message = str(row["message"])
+            if stamp is not None and 0 <= (now-stamp).total_seconds() <= _HEARTBEAT_MAX_MIN*60:
+                recent.append((stamp, message))
+        recent.sort(key=lambda item: item[0], reverse=True)
+        if recent and recent[0][1].startswith("scenario tick: "):
+            scenario = [(stamp, message.removeprefix("scenario tick: "))
+                        for stamp, message in recent if message.startswith("scenario tick: ")]
+            wait = next((stamp for stamp, status in scenario if status == "wait" and stamp > last_error), None)
+            protection = next((stamp for stamp, status in scenario if status == "protection_checked"), None)
+            execution = next(((stamp, status) for stamp, status in scenario if status != "protection_checked"), None)
+            lines = [f"매매 판단({mode}): " + (
+                f"{_kst_time(wait)} · 관망·기존 계획 유지(WAIT) 판단 완료"
+                if wait else "마지막 오류 이후 최근 매매 판단 완료 미확인")]
+            if execution and execution[1] != "wait":
+                stamp, status = execution
+                # These heartbeats do not identify which loop failed/skipped.
+                # In particular intent_pending is not proof of a fill or even
+                # of validation: submission_unknown shares the same status.
+                label = {"lock_busy": "잠금 대기로 건너뜀", "blocked": "차단됨",
+                         "intent_pending": "주문 처리 미확정"}.get(status, "완료 미확인")
+                lines.append(f"최근 시나리오 실행({mode}): {_kst_time(stamp)} · {label}")
+            lines.append(f"포지션 보호({mode}): " + (
+                f"{_kst_time(protection)} · 확인" if protection else "최근 확인 기록 없음"))
+            lines.append("최근 70분 내 기록 기준 · 누적 오류 경보 유지(모든 이상 해소를 뜻하지 않음)")
+            return "\n".join(lines)
+        # Preserve the legacy runner's latest-heartbeat completion contract.
+        completed, message = recent[0] if recent else (None, "")
+        if (message.startswith("tick ok: protection=")
                 and completed is not None and last_error < completed <= now
                 and (now-completed).total_seconds() <= _HEARTBEAT_MAX_MIN * 60):
             return f"오류 이후 정규 실행 완료 확인: {_kst_time(completed)} (모든 이상 해소를 뜻하지 않음)"

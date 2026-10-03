@@ -130,6 +130,111 @@ def test_health_alert_includes_generation_time(captured):
     assert "30분봉 기준시각" in captured[0]
 
 
+def _scenario_error_history():
+    conn = _root_conn()
+    now = datetime(2026, 10, 4, 0, 15, tzinfo=timezone(timedelta(hours=9)))
+    for minutes in (90, 75, 60, 45, 30, 15):
+        tracking.log_event(conn, "error", "scenario tick blocked: reconciliation_or_proposal_failed",
+            level="error", mode="demo", ts=_iso(now-timedelta(minutes=minutes)+timedelta(seconds=16)))
+    return conn, now
+
+
+def _scenario_heartbeat(conn, now, status, minutes, mode="demo"):
+    tracking.log_event(conn, "heartbeat", "scenario tick: " + status,
+        mode=mode, ts=_iso(now-timedelta(minutes=minutes)))
+
+
+def test_actual_six_errors_separates_skipped_execution_from_protection():
+    conn, now = _scenario_error_history()
+    _scenario_heartbeat(conn, now, "lock_busy", 10)
+    _scenario_heartbeat(conn, now, "lock_busy", 5)
+    _scenario_heartbeat(conn, now, "protection_checked", 1)
+    result = healthcheck._check_error_burst(conn, "demo", now)
+    assert result["level"] == "alert" and "6건" in result["msg"]
+    assert "00:00:16 KST" in result["msg"]
+    assert "00:10:00 KST · 잠금 대기로 건너뜀" in result["msg"]
+    assert "포지션 보호(demo): 2026-10-04 00:14:00 KST · 확인" in result["msg"]
+    assert "매매 판단 완료 미확인" in result["msg"]
+
+
+def test_wait_completion_not_hidden_by_later_protection():
+    conn, now = _scenario_error_history()
+    _scenario_heartbeat(conn, now, "wait", 5)
+    _scenario_heartbeat(conn, now, "protection_checked", 1)
+    result = healthcheck._check_error_burst(conn, "demo", now)
+    assert "00:10:00 KST · 관망·기존 계획 유지(WAIT) 판단 완료" in result["msg"]
+    assert "00:14:00 KST · 확인" in result["msg"]
+    assert result["level"] == "alert"
+
+
+@pytest.mark.parametrize("status", ["blocked", "lock_busy", "intent_pending", "unknown"])
+def test_later_noncompletion_does_not_claim_recovery(status):
+    conn, now = _scenario_error_history()
+    _scenario_heartbeat(conn, now, "wait", 10)
+    _scenario_heartbeat(conn, now, status, 5)
+    _scenario_heartbeat(conn, now, "protection_checked", 1)
+    result = healthcheck._check_error_burst(conn, "demo", now)
+    assert result["level"] == "alert"
+    assert "00:05:00 KST · 관망·기존 계획 유지(WAIT) 판단 완료" in result["msg"]
+    assert "최근 시나리오 실행(demo): 2026-10-04 00:10:00 KST" in result["msg"]
+    assert "모든 이상 해소를 뜻하지 않음" in result["msg"]
+
+
+@pytest.mark.parametrize("minutes,mode", [(-1, "demo"), (80, "demo"), (1, "shadow")])
+def test_future_stale_other_mode_scenario_completion_ignored(minutes, mode):
+    conn, now = _scenario_error_history()
+    _scenario_heartbeat(conn, now, "wait", minutes, mode)
+    _scenario_heartbeat(conn, now, "protection_checked", 2)
+    result = healthcheck._check_error_burst(conn, "demo", now)
+    assert "WAIT) 판단 완료" not in result["msg"]
+    assert "매매 판단 완료 미확인" in result["msg"]
+
+
+def test_new_error_after_wait_does_not_count_old_wait_as_completion():
+    conn, now = _scenario_error_history()
+    _scenario_heartbeat(conn, now, "wait", 10)
+    tracking.log_event(conn, "error", "new failure", level="error", mode="demo",
+        ts=_iso(now-timedelta(minutes=5)))
+    _scenario_heartbeat(conn, now, "blocked", 5)
+    _scenario_heartbeat(conn, now, "protection_checked", 1)
+    before = conn.total_changes
+    result = healthcheck._check_error_burst(conn, "demo", now)
+    assert "7건" in result["msg"] and "매매 판단 완료 미확인" in result["msg"]
+    assert "WAIT) 판단 완료" not in result["msg"]
+    assert "00:14:00 KST · 확인" in result["msg"]
+    assert conn.total_changes == before
+
+
+def test_scenario_context_uses_event_time_not_late_insertion_order():
+    conn, now = _scenario_error_history()
+    _scenario_heartbeat(conn, now, "wait", 5)
+    _scenario_heartbeat(conn, now, "protection_checked", 1)
+    _scenario_heartbeat(conn, now, "blocked", 12)
+    _scenario_heartbeat(conn, now, "protection_checked", 14)
+    result = healthcheck._check_error_burst(conn, "demo", now)
+    assert "00:10:00 KST · 관망·기존 계획 유지(WAIT) 판단 완료" in result["msg"]
+    assert "00:14:00 KST · 확인" in result["msg"]
+    assert "최근 시나리오 실행" not in result["msg"]
+
+
+@pytest.mark.parametrize("legacy_latest", [True, False])
+@pytest.mark.parametrize("legacy_ok", [True, False])
+def test_mixed_runner_transition_uses_latest_valid_event(legacy_latest, legacy_ok):
+    conn, now = _scenario_error_history()
+    scenario_minutes, legacy_minutes = (12, 5) if legacy_latest else (5, 12)
+    _scenario_heartbeat(conn, now, "wait", scenario_minutes)
+    legacy = "tick ok: protection=1x10m, strategy=0x30m; last=None" if legacy_ok else "tick skipped (broker recovery pending)"
+    tracking.log_event(conn, "heartbeat", legacy, mode="demo",
+        ts=_iso(now-timedelta(minutes=legacy_minutes)))
+    # Neither a future nor malformed late insertion selects the active runner.
+    _scenario_heartbeat(conn, now, "protection_checked", -1)
+    tracking.log_event(conn, "heartbeat", "tick ok: protection=1x10m", mode="demo", ts="bad-time")
+    result = healthcheck._check_error_burst(conn, "demo", now)
+    assert result["level"] == "alert"
+    assert ("오류 이후 정규 실행 완료 확인" in result["msg"]) == (legacy_latest and legacy_ok)
+    assert ("WAIT) 판단 완료" in result["msg"]) == (not legacy_latest)
+
+
 def test_six_reported_events_with_only_four_primary_errors_do_not_alert():
     conn = _healthy_conn()
     for _ in range(4):
