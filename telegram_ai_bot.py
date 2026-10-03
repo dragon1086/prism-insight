@@ -80,6 +80,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from prism_core.log_redaction import install as _install_log_redaction  # noqa: E402
+_install_log_redaction()
 
 # Constants definition
 REPORTS_DIR = Path("reports")

@@ -5,6 +5,8 @@ the outcome of the work that triggered it.
 """
 import logging
 import os
+from prism_core.log_redaction import install as _install_log_redaction  # noqa: E402
+_install_log_redaction()
 
 logger = logging.getLogger(__name__)
 

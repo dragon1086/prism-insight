@@ -16,6 +16,8 @@ import uuid
 import aiohttp
 
 from prism_core.strategy_ledger import _time
+from prism_core.log_redaction import install as _install_log_redaction  # noqa: E402
+_install_log_redaction()
 
 AUTHORIZED_TEST_CHAT_ID = 7726642089
 MAX_RESPONSE_BYTES = 65536

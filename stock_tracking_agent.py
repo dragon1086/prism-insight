@@ -126,6 +126,8 @@ from tracking import (
     CompressionManager,
     TelegramSender,
 )
+from prism_core.log_redaction import install as _install_log_redaction  # noqa: E402
+_install_log_redaction()
 
 # Delay MCPApp construction so a successful Codex+MCP path never nests two
 # MCP hosts in one process. Legacy mode still constructs the same app at run().
