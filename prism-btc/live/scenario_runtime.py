@@ -357,8 +357,14 @@ class ScenarioRuntime:
                     entries=validated.get("entries",[])
                     quantity=sum(e["quantity"] for e in entries)
                     price=sum(e["price"]*e["quantity"] for e in entries)/quantity if quantity else None
+                    held_quantity=sum(p["quantity"] for p in fresh["positions"])
+                    held_average=(sum(p["price"]*p["quantity"] for p in fresh["positions"])/held_quantity
+                                  if held_quantity else None)
                     self._notice("plan:"+ident,dict(kind="PLAN",timestamp=self.clock(),side=validated["side"],
                         price=price,hard_stop=validated["hard_stop"],take_profits=validated.get("take_profits",[]),
+                        plan_action=validated["action"],quantity=quantity,before_quantity=held_quantity,
+                        before_hard_stop=fresh.get("previous_hard_stop"),reference_entry_price=held_average,
+                        scenario_initial_equity=fresh["initial_equity"],
                         scenario_budget=validated["risk"]["budget"],scenario_risk=validated["risk"]["total_risk"]))
                     self.conn.commit()
                 try:

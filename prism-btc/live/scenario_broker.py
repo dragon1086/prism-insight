@@ -98,6 +98,7 @@ class ScenarioDemoBroker(ScenarioExecution):
                 kind TEXT NOT NULL, captured_at REAL NOT NULL, body TEXT NOT NULL)""")
             conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_broker_notices(event_id TEXT PRIMARY KEY,scenario_id TEXT NOT NULL,body TEXT NOT NULL)")
             conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_broker_incidents(scenario_id TEXT PRIMARY KEY,episode INTEGER NOT NULL,active INTEGER NOT NULL)")
+            conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_notice_positions(scenario_id TEXT PRIMARY KEY,revision INTEGER NOT NULL,body TEXT NOT NULL)")
             conn.commit()
             self._init_execution(execution_enabled)
             if self.execution_enabled:
@@ -529,6 +530,7 @@ class ScenarioDemoBroker(ScenarioExecution):
                 exchange_order_ids=[c["order_id"] for c in group],open_entries=open_entries,
                 confirmed_hard_stop=float(observed["position"].get("stopLoss",0)) if protection and not observed["exchange_flat"] else None))
         settlement=None
+        accounting=None
         financial_pending=False
         if not children and observed["exchange_flat"] and not observed["open_orders"]:
             settlement=dict(scenario_id=active["scenario_id"],flat_confirmed=True,orders_terminal=True,
@@ -541,15 +543,45 @@ class ScenarioDemoBroker(ScenarioExecution):
                 financial_pending=accounting.get("status")!="confirmed"
             except Exception:
                 financial_pending=True
-        notices=self._notices(active,children,observed,protection,settlement,unknown or not protection or financial_pending)
+        # Notification enrichment is optional. Its SQL and rendering failures
+        # must never roll back verified execution/accounting or prevent the
+        # runtime from receiving the reconciliation result.
+        self.conn.commit()
+        notices=[]
+        notice_error=None
+        notice_savepoint=False
+        try:
+            self.conn.execute("SAVEPOINT scenario_notice_capture")
+            notice_savepoint=True
+            notices=self._notices(active,children,observed,protection,settlement,unknown or not protection or financial_pending,accounting)
+            self.conn.execute("RELEASE SAVEPOINT scenario_notice_capture")
+            notice_savepoint=False
+        except Exception:
+            notices=[]
+            notice_error="optional_notice_capture_failed"
+            if notice_savepoint:
+                try:
+                    self.conn.execute("ROLLBACK TO SAVEPOINT scenario_notice_capture")
+                    self.conn.execute("RELEASE SAVEPOINT scenario_notice_capture")
+                except Exception:
+                    # Core evidence was committed before the optional savepoint.
+                    # Fall back to a full rollback rather than leave partial
+                    # notification writes available to a later unrelated commit.
+                    self.conn.rollback()
         return dict(intents=items,settlement=settlement,observation=observed,scenario_id=active["scenario_id"],notices=notices,
+                    notice_error=notice_error,
                     protection_confirmed=protection,
                     confirmed_hard_stop=float(observed["position"].get("stopLoss",0)) if protection and not observed["exchange_flat"] else None,
                     protection_status="confirmed" if protection else "unknown")
 
-    def _notices(self,active,children,observed,protected,settlement,pending=False):
+    def _notices(self,active,children,observed,protected,settlement,pending=False,accounting=None):
         """Immutable first-observation events; poll time never changes event IDs."""
         from live.scenario_notice import render_notice
+        from live.scenario_notice_evidence import position_snapshot, economic_fingerprint
+        snapshot=position_snapshot(active,children,observed,protected,pending,accounting)
+        previous=self.conn.execute("SELECT revision,body FROM llm_scenario_notice_positions WHERE scenario_id=?",(active["scenario_id"],)).fetchone()
+        before=json.loads(previous[1]) if previous else None
+        fresh_rich_comparison=False
         fills=[(c,e) for c in children if c["evidence"] for e in c["evidence"]["executions"]]
         entry_fills=[e for c,e in fills if c["kind"]=="entry"]
         entry_qty=sum(float(e["execQty"]) for e in entry_fills)
@@ -574,27 +606,28 @@ class ScenarioDemoBroker(ScenarioExecution):
                 hard_stop=float(observed["position"].get("stopLoss",0)) or active["hard_stop"],
                 protection_confirmed=protected,exchange_leverage=float(observed["position"]["leverage"]),
                 scenario_budget=active["initial_equity"]*.02,settlement_confirmed=False)
-            if child["kind"]=="entry":
-                source=self.conn.execute("SELECT payload FROM llm_scenario_intents WHERE id=?",(child["intent_id"],)).fetchone()
-                if source:
-                    event["take_profits"]=json.loads(source[0]).get("take_profits",[])[:8]
-                if (0<=observed["captured_at"]-event["timestamp"]<=120 and not observed["exchange_flat"] and
-                    observed["position"].get("side")==("Buy" if active["side"]=="LONG" else "Sell")):
-                    event["remaining_quantity"]=float(observed["position"]["size"])
-                    try:
-                        margin=_number(observed["position"].get("positionIM"),minimum=0)
-                        event["account_snapshot"]=dict(same_event=True,same_account=True,
-                            position_margin=margin,equity=observed["equity"],timestamp=observed["captured_at"],margin_mode="REGULAR_MARGIN")
-                    except BrokerNotReady:
-                        pass
+            if snapshot and 0<=observed["captured_at"]-event["timestamp"]<=120:
+                event.update(position_after=snapshot,position_snapshot_scope="post_observation_total",
+                    remaining_quantity=snapshot["quantity"],account_snapshot=snapshot["account_snapshot"])
+                # A reconciliation-wide baseline is not a per-fill position.
+                # Never present a later observation as preceding an older fill.
+                valid_before=before is not None and before["timestamp"]<=event["timestamp"]
+                if valid_before:
+                    event["position_before"]=before
+                if (before is None or valid_before) and not self.conn.execute(
+                    "SELECT 1 FROM llm_scenario_broker_notices WHERE event_id=?",(event["event_id"],)).fetchone():
+                    fresh_rich_comparison=True
             if child["kind"] in {"tp","partial_sl","native_sl"}:
                 event["reason_code"]={"tp":"TAKE_PROFIT","partial_sl":"PARTIAL_STOP","native_sl":"HARD_STOP"}[child["kind"]]
             candidates.append(event)
-        if protected and not observed["exchange_flat"]:
+        changed=bool(snapshot and (before is None or economic_fingerprint(snapshot)!=economic_fingerprint(before)))
+        if changed and not observed["exchange_flat"] and not fresh_rich_comparison:
             stop=float(observed["position"]["stopLoss"])
-            candidates.append(dict(event_id="scenario-protection-"+hashlib.sha256(f'{active["scenario_id"]}:{stop}'.encode()).hexdigest()[:24],
+            revision=previous[0]+1 if previous else 1
+            candidates.append(dict(event_id="scenario-position-"+hashlib.sha256(f'{active["scenario_id"]}:{revision}'.encode()).hexdigest()[:24],
                 kind="PROTECTION",timestamp=observed["captured_at"],side=active["side"],hard_stop=stop,
-                protection_confirmed=True,exchange_leverage=float(observed["position"]["leverage"]),remaining_quantity=float(observed["position"]["size"])))
+                protection_confirmed=True,exchange_leverage=float(observed["position"]["leverage"]),remaining_quantity=float(observed["position"]["size"]),
+                position_before=before,position_after=snapshot,change_type="updated" if before else "initial_protection"))
         if settlement and settlement.get("execution_ids"):
             exit_fills=[e for c,e in fills if c["kind"]!="entry"]
             exit_qty=sum(float(e["execQty"]) for e in exit_fills)
@@ -610,7 +643,9 @@ class ScenarioDemoBroker(ScenarioExecution):
             render_notice(event)
             self.conn.execute("INSERT OR IGNORE INTO llm_scenario_broker_notices VALUES(?,?,?)",
                 (event["event_id"],active["scenario_id"],json.dumps(event,allow_nan=False,sort_keys=True)))
-        self.conn.commit()
+        if changed:
+            self.conn.execute("INSERT OR REPLACE INTO llm_scenario_notice_positions VALUES(?,?,?)",
+                (active["scenario_id"],previous[0]+1 if previous else 1,json.dumps(snapshot,allow_nan=False,sort_keys=True)))
         return self._pending_notices()
 
     def _pending_notices(self):
