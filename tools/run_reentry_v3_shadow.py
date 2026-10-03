@@ -2,10 +2,13 @@
 trigger only when REENTRY_V3_LLM_RECHECK=true (.env or environment; default off), never with
 --no-llm or a dry run.
 
-    python tools/run_reentry_v3_shadow.py --market KR --phase intraday   # 12:10 KST lunch decision
+    python tools/run_reentry_v3_shadow.py --market KR --phase intraday   # 14:00 KST decision
     python tools/run_reentry_v3_shadow.py --market KR --phase close      # 16:40 KST after the close
-    python tools/run_reentry_v3_shadow.py --market US --phase intraday   # 12:30 New York
+    python tools/run_reentry_v3_shadow.py --market US --phase intraday   # 13:50 New York decision
     python tools/run_reentry_v3_shadow.py --market US --phase close      # 17:20 New York
+
+The decision run sits before the afternoon batches (KR 14:46, US 14:30 ET) and before the KR
+closing auction (15:20), where KIS current-price and order behaviour differ.
     python tools/run_reentry_v3_shadow.py --market KR --phase intraday --dry-run   # writes nothing
 """
 from __future__ import annotations
@@ -29,7 +32,7 @@ if str(ROOT) not in sys.path:
 from observability import reentry_v3_shadow as V3  # noqa: E402
 from tools import run_reentry_shadow as collectors  # noqa: E402
 
-HISTORY_DAYS = 320          # 70-day enrolment + 60-session campaign + 60-session lookback + 120-day regime MAs
+HISTORY_DAYS = 480          # 52-week high for the BUY 2a target + 70-day enrolment + 60-session watch
 KR_CACHE_DIR = ROOT / "runtime/reentry_v3_kr_daily_cache"
 QUOTE_MAX_AGE_SECONDS = 120     # same freshness bound as the B3 quote input
 CALENDARS = {"KR": "XKRX", "US": "NYSE"}
@@ -175,7 +178,8 @@ def us_quote_fn(timeout=15):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--market", choices=["KR", "US"], required=True)
-    parser.add_argument("--phase", choices=["intraday", "close"], required=True)
+    parser.add_argument("--phase", choices=["intraday", "close"], required=True,
+                        help="intraday: decision run (KR 14:00 KST, US 13:50 ET); close: after-close ledger update")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--db", default=str(V3.DB_PATH))
     parser.add_argument("--state-root", default=str(V3.STATE_DIR))

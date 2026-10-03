@@ -1,4 +1,4 @@
-"""Re-entry v3 SHADOW: campaign re-entry with a lunch-time decision. No orders, no DB writes, no Telegram.
+"""Re-entry v3 SHADOW: campaign re-entry decided before the close. No orders, no DB writes, no Telegram.
 
 Enrolment is the v2 one (observability.reentry_shadow.candidates with include_blocked=True:
 STOP_EXIT / LOCATION_SKIP / ENTER_BLOCKED, 70-day window, point-in-time dedupe). Each watch
@@ -6,13 +6,16 @@ becomes a campaign around one level L (prism_core/reentry_campaign.py); the whol
 replayed from the anchor on every run, so reruns are idempotent and the only stored inputs are
 the live decisions.
 
-* ``phase="intraday"`` (KR 12:10 KST, US 12:30 New York; before any closing auction): for
-  campaigns that may open a position today, read the live quote, evaluate the triggers with the
-  lunch-time price as the close proxy, record the decision (decision_price, decision_time,
-  low so far), freeze the recheck inputs of a fired trigger and run the LLM recheck.
+* ``phase="intraday"`` (KR 14:00 KST, US 13:50 New York: before the afternoon batches at KR 14:46 /
+  US 14:30 ET and before the KR closing auction at 15:20): for campaigns that may open a position
+  today, read the live quote, evaluate each campaign rule's triggers (R1C/R2S, or SHAKEOUT_RECLAIM
+  inside a shakeout window) with that price as the close proxy and the projected full-day volume,
+  record the decision (decision_price, decision_time, low so far), freeze the recheck inputs of a
+  fired trigger and run the LLM recheck.
 * ``phase="close"`` (after the close): refresh completed bars; the replay applies recorded
-  decisions, exits, campaign ends (L97 and SS), outcomes and the pivot control. Days without a
-  live decision (before enrolment, missed runs) are evaluated on the close (BACKFILL, no LLM).
+  decisions, exits, shakeout windows, watch ends (L97 and SS), outcomes and the pivot control.
+  Days without a live decision (before enrolment, missed runs) are evaluated on the close
+  (BACKFILL, no LLM).
 
 Design and evidence: docs/REENTRY_V3_CAMPAIGN_SHADOW_ko.md.
 """
@@ -110,16 +113,28 @@ def _hash(*parts):
 
 class MarketContext:
     """Deterministic regime (production cores.data_prefetch._compute_kr_regime on the regime
-    benchmark: KOSPI for KR, SPY as the S&P 500 proxy for US) and MarketPulse state per ticker
-    benchmark, both as of the session before a given day."""
+    benchmark: KOSPI for KR, SPY as the S&P 500 proxy for US) after the BUY distribution-day
+    caution (cores.buy_gate.effective_buy_regime), and the MarketPulse state per ticker benchmark,
+    both as of the session before a given day."""
 
     def __init__(self, regime_rows):
         self.regime_rows, self._regimes, self._pulses = regime_rows or [], {}, {}
 
-    def regime_at(self, day):
+    def regime_detail(self, day):
         if day not in self._regimes:
-            self._regimes[day] = V2.kr_regime(self.regime_rows, day) if self.regime_rows else None
+            base = V2.kr_regime(self.regime_rows, day) if self.regime_rows else None
+            detail = {"base": base, "effective": base, "distribution_days": None, "caution": False}
+            if base:
+                from cores.buy_gate import effective_buy_regime
+                from observability.reentry_recheck_inputs import market_facts
+                days = market_facts(self.regime_rows, day)["distribution_days"]
+                effective, caution = effective_buy_regime(base, days)
+                detail.update(effective=effective, distribution_days=days, caution=caution)
+            self._regimes[day] = detail
         return self._regimes[day]
+
+    def regime_at(self, day):
+        return self.regime_detail(day)["effective"]
 
     def pulse_fn(self, bench):
         if not bench:
@@ -217,19 +232,38 @@ def _local_time(iso, market):
 
 
 def decide(watch, quote, frames, completed, decision_day, market, ctx):
-    """Record the lunch-time decision for one watch; returns the decision (trigger may be None)."""
+    """Record the decision-time evaluation for one watch, per campaign rule (a rule inside a shakeout
+    window only checks SHAKEOUT_RECLAIM). Returns the decision; "trigger" is the primary rule's fired
+    trigger, else the first fired one, else None."""
     bars, bench = _frames_for(watch, frames, completed)
     ledger = watch["ledger"]
-    result = C.evaluate(watch["setup"], bars=bars, i=len(bars), flags=ledger["flags"], price=quote["price"],
-                        day_low=quote.get("low"), regime=ctx.regime_at(decision_day))
+    share = quote.get("volume_share")
+    projected = C.projected_volume(quote.get("volume"), market, share)
+    regime = ctx.regime_detail(decision_day)
     eligible = {rule: info for rule, info in ledger["next"].items() if info["eligible"]}
+    by_rule, checks, results = {}, {}, {}
+    for rule, info in eligible.items():
+        window = info.get("window")
+        key = (window["R"], window["start_date"]) if window else None
+        if key not in results:
+            results[key] = C.evaluate(watch["setup"], bars=bars, i=len(bars), flags=ledger["flags"],
+                                      price=quote["price"], day_low=quote.get("low"), regime=regime["effective"],
+                                      window=window, volume_projected=projected)
+        by_rule[rule], checks[rule] = results[key]["trigger"], results[key]["checks"]
+    primary = C.POLICY["primary_rule"]
+    trigger = by_rule.get(primary) or next((t for t in by_rule.values() if t), None)
+    first = next(iter(results.values()))
     decision = {"phase": "intraday", "decision_day": decision_day, "decision_time": quote["observed_at"],
                 "decision_price": quote["price"], "day_low": quote.get("low"),
                 "quote": {k: quote.get(k) for k in ("price", "low", "open", "high", "volume", "observed_at", "source")},
-                "trigger": result["trigger"], "checks": result["checks"], "prev_close": result["prev_close"],
-                "prior_high": result["prior_high"], "regime": result["regime"],
-                "regime_missing": result["regime_missing"], "market_pulse": ctx.pulse_fn(bench)(decision_day),
-                "eligible_rules": {rule: info["attempt"] for rule, info in eligible.items()}}
+                "volume_share": share or C.VOLUME_SHARE_DEFAULT[market],
+                "volume_share_source": "ticker_profile" if share else "market_default",
+                "volume_projected": projected, "by_rule": by_rule, "trigger": trigger, "checks": checks,
+                "prev_close": first["prev_close"], "prior_high": first["prior_high"], "regime": first["regime"],
+                "regime_detail": regime, "regime_missing": first["regime_missing"],
+                "market_pulse": ctx.pulse_fn(bench)(decision_day),
+                "eligible_rules": {rule: info["attempt"] for rule, info in eligible.items()},
+                "windows": {rule: info.get("window") for rule, info in eligible.items() if info.get("window")}}
     watch.setdefault("decisions", {})[decision_day] = decision
     return decision
 
@@ -259,10 +293,14 @@ def freeze_inputs(market, watch, decision, frames, completed, reports_root, arch
     alloc, _ = C.b3_allocation(decision["decision_price"], atr)
     attempts = {}
     for rule, number in decision["eligible_rules"].items():
+        if not decision["by_rule"].get(rule):
+            continue
         prior = [{k: t.get(k) for k in ("date", "trigger", "entry", "exit_date", "exit_reason", "ret", "mode")}
                  for t in ledger["campaigns"][rule]["attempts"]]
         attempts[rule] = {"attempt": number, "max": C.POLICY["max_attempts"], "prior": prior}
-    end_levels = {rule: C.CAMPAIGN_RULES[rule](setup, ledger["flags"]["above"]) for rule in C.POLICY["campaign_rules"]}
+    broke = ledger["flags"]["above"]
+    reclaim = C.reclaim_level(setup, broke)
+    end_levels = {rule: C.CAMPAIGN_RULES[rule](setup, broke) for rule in C.POLICY["campaign_rules"]}
     item = {
         "contract": INPUT_CONTRACT, "policy_version": C.POLICY_VERSION, "market": market,
         "event_id": _hash(watch["watch_id"], day, trigger["trigger"]), "watch_ref": watch["watch_id"],
@@ -271,21 +309,32 @@ def freeze_inputs(market, watch, decision, frames, completed, reports_root, arch
         "decision_price": decision["decision_price"], "decision_time": decision["decision_time"],
         "decision_time_local": _local_time(decision["decision_time"], market), "day_low": decision["day_low"],
         "prev_close": decision["prev_close"], "level": {"L": setup["L"], "basis": setup["level_basis"]},
-        "target": trigger["target"], "target_source": trigger["target_source"], "no_overhead": trigger["no_overhead"],
-        "stop": trigger["stop"], "stop_rule": trigger["stop_rule"], "rr": trigger["rr"], "rr_floor": trigger["rr_floor"],
-        "regime": decision["regime"], "regime_missing": decision["regime_missing"],
+        "target": trigger["target"], "target_source": trigger["target_source"], "target_rule": trigger["target_rule"],
+        "resistance": trigger["resistance"], "add_condition": trigger["add_condition"],
+        "target_unsupported": trigger["target_unsupported"], "stop": trigger["stop"],
+        "stop_rule": trigger["stop_rule"], "max_stop": trigger["max_stop"], "rr": trigger["rr"],
+        "rr_floor": trigger["rr_floor"],
+        "shakeout": ({k: trigger.get(k) for k in ("shakeout_low", "window_start", "volume_ratio")}
+                     if trigger["trigger"] == "SHAKEOUT_RECLAIM" else None),
+        "volume_projected": decision["volume_projected"], "volume_share": decision["volume_share"],
+        "volume_share_source": decision["volume_share_source"],
+        "regime": decision["regime"], "regime_detail": decision["regime_detail"],
+        "regime_missing": decision["regime_missing"],
         "market_pulse": decision["market_pulse"], "attempts": attempts,
         "campaign": {"rules": list(C.POLICY["campaign_rules"]), "eligible_rules": sorted(decision["eligible_rules"]),
-                     "anchor_date": setup["anchor_date"], "elapsed": ledger["elapsed"],
-                     "horizon": C.POLICY["horizon"],
-                     "end_levels": {k: (round(v, 4) if v else None) for k, v in end_levels.items()}},
+                     "fired_rules": sorted(attempts), "anchor_date": setup["anchor_date"],
+                     "elapsed": ledger["elapsed"], "horizon": C.POLICY["horizon"],
+                     "end_levels": {k: (round(v, 4) if v else None) for k, v in end_levels.items()},
+                     "reclaim_level": reclaim,
+                     "deep_level": round(reclaim * C.SHAKEOUT_DEEP, 4) if reclaim else None,
+                     "shakeout_window_sessions": C.SHAKEOUT_WINDOW, "windows": decision["windows"]},
         "rule_ids": ledger["rule_ids"], "allocation": alloc, "atr14": round(atr, 6) if atr else None,
         "gates": {"G1_step16": C.g1_blocked(set(watch.get("stop_dates") or [])
                                             | {d for c in ledger["campaigns"].values()
                                                for d in c["virtual_stop_dates"]}
                                             | ({setup["anchor_date"]} if watch["source"] == "STOP_EXIT" else set()),
                                             bars + [{"date": day}], len(bars)),
-                  "G2_v2_one_retry": max(decision["eligible_rules"].values()) >= 2},
+                  "G2_v2_one_retry": max(a["attempt"] for a in attempts.values()) >= 2},
         "report_ref": V2.report_reference(market, watch["ticker"], day, reports_root, archive_db),
         "facts_text": facts_text(bars, decision["quote"], day, market, bench),
         "original": {"decided_on": row["exit_date"],
@@ -304,7 +353,8 @@ def freeze_inputs(market, watch, decision, frames, completed, reports_root, arch
 
 
 def intraday(state, market, decision_day, frames, completed, quote_fn, ctx, reports_root, archive_db):
-    """Lunch-time decisions for campaigns that may open a position today. Returns (frozen, counts)."""
+    """Decision-time (KR 14:00 / US 13:50) evaluations for campaigns that may open a position today.
+    Returns (frozen, counts)."""
     counts = {"candidates": 0, "quotes": 0, "quote_missing": 0, "quote_cap": 0, "decisions": 0, "triggers": 0}
     frozen = []
     for watch in state["watches"]:
@@ -426,7 +476,7 @@ def run(market, completed, *, collector, phase="close", decision_day=None, quote
                          "trigger": item["trigger"], "trigger_date": item["trigger_date"],
                          "decision_price": item["decision_price"], "decision_time": item["decision_time"],
                          "level": item["level"]["L"], "stop": item["stop"], "target": item["target"], "rr": item["rr"],
-                         "rr_floor": item["rr_floor"], "no_overhead": item["no_overhead"], "regime": item["regime"],
+                         "rr_floor": item["rr_floor"], "target_rule": item["target_rule"], "regime": item["regime"],
                          "market_pulse": item["market_pulse"], "attempts": {r: a["attempt"] for r, a in
                                                                             item["attempts"].items()},
                          "gates": item["gates"], "allocation": item["allocation"],

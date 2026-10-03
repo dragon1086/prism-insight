@@ -1,27 +1,36 @@
 """Campaign re-entry v3 (KR/US): pure rules, no I/O. Design: docs/REENTRY_V3_CAMPAIGN_SHADOW_ko.md.
 
 A stock that was stopped out (STOP_EXIT) or analysed and held off (LOCATION_SKIP /
-ENTER_BLOCKED) is re-tried around one key level L for up to 60 sessions (a "campaign"),
-accepting several small stops while L holds. Definitions follow the pre-registered research
-(re-entry v3/v4, 2026-10-04) as approved by the user:
+ENTER_BLOCKED) is re-tried around one key level L (the "reference price") for up to 60
+sessions (the "re-entry watch window", called a campaign in code), accepting several small
+stops while L holds. Definitions follow the pre-registered research (re-entry v3/v4/v5,
+2026-10-04) and the user decisions of 2026-10-04:
 
 * L: STOP_EXIT -> the highest scenario key level strictly below the original entry (the level
   the first buy broke), else primary_resistance; held-off rows -> primary_resistance.
-* Campaign: sessions anchor+1 .. anchor+60. Two independent end rules are recorded side by side:
-  L97 (close < L*0.97) and SS (close < secondary_support, or L*0.95 when SS is missing or >= L).
-  Held-off names that have not closed above L yet use the support-based levels of the research.
-* Triggers, evaluated on completed bars plus the decision-time price (live: the lunch-time
-  quote as the close proxy; backfill: the completed close):
-  R1C (re-break) and R2S (box-bottom retest with an R/R floor), R1C first when both fire.
+* Watch: sessions anchor+1 .. anchor+60, two campaign rules recorded side by side: L97
+  (breakdown line L*0.97) and SS (secondary_support, or L*0.95 when SS is missing or >= L);
+  held-off names that have not closed above L yet use the research's support-based lines.
+  A completed close under the breakdown line (the original stop day included) opens a
+  5-session shakeout window: a close back above the reclaim level returns to normal, a close
+  under reclaim*0.90 or an expired window ends the watch.
+* Triggers on completed bars plus the decision-time price (live: the 14:00 KST / 13:50 ET
+  quote as the close proxy; backfill: the completed close): R1C re-break and R2S retest
+  (R/R >= regime floor with the live BUY target rule) outside a window, SHAKEOUT_RECLAIM inside
+  one (other triggers are off there).
+* Target (live BUY rule): 80% of the distance to the nearest confirmed major resistance above
+  the entry among {primary_resistance, secondary_resistance, prior 60-session high}; in bull
+  regimes a resistance within +3% is an add condition and the next one is used; with no
+  resistance the BUY 2a rule (entry*1.20) or no target at all.
+* Stop: never wider than the regime maximum stop of the BUY table (-7/-6/-5%).
 * One virtual position at a time, max 3 attempts, no entry on an exit day, one idle session
-  after a stop. Stop = max(L*0.97, entry*0.90). Exit E1 (production-like) governs the campaign;
-  E2 (stop or campaign end only) is recorded per attempt as a shadow value.
+  after a stop (not for SHAKEOUT_RECLAIM). Exit E1 (production-like) governs the ledger; E2
+  (stop or level breakdown) is recorded per attempt as a shadow value.
 * Sizing: B3 initial allocation (prism_core.oneil_adaptive_policy.initial_sizing, ATR14).
 
-Rule sets are pluggable: TRIGGERS, CAMPAIGN_RULES (end), STOP_RULES and EXIT_RULES are
-registries, POLICY names the active ids, and every ledger record carries the ids it used.
-A trigger may return its own "stop" (e.g. under a shakeout low) which then overrides the
-stop rule for that attempt.
+Rule sets are pluggable: TRIGGERS, CAMPAIGN_RULES (breakdown line), STOP_RULES and EXIT_RULES
+are registries, POLICY names the active ids, and every ledger record carries the ids it used.
+A trigger may return its own "stop"/"stop_rule" which then replaces the stop rule for that attempt.
 
 Bars are dicts {date, open, high, low, close, volume} sorted by date. A function looking at
 "day i" reads bars[:i] as completed history plus explicitly passed day-i decision values.
@@ -37,31 +46,43 @@ from prism_core.oneil_adaptive_policy import initial_sizing
 POLICY_VERSION = "reentry_campaign_v3"
 STOP_EXIT = "STOP_EXIT"
 KEY_LEVELS = ("primary_support", "secondary_support", "primary_resistance", "secondary_resistance")
+BULL_REGIMES = ("parabolic", "strong_bull", "moderate_bull")
 
-HORIZON = 60                # campaign sessions after the anchor
+HORIZON = 60                # watch sessions after the anchor
 MAX_ATTEMPTS = 3
-PRIOR_HIGH_BARS = 60        # "prior 60-session high" target candidate
+PRIOR_HIGH_BARS = 60        # "prior 60-session high" resistance candidate (completed bars only)
 REBREAK_CHASE = 0.03        # R1C: price <= L*1.03
 RETEST_BAND = 0.03          # R2S: day low within L*(1 +/- 3%)
 RETEST_CHASE = 0.05         # R2S: price <= L*1.05
-TARGET_MIN_GAP = 0.02       # next resistance must be above entry*1.02
-LEVEL_BREAK = 0.97          # L97 end rule, structural stop under L
-SS_FALLBACK = 0.95          # SS end rule fallback
-STOP_CAP = 0.10             # structural stop never wider than -10%
+LEVEL_BREAK = 0.97          # L97 breakdown line and the structural stop under L
+SS_FALLBACK = 0.95          # SS breakdown line fallback
+STRUCT_FLOOR = 0.90         # structural stop never below entry*0.90 (the regime cap is tighter anyway)
 CONTROL_STOP = 0.93         # research fallback when L*0.97 is not under the entry (control entries)
+# Live BUY target rule (cores/agents/trading_agents.py "진입가 / 목표가 / 손절가 산정").
+TARGET_FRACTION = 0.80
+ADD_CONDITION_GAP = 0.03    # bull regimes: a resistance within +3% is an add condition, not the target
+ONEIL_TARGET = 1.20         # 2a: overhead-free breakout target
+ONEIL_NEAR_HIGH = 0.95      # 2a (a): price >= 95% of the confirmed 52-week high
+ONEIL_CHASE = 1.05          # 2a (c): price <= breakout high * 1.05
+H52_BARS, H52_MIN_BARS = 252, 240
+# Shakeout recovery (research v5 A2, user decision 2026-10-04).
+SHAKEOUT_WINDOW = 5
+SHAKEOUT_DEEP = 0.90        # close < reclaim*0.90 ends the watch
+SHAKEOUT_CHASE = 0.05       # entry <= reclaim*1.05
+SHAKEOUT_LOW_STOP = 0.99    # stop under the shakeout low
+# Share of a normal day's volume traded by the decision time (14:00 KST / 13:50 ET) when no
+# ticker-specific intraday profile is supplied (quote["volume_share"]).
+VOLUME_SHARE_DEFAULT = {"KR": 0.80, "US": 0.70}
 BREAKEVEN_AFTER = 0.10      # E1: stop to entry after a +10% close
 MA_EXIT_FROM_BAR = 3        # E1: MA20 close exit from bar 3
 HOLD_BARS = 40              # E1: time exit
 ALLOC_FALLBACK = 0.5        # research fallback when ATR14 is unavailable (flagged)
-G1_SESSIONS, G1_STOPS = 10, 2   # BUY Step 1.6: >=2 stops within ~2 weeks
-# R/R floors come from the production buy gate (cores/buy_gate.REGIME_RULES). The approved
-# design lists parabolic at 1.0 although the gate uses 0.7; the deterministic regime
-# function never returns parabolic, so this only matters if that changes.
-PARABOLIC_RR_FLOOR = 1.0
+G1_SESSIONS, G1_STOPS = 10, 2   # BUY Step 1.6: >=2 stops within ~2 weeks (counterfactual flag only)
 
 POLICY = {
     "policy_version": POLICY_VERSION,
-    "triggers": ("R1C", "R2S"),           # priority order
+    "triggers": ("R1C", "R2S"),           # outside a shakeout window, priority order
+    "window_triggers": ("SHAKEOUT_RECLAIM",),
     "campaign_rules": ("L97", "SS"),
     "primary_rule": "L97",                # dedupe, controls and the LLM recheck follow this one
     "stop_rule": "STRUCT",
@@ -109,10 +130,26 @@ def make_setup(source, key_levels, entry_price, anchor_price, anchor_date):
             "anchor_price": _pos(anchor_price), "anchor_date": anchor_date}
 
 
+def _rule(regime):
+    return REGIME_RULES.get(regime) or REGIME_RULES["sideways"]
+
+
 def rr_floor(regime):
-    if regime == "parabolic":
-        return PARABOLIC_RR_FLOOR
-    return float((REGIME_RULES.get(regime) or REGIME_RULES["sideways"])["rr_floor"])
+    """R/R floor of the BUY table (cores/buy_gate.REGIME_RULES; parabolic 0.7)."""
+    return float(_rule(regime)["rr_floor"])
+
+
+def max_stop(regime):
+    """Regime maximum stop of the BUY table as a fraction (0.07 / 0.06 / 0.05)."""
+    return float(_rule(regime)["max_loss_pct"]) / 100
+
+
+def reclaim_level(setup, broke):
+    """Price a shakeout must close back above: L, or the support for held-off names before a close > L."""
+    levels = setup["levels"]
+    if setup["source"] == STOP_EXIT or broke:
+        return setup["L"]
+    return levels.get("primary_support") or levels.get("secondary_support")
 
 
 def prior_high(bars, i, n=PRIOR_HIGH_BARS):
@@ -120,13 +157,51 @@ def prior_high(bars, i, n=PRIOR_HIGH_BARS):
     return max(b["high"] for b in window) if window else None
 
 
-def target_for(setup, entry, high60):
-    """Nearest of {primary_resistance, secondary_resistance, prior 60-session high} above entry*1.02."""
+def oneil_2a(entry, resistances, bars, i):
+    """BUY 2a: (a) price >= 95% of the confirmed 52-week high, (b) no other major resistance within
+    entry*1.20, (c) price <= that high*1.05, (d) not trend-gated (Step 1.5 T1/T2). -> (ok, reason)."""
+    window = bars[max(0, i - H52_BARS):i]
+    if len(window) < H52_MIN_BARS:
+        return False, "h52_history_short"
+    high = max(b["high"] for b in window)
+    if entry < high * ONEIL_NEAR_HIGH:
+        return False, "below_95pct_52w_high"
+    if any(v <= entry * ONEIL_TARGET and abs(v / high - 1) > 0.001 for v, _ in resistances):
+        return False, "resistance_within_20pct"
+    if entry > high * ONEIL_CHASE:
+        return False, "above_breakout_high_5pct"
+    if P.trend_ok(bars, i) is not True:
+        return False, "trend_gated"
+    return True, "ok"
+
+
+def target_for(setup, entry, regime, bars, i):
+    """Live BUY target: 80% of the distance to the nearest confirmed major resistance above the entry
+    (bull regimes: a resistance within +3% is an add condition and the next one is used); none -> 2a
+    (entry*1.20) or unsupported. Today's in-progress high is never a candidate (completed bars only)."""
     named = [("primary_resistance", setup["levels"].get("primary_resistance")),
              ("secondary_resistance", setup["levels"].get("secondary_resistance")),
-             ("prior_60_high", high60)]
-    above = [(v, k) for k, v in named if v and v > entry * (1 + TARGET_MIN_GAP)]
-    return min(above) if above else (None, None)
+             ("prior_60_high", prior_high(bars, i))]
+    above = sorted((v, k) for k, v in named if v and v > entry)
+    out = {"target": None, "target_source": None, "resistance": None, "add_condition": None,
+           "target_rule": None, "target_unsupported": None}
+    chosen = above[0] if above else None
+    if chosen and regime in BULL_REGIMES and chosen[0] <= entry * (1 + ADD_CONDITION_GAP):
+        out["add_condition"] = {"price": chosen[0], "source": chosen[1]}
+        chosen = next(((v, k) for v, k in above if v > chosen[0]), None)
+        out["target_rule"] = "next_after_add_condition"
+    else:
+        out["target_rule"] = "nearest"
+    if chosen:
+        out.update(target=round(entry + TARGET_FRACTION * (chosen[0] - entry), 6), target_source=chosen[1],
+                   resistance=chosen[0])
+        return out
+    ok, reason = oneil_2a(entry, above, bars, i)
+    if ok:
+        out.update(target=round(entry * ONEIL_TARGET, 6), target_source="oneil_breakout_2a", target_rule="oneil_2a")
+    else:
+        out.update(target_rule="unsupported", target_unsupported=reason)
+    return out
 
 
 def atr14(history):
@@ -151,6 +226,14 @@ def g1_blocked(stop_dates, bars, i):
     return len(set(stop_dates) & window) >= G1_STOPS
 
 
+def projected_volume(volume_so_far, market, share=None):
+    """Full-day volume projected from the cumulative volume at the decision time."""
+    share = share or VOLUME_SHARE_DEFAULT.get(market)
+    if volume_so_far is None or not share:
+        return None
+    return volume_so_far / share
+
+
 # ---------------------------------------------------------------- registries
 TRIGGERS = {}
 
@@ -163,11 +246,12 @@ def register_trigger(trigger_id, label):
     return wrap
 
 
-def _stop_struct(setup, entry):
+def _stop_struct(setup, entry, regime):
+    """max(structural stop under L, entry*(1 - regime max stop)): never wider than the BUY table."""
     level = setup["L"]
-    if level * LEVEL_BREAK >= entry * 0.99:
-        return entry * CONTROL_STOP
-    return max(level * LEVEL_BREAK, entry * (1 - STOP_CAP))
+    struct = entry * CONTROL_STOP if level * LEVEL_BREAK >= entry * 0.99 else \
+        max(level * LEVEL_BREAK, entry * STRUCT_FLOOR)
+    return max(struct, entry * (1 - max_stop(regime)))
 
 
 def _end_l97(setup, broke):
@@ -213,7 +297,7 @@ def _exit_e1(bars, j, pos):
 
 
 def _exit_e2(bars, j, pos):
-    """Trend-follow shadow: only the stop (campaign end closes it)."""
+    """Trend-follow shadow: only the stop (the level breakdown / watch end closes it)."""
     return _stop_hit(bars[j], pos, j - pos["_start"] + 1)
 
 
@@ -222,7 +306,16 @@ STOP_RULES = {"STRUCT": _stop_struct}
 EXIT_RULES = {"E1": _exit_e1, "E2": _exit_e2}
 
 
-@register_trigger("R1C", "①C")
+def _priced(ctx, entry, stop=None, stop_rule=None):
+    rule = stop_rule or ctx["policy"]["stop_rule"]
+    stop = stop if stop is not None else STOP_RULES[rule](ctx["setup"], entry, ctx["regime"])
+    out = target_for(ctx["setup"], entry, ctx["regime"], ctx["bars"], ctx["i"])
+    out.update(stop=round(stop, 6), stop_rule=rule, max_stop=max_stop(ctx["regime"]), rr_floor=rr_floor(ctx["regime"]),
+               rr=round((out["target"] - entry) / (entry - stop), 4) if out["target"] and entry > stop else None)
+    return out
+
+
+@register_trigger("R1C", "기준 가격 재돌파 매수")
 def _trigger_rebreak(ctx):
     level, price = ctx["L"], ctx["price"]
     if not ctx["flags"]["armed"]:
@@ -236,7 +329,7 @@ def _trigger_rebreak(ctx):
     return {"fired": True, "reason": "fired", "entry": price}
 
 
-@register_trigger("R2S", "②S")
+@register_trigger("R2S", "기준 가격 눌림 지지 매수")
 def _trigger_retest(ctx):
     setup, level, price, low = ctx["setup"], ctx["L"], ctx["price"], ctx["day_low"]
     if setup["source"] != STOP_EXIT and not ctx["flags"]["above"]:
@@ -252,54 +345,71 @@ def _trigger_retest(ctx):
     if price > level * (1 + RETEST_CHASE):
         return {"fired": False, "reason": "chase"}
     out = {"fired": True, "reason": "fired", "entry": price}
-    out.update(_price_levels(ctx, price))
-    if out["rr"] is not None and out["rr"] < out["rr_floor"]:
+    out.update(_priced(ctx, price))
+    if out["target"] is None:
+        return {"fired": False, "reason": "target_unsupported", "target_unsupported": out["target_unsupported"]}
+    if out["rr"] is None or out["rr"] < out["rr_floor"]:
         return {"fired": False, "reason": "rr_below_floor", "rr": out["rr"], "rr_floor": out["rr_floor"]}
     return out
 
 
-def _price_levels(ctx, entry, stop=None, stop_rule=None):
-    rule = stop_rule or POLICY["stop_rule"]
-    stop = stop if stop is not None else STOP_RULES[rule](ctx["setup"], entry)
-    target, source = target_for(ctx["setup"], entry, ctx["prior_high"])
-    return {"stop": round(stop, 6), "stop_rule": rule, "target": target, "target_source": source,
-            "no_overhead": target is None, "rr_floor": rr_floor(ctx["regime"]),
-            "rr": round((target - entry) / (entry - stop), 4) if target and entry > stop else None}
+@register_trigger("SHAKEOUT_RECLAIM", "흔들기 후 회복 매수")
+def _trigger_shakeout(ctx):
+    window, price = ctx["window"], ctx["price"]
+    reclaim = window["R"]
+    if not reclaim < price <= reclaim * (1 + SHAKEOUT_CHASE):
+        return {"fired": False, "reason": "below_level" if price <= reclaim else "chase"}
+    avg20 = P.avg_volume(ctx["bars"], ctx["i"])
+    projected = ctx.get("volume_projected")
+    if projected is None or not avg20:
+        return {"fired": False, "reason": "missing_volume"}
+    if projected < avg20:
+        return {"fired": False, "reason": "volume_below_avg20", "volume_ratio": round(projected / avg20, 4)}
+    low = min(v for v in (window["low"], ctx["day_low"]) if v is not None)
+    stop = max(low * SHAKEOUT_LOW_STOP, price * (1 - max_stop(ctx["regime"])))
+    out = {"fired": True, "reason": "fired", "entry": price, "shakeout_low": low,
+           "window_start": window["start_date"], "volume_ratio": round(projected / avg20, 4)}
+    out.update(_priced(ctx, price, stop=stop, stop_rule="SHAKEOUT_LOW"))
+    return out
 
 
-def evaluate(setup, *, bars, i, flags, price, day_low, regime, policy=None):
-    """Trigger check for day i: bars[:i] is completed history; price/day_low are day-i decision values.
+def evaluate(setup, *, bars, i, flags, price, day_low, regime, window=None, volume_projected=None, policy=None):
+    """Trigger check for day i: bars[:i] is completed history; price/day_low/volume_projected are day-i
+    decision values. Inside a shakeout window only the window triggers are evaluated.
 
     Returns {"trigger": fired dict or None, "checks": {trigger_id: reason}, ...context}.
     """
     policy = policy or POLICY
-    ctx = {"setup": setup, "L": setup["L"], "bars": bars, "i": i, "flags": dict(flags),
+    ctx = {"setup": setup, "L": setup["L"], "bars": bars, "i": i, "flags": dict(flags), "window": window,
+           "policy": policy,
            "prev_close": bars[i - 1]["close"], "price": price, "day_low": day_low,
-           "regime": regime or "sideways", "prior_high": prior_high(bars, i)}
+           "volume_projected": volume_projected, "regime": regime or "sideways"}
     checks, fired = {}, None
-    for trigger_id in policy["triggers"]:
+    for trigger_id in (policy["window_triggers"] if window else policy["triggers"]):
         result = TRIGGERS[trigger_id]["fn"](ctx)
         checks[trigger_id] = result["reason"]
         if result["fired"] and fired is None:
             fired = dict(result, trigger=trigger_id, label=TRIGGERS[trigger_id]["label"])
     if fired is not None:
         if "rr_floor" not in fired:
-            fired.update(_price_levels(ctx, fired["entry"], fired.get("stop"), fired.get("stop_rule")))
+            fired.update(_priced(ctx, fired["entry"], fired.get("stop"), fired.get("stop_rule")))
         fired.pop("fired", None)
         fired.pop("reason", None)
-    return {"trigger": fired, "checks": checks, "prev_close": ctx["prev_close"], "prior_high": ctx["prior_high"],
-            "regime": ctx["regime"], "regime_missing": regime is None, "flags": dict(flags)}
+    return {"trigger": fired, "checks": checks, "prev_close": ctx["prev_close"], "prior_high": prior_high(bars, i),
+            "regime": ctx["regime"], "regime_missing": regime is None, "flags": dict(flags),
+            "window": dict(window) if window else None}
 
 
 # ---------------------------------------------------------------- campaign replay
 def _new_campaign(rule):
-    return {"rule": rule, "status": "ACTIVE", "attempts": [], "_pos": None, "_last_exit": None,
-            "_last_stop": False, "virtual_stop_dates": [], "pnl_slot": 0.0, "mark_slot": 0.0,
+    return {"rule": rule, "status": "ACTIVE", "attempts": [], "window": None, "windows": [], "_pos": None,
+            "_last_exit": None, "_last_stop": False, "virtual_stop_dates": [], "pnl_slot": 0.0, "mark_slot": 0.0,
             "_peak": 0.0, "mdd_slot": 0.0}
 
 
 def eligible(campaign, i, anchor, policy=None):
-    """(bool, reason): may this campaign open a position on day i?"""
+    """(bool, reason): may this campaign open a position on day i? A shakeout window lifts the
+    one-session cooldown after a stop (the exit day itself stays blocked)."""
     policy = policy or POLICY
     if campaign["status"] != "ACTIVE":
         return False, "ended"
@@ -311,7 +421,7 @@ def eligible(campaign, i, anchor, policy=None):
         return False, "horizon"
     if campaign["_last_exit"] == i:
         return False, "exit_day"
-    if campaign["_last_stop"] and campaign["_last_exit"] == i - 1:
+    if campaign["_last_stop"] and campaign["_last_exit"] == i - 1 and not campaign["window"]:
         return False, "stop_cooldown"
     return True, "ok"
 
@@ -333,7 +443,16 @@ def _close_attempt(campaign, bars, j, price, reason, rule):
         campaign["virtual_stop_dates"].append(bars[j]["date"])
 
 
-def _step(campaign, bars, j, policy):
+def _close_all(campaign, bars, j, reason):
+    for att in campaign["attempts"]:
+        for shadow in att["shadow_exits"].values():
+            if shadow["status"] == "OPEN":
+                _close(shadow, bars, j, bars[j]["close"], reason, campaign["rule"])
+    if campaign["_pos"] is not None:
+        _close_attempt(campaign, bars, j, bars[j]["close"], reason, campaign["rule"])
+
+
+def _step(campaign, bars, j):
     for att in campaign["attempts"]:
         for rule, shadow in att["shadow_exits"].items():
             if shadow["status"] == "OPEN" and j >= shadow["_start"]:
@@ -359,15 +478,19 @@ def _open(campaign, setup, bars, i, trigger, *, mode, decision, regime, pulse, s
     record = {
         "rule": campaign["rule"], "attempt": number, "trigger": trigger["trigger"], "label": trigger["label"],
         "mode": mode, "date": bars[i]["date"], "entry": entry, "stop0": trigger["stop"], "stop": trigger["stop"],
-        "stop_rule": trigger["stop_rule"], "exit_rule": policy["exit_rule"], "target": trigger["target"],
-        "target_source": trigger["target_source"], "no_overhead": trigger["no_overhead"], "rr": trigger["rr"],
-        "rr_floor": trigger["rr_floor"], "regime": regime, "market_pulse": pulse,
-        "atr14": round(atr, 6) if atr else None, "alloc": alloc, "alloc_fallback": fallback,
+        "stop_rule": trigger["stop_rule"], "max_stop": trigger["max_stop"], "exit_rule": policy["exit_rule"],
+        "target": trigger["target"], "target_source": trigger["target_source"], "target_rule": trigger["target_rule"],
+        "add_condition": trigger["add_condition"], "rr": trigger["rr"], "rr_floor": trigger["rr_floor"],
+        "regime": regime, "market_pulse": pulse, "atr14": round(atr, 6) if atr else None, "alloc": alloc,
+        "alloc_fallback": fallback,
         "gates": {"G1_step16": g1_blocked(stops, bars, i), "G2_v2_one_retry": number >= 2},
         "status": "OPEN", "_start": i + 1, "intraday": False,
         "shadow_exits": {r: {"entry": entry, "stop": trigger["stop"], "_start": i + 1, "intraday": False,
                              "status": "OPEN"} for r in policy["shadow_exit_rules"]},
     }
+    for key in ("shakeout_low", "window_start", "volume_ratio"):
+        if key in trigger:
+            record[key] = trigger[key]
     if decision:
         record.update(decision_price=decision.get("decision_price"), decision_time=decision.get("decision_time"),
                       decision_low=decision.get("day_low"))
@@ -376,8 +499,8 @@ def _open(campaign, setup, bars, i, trigger, *, mode, decision, regime, pulse, s
     bar = bars[i]
     record["close_on_entry_day"] = bar["close"]
     record["close_vs_decision_pct"] = round((bar["close"] / entry - 1) * 100, 4)
-    # A lunch-time entry still lives through the afternoon: a new low after the decision that
-    # reaches the stop exits on the entry day (the low so far was already above the stop).
+    # An entry at the decision time still lives through the rest of the session: a new low after
+    # the decision that reaches the stop exits on the entry day (the low so far was above the stop).
     low_so_far = record.get("decision_low")
     if mode == "INTRADAY" and low_so_far and bar["low"] < low_so_far:
         for shadow_rule, shadow in record["shadow_exits"].items():
@@ -390,25 +513,55 @@ def _open(campaign, setup, bars, i, trigger, *, mode, decision, regime, pulse, s
             record["entry_day_stop"] = True
 
 
+def _transition(campaign, setup, bars, i, broke, anchor, policy):
+    """Close-of-day state change: ("end", reason, level) | ("open_window", R, level) | ("reclaim",) | None."""
+    close, window, change = bars[i]["close"], campaign["window"], None
+    if window:
+        if close > window["R"]:
+            change = ("reclaim",)
+        elif close < window["R"] * SHAKEOUT_DEEP:
+            return ("end", "deep", window["R"] * SHAKEOUT_DEEP)
+        elif i - window["_start"] >= SHAKEOUT_WINDOW:
+            return ("end", "expire", window["R"])
+    else:
+        line = CAMPAIGN_RULES[campaign["rule"]](setup, broke)
+        if line is not None and close < line:
+            reclaim = reclaim_level(setup, broke)
+            if reclaim and close < reclaim * SHAKEOUT_DEEP:
+                return ("end", "deep", reclaim * SHAKEOUT_DEEP)
+            change = ("open_window", reclaim, line)
+    if i == anchor + policy["horizon"]:
+        return ("end", "horizon", None)
+    return change
+
+
+def _open_window(campaign, bars, i, reclaim, line):
+    campaign["window"] = {"R": reclaim, "line": round(line, 6), "start_date": bars[i]["date"], "_start": i,
+                          "low": bars[i]["low"]}
+    campaign["windows"].append({"start_date": bars[i]["date"], "R": reclaim, "line": round(line, 6)})
+
+
 def _end(campaign, bars, i, reason, level):
-    for att in campaign["attempts"]:
-        for shadow in att["shadow_exits"].values():
-            if shadow["status"] == "OPEN":
-                _close(shadow, bars, i, bars[i]["close"], "campaign_end", campaign["rule"])
-    if campaign["_pos"] is not None:
-        _close_attempt(campaign, bars, i, bars[i]["close"], "campaign_end", campaign["rule"])
+    _close_all(campaign, bars, i, "campaign_end")
     campaign.update(status="ENDED", end_date=bars[i]["date"], end_reason=reason,
-                    end_level=round(level, 6) if level else None, end_rule=campaign["rule"], _end_index=i)
+                    end_level=round(level, 6) if level else None, end_rule=campaign["rule"], _end_index=i, window=None)
+
+
+def _window_public(window, i):
+    if not window:
+        return None
+    return {"R": window["R"], "line": window["line"], "start_date": window["start_date"], "low": window["low"],
+            "sessions_left": SHAKEOUT_WINDOW - (i - window["_start"]) + 1}     # including session i
 
 
 def replay(setup, bars, anchor, *, decisions=None, regime_at=None, pulse_at=None, stop_dates=(), policy=None,
            market=None):
-    """Campaign ledger from the anchor through the last completed bar.
+    """Ledger of the watch from the anchor through the last completed bar.
 
-    decisions: {date: intraday decision} recorded live; such a day uses that decision (entry at the
-    decision price) instead of re-evaluating the close. Other days are evaluated on the close
-    (BACKFILL). regime_at(day)/pulse_at(day) give the state as of the session before `day`.
-    market: also records the pivot control (P.evaluate_day, no market ban).
+    decisions: {date: intraday decision} recorded live; such a day uses that decision's per-rule
+    triggers (entry at the decision price) instead of re-evaluating the close. Other days are
+    evaluated on the close (BACKFILL, completed volume). regime_at(day)/pulse_at(day) give the
+    state as of the session before `day`. market: also records the pivot control.
     """
     policy = policy or POLICY
     decisions = decisions or {}
@@ -418,45 +571,67 @@ def replay(setup, bars, anchor, *, decisions=None, regime_at=None, pulse_at=None
     flags = {"armed": bars[a]["close"] < level,
              "above": (setup.get("anchor_price") or 0) >= level or bars[a]["close"] > level}
     camps = {rule: _new_campaign(rule) for rule in policy["campaign_rules"]}
+    for camp in camps.values():         # the original stop day can already be a shakeout (or a deep failure)
+        line = CAMPAIGN_RULES[camp["rule"]](setup, flags["above"])
+        reclaim = reclaim_level(setup, flags["above"])
+        if line is not None and bars[a]["close"] < line:
+            if reclaim and bars[a]["close"] < reclaim * SHAKEOUT_DEEP:
+                _end(camp, bars, a, "deep", reclaim * SHAKEOUT_DEEP)
+            else:
+                _open_window(camp, bars, a, reclaim, line)
     stats = {"fired": {}, "checks": {}, "conflicts": []}
     last = min(n - 1, a + policy["horizon"])
     for i in range(a + 1, last + 1):
         bar, broke = bars[i], flags["above"]
-        ending = {}
+        changes = {}
         for rule, camp in camps.items():
             if camp["status"] != "ACTIVE":
                 continue
-            _step(camp, bars, i, policy)
-            lvl = CAMPAIGN_RULES[rule](setup, broke)
-            camp["level_now"] = round(lvl, 6) if lvl else None
-            if lvl is not None and bar["close"] < lvl:
-                ending[rule] = ("breakdown", lvl)
-            elif i == a + policy["horizon"]:
-                ending[rule] = ("horizon", lvl)
-        open_ok = {rule: camp for rule, camp in camps.items() if eligible(camp, i, a, policy)[0]}
+            _step(camp, bars, i)
+            changes[rule] = _transition(camp, setup, bars, i, broke, a, policy)
+        open_ok = {r: c for r, c in camps.items() if eligible(c, i, a, policy)[0]}
         decision = decisions.get(bar["date"])
-        if open_ok:
-            regime = regime_at(bar["date"])
-            if decision is not None:
-                mode, trigger = "INTRADAY", decision.get("trigger")
-            else:
-                mode = "BACKFILL"
-                open_ok = {r: c for r, c in open_ok.items() if r not in ending}    # research: entry only before end
+        regime = regime_at(bar["date"])
+        if open_ok and decision is not None:
+            by_rule = decision.get("by_rule") or {}
+            for rule, camp in open_ok.items():
+                trigger = by_rule.get(rule)
+                if trigger:
+                    _fire(stats, camp, setup, bars, i, trigger, "INTRADAY", decision, regime, pulse_at, stop_dates,
+                          policy)
+        elif open_ok:
+            groups = {}
+            for rule, camp in open_ok.items():
+                if (changes.get(rule) or ("",))[0] == "end":
+                    continue                                  # research: no close entry on the end day
+                window = camp["window"]
+                key = (window["R"], window["_start"]) if window else None
+                groups.setdefault(key, []).append(camp)
+            for members in groups.values():
+                window = members[0]["window"]
                 result = evaluate(setup, bars=bars, i=i, flags=flags, price=bar["close"], day_low=bar["low"],
-                                  regime=regime, policy=policy) if open_ok else {"trigger": None, "checks": {}}
-                trigger = result["trigger"]
+                                  regime=regime, window=window, volume_projected=bar["volume"], policy=policy)
                 for tid, reason in result["checks"].items():
                     stats["checks"].setdefault(tid, {}).setdefault(reason, 0)
                     stats["checks"][tid][reason] += 1
-            if trigger and open_ok:
-                stats["fired"][trigger["trigger"]] = stats["fired"].get(trigger["trigger"], 0) + 1
-                for camp in open_ok.values():
-                    _open(camp, setup, bars, i, trigger, mode=mode, decision=decision, regime=regime or "sideways",
-                          pulse=pulse_at(bar["date"]), stop_dates=stop_dates, policy=policy)
-        elif decision is not None and decision.get("trigger"):
+                if result["trigger"]:
+                    for camp in members:
+                        _fire(stats, camp, setup, bars, i, result["trigger"], "BACKFILL", None, regime, pulse_at,
+                              stop_dates, policy)
+        elif decision is not None and any((decision.get("by_rule") or {}).values()):
             stats["conflicts"].append({"date": bar["date"], "reason": "not_eligible_on_replay"})
-        for rule, (reason, lvl) in ending.items():
-            _end(camps[rule], bars, i, reason, lvl)
+        for rule, change in changes.items():
+            camp = camps[rule]
+            if change is None:
+                if camp["window"]:
+                    camp["window"]["low"] = min(camp["window"]["low"], bar["low"])
+            elif change[0] == "end":
+                _end(camp, bars, i, change[1], change[2])
+            elif change[0] == "open_window":
+                _close_all(camp, bars, i, "breakdown")
+                _open_window(camp, bars, i, change[1], change[2])
+            elif change[0] == "reclaim":
+                camp["window"] = None
         if bar["close"] < level:
             flags["armed"] = True
         if bar["close"] > level:
@@ -473,20 +648,29 @@ def replay(setup, bars, anchor, *, decisions=None, regime_at=None, pulse_at=None
     if last == n - 1 and not complete:
         for rule, camp in camps.items():
             ok, why = eligible(camp, n, a, policy)
-            upcoming[rule] = {"eligible": ok, "reason": why, "attempt": len(camp["attempts"]) + 1}
+            upcoming[rule] = {"eligible": ok, "reason": why, "attempt": len(camp["attempts"]) + 1,
+                              "mode": "SHAKEOUT" if camp["window"] else "NORMAL",
+                              "window": _window_public(camp["window"], n)}
     ledger = {
         "policy_version": policy["policy_version"],
-        "rule_ids": {k: policy[k] for k in ("triggers", "campaign_rules", "primary_rule", "stop_rule", "exit_rule",
-                                            "shadow_exit_rules")},
+        "rule_ids": {k: policy[k] for k in ("triggers", "window_triggers", "campaign_rules", "primary_rule",
+                                            "stop_rule", "exit_rule", "shadow_exit_rules")},
         "L": level, "anchor_date": bars[a]["date"], "asof": bars[last]["date"], "elapsed": last - a,
         "horizon_complete": complete, "flags": flags, "next": upcoming,
         "trigger_stats": {"fired": stats["fired"], "checks": stats["checks"]}, "conflicts": stats["conflicts"],
-        "campaigns": {rule: _public(camp) for rule, camp in camps.items()},
+        "campaigns": {rule: _public(dict(camp, window=_window_public(camp["window"], last + 1)))
+                      for rule, camp in camps.items()},
     }
     if market:
         end_index = camps[policy["primary_rule"]].get("_end_index")
-        ledger["controls"] = {"PIVOT": pivot_control(setup, bars, a, end_index, market, policy)}
+        ledger["controls"] = {"PIVOT": pivot_control(setup, bars, a, end_index, market, policy, regime_at)}
     return ledger
+
+
+def _fire(stats, camp, setup, bars, i, trigger, mode, decision, regime, pulse_at, stop_dates, policy):
+    stats["fired"][trigger["trigger"]] = stats["fired"].get(trigger["trigger"], 0) + 1
+    _open(camp, setup, bars, i, trigger, mode=mode, decision=decision, regime=regime or "sideways",
+          pulse=pulse_at(bars[i]["date"]), stop_dates=stop_dates, policy=policy)
 
 
 def _public(value):
@@ -501,16 +685,18 @@ def _public(value):
 
 def campaign_summary(campaign):
     attempts = campaign.get("attempts") or []
-    return {"status": campaign["status"], "end_date": campaign.get("end_date"), "end_reason": campaign.get("end_reason"),
-            "attempts": len(attempts), "wins": sum(1 for t in attempts if (t.get("ret") or 0) > 0),
-            "pnl_slot": campaign["pnl_slot"], "mark_slot": campaign["mark_slot"], "mdd_slot": campaign["mdd_slot"]}
+    return {"status": campaign["status"], "end_date": campaign.get("end_date"),
+            "end_reason": campaign.get("end_reason"), "attempts": len(attempts),
+            "wins": sum(1 for t in attempts if (t.get("ret") or 0) > 0), "pnl_slot": campaign["pnl_slot"],
+            "mark_slot": campaign["mark_slot"], "mdd_slot": campaign["mdd_slot"]}
 
 
 # ---------------------------------------------------------------- control
-def pivot_control(setup, bars, anchor, end_index, market, policy=None):
+def pivot_control(setup, bars, anchor, end_index, market, policy=None, regime_at=None):
     """Existing pivot trigger per day (P.evaluate_day, no CORRECTION ban, deterministic), first trigger
-    before the primary campaign end, managed like an attempt (structural stop, E1, campaign end)."""
+    before the primary watch end, managed like an attempt (capped structural stop, E1, watch end)."""
     policy = policy or POLICY
+    regime_at = regime_at or (lambda day: None)
     last = min(len(bars) - 1, anchor + policy["horizon"])
     stop_at = end_index if end_index is not None else last + 1
     counts, first = {}, None
@@ -527,7 +713,7 @@ def pivot_control(setup, bars, anchor, end_index, market, policy=None):
     i, day = first
     intraday = day["trigger"] != "FOLLOW_THROUGH"
     entry = day["entry"]
-    stop = STOP_RULES[policy["stop_rule"]](setup, entry)
+    stop = STOP_RULES[policy["stop_rule"]](setup, entry, regime_at(bars[i]["date"]) or "sideways")
     pos = {"entry": entry, "stop": stop, "_start": i, "intraday": intraday, "status": "OPEN"}
     out["first_trigger"] = {"date": bars[i]["date"], "trigger": day["trigger"], "entry": entry,
                             "pivot": day.get("pivot"), "stop": round(stop, 6)}
