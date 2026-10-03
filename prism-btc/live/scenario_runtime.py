@@ -243,7 +243,8 @@ class ScenarioRuntime:
                        previous_hard_stop=active["hard_stop"])
             plans=self.conn.execute("SELECT payload,status,evidence FROM llm_scenario_intents WHERE scenario_id=? ORDER BY rowid DESC LIMIT 5",
                                     (active["scenario_id"],)).fetchall()
-            ctx["current_plan"]=json.loads(plans[0][0]) if plans else None
+            ctx["current_plan"]=active.get("current_plan") or next((json.loads(p[0]) for p in plans
+                if json.loads(p[0])["action"] in {"OPEN","ADJUST"}),None)
             ctx["recent_actions"]=[{
                 "action":json.loads(payload)["action"],"revision":json.loads(payload)["revision"],
                 "status":status,"verified_executed_quantity":json.loads(evidence).get("filled_quantity") if evidence else None
@@ -322,6 +323,7 @@ class ScenarioRuntime:
                 if validated["action"] in ("OPEN", "ADJUST"):
                     state["active"]["desired_hard_stop"] = validated["hard_stop"]
                     state["active"]["expires_at"] = validated["expires_at"]
+                    state["active"]["current_plan"] = validated
                 state["version"] += 1
                 self.conn.execute("INSERT INTO llm_scenario_intents VALUES(?,?,?,'PENDING',NULL)",
                                   (ident, validated["scenario_id"], _json(validated)))

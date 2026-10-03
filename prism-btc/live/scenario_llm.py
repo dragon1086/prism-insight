@@ -37,6 +37,8 @@ If accounting_status is pending, missing loss/fee/funding values are UNKNOWN,
 not zero. Respect the observed live position even if settlement is incomplete;
 use WAIT or EXIT, never propose extra exposure or reset the scenario.
 Read current_plan, recent_actions and target_status before revising a scenario.
+current_plan is the last requested OPEN/ADJUST plan, not proof it executed;
+target_status and verified execution evidence determine what actually happened.
 ADJUST replaces the target plan for the remaining position. Do not automatically
 recreate already filled TP targets; retain a protected runner when the thesis
 remains valid. Refer to the previous plan and actual fills in your revision reason.
