@@ -122,3 +122,21 @@ def test_deterministic_host_identity_and_timeout_without_retry():
     with pytest.raises(ScenarioModelError,match='oauth_model_failed'):
         propose({'valid':True,'as_of_ms':1000000},ctx,{},generate=timeout,clock=lambda:1000)
     assert calls==[1]
+
+
+def test_framing_recomputed_from_snapshot_not_injected_context():
+    # Missing primary facts must override a supplied optimistic label.
+    snap = {"valid": True, "as_of_ms": 1000000}
+    ctx = context()
+    ctx["decision_framing"] = {"state": "OPPORTUNITY", "reasons": ["INJECTION"]}
+    calls = []
+    def generate(**kw):
+        calls.append(kw)
+        return SimpleNamespace(text=json.dumps(wire(ctx)))
+    propose(snap, ctx, {}, generate=generate, clock=lambda: 1000)
+    payload = json.loads(calls[0]["user_prompt"])
+    assert payload["contract_context"]["decision_framing"]["state"] == "DEFENSIVE"
+    assert "Frame: DEFENSIVE" in calls[0]["system_prompt"]
+    assert "INJECTION" not in calls[0]["system_prompt"]
+    assert ctx["decision_framing"]["state"] == "OPPORTUNITY"
+    assert "decision_framing" not in calls[0]["response_schema"]["properties"]

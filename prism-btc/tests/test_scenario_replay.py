@@ -40,6 +40,7 @@ def test_full_runtime_record_and_frozen_replay_same_hash(tmp_path):
     assert first['result_hash']==replay['result_hash']
     assert first['mode']=='SYNTHETIC_FIXTURE'
     assert replay['execution_metadata']['actual_model_calls']==0
+    assert set(first['contract']['framing_prompt_hashes']) == {'OPPORTUNITY','TRANSITION','DEFENSIVE'}
 
 
 def test_missing_mark_or_existing_output_never_runs_policy(tmp_path):

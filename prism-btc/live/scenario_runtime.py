@@ -314,6 +314,8 @@ class ScenarioRuntime:
             input_id = str(uuid.uuid4())
             ctx.update(now=self.clock(), input_id=input_id, input_captured_at=captured,
                        max_input_age_seconds=120)
+            from live.scenario_framing import decision_framing
+            ctx["decision_framing"] = decision_framing(snap, ctx)
             with mutation_lock(self.conn):
                 self.conn.execute("UPDATE llm_scenario_decisions SET snapshot=?, context=? WHERE slot=?",
                                   (_json(snap), _json(ctx), slot))
