@@ -15,6 +15,8 @@ TITLES = {
     "PENDING": "⚠️ BTC 데모 상태 미확정 · 신규 주문 보류",
     "HALTED": "⛔ BTC 데모 신규 진입 중단 · 운영자 검토 필요",
     "RESOLVED": "✅ BTC 데모 미확정 상태 해소",
+    "MODEL_ERROR": "⚠️ BTC 데모 LLM 판단 오류 · 이번 판단 미반영",
+    "MODEL_RECOVERED": "✅ BTC 데모 LLM 응답 검증 정상 확인",
 }
 REASONS = {
     "BREAKOUT":"수렴 뒤 돌파", "RETEST":"돌파 구간 재확인", "TREND_CONTINUATION":"단기 추세 지속",
@@ -50,6 +52,8 @@ def render_notice(event: dict) -> str:
         raise ValueError("protection_evidence_required")
     if kind == "RESOLVED" and event.get("resolution_confirmed") is not True:
         raise ValueError("resolution_evidence_required")
+    if kind == "MODEL_RECOVERED" and event.get("model_validation_confirmed") is not True:
+        raise ValueError("model_validation_evidence_required")
     at = _number(event.get("timestamp"))
     if at is None:
         raise ValueError("event_timestamp_required")
@@ -138,6 +142,16 @@ def render_notice(event: dict) -> str:
         lines.append("기존 포지션 보호는 유지합니다. 검토·명시적 승인 전 자동 재개하지 않습니다.")
     if kind == "PENDING":
         lines.append("체결·취소·보호·정산의 불명확 상태를 확인 중입니다. 재주문하지 않습니다.")
+    if kind == "MODEL_ERROR":
+        reason = {"llm_output_contract_failed":"LLM 응답이 출력 규격 검증을 통과하지 못했습니다.",
+                  "llm_call_failed":"LLM 호출에 실패했습니다."}.get(event.get("reason_code"))
+        if reason is None:
+            raise ValueError("model_error_reason_required")
+        lines.extend([reason, "이번 응답에 따른 주문 변경은 적용하지 않습니다.",
+            "거래소 주문·체결·보호 상태는 별도 확인 대상입니다."])
+    if kind == "MODEL_RECOVERED":
+        lines.extend(["후속 LLM 응답이 검증을 통과했습니다.",
+            "주문 체결·보호·정산의 확인이나 매매 재개를 뜻하지 않습니다."])
     if kind == "RESOLVED":
         resolution = {"CANCELLED_UNFILLED":"미체결 취소 확인", "FILLED_PROTECTED":"체결·보호 확인", "FLAT_SETTLED":"잔량 0·정산 확인", "PROTECTION_QUERY_RECOVERED":"거래소 조회·보호 상태 확인 · 손익 정산 상태는 별도입니다."}.get(event.get("resolution"))
         if resolution is None:

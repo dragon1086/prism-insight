@@ -82,3 +82,35 @@ def test_invalid_identity_stays_blocked_in_frozen_runtime(tmp_path):
         second=run_replay(b,m,tmp_path/'bad-id-copy',mode='frozen',tape_path=tape)
     assert first['decision_outcomes']==second['decision_outcomes']=={'blocked':2}
     assert first['result_hash']==second['result_hash']
+
+
+@pytest.mark.parametrize('invalid',[False,True])
+def test_strict_wire_fresh_and_frozen_preserve_trade_or_rejection(tmp_path,invalid):
+    import json
+    import sqlite3
+    from types import SimpleNamespace
+    from live.scenario_contract import identity_fields
+    b,m=inputs();tape=tmp_path/'strict-tape'
+    def generate(**kw):
+        c=json.loads(kw['user_prompt'])['contract_context']
+        p=dict(identity_fields(c),action='EXIT' if c['scenario_id'] else 'OPEN',
+               confidence=.5,expires_at=c['now']+600,leverage=10,
+               side=None,hard_stop=None,chase=None,entries=[],take_profits=[],
+               partial_stops=[],cancel_entry_ids=[],rationale='synthetic contract test')
+        if p['action']=='OPEN':
+            p.update(side='LONG',hard_stop=98,chase=dict(max_bps=0,max_reprices=0),
+                     entries=[dict(id='e1',price=100,quantity=.1)])
+        if invalid:p['input_id']='wrong'
+        return SimpleNamespace(text=json.dumps(p))
+    with network_boundary('frozen') as blocked:
+        first=run_replay(b,m,tmp_path/'fresh',mode='fresh',tape_path=tape,model_generator=generate)
+        second=run_replay(b,m,tmp_path/'frozen',mode='frozen',tape_path=tape)
+    assert not blocked
+    assert first['result_hash']==second['result_hash']
+    assert first['economic']['completed_scenarios']==(0 if invalid else 1)
+    if invalid:
+        outcomes=[]
+        for path in ['fresh','frozen']:
+            with sqlite3.connect(tmp_path/path/'replay.sqlite') as conn:
+                outcomes.append([json.loads(row[0]) for row in conn.execute('SELECT outcome FROM llm_scenario_decisions ORDER BY slot')])
+        assert outcomes[0]==outcomes[1]==[{'status':'blocked','reason':'llm_output_contract_failed'}]*2

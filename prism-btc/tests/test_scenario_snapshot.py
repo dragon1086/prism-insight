@@ -38,6 +38,7 @@ def test_primary_and_context_are_separate_json_safe_facts():
     assert hour["forming"]["ma10"] == pytest.approx(100.4)
     assert hour["forming"]["price_position"] == "above"
     assert hour["forming"]["is_confirmed"] is False
+    assert hour["forming"]["observation_kind"] == "observed"
     assert hour["forming"]["volume_projection"]["uncertainty_interval"] is None
 
 

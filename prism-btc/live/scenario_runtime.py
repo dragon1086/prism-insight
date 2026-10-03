@@ -21,6 +21,7 @@ import uuid
 from core.llm_scenario import validate_scenario, update_circuit_breaker
 from live.shared_entry_coordinator import database_path, mutation_lock
 from live.entry_reservations import LockBusy
+from live.scenario_llm import ScenarioModelError
 
 REQUIRED_CAPABILITIES = frozenset({"exact_fills", "atomic_protection",
     "exact_settlement", "idempotent_intents", "fresh_risk_context"})
@@ -251,6 +252,26 @@ class ScenarioRuntime:
             } for payload,status,evidence in reversed(plans)]
         else:
             ctx.update(current_plan=None,recent_actions=[])
+        # Past validated WAIT reasons are observations, never executable plans.
+        # Do not feed rejected/stale proposals or another active scenario back.
+        slot = int(self.clock() // 300)
+        waits = []
+        rows = self.conn.execute(
+            "SELECT context,proposal,outcome FROM llm_scenario_decisions "
+            "WHERE slot>=? AND slot<? AND outcome IS NOT NULL ORDER BY slot DESC",
+            (slot - 6, slot)).fetchall()
+        for context, proposal, outcome in rows:
+            if json.loads(outcome).get("status") != "wait" or not context or not proposal:
+                continue
+            previous, decision = json.loads(context), json.loads(proposal)
+            if previous.get("scenario_id") != ctx["scenario_id"] or decision.get("action") != "WAIT":
+                continue
+            waits.append({"as_of_ms": int(previous["input_captured_at"] * 1000),
+                          "rationale": decision["rationale"],
+                          "confidence": decision["confidence"]})
+            if len(waits) == 3:
+                break
+        ctx["recent_waits"] = list(reversed(waits))
         ctx["new_risk_blocked"] = bool(ctx["new_risk_blocked"] or state["breaker"].get("blocked"))
         if state["breaker"].get("blocked") and not state.get("halt_notified"):
             stamp=state.setdefault("halted_at",self.clock())
@@ -343,6 +364,12 @@ class ScenarioRuntime:
                     self.conn.commit()
                     return {"status": "intent_pending", "reason": "submission_unknown"}
                 return {"status": "intent_pending", "reason": "awaiting_exact_evidence"}
+        except ScenarioModelError as exc:
+            self.conn.rollback()
+            # Fixed codes only: never expose a response, account or transport error.
+            reason = ("llm_call_failed" if str(exc) in {"oauth_model_failed", "late_response"}
+                      else "llm_output_contract_failed")
+            return {"status": "blocked", "reason": reason}
         except LockBusy:
             self.conn.rollback()
             return {"status":"lock_busy","reason":"another_protection_or_execution_tick"}

@@ -20,17 +20,14 @@ from live.scenario_llm import propose
 
 
 def response_contract(context):
+    from live.scenario_contract import identity_fields
     return {
-        "schema_version": 1,
-        "scenario_id": context.get("scenario_id") or "choose-a-new-short-unique-id",
-        "revision": context["revision"] + 1,
-        "input_id": context["input_id"],
-        "action_id": "choose-a-new-short-unique-id",
+        **identity_fields(context),
         "action": "WAIT | OPEN | ADJUST | EXIT",
-        "side": "LONG | SHORT (required for OPEN/ADJUST)",
+        "side": "LONG | SHORT for OPEN/ADJUST; null for WAIT/EXIT",
         "confidence": "number 0..1 (NOT calibrated win probability)",
         "expires_at": "Unix seconds >now and <=now+3600",
-        "hard_stop": "positive price required for OPEN/ADJUST; no widening",
+        "hard_stop": "positive price for OPEN/ADJUST; no widening; null for WAIT/EXIT",
         "entries": [{"id":"unique", "price":"positive number", "quantity":"positive BTC number"}],
         "take_profits": [{"id":"unique", "price":"positive number", "fraction":"number >0..1"}],
         "partial_stops": [{"id":"unique", "price":"positive number", "fraction":"number >0..1"}],
@@ -39,7 +36,7 @@ def response_contract(context):
         "rationale": "short Korean evidence/invalidation explanation",
         "leverage": 10,
         "rules": ["Do not include this rules field in the response.",
-                  "WAIT/EXIT require empty entries/take_profits/partial_stops; OMIT hard_stop, side and chase entirely.",
+                  "All schema fields are required. WAIT/EXIT require empty entries/take_profits/partial_stops and explicit null hard_stop, side and chase. OPEN/ADJUST require non-null side, hard_stop and chase.",
                   "OPEN only when no active scenario; ADJUST/EXIT only when active.",
                   "Each exit list fractions sum <=1; leftover may be runner protected by hard stop.",
                   "Budget=initial_equity*0.02. Per BTC loss=abs(entry-stop)+entry*(estimated_cost_rate+slippage_bps/10000).",

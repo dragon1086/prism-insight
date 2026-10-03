@@ -155,6 +155,10 @@ class HistoricalScenarioData:
                 forming[tf] = aggregate.loc[ast == current_start]
             # A partial source prefix is never represented as a complete forming bar.
         result = build_scenario_snapshot(history, now_ms, provisional_tf_data=forming, observed_at_ms=now_ms)
+        for tf, fact in result["timeframes"].items():
+            if fact["forming"] is not None:
+                fact["forming"]["observation_kind"] = (
+                    "synthetic_boundary" if tf in synthetic else "historical_completed_subbars")
         result["historical_replay"] = {"source_interval_ms": self.interval_ms,
             "closed_source_through_ms": now_ms, "zero_progress_synthetic_timeframes": synthetic,
             "boundary_convention": "after_previous_close_before_next_trade"}

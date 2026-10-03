@@ -140,6 +140,47 @@ def test_llm_failure_preserves_slot_and_protection(setup):
     assert b.reconciles == 2
 
 
+@pytest.mark.parametrize("error,reason", [
+    ("response_contract_mismatch", "llm_output_contract_failed"),
+    ("invalid_json", "llm_output_contract_failed"),
+    ("oauth_model_failed", "llm_call_failed"),
+    ("late_response", "llm_call_failed"),
+])
+def test_llm_failure_has_safe_audit_category_and_no_orders(setup, error, reason):
+    from live.scenario_llm import ScenarioModelError
+    r, b, _, _ = setup
+    r.propose = lambda *_: (_ for _ in ()).throw(ScenarioModelError(error))
+    assert r.tick() == {"status": "blocked", "reason": reason}
+    assert reason in r.conn.execute("SELECT outcome FROM llm_scenario_decisions").fetchone()[0]
+    assert not b.executed
+    assert r.tick()["status"] == "duplicate_slot"
+
+
+def test_recent_wait_context_is_bounded_causal_and_excludes_rejections(setup):
+    r, b, now, _ = setup
+    seen = []
+    def model(s, ctx):
+        seen.append(ctx.get("recent_waits"))
+        return wait_proposal(s, ctx, rationale=f"watch {len(seen)}")
+    r.propose = model
+    for _ in range(5):
+        assert r.tick()["status"] == "wait"
+        now[0] += 300
+    assert seen[0] == []
+    assert [x["rationale"] for x in seen[-1]] == ["watch 2", "watch 3", "watch 4"]
+    assert all(x["as_of_ms"] < now[0] * 1000 for x in seen[-1])
+    r.propose = lambda s, c: wait_proposal(s, c, rationale="invalid", revision=99)
+    assert r.tick()["status"] == "blocked"
+    now[0] += 300
+    r.propose = model
+    assert r.tick()["status"] == "wait"
+    assert "invalid" not in [x["rationale"] for x in seen[-1]]
+    now[0] += 2100
+    assert r.tick()["status"] == "wait"
+    assert seen[-1] == []
+    assert not b.executed
+
+
 @pytest.mark.parametrize("missing", ["fees_complete", "funding_complete", "executions_complete", "flat_confirmed"])
 def test_incomplete_settlement_never_completes(setup, missing):
     r, b, _, _ = setup

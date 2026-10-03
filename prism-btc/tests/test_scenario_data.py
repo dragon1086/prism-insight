@@ -23,6 +23,7 @@ def test_boundary_uses_only_last_known_close_not_next_open():
     assert result["valid"]
     forming = result["timeframes"]["1h"]["forming"]
     assert forming["elapsed_ms"] == 0
+    assert forming["observation_kind"] == "synthetic_boundary"
     assert forming["ohlcv"] == dict(open=101., high=101., low=101., close=101., volume=0.)
     assert "1h" in result["historical_replay"]["zero_progress_synthetic_timeframes"]
 
@@ -35,6 +36,7 @@ def test_future_changes_and_appends_cannot_affect_snapshot():
     assert HistoricalScenarioData(source).snapshot(now) == expected
     forming = expected["timeframes"]["1h"]["forming"]
     assert forming["elapsed_ms"] == 25*60_000
+    assert forming["observation_kind"] == "historical_completed_subbars"
     assert forming["ohlcv"]["volume"] == 50.
 
 
