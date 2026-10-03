@@ -21,3 +21,12 @@ def test_missing_input_or_contract_mismatch_is_not_wait(tmp_path):
     with pytest.raises(TapeMismatch):r.lookup({},dict(now=1,input_id='y',qty=3))
     with pytest.raises(TapeMismatch):r.assert_exhausted()
     with pytest.raises(FileExistsError):DecisionTape(path,'record',{})
+
+
+@pytest.mark.parametrize('proposal',[{'input_id':'wrong','action':'WAIT'},{'action':'WAIT'}])
+def test_replay_preserves_original_invalid_or_missing_identity(tmp_path,proposal):
+    path=tmp_path/'invalid';t=DecisionTape(path,'record',{})
+    t.append({},dict(now=1,input_id='request-original'),proposal,1);t.close()
+    r=DecisionTape(path,'frozen',{})
+    actual=r.lookup({},dict(now=1,input_id='request-replay'))['proposal']
+    assert actual==proposal

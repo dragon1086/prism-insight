@@ -72,3 +72,13 @@ def test_real_runtime_simulated_open_exit_and_exact_tape_replay(tmp_path):
     assert first['economic']['completed_scenarios']==1
     assert first['economic']['fees']>0 and first['economic']['open_quantity']==0
     assert first['result_hash']==second['result_hash']
+
+
+def test_invalid_identity_stays_blocked_in_frozen_runtime(tmp_path):
+    b,m=inputs();tape=tmp_path/'bad-id-tape'
+    def invalid(s,c):return {**wait_policy(s,c),'input_id':'wrong'}
+    with network_boundary('frozen'):
+        first=run_replay(b,m,tmp_path/'bad-id',mode='fixture',tape_path=tape,policy=invalid)
+        second=run_replay(b,m,tmp_path/'bad-id-copy',mode='frozen',tape_path=tape)
+    assert first['decision_outcomes']==second['decision_outcomes']=={'blocked':2}
+    assert first['result_hash']==second['result_hash']

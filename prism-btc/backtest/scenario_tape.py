@@ -79,7 +79,9 @@ class DecisionTape:
             raise TapeMismatch("semantic_input_mismatch")
         self.used.add(at)
         result=copy.deepcopy(row)
-        if result["proposal"] is not None:
+        # A bad/missing echo was rejected originally. Never repair it in replay.
+        if (isinstance(result["proposal"],dict)
+                and result["proposal"].get("input_id")==row["context"].get("input_id")):
             result["proposal"]["input_id"]=context["input_id"]
         return result
 
@@ -94,4 +96,3 @@ class DecisionTape:
     def close(self):
         if self.stream:
             self.stream.close()
-

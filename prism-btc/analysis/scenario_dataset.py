@@ -7,13 +7,18 @@ import json
 import time
 from pathlib import Path
 from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import build_opener,ProxyHandler,HTTPRedirectHandler
 
 import pandas as pd
 
 HOST = "https://api.bybit.com"
 INTERVALS = {"30m":("30",1_800_000),"1h":("60",3_600_000),
              "4h":("240",14_400_000),"12h":("720",43_200_000),"1d":("D",86_400_000)}
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self,req,fp,code,msg,headers,newurl):
+        raise ValueError("public_data_redirect_forbidden")
 
 
 def digest(value):
@@ -24,9 +29,10 @@ def _public_get(path,params):
     if path not in {"/v5/market/kline","/v5/market/mark-price-kline","/v5/market/funding/history"}:
         raise ValueError("public_endpoint_only")
     request=HOST+path+"?"+urlencode(dict(category="linear",symbol="BTCUSDT",**params))
+    opener=build_opener(ProxyHandler({}),_NoRedirect())
     for attempt in range(3):
         try:
-            with urlopen(request,timeout=20) as response:
+            with opener.open(request,timeout=20) as response:
                 data=json.loads(response.read(4_000_000))
             if data.get("retCode")!=0:
                 raise ValueError("public_response_failed")
