@@ -160,7 +160,145 @@ def test_llm_failure_preserves_slot_and_protection(setup):
     assert b.reconciles == 2
 
 
-def test_protection_contention_after_model_keeps_safe_outcome_audit(setup, monkeypatch):
+@pytest.mark.parametrize("stage", ["initial_reconcile", "snapshot_collection",
+    "snapshot_validation", "snapshot_persist", "proposal_call", "proposal_persist",
+    "post_model_reconcile", "validation", "execution"])
+def test_generic_failure_records_fixed_stage_without_exception_data(setup, monkeypatch, stage):
+    import json
+    import live.scenario_runtime as module
+    r, b, _, _ = setup
+    def fail(*_args, **_kwargs):
+        raise ValueError("private account or transport data")
+    if stage == "initial_reconcile":
+        b.reconcile = fail
+    elif stage == "snapshot_collection":
+        r.snapshot = fail
+    elif stage == "snapshot_validation":
+        r.snapshot = lambda: {"valid": False, "error": "private account data"}
+    elif stage in {"snapshot_persist", "proposal_persist"}:
+        # Non-serializable optional data exercises audit persistence, not orders.
+        if stage == "snapshot_persist":
+            r.snapshot = lambda: {"valid": True, "as_of_ms": r.clock()*1000, "bad": object()}
+        else:
+            r.propose = lambda s, c: dict(proposal(s, c), bad=object())
+    elif stage == "proposal_call":
+        r.propose = fail
+    elif stage == "post_model_reconcile":
+        def model(s, c):
+            b.reconcile = fail
+            return proposal(s, c)
+        r.propose = model
+    elif stage == "validation":
+        monkeypatch.setattr(module, "validate_scenario", fail)
+    else:
+        original = r._save
+        def save(state):
+            if state["active"]:
+                fail()
+            original(state)
+        r._save = save
+    expected = {"status": "blocked", "reason": "reconciliation_or_proposal_failed",
+                "failure_stage": stage}
+    if stage == "snapshot_validation":
+        expected["failure_code"] = "invalid_market_snapshot"
+    assert r.tick() == expected
+    rows = r.conn.execute("SELECT outcome FROM llm_scenario_decisions").fetchall()
+    if stage != "initial_reconcile":
+        assert json.loads(rows[0][0]) == expected
+    assert not b.executed
+
+
+@pytest.mark.parametrize("code", ["empty_public_data", "collection_too_slow",
+    "candle_boundary_crossed_during_collection", "future_public_candle"])
+def test_collection_failure_code_requires_exact_value_error_and_stage(setup, code):
+    import json
+    r, b, _, _ = setup
+    def fail():
+        raise ValueError(code)
+    r.snapshot = fail
+    result = r.tick()
+    assert result == {"status": "blocked", "reason": "reconciliation_or_proposal_failed",
+                      "failure_stage": "snapshot_collection", "failure_code": code}
+    assert json.loads(r.conn.execute("SELECT outcome FROM llm_scenario_decisions").fetchone()[0]) == result
+    assert not b.executed
+
+
+@pytest.mark.parametrize("error", [ValueError(), ValueError("private account data"),
+    ValueError("empty_public_data private account data"),
+    ValueError("empty_public_data", "private account data"),
+    RuntimeError("empty_public_data"), ValueError("invalid_snapshot_time")])
+def test_unknown_collection_error_never_adds_failure_code(setup, error):
+    r, b, _, _ = setup
+    def fail():
+        raise error
+    r.snapshot = fail
+    assert r.tick() == {"status": "blocked", "reason": "reconciliation_or_proposal_failed",
+                       "failure_stage": "snapshot_collection"}
+    assert not b.executed
+
+
+def test_collection_code_not_exposed_from_other_stages(setup):
+    r, b, _, _ = setup
+    def fail(*_args):
+        raise ValueError("empty_public_data")
+    r.propose = fail
+    assert r.tick() == {"status": "blocked", "reason": "reconciliation_or_proposal_failed",
+                       "failure_stage": "proposal_call"}
+    assert not b.executed
+
+
+def test_invalid_snapshot_time_has_fixed_validation_code(setup):
+    r, b, _, _ = setup
+    r.snapshot = lambda: {"valid": True, "as_of_ms": "private account data"}
+    assert r.tick() == {"status": "blocked", "reason": "reconciliation_or_proposal_failed",
+                       "failure_stage": "snapshot_validation", "failure_code": "invalid_snapshot_time"}
+    assert not b.executed
+
+
+@pytest.fixture
+def lock_clock(monkeypatch):
+    from types import SimpleNamespace
+    import live.scenario_runtime as module
+    elapsed = [0.]
+    sleeps = []
+    def sleep(seconds):
+        sleeps.append(seconds)
+        elapsed[0] += seconds
+    monkeypatch.setattr(module, "time", SimpleNamespace(
+        monotonic=lambda: elapsed[0], sleep=sleep))
+    return elapsed, sleeps
+
+
+def test_post_model_transient_contention_reconciles_and_executes_once(setup, monkeypatch, lock_clock):
+    from contextlib import contextmanager
+    import live.scenario_runtime as module
+    from live.entry_reservations import LockBusy
+    r, b, _, _ = setup
+    original = module.mutation_lock
+    returned = []
+    attempts = []
+    @contextmanager
+    def lock(conn):
+        if returned:
+            attempts.append(True)
+            if len(attempts) == 1:
+                raise LockBusy("protection finishing")
+        with original(conn):
+            yield
+    def model(s, c):
+        returned.append(True)
+        return proposal(s, c)
+    monkeypatch.setattr(module, "mutation_lock", lock)
+    r.propose = model
+    assert r.tick()["reason"] == "awaiting_exact_evidence"
+    assert len(returned) == 1 and len(attempts) == 2
+    assert b.reconciles == 2 and b.executed == ["action-1"]
+    assert lock_clock[0][0] == .25
+    assert r.tick()["status"] == "intent_pending"
+    assert b.executed == ["action-1"]
+
+
+def test_protection_contention_after_model_keeps_safe_outcome_audit(setup, monkeypatch, lock_clock):
     from contextlib import contextmanager
     import json
     import live.scenario_runtime as module
@@ -185,6 +323,149 @@ def test_protection_contention_after_model_keeps_safe_outcome_audit(setup, monke
     assert outcome == result
     assert json.loads(r.conn.execute("SELECT proposal FROM llm_scenario_decisions").fetchone()[0])["action"] == "WAIT"
     assert not b.executed
+    assert lock_clock[0][0] == 8
+    assert b.reconciles == 1
+
+
+@pytest.mark.parametrize("change,expected", [
+    ("account", "stale_proposal"), ("scenario", "stale_proposal"),
+    ("input_expired", "blocked"), ("proposal_expired", "blocked"),
+    ("protection", "stale_proposal"),
+])
+def test_post_model_wait_rechecks_freshness_and_state(setup, monkeypatch, lock_clock, change, expected):
+    from contextlib import contextmanager
+    import live.scenario_runtime as module
+    from live.entry_reservations import LockBusy
+    r, b, now, _ = setup
+    original = module.mutation_lock
+    returned = []
+    attempted = []
+    @contextmanager
+    def lock(conn):
+        if returned and not attempted:
+            attempted.append(True)
+            if change == "account":
+                b.ctx["account_version"] = "changed"
+            elif change == "scenario":
+                state = r.state()
+                state["version"] += 1
+                r._save(state)
+            elif change == "protection":
+                b.ctx["protection_ok"] = False
+            else:
+                now[0] += 1
+            raise LockBusy("protection finishing")
+        with original(conn):
+            yield
+    def model(s, c):
+        result = proposal(s, c)
+        if change == "input_expired":
+            result["expires_at"] = now[0] + 300
+            now[0] += 119.5
+        elif change == "proposal_expired":
+            now[0] += 89.5
+        returned.append(True)
+        return result
+    monkeypatch.setattr(module, "mutation_lock", lock)
+    r.propose = model
+    assert r.tick()["status"] == expected
+    assert b.reconciles == 2 and not b.executed
+    assert r.conn.execute("SELECT count(*) FROM llm_scenario_intents").fetchone()[0] == 0
+    assert len(returned) == 1 and lock_clock[0][0] == .25
+
+
+def test_pre_model_contention_still_skips_without_retry(setup, monkeypatch, lock_clock):
+    from contextlib import contextmanager
+    import live.scenario_runtime as module
+    from live.entry_reservations import LockBusy
+    r, b, _, _ = setup
+    @contextmanager
+    def lock(conn):
+        raise LockBusy("protection owns lock")
+        yield  # pragma: no cover
+    monkeypatch.setattr(module, "mutation_lock", lock)
+    assert r.tick()["status"] == "lock_busy"
+    assert b.reconciles == 0 and not lock_clock[1]
+    assert r.conn.execute("SELECT count(*) FROM llm_scenario_slots").fetchone()[0] == 0
+
+
+def test_post_model_guarded_reconcile_lock_error_is_not_retried(setup, lock_clock):
+    from live.entry_reservations import LockBusy
+    r, b, _, _ = setup
+    def reconcile():
+        b.reconciles += 1
+        if b.reconciles == 2:
+            raise LockBusy("guarded body failed")
+        return {}
+    b.reconcile = reconcile
+    assert r.tick()["status"] == "lock_busy"
+    assert b.reconciles == 2 and not lock_clock[1] and not b.executed
+
+
+def test_post_model_wait_cancellation_propagates_without_execution(setup, monkeypatch, lock_clock):
+    from contextlib import contextmanager
+    import live.scenario_runtime as module
+    from live.entry_reservations import LockBusy
+    r, b, _, _ = setup
+    original = module.mutation_lock
+    returned = []
+    @contextmanager
+    def lock(conn):
+        if returned:
+            raise LockBusy("protection owns lock")
+        with original(conn):
+            yield
+    def model(s, c):
+        returned.append(True)
+        return proposal(s, c)
+    def cancelled(_seconds):
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(module, "mutation_lock", lock)
+    monkeypatch.setattr(module.time, "sleep", cancelled)
+    r.propose = model
+    with pytest.raises(KeyboardInterrupt):
+        r.tick()
+    assert b.reconciles == 1 and not b.executed
+    assert r.conn.execute("SELECT count(*) FROM llm_scenario_slots").fetchone()[0] == 1
+
+
+def test_post_model_retries_real_process_lock_after_protection_releases(setup, monkeypatch):
+    import subprocess
+    import sys
+    from types import SimpleNamespace
+    import live.scenario_runtime as module
+    r, b, _, path = setup
+    holders, sleeps = [], []
+    code = (
+        "import fcntl,sys; "
+        "f=open(sys.argv[1],'a'); fcntl.flock(f,fcntl.LOCK_EX); "
+        "print('locked',flush=True); sys.stdin.readline(); "
+        "fcntl.flock(f,fcntl.LOCK_UN)"
+    )
+    def model(s, c):
+        child = subprocess.Popen([sys.executable, "-c", code,
+            str(path.resolve()) + ".btc-execution.lock"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        holders.append(child)
+        assert child.stdout.readline().strip() == "locked"
+        return proposal(s, c)
+    def release(seconds):
+        sleeps.append(seconds)
+        child = holders[0]
+        child.communicate("release\n", timeout=5)
+        assert child.returncode == 0
+    monkeypatch.setattr(module, "time", SimpleNamespace(
+        monotonic=module.time.monotonic, sleep=release))
+    r.propose = model
+    try:
+        assert r.tick()["reason"] == "awaiting_exact_evidence"
+        assert sleeps == [.25] and len(holders) == 1
+        assert b.executed == ["action-1"] and b.reconciles == 2
+    finally:
+        for child in holders:
+            if child.poll() is None:
+                child.kill()
+                child.communicate(timeout=5)
 
 
 @pytest.mark.parametrize("error,reason", [

@@ -55,6 +55,46 @@ def test_initial_fill_seeds_snapshot_without_duplicate_protection(live):
     assert e.writes==[]
 
 
+def test_notice_entry_stages_follow_exact_fill_history_not_child_order(live):
+    b,e=live
+    active,children,observed=notice_fixture()
+    children.append(dict(kind="entry",status="TERMINAL",intent_id="none",evidence=dict(order={},
+        executions=[dict(execId="second",execQty="0.4",execPrice="101",execTime="1800000000000"),
+                    dict(execId="first",execQty="0.6",execPrice="100",execTime="1799999999000")])))
+    events=b._notices(active,children,observed,True,None)
+    assert [n["event_id"] for n in events]==["scenario-fill-first","scenario-fill-second"]
+    by_id={n["event_id"]:n for n in events}
+    assert by_id["scenario-fill-first"]["entry_stage"]=="initial"
+    assert by_id["scenario-fill-second"]["entry_stage"]=="additional"
+    assert by_id["scenario-fill-second"]["entry_timestamp"]==1799999999
+    # Stable labels through restart/repeated reconciliation; no new order.
+    assert b._notices(active,list(reversed(children)),observed,True,None)==events
+    assert e.writes==[]
+
+
+def test_pending_evidence_does_not_claim_first_entry(live):
+    b,e=live
+    active,children,observed=notice_fixture()
+    children.append(dict(kind="entry",status="TERMINAL",intent_id="none",evidence=dict(order={},
+        executions=[dict(execId="only-known",execQty="1",execPrice="100",execTime="1800000000000")])))
+    events=b._notices(active,children,observed,True,None,pending=True)
+    assert "entry_stage" not in next(n for n in events if n["kind"]=="FILLED")
+    assert e.writes==[]
+
+
+def test_existing_position_status_references_original_entry_not_new_trade(live):
+    b,e=live
+    active,children,observed=notice_fixture()
+    children.append(dict(kind="entry",status="TERMINAL",intent_id="none",evidence=dict(order={},
+        executions=[dict(execId="old-entry",execQty="1",execPrice="100",execTime="1799999000000")])))
+    events=b._notices(active,children,observed,True,None)
+    status=next(n for n in events if n["kind"]=="PROTECTION")
+    assert status["entry_timestamp"]==1799999000
+    assert status["position_before"] is None
+    assert status["position_after"]["quantity"]==1
+    assert e.writes==[]
+
+
 def test_flat_baseline_then_first_fill_has_one_rich_notice(live):
     b,e=live
     b.execute(persist(b),"a1")

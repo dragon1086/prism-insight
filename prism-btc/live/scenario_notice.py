@@ -109,14 +109,14 @@ def _target_text(position, price, qty, equity):
     if not all(math.isfinite(v) for v in (change, pnl)):
         return "계산 자료 미확인"
     lev = _number(position.get("exchange_leverage"))
-    result = f"1배 포지션 수익률 {_percent(change, True)}"
+    result = f"1배 {_percent(change, True)}"
     if lev is not None and lev > 0 and math.isfinite(change * lev):
-        result += f" · {lev:g}배 단순환산 {_percent(change*lev, True)}"
+        result += f" / {lev:g}배 {_percent(change*lev, True)}"
     else:
         result += " · 레버리지 환산 미확인"
-    result += f" / 해당 수량 예상 손익 {_decimal(pnl, True)} USDT"
+    result += f" · {_decimal(pnl, True)} USDT"
     if equity is not None and math.isfinite(pnl/equity*100):
-        result += f" (현재 계좌 순자산 대비 {_percent(pnl/equity*100, True)})"
+        result += f"(계좌 {_percent(pnl/equity*100, True)})"
     return result
 
 
@@ -135,109 +135,115 @@ def _stop_impact(position):
 
 
 def _position_lines(event, after):
+    """Compact public view; the complete verified snapshot stays in the event."""
     lines = []
     before = _position(event.get("position_before"))
     if before is not None and before["timestamp"] > after["timestamp"]:
         before = None
     qty = after["quantity"]
+    changed = event["kind"] == "PROTECTION" and before is not None
+    if event["kind"] == "PROTECTION" and before is None:
+        lines.append("기존 보유 상태 안내 · 신규 진입 아님 · 이전 상태 미확인")
     if event["kind"] == "FILLED":
         fill_qty = _number(event.get("quantity"))
-        lines.append(f"이번 체결: {fill_qty:g} BTC · 체결가 {_money(event.get('price'))}" if fill_qty is not None and fill_qty > 0 else "이번 체결 수량·가격 자료 미확인")
-    if event["kind"] == "PROTECTION" and before is None:
-        lines.append("보호 설정 최초 확인 · 이전 상태 미확인")
-    if before is not None:
-        lines.append(f"변경 전: {_time(before['timestamp'])} / 변경 후: {_time(after['timestamp'])}")
+        lines.append(f"이번 체결: {fill_qty:g} BTC · {_money(event.get('price'))}" if fill_qty is not None and fill_qty > 0 else "이번 체결 수량·가격 미확인")
+    entry_at = _number(event.get("entry_timestamp"))
+    if entry_at is not None and _time(entry_at) != "미확인" and entry_at <= event["timestamp"]:
+        lines.append(f"첫 진입 {_time(entry_at)} · 같은 매매 추적")
+    if changed:
+        for field, label, fmt in (("quantity", "보유량", lambda v: f"{v:g} BTC"),
+                                 ("average_entry_price", "평단", _money)):
+            old, new = before.get(field), after.get(field)
+            if old != new:
+                lines.append(f"{label}: {fmt(old) if old is not None else '미확인'} → {fmt(new) if new is not None else '미확인'}")
         if before.get("side") != after.get("side"):
             names = {"LONG":"롱", "SHORT":"숏"}
             lines.append(f"방향: {names.get(before.get('side'), '보유 없음')} → {names.get(after.get('side'), '보유 없음')}")
-        fields = (("quantity", "전체 보유량", lambda v: f"{v:g} BTC"),
-                  ("average_entry_price", "전체 평균 진입가", _money),
-                  ("hard_stop", "최종 손절·수익보호 가격(SL)", _money))
-        for key, label, fmt in fields:
-            old, new = before.get(key), after.get(key)
-            if old is None or new is None:
-                lines.append(f"{label}: {fmt(old) if old is not None else '미확인'} → {fmt(new) if new is not None else '미확인'}")
-            elif old == new:
-                lines.append(f"{label}: {fmt(new)} · 변경 없음")
-            else:
-                lines.append(f"{label}: {fmt(old)} → {fmt(new)}")
-        if before["quantity"] > 0 and qty > 0:
-            old_pnl, old_impact = _stop_impact(before)
-            new_pnl, new_impact = _stop_impact(after)
-            old_money = _decimal(old_pnl, True) if old_pnl is not None else "미확인"
-            new_money = _decimal(new_pnl, True) if new_pnl is not None else "미확인"
-            old_percent = _percent(old_impact, True) if old_impact is not None else "미확인"
-            new_percent = _percent(new_impact, True) if new_impact is not None else "미확인"
-            lines.append(f"SL 가격 정리 가정 손익: {old_money} → {new_money} USDT")
-            lines.append(f"계좌 영향(비용 전·각 조회 시점 순자산 기준): {old_percent} → {new_percent}")
-        for key, label in (("take_profits", "익절 목표(TP)"), ("partial_stops", "부분 손절 목표")):
-            old, new = _targets(before, key), _targets(after, key)
-            def describe(items):
-                if items is None:
-                    return "미확인"
-                result = " / ".join(f"{_money(t['price'])} · {t['quantity']:g} BTC" for t in items[:2]) or "없음"
-                if len(items) > 2:
-                    result += f" / 나머지 {len(items)-2}개 상세 생략"
-                return result
-            lines.append(f"{label}: {describe(old)} → {describe(new)}" if old != new or old is None else f"{label}: {describe(new)} · 변경 없음")
     else:
-        lines.append(f"전체 보유량: {qty:g} BTC · 전체 평균 진입가: {_money(after.get('average_entry_price'))}")
-        lines.append(f"포지션 자료 기준: {_time(after['timestamp'])}")
+        old_qty = before['quantity'] if before is not None else None
+        amount = f"{old_qty:g} BTC → {qty:g} BTC" if old_qty is not None and old_qty != qty else f"{qty:g} BTC"
+        average = _money(after.get('average_entry_price'))
+        if before is not None and before['quantity'] > 0 and before.get('average_entry_price') != after.get('average_entry_price'):
+            average = _money(before.get('average_entry_price')) + " → " + average
+        lines.append(f"보유 {amount} · 평단 {average}")
     if qty <= 0:
-        lines.append("현재 보유 포지션 없음 · 손익 정산 확인과는 별개입니다.")
+        lines.append("현재 보유 포지션 없음 · 손익 확정은 별도")
         return lines
-    lev = _number(after.get("exchange_leverage"))
-    lines.append(f"거래소 레버리지: {lev:g}배 확인" if lev is not None and lev > 0 else "거래소 레버리지 미확인")
+    if event['kind'] == 'PARTIAL':
+        lines.append(f"남은 물량 SL {_money(after.get('hard_stop'))} · 보호 {'확인' if event.get('protection_confirmed') is True else '미확인'}")
+        return lines
     account = _account(after.get("account_snapshot"), after["timestamp"])
     equity = account["equity"] if account else None
-    if account:
-        margin = _number(account.get("position_margin"))
-        if margin is not None and margin >= 0 and math.isfinite(margin/equity*100):
-            lines.append(f"현재 포지션 증거금: {_money(margin)} / 계좌 순자산 {_money(equity)}의 {_percent(margin/equity*100)}")
-        else:
-            lines.append(f"계좌 순자산: {_money(equity)} · 포지션 증거금·비중 자료 미확인")
-        mode = {"ISOLATED_MARGIN":"격리", "REGULAR_MARGIN":"교차", "PORTFOLIO_MARGIN":"포트폴리오"}.get(account.get("margin_mode"), "미확인")
-        lines.append(f"마진 방식: {mode} · 증거금은 최대손실 한도가 아닙니다.")
-        lines.append(f"계좌 자료 기준: {_time(account['timestamp'])}")
-    else:
-        lines.append("계좌 증거금·비중 자료 미확인")
+    lev = _number(after.get("exchange_leverage"))
+    mode = {"ISOLATED_MARGIN":"격리", "REGULAR_MARGIN":"교차", "PORTFOLIO_MARGIN":"포트폴리오"}.get(account.get("margin_mode"), "방식 미확인") if account else "방식 미확인"
+    margin = _number(account.get("position_margin")) if account else None
+    capital = f"증거금 {_money(margin)}(계좌 {_percent(margin/equity*100)})" if margin is not None and margin >= 0 and math.isfinite(margin/equity*100) else "증거금·비중 미확인"
+    lines.append(f"{lev:g}배 · {mode} · {capital}" if lev is not None and lev > 0 else f"배율 미확인 · {mode} · {capital}")
+    # The short timestamp preserves the independent observation time without
+    # repeating an entire date on every account field.
+    stamp = _time(after["timestamp"])
+    if account and account["timestamp"] != after["timestamp"]:
+        stamp += " / 계좌 " + _time(account["timestamp"])
+    if changed:
+        stamp = _time(before['timestamp']) + " → " + stamp
+    lines[-1] += " · 조회 " + stamp
     stop = _number(after.get("hard_stop"))
-    if stop is not None and stop > 0:
-        protected_gain = (stop-after["average_entry_price"]) * (1 if after["side"] == "LONG" else -1) >= 0
-        lines.append(f"{'수익 보호' if protected_gain else '최종 손절'}(SL): {_money(stop)} · 남은 보유물량 전량")
-        lines.append(_target_text(after, stop, qty, equity))
-    else:
-        lines.append("최종 손절(SL): 미확인")
-    for field, label in (("take_profits", "익절 목표"), ("partial_stops", "부분 손절 목표")):
+    missing = []
+    stop_changed = changed and before.get("hard_stop") != after.get("hard_stop")
+    exposure_changed = changed and any(before.get(k) != after.get(k) for k in ("quantity", "average_entry_price", "side"))
+    if not changed or stop_changed or exposure_changed or stop is None or stop <= 0:
+        if stop is not None and stop > 0:
+            protected_gain = (stop-after["average_entry_price"]) * (1 if after["side"] == "LONG" else -1) >= 0
+            label = "수익 보호 SL" if protected_gain else "손절 SL"
+            prior = _number(before.get("hard_stop")) if changed else None
+            price = f"{_decimal(prior)} → {_decimal(stop)} USDT" if prior is not None else _money(stop)
+            lines.append(f"{label} {price} · 전량 | " + _target_text(after, stop, qty, equity))
+            if changed:
+                old_pnl, old_impact = _stop_impact(before)
+                new_pnl, new_impact = _stop_impact(after)
+                def money(v):
+                    return _decimal(v, True) if v is not None else "미확인"
+                def pct(v):
+                    return _percent(v, True) if v is not None else "미확인"
+                lines.append(f"SL 손익 {money(old_pnl)} → {money(new_pnl)} USDT · 계좌 {pct(old_impact)} → {pct(new_impact)}")
+        else:
+            missing.append("손절 SL")
+    for field, label in (("take_profits", "익절 TP"), ("partial_stops", "부분 손절")):
         targets = _targets(after, field)
+        old = _targets(before, field) if changed else None
         if targets is None:
-            lines.append(f"{label}: 미확인")
+            missing.append(label)
             continue
-        for index, target in enumerate(targets[:2], 1):
-            lines.append(f"{label} {index}: {_money(target['price'])} · {target['quantity']:g} BTC (현재 보유물량 {target['quantity']/qty*100:g}%)")
-            lines.append(_target_text(after, target["price"], target["quantity"], equity))
+        if changed and targets == old and not exposure_changed:
+            continue
+        if changed and targets != old:
+            previous = " / ".join(f"{_decimal(t['price'])}({t['quantity']:g} BTC)" for t in old[:2]) if old else ("없음" if old == [] else "미확인")
+            lines.append(f"{label} 이전 {previous} → 아래 설정" if targets else f"{label} 이전 {previous} → 없음")
+        for target in targets[:2]:
+            lines.append(f"{label} {_money(target['price'])} · {target['quantity']/qty*100:g}%({target['quantity']:g} BTC) | " + _target_text(after, target["price"], target["quantity"], equity))
         if len(targets) > 2:
-            total_qty = sum(t["quantity"] for t in targets)
-            lines.append(f"{label}: 총 {len(targets)}개 · 합계 {total_qty:g} BTC ({total_qty/qty*100:g}%) · 나머지 {len(targets)-2}개 상세 생략")
+            lines.append(f"{label} 총 {len(targets)}개 · 나머지 {len(targets)-2}개 상세 생략")
         if field == "take_profits":
-            target_qty = sum(t["quantity"] for t in targets)
-            remaining = 0 if math.isclose(qty, target_qty, rel_tol=1e-12, abs_tol=0) else max(0, qty-target_qty)
+            total = sum(t["quantity"] for t in targets)
+            remaining = 0 if math.isclose(qty, total, rel_tol=1e-12, abs_tol=0) else max(0, qty-total)
             if remaining > 1e-12:
-                lines.append(f"목표 익절 후 남길 물량: {remaining:g} BTC ({remaining/qty*100:g}%) · 추세 추종, SL 보호")
+                lines.append(f"익절 후 {remaining/qty*100:g}% 추세 추종 · SL 보호")
+    if missing:
+        lines.append("⚠ 미확인: " + "·".join(missing))
     budget, initial = (_number(after.get(k)) for k in ("scenario_budget", "scenario_initial_equity"))
-    if budget is not None and budget >= 0:
-        basis = f"시나리오 시작 순자산의 {_percent(budget/initial*100)}" if initial is not None and initial > 0 and math.isfinite(budget/initial*100) else "시작 순자산 대비 비율 미확인"
-        lines.append(f"이번 매매 전체 손실 목표 한도: {_money(budget)} ({basis}) · 첫 계획부터 전량 청산까지 비용 포함")
     risk = _number(after.get("scenario_risk"))
-    if risk is not None and risk >= 0:
-        label = "비용·미체결까지 반영한 계획 위험" if after.get("scenario_risk_includes_pending") is True else "계획 위험(미체결 예약 포함 여부 미확인)"
-        basis = f"시나리오 시작 순자산의 {_percent(risk/initial*100)}" if initial is not None and initial > 0 and math.isfinite(risk/initial*100) else "시작 순자산 대비 비율 미확인"
-        lines.append(f"{label}: {_money(risk)} ({basis}) · 이미 소진한 손실＋남은 위험")
-    lines.append("위 목표별 손익은 수수료·슬리피지·펀딩 전이며 합산 보장이 아닙니다. 실제 손실은 계획 한도를 넘을 수 있습니다.")
-    lines.append("레버리지 수익률은 단순환산이며 거래소 증거금 수익률과 다를 수 있습니다.")
+    if budget is not None and budget >= 0:
+        basis = _percent(budget/initial*100) if initial is not None and initial > 0 and math.isfinite(budget/initial*100) else "비율 미확인"
+        text = f"매매 전체 손실 목표 {basis}({_money(budget)}, 시작 계좌 기준)"
+        if risk is not None and risk >= 0:
+            risk_pct = _percent(risk/initial*100) if initial is not None and initial > 0 and math.isfinite(risk/initial*100) else "비율 미확인"
+            text += f" · 누적손실+잔여위험 {risk_pct}({_money(risk)})"
+            text += " · 비용·미체결 포함" if after.get("scenario_risk_includes_pending") is True else " · 미체결 포함 미확인"
+        lines.append(text)
+    else:
+        lines.append("매매 전체 손실 목표 미확인")
+    lines.append("※ 배율 수익률은 단순환산·손익은 수수료·슬리피지·펀딩 전. 증거금≠손실한도, 실제 손실은 목표 초과 가능.")
     return lines
-
-
 def render_notice(event: dict) -> str:
     """No raw identifiers/payloads. Acknowledgement never implies a fill or PnL."""
     kind = event.get("kind")
@@ -258,19 +264,25 @@ def render_notice(event: dict) -> str:
     at = _number(event.get("timestamp"))
     if at is None or _time(at) == "미확인":
         raise ValueError("event_timestamp_required")
+    after = _position(event.get("position_after"), at)
     title = TITLES[kind]
+    if kind == "FILLED":
+        title = {"initial":"📌 BTC 데모 첫 진입 체결", "additional":"➕ BTC 데모 추가 체결 · 기존 매매"}.get(event.get("entry_stage"), "📌 BTC 데모 진입 체결 확인")
+    if kind == "PARTIAL" and after is None:
+        title = "✂️ BTC 데모 청산 체결 · 잔량 확인 중"
+    if kind == "PARTIAL" and after is not None and after["quantity"] == 0:
+        title = "🏁 BTC 데모 전량 청산 체결 · 정산 대기"
     if kind == "PROTECTION" and event.get("change_type") == "initial_protection":
-        title = "🛡 BTC 데모 포지션·보호 최초 확인"
-    lines = [title, _time(at)]
+        title = "🛡 BTC 데모 기존 포지션 확인"
+    lines = [title + " · " + _time(at)]
     if event.get("reason_code") in REASONS:
         lines.append("사유: " + REASONS[event["reason_code"]])
-    after = _position(event.get("position_after"), at)
     if kind == "PROTECTION" and _position(event.get("position_before")) is None and event.get("change_type") != "initial_protection":
-        lines[0] = "🛡 BTC 데모 보호 설정 확인 · 이전 상태 미확인"
+        lines[0] = "🛡 BTC 데모 보호 설정 확인 · 이전 상태 미확인 · " + _time(at)
     if kind in {"FILLED", "PROTECTION", "PARTIAL"} and after is not None:
-        lines.append("방향: " + {"LONG":"롱(가격 상승에 투자)", "SHORT":"숏(가격 하락에 투자)"}.get(after.get("side"), "보유 없음"))
+        lines[0] += " · " + {"LONG":"롱", "SHORT":"숏"}.get(after.get("side"), "보유 없음")
         lines.extend(_position_lines(event, after))
-        if event.get("protection_confirmed") is not True:
+        if after["quantity"] > 0 and event.get("protection_confirmed") is not True:
             lines.append("⚠ 보호주문 적용 미확인: 신규 위험 확대 보류")
     elif kind in {"PLAN", "SUBMITTED", "FILLED", "PROTECTION"}:
         if event.get("side") not in {"LONG", "SHORT"}:
