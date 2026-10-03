@@ -280,6 +280,11 @@ jobs:
             prism-btc/tests/test_scenario_accounting.py \
             prism-btc/tests/test_scenario_execution.py \
             prism-btc/tests/test_scenario_control.py \
+            prism-btc/tests/test_scenario_data.py \
+            prism-btc/tests/test_scenario_dataset.py \
+            prism-btc/tests/test_scenario_exchange.py \
+            prism-btc/tests/test_scenario_replay.py \
+            prism-btc/tests/test_scenario_tape.py \
             prism-btc/tests/test_demo.py \
             prism-btc/tests/test_native_stop.py \
             prism-btc/tests/test_take_profit.py \
