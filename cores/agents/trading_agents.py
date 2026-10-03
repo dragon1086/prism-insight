@@ -239,17 +239,22 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         ## buy_score Rubric (1~10)
 
-        - **9~10**: All 4 fundamental checks strong + 3+ momentum signals + clear trend
-        - **7~8**: F1~F4 pass + 2+ momentum signals
-        - **5~6**: F1~F4 pass + 1 momentum signal (conditional zone)
-        - **3~4**: F1~F4 pass + momentum thin (only enterable in strong_bull / moderate_bull)
-        - **1~2**: Fundamental Gate fails, or clear negative factor
+        The score answers "is this setup buyable now". Scores of 5 or more are only for stocks that pass the Step 1.5 trend gate and the Step 1.6 repeat stop-out gate.
+
+        - **9~10**: All 4 fundamental checks strong + 3+ momentum signals + clear trend (above a rising 50-day MA)
+        - **7~8**: F1~F4 pass + 2+ momentum signals + Step 1.5/1.6 gates pass
+        - **5~6**: F1~F4 pass + 1 momentum signal + Step 1.5/1.6 gates pass (conditional zone)
+        - **3~4**: F1~F4 pass + momentum thin (only enterable where min_score is 4), or F1~F4 pass but the stock is a no-entry under the Step 1.5 trend gate or the Step 1.6 repeat stop-out gate. A gated stock never scores above 4 however strong its fundamentals or momentum, and the trend gate alone does not push it down to 1~2. When the Step 1.5 exception (volume-backed reclaim of the moving average) holds, the gate counts as passed and the score is assigned normally.
+        - **1~2**: Fundamental Gate fails, or clear negative factor (e.g. standalone no-entry reasons 1, 2 or 4)
+
+        R/R, stop-width and target shortfalls are about price location: do not fold them into the score; state them in rejection_reason only.
 
         Macro adjustment is reported separately, NOT folded into buy_score:
         - Stock's sector is a leading sector OR direct beneficiary theme: +1
           If a leader record includes industry, require that exact industry match; sector alone is insufficient. Unknown candidate industry gives no narrow-industry bonus. An independently evidenced direct-beneficiary theme remains eligible under the existing rule; do not infer it from sector membership.
         - Stock's sector is lagging OR direct risk-event victim: -1
         → effective_score = buy_score + macro_adjustment, compared against min_score.
+        A stock that is a no-entry under the Step 1.5/1.6 gates gets no positive macro_adjustment (0 or -1), so a gated stock's effective_score never reaches min_score and looks like an entry.
 
         ## Stop Loss Construction
 
@@ -622,17 +627,22 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         ## buy_score 산정 가이드 (1~10점)
 
-        - **9~10점**: 펀더 4개 모두 강함 + 모멘텀 3개+ 신호 + 추세 명확
-        - **7~8점**: F1~F4 통과 + 모멘텀 2개+ 신호
-        - **5~6점**: F1~F4 통과 + 모멘텀 1개 신호 (조건부 진입 영역)
-        - **3~4점**: F1~F4 통과 + 모멘텀 부족 (strong_bull / moderate_bull에서만 진입 검토)
-        - **1~2점**: 펀더 게이트 미달 또는 명확한 부정 요소
+        점수는 "지금 이 셋업을 살 만한가"를 나타냅니다. 5점 이상은 1.5단계 추세 게이트와 1.6단계 상습 손절 게이트를 통과한 종목에만 줍니다.
+
+        - **9~10점**: 펀더 4개 모두 강함 + 모멘텀 3개+ 신호 + 추세 명확 (상승하는 50일선 위)
+        - **7~8점**: F1~F4 통과 + 모멘텀 2개+ 신호 + 1.5·1.6단계 게이트 통과
+        - **5~6점**: F1~F4 통과 + 모멘텀 1개 신호 + 1.5·1.6단계 게이트 통과 (조건부 진입 영역)
+        - **3~4점**: F1~F4 통과 + 모멘텀 부족 (min_score가 4인 국면에서만 진입 검토), 또는 F1~F4는 통과했지만 1.5단계 추세 게이트·1.6단계 상습 손절 게이트에 걸려 미진입하는 종목. 게이트에 걸린 종목은 펀더·모멘텀이 강해도 4점을 넘지 않고, 추세 게이트 하나만으로 1~2점까지 내리지 않습니다. 1.5단계 예외(거래량 동반 이동평균 회복)가 성립하면 게이트 통과로 보고 정상 산정합니다.
+        - **1~2점**: 펀더 게이트 미달 또는 명확한 부정 요소 (미진입 단독 사유 1·2·4 해당 등)
+
+        손익비·손절폭·목표가 미달은 가격 위치의 문제이므로 점수에 반영하지 않고 rejection_reason에만 적습니다.
 
         거시 보정은 별도 필드(macro_adjustment)에 분리해서 표기하고, buy_score에 직접 합산하지 마십시오:
         - 종목 섹터가 주도 섹터 OR 직접 수혜 테마: +1
           주도 항목에 industry가 있으면 해당 산업까지 일치해야 하며 섹터만 같다고 가점하지 않습니다. 종목 산업이 미확인이면 좁은 산업 가점은 없습니다. 독립 근거가 있는 직접 수혜 테마는 기존 기준대로 평가하되 섹터 소속만으로 추정하지 않습니다.
         - 종목 섹터가 소외 섹터 OR 직접 리스크 이벤트 피해: -1
         → effective_score = buy_score + macro_adjustment, min_score 비교는 effective_score로 합니다.
+        1.5·1.6단계 게이트에 걸려 미진입하는 종목은 macro_adjustment 가점(+1)을 주지 않습니다(0 또는 -1). 게이트에 걸린 종목의 effective_score가 min_score를 넘어 진입처럼 보이지 않게 하기 위함입니다.
 
         ## 손절가 설정
 
