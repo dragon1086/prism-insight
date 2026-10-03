@@ -140,6 +140,33 @@ def test_llm_failure_preserves_slot_and_protection(setup):
     assert b.reconciles == 2
 
 
+def test_protection_contention_after_model_keeps_safe_outcome_audit(setup, monkeypatch):
+    from contextlib import contextmanager
+    import json
+    import live.scenario_runtime as module
+    from live.entry_reservations import LockBusy
+    r, b, _, _ = setup
+    busy = [False]
+    original = module.mutation_lock
+    @contextmanager
+    def lock(conn):
+        if busy[0]:
+            raise LockBusy("independent protection owns lock")
+        with original(conn):
+            yield
+    monkeypatch.setattr(module, "mutation_lock", lock)
+    def model(s, c):
+        busy[0] = True
+        return wait_proposal(s, c)
+    r.propose = model
+    result = r.tick()
+    assert result == {"status": "lock_busy", "reason": "another_protection_or_execution_tick"}
+    outcome = json.loads(r.conn.execute("SELECT outcome FROM llm_scenario_decisions").fetchone()[0])
+    assert outcome == result
+    assert json.loads(r.conn.execute("SELECT proposal FROM llm_scenario_decisions").fetchone()[0])["action"] == "WAIT"
+    assert not b.executed
+
+
 @pytest.mark.parametrize("error,reason", [
     ("response_contract_mismatch", "llm_output_contract_failed"),
     ("invalid_json", "llm_output_contract_failed"),
