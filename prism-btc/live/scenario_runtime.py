@@ -31,7 +31,7 @@ REQUIRED_CAPABILITIES = frozenset({"exact_fills", "atomic_protection",
 @contextmanager
 def _post_model_mutation_lock(conn):
     """Briefly wait for protection; retry acquisition, never the guarded work."""
-    deadline = time.monotonic() + 8
+    deadline = time.monotonic() + 20
     with ExitStack() as stack:
         while True:
             try:
@@ -418,7 +418,7 @@ class ScenarioRuntime:
                        "failure_stage": stage}
             safe_codes = {
                 "snapshot_collection": {"empty_public_data", "collection_too_slow",
-                    "candle_boundary_crossed_during_collection", "future_public_candle"},
+                    "candle_boundary_crossed_during_collection", "future_public_candle", "public_rate_limited"},
                 "snapshot_validation": {"invalid_market_snapshot", "invalid_snapshot_time"},
             }
             code = exc.args[0] if type(exc) is ValueError and len(exc.args) == 1 else None

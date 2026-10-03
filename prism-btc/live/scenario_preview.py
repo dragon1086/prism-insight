@@ -53,7 +53,9 @@ def collect_snapshot(*, fetch=None, clock=time.time):
         from collector.bybit_public import _get_klines
         from engine.config import TF_INTERVAL_MAP, PROTECTION_TF_INTERVAL_MAP
         intervals = {**TF_INTERVAL_MAP, **PROTECTION_TF_INTERVAL_MAP}
-        fetch = lambda tf: _get_klines(intervals[tf], limit=1000 if tf=="5m" else 100, retries=1)
+        def fetch(tf):
+            return _get_klines(intervals[tf], limit=1000 if tf=="5m" else 100,
+                               retries=3, retry_rate_limit_only=True)
     started = clock()
     frames = {}
     received = {}
