@@ -601,18 +601,79 @@ def buy_prompt_block(market, language="ko"):
     if floor is None:
         return ""
     value = int(floor) if float(floor).is_integer() else floor
+    # Framing first, then the rule. The shared instruction was written for all-in/all-out
+    # entries (constraint 4) and frames weak markets as risk control and strong markets as
+    # opportunity cost; a micro-split pilot changes the error costs, so this block states
+    # which shared lines it supersedes instead of leaving the model to reconcile them.
     if language == "ko":
         return (
-            "\n\n### 초분할 진입 기준 (결정론적)\n"
-            f"이번 신규 진입은 초분할로 1슬롯의 30~80%만 먼저 매수합니다. 그래서 진입 최소 점수는 시장 국면과 관계없이 "
-            f"{value}점입니다. min_score 필드에는 {value}점을 쓰고, buy_score가 {value}점 이상이며 미진입 단독 사유와 1단계 "
-            "펀더멘털·추세 게이트에 걸리지 않으면 진입으로 판단하십시오. 점수 산정 기준·스키마·손절·손익비 규칙은 바뀌지 않습니다.\n")
+            "\n\n### 초분할 진입 프레임 (이번 신규 진입에 우선 적용)\n"
+            "이번 매수는 1슬롯의 30~80%만 먼저 사는 정찰병 진입입니다. 비중은 시스템이 변동성(ATR)으로 이미 줄여 두었고, "
+            "맞으면 증액 시나리오(add_plan)로 키우며, 틀리면 최초 진입가 기준 손절로 작게 끝납니다(예: 비중 35% × 손절 6% = "
+            "슬롯의 약 2%). 그래서 이 판단의 오류 비용은 비대칭입니다. 틀린 진입은 작게 잘리지만, 놓친 진입은 되돌릴 수 "
+            "없습니다(이 트리거는 다시 오지 않습니다).\n"
+            "- 불확실성은 미진입이 아니라 비중이 처리합니다. 아래 기준을 모두 통과했다면 '확신 부족'·'추가 확인 필요'·"
+            "'돌파 확인 후'는 미진입 사유가 아닙니다. 확인되면 더 사는 일은 add_plan 시나리오(breakout·pullback_reclaim 등)의 "
+            "몫이니 그 조건은 시나리오로 쓰십시오.\n"
+            "- 점수는 산정 기준대로 매기십시오. 입력에 기준을 충족하는 근거가 있는데 '애매하다'는 이유로 한 단계 낮추지 "
+            "마십시오. 근거가 없으면 만들어내지 마십시오.\n"
+            "- 바뀌지 않는 것: 1단계 펀더멘털·1.5단계 추세·1.6단계 상습 손절 게이트, 미진입 단독·복합 사유(아래 사유 1 예외 "
+            "제외), 손익비 floor, 최대 손절폭, 손절 규칙. 강세 국면의 목표 산정만 아래 규칙을 따릅니다. 이 프레임은 기준 안의 "
+            "재량 판단에만 적용됩니다.\n"
+            "- 시스템 제약 4(분할매매 불가·올인/올아웃)는 이번 매수에 적용되지 않습니다. 매수는 초분할(최초 비중 + 증액 "
+            "시나리오), 매도는 기존대로 전량입니다. 제약 2·3은 진입/미진입 결정 문장에만 적용되며 add_plan의 조건부 "
+            "시나리오를 막지 않습니다. 최초 비중은 결정론적으로 정해지므로 parabolic의 '사이징 축소 금지'와 충돌하지 않습니다.\n"
+            f"\n### 초분할 진입 기준 (결정론적)\n"
+            f"진입 최소 점수는 시장 국면과 관계없이 {value}점입니다(매트릭스의 min_score 열과 JSON 예시값 대신). min_score "
+            f"필드에 {value}점을 쓰십시오. 결정 규칙: effective_score ≥ {value} AND 1·1.5·1.6단계 게이트 통과 AND 미진입 "
+            "단독·복합 사유 없음 AND 손익비 ≥ 현재 국면 floor AND |손절폭| ≤ 최대 손절폭 AND 모멘텀 신호·추가 확인 개수 "
+            "충족 → 진입. min_score 외의 매트릭스 값, 점수 산정 기준, 스키마는 바뀌지 않습니다.\n"
+            "- 미진입 단독 사유 1(지지선이 -10% 이하)은 이번 진입에 적용하지 않습니다. '손절가 설정' 규칙상 지지선이 멀면 "
+            "매트릭스 최대 손절폭이 손절가가 되므로 사용 가능한 손절은 항상 있습니다.\n"
+            "- 강세 국면(분산일 Kill Switch 반영 후 parabolic·strong_bull·moderate_bull)에서는 목표 도달이 매도가 아니라 "
+            "trailing 전환이고, 초분할에서는 바로 위 저항 돌파가 증액 조건입니다. 그래서 가장 가까운 확정 주요 저항이 "
+            "현재가 +3% 이내이면 그 저항은 목표가 아니라 증액 조건입니다. add_plan에 그 저항 돌파(breakout) 시나리오를 "
+            "쓰고, target_price는 그 다음 확정 주요 저항까지 거리의 80%로 산정합니다. 다음 저항이 없으면 2a 조건을 확인하고, "
+            "둘 다 없으면 기존대로 목표 근거 없음입니다. 이는 손익비를 맞추려는 선택이 아니라 이 규칙에서 나온 목표이므로 "
+            "'먼 저항 금지' 계약의 예외이며, target_provenance.reason에 첫 저항 가격과 '증액 조건'을 쓰십시오. 횡보·약세 "
+            "국면은 목표 도달 시 매도하므로 기존 규칙(가장 가까운 저항)을 유지합니다.\n")
     return (
-        "\n\n### Micro-split entry threshold (deterministic)\n"
-        f"This new entry is a micro-split: only 30-80% of one slot is bought first, so the minimum entry score is "
-        f"{value} in every market regime. Write {value} in min_score and decide Enter when buy_score >= {value} and no "
-        "standalone no-entry reason, Stage-1 fundamental gate or trend gate applies. Scoring rules, schema, stop and "
-        "R/R rules are unchanged.\n")
+        "\n\n### Micro-split entry frame (takes precedence for this new entry)\n"
+        "This buy is a scout entry: only 30-80% of one slot is bought first. The system has already sized it down by "
+        "volatility (ATR); if it works, the add scenarios (add_plan) build it up, and if it fails, the initial-entry "
+        "stop ends it small (e.g. 35% allocation x 6% stop = about 2% of a slot). The error costs are therefore "
+        "asymmetric: a wrong entry is cut small, a missed entry cannot be recovered (this trigger will not fire "
+        "again).\n"
+        "- Size, not abstention, absorbs uncertainty. When every criterion below passes, 'low conviction', 'needs "
+        "more confirmation' or 'wait for the breakout' is not a no-entry reason; buying more on confirmation is the "
+        "job of the add_plan scenarios (breakout, pullback_reclaim, ...), so write that condition as a scenario.\n"
+        "- Score by the rubric. When the inputs contain evidence that meets a band, do not mark it down a step for "
+        "being 'borderline'. Never invent evidence that is not there.\n"
+        "- Unchanged: the Step 1 fundamental, Step 1.5 trend and Step 1.6 repeat stop-out gates, standalone and "
+        "compound no-entry reasons (except reason 1 below), the R/R floor, the maximum stop width and the stop "
+        "rules; only the bull-regime target follows the rule below. This frame only applies to discretionary "
+        "judgment inside those criteria.\n"
+        "- System constraint 4 (no split trading, all-in/all-out) does not apply to this buy: buying is a "
+        "micro-split (initial allocation plus add scenarios) and selling stays a full exit. Constraints 2 and 3 "
+        "apply to the enter/no-entry decision only and do not forbid conditional add_plan scenarios. The initial "
+        "allocation is deterministic, so it does not conflict with the parabolic 'no size reduction' rule.\n"
+        "\n### Micro-split entry threshold (deterministic)\n"
+        f"The minimum entry score is {value} in every market regime (instead of the matrix min_score column and the "
+        f"JSON example values). Write {value} in min_score. Decision rule: effective_score >= {value} AND Steps 1, "
+        "1.5 and 1.6 pass AND no standalone or compound no-entry reason AND R/R >= the current regime floor AND "
+        "|stop| <= the maximum stop AND the momentum-signal and extra-confirmation counts are met -> Enter. Every "
+        "other matrix value, the scoring rubric and the schema are unchanged.\n"
+        "- Standalone no-entry reason 1 (support at -10% or worse) does not apply to this entry: under the stop rules "
+        "a distant support makes the matrix maximum stop the stop, so a usable stop always exists.\n"
+        "- In bull regimes (parabolic, strong_bull, moderate_bull after the distribution-day kill switch) reaching the "
+        "target switches to a trailing stop instead of selling, and in a micro-split a break above the next "
+        "resistance is an add condition. So when the nearest confirmed major resistance is within +3% of the current "
+        "price, that resistance is an add condition, not the target: write a breakout add_plan scenario over it and "
+        "set target_price at 80% of the distance to the following confirmed major resistance. If there is none, "
+        "check the 2a conditions; if neither applies, the target is unsupported as before. This target comes from "
+        "this rule, not from fitting the R/R floor, so it is an exception to the no-farther-resistance contract; "
+        "state the first resistance price and 'add condition' in target_provenance.reason. Sideways and bear regimes "
+        "sell at the target, so they keep the nearest-resistance rule.\n")
 
 
 def journal_position_line(scenario, profit_rate=None):

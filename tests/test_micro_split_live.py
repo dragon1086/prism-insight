@@ -419,3 +419,16 @@ def test_weekly_report_marks_partial_positions(live_on):
     suffix = weekly._slot_suffix(json.dumps(added), 10000, 10500)
     assert suffix.startswith(" · 비중 80% (78%→80%)") and "슬롯 기준" in suffix
     assert weekly._slot_suffix("{}", 10000, 10500) == "" and weekly._slot_suffix(None, 10000, None) == ""
+
+
+def test_buy_prompt_block_states_the_frame_and_what_it_supersedes(live_on):
+    """2026-10-03 framing: scout entry, asymmetric error cost, and explicit overrides of shared lines."""
+    ko = live.buy_prompt_block("KR", "ko")
+    assert "정찰병 진입" in ko and "놓친 진입은 되돌릴 수 없습니다" in ko
+    assert "시스템 제약 4(분할매매 불가·올인/올아웃)는 이번 매수에 적용되지 않습니다" in ko
+    assert "effective_score ≥ 5" in ko and "손익비 ≥ 현재 국면 floor" in ko
+    assert "미진입 단독 사유 1(지지선이 -10% 이하)은 이번 진입에 적용하지 않습니다" in ko
+    assert "현재가 +3% 이내이면 그 저항은 목표가 아니라 증액 조건" in ko and "횡보·약세" in ko
+    en = live.buy_prompt_block("US", "en")
+    assert "scout entry" in en and "System constraint 4" in en and "within +3% of the current" in en
+    assert "Standalone no-entry reason 1" in en and "effective_score >= 5" in en
