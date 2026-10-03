@@ -284,3 +284,35 @@ def test_prospective_exact_open_preserved(db):
     child(db)
     result = packet.build_packet(db, "1970-01-01T00:04:00Z")
     assert result["scenarios"][0]["cohort"] == "PROSPECTIVE"
+
+
+@pytest.mark.parametrize("slot", [0, 2])
+def test_rejected_duplicate_proposal_does_not_poison_exact_intent(db, slot):
+    child(db)
+    with sqlite3.connect(db) as conn:
+        raw = json.loads(conn.execute("SELECT proposal FROM llm_scenario_decisions").fetchone()[0])
+        raw["input_id"] = "rejected-input"
+        conn.execute("INSERT INTO llm_scenario_decisions VALUES(?,?,?,?)",
+                     (slot, json.dumps(raw), '{"status":"blocked"}', '{"input_id":"rejected-input"}'))
+    result = packet.build_packet(db, "1970-01-01T00:04:00Z")
+    assert result["status"] == "AVAILABLE"
+    assert result["scenarios"][0]["cohort"] == "PROSPECTIVE"
+    assert result["scenarios"][0]["entry_quantity"] == "1"
+    assert result["scenarios"][0]["open_decision_slot_start"] == 300
+    assert result["scenarios"][0]["issues"] == []
+    assert result["decision_outcomes"] == {"wait": 1, "blocked": 1}
+    assert result["decision_scope"] == "GLOBAL_STORED_HISTORY_NOT_POST_BOUNDARY"
+
+
+def test_ambiguous_exact_proposals_never_select_nearest_or_earliest(db):
+    child(db)
+    with sqlite3.connect(db) as conn:
+        proposal, outcome, context = conn.execute(
+            "SELECT proposal,outcome,context FROM llm_scenario_decisions").fetchone()
+        conn.execute("INSERT INTO llm_scenario_decisions VALUES(2,?,?,?)", (proposal, outcome, context))
+    result = packet.build_packet(db, "1970-01-01T00:04:00Z")
+    assert result["status"] == "AVAILABLE"
+    assert result["scenarios"][0]["cohort"] == "START_UNKNOWN"
+    assert result["scenarios"][0]["open_decision_slot_start"] is None
+    assert result["scenarios"][0]["issues"] == ["AMBIGUOUS_DECISION_ACTION_LINK"]
+    assert result["scenarios"][0]["entry_quantity"] == "1"
