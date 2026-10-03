@@ -75,9 +75,11 @@ def test_decision_rules_and_json_schema_are_byte_preserved(prompt):
     # revenue drivers without sourced structural decline (an unconfirmed edge is not a fail). JSON unchanged.
     # 2026-10-03 reviewed: rules hash only — buy_score rubric aligned with the Step 1.5/1.6 gates (a gated
     # no-entry scores at most 4 with no positive macro bonus; R/R stays out of the score). JSON unchanged.
+    # 2026-10-03 reviewed: rules hash only — rubric consistency (zero-momentum 3~4 is a no-entry zone; the
+    # Step 1 bull-regime compensation path scores by the bands, capped at 6). JSON unchanged.
     expected = {
-        "ko": ("ab3653697696dd3dd522282d12710dce99d7c04d0902fd9fcb65de5f0699b9c0", "96246810a487039fed91b8b44d68f1a8d9c99c3384f00a3a13400c9b7a45156e"),
-        "en": ("d3987427cbb30c9fb55b253f8fab840404d08661c7c8f86bb4d208180efef4ed", "165a98f70fb92ff5d5c8d52577a7703172df08d1e37825866cebec7e4a4a2d56"),
+        "ko": ("16f2eea5fe4f69f6635064967ae222c00ce8f8b9d6d0b18191c1a378ddf0de8b", "96246810a487039fed91b8b44d68f1a8d9c99c3384f00a3a13400c9b7a45156e"),
+        "en": ("4554e6bf8ac11ae69963d5eb6e9aac75025ba541cd64874a128d3fc6cd6d062c", "165a98f70fb92ff5d5c8d52577a7703172df08d1e37825866cebec7e4a4a2d56"),
     }
     assert hashlib.sha256(text.split(heading)[0].encode()).hexdigest() == expected[language][0]
     assert hashlib.sha256(text[text.index(json_heading):].encode()).hexdigest() == expected[language][1]
