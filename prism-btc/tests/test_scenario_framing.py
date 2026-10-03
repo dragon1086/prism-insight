@@ -111,3 +111,12 @@ def test_deterministic_non_mutating_and_no_injected_system_text():
     assert "NOT realized loss" in prompt and "original 2%" in prompt and "Fixed 10x" in prompt
     assert "Frame: DEFENSIVE" in framing_prompt({"state": "INJECTION"})
     json.dumps(result, allow_nan=False)
+
+
+@pytest.mark.parametrize("state", ["OPPORTUNITY", "TRANSITION", "DEFENSIVE"])
+def test_framing_cannot_override_lifecycle_accounting_or_incremental_orders(state):
+    prompt = framing_prompt({"state": state})
+    assert "Base safety, lifecycle, accounting and response-contract rules take precedence" in prompt
+    assert "accounting is pending: WAIT or EXIT" in prompt
+    assert "halt with confirmed accounting: no NEW entries" in prompt
+    assert "incremental-order and confirmed-cancellation rules" in prompt

@@ -108,7 +108,14 @@ Prefix the Korean rationale with [위험 관리].""",
 
 def framing_prompt(framing: dict) -> str:
     """Only trusted fixed strings enter the system prompt, never reason strings."""
-    return _FRAMING_PROMPTS.get(framing.get("state"), _FRAMING_PROMPTS["DEFENSIVE"]) + """
+    priority = """Base safety, lifecycle, accounting and response-contract rules take precedence
+over this market lens. IF accounting is pending: WAIT or EXIT. ELSE IF there is
+a halt with confirmed accounting: no NEW entries, but protective ADJUST and EXIT
+remain eligible. Apply the base incremental-order and confirmed-cancellation rules
+before considering opportunity cost. A working unfilled order is not a filled
+position; preserving protection may mean cancelling its currently verified entry.
+"""
+    return priority + _FRAMING_PROMPTS.get(framing.get("state"), _FRAMING_PROMPTS["DEFENSIVE"]) + """
 This framing is a soft analysis lens, not permission or a calibrated probability.
 Potential missed opportunity is NOT realized loss and MUST NOT be booked as a
 loss or enlarge the original 2% scenario budget. Fixed 10x leverage, existing
