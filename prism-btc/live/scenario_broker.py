@@ -415,7 +415,7 @@ class ScenarioDemoBroker(ScenarioExecution):
                 protection_status="verified_flat_no_exposure" if flat_verified else "not_managed_by_scenario_adapter")
         # A crashed executor cannot still run while the shared mutation lock is
         # held. Unsubmitted children are abandoned, not silently retried.
-        self.conn.execute("UPDATE llm_scenario_execution_batches SET status='ABORTED' WHERE status='EXECUTING'")
+        self.conn.execute("UPDATE llm_scenario_execution_batches SET status='INTERRUPTED' WHERE status='EXECUTING'")
         self.conn.commit()
         # Protection is attempted before unknown child recovery, not after it.
         protection=False
@@ -501,7 +501,16 @@ class ScenarioDemoBroker(ScenarioExecution):
                 cancelled=all(any(c["kind"]=="entry" and (c["local_id"]==entry or c["order_id"]==entry) and c["status"]=="TERMINAL" for c in children) for entry in payload.get("cancel_entry_ids",[]))
                 adjusted=payload["action"]=="ADJUST" and not payload.get("entries") and self._verify_protection(observed,payload["hard_stop"],active["side"])
                 no_submit=payload["action"]=="OPEN" and observed["exchange_flat"] and not observed["open_orders"]
-                terminal=cancelled and (payload["action"]=="WAIT" or adjusted or no_submit or (payload["action"]=="EXIT" and observed["exchange_flat"]))
+                batch=self.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id=?",(ident,)).fetchone()
+                # Children are durable BEFORE any submit. An explicitly aborted
+                # replacement with none cannot have placed its replacement; only
+                # release it after exact old-order evidence proves flat/terminal.
+                # Interrupted/crashed batches remain a distinct uncertainty.
+                aborted_adjust=(payload["action"]=="ADJUST" and batch is not None and batch[0]=="ABORTED"
+                    and not unknown and observed["exchange_flat"] and not observed["open_orders"]
+                    and not observed["legacy_fenced"] and protection
+                    and all(c["status"]=="TERMINAL" and c["evidence"] for c in children))
+                terminal=cancelled and (payload["action"]=="WAIT" or adjusted or no_submit or aborted_adjust or (payload["action"]=="EXIT" and observed["exchange_flat"]))
                 if terminal:
                     items.append(dict(intent_id=ident,terminal=True,protection_ok=protection,orders_reconciled=True,
                         executions_complete=True,execution_ids=[],filled_quantity=0.,exchange_order_ids=[],open_entries=[]))
@@ -511,7 +520,7 @@ class ScenarioDemoBroker(ScenarioExecution):
                 for c in group if c["kind"]=="entry" and c["status"]=="LIVE"]
             all_children_submitted=all(any(c["kind"]=="entry" and c["local_id"]==r["id"] for c in group) for r in payload.get("entries",[]))
             batch=self.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id=?",(ident,)).fetchone()
-            all_children_submitted=all_children_submitted or bool(batch and batch[0]=="ABORTED")
+            all_children_submitted=all_children_submitted or bool(batch and batch[0] in {"ABORTED","INTERRUPTED"})
             items.append(dict(intent_id=ident,terminal=all(c["status"]=="TERMINAL" for c in group) and all_children_submitted,
                 protection_ok=protection,orders_reconciled=not unknown and all_children_submitted,executions_complete=not unknown,
                 execution_ids=execution_ids,filled_quantity=sum(float(e["execQty"]) for c in group for e in c["evidence"]["executions"]),

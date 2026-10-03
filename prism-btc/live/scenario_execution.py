@@ -201,7 +201,7 @@ class ScenarioExecution:
                 self._fail("child_intent_changed")
             return self._query_child(previous)  # Never repeat UNKNOWN POST.
         batch=self.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id=?",(intent_id,)).fetchone()
-        if kind=="entry" and batch and batch[0]=="ABORTED":
+        if kind=="entry" and batch and batch[0] in {"ABORTED","INTERRUPTED"}:
             self._fail("unsubmitted_children_abandoned")
         self.conn.executemany("INSERT INTO llm_scenario_children VALUES(?,?,?,?,?,?,'UNKNOWN',NULL,NULL,?)",
             [(link,intent_id,payload["scenario_id"],kind,local_id,encoded(request),self.clock())])
@@ -325,15 +325,18 @@ class ScenarioExecution:
     def execute(self,payload,intent_id):
         from live.shared_entry_coordinator import mutation_lock
         with mutation_lock(self.conn):
+            batch=self.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id=?",(intent_id,)).fetchone()
+            if batch and batch[0]=="INTERRUPTED":
+                self._fail("interrupted_execution_requires_reconciliation")
             self.conn.execute("INSERT OR IGNORE INTO llm_scenario_execution_batches VALUES(?,'EXECUTING')",(intent_id,))
             self.conn.commit()
             try:
                 result=self._execute(payload,intent_id)
             except Exception:
-                self.conn.execute("UPDATE llm_scenario_execution_batches SET status='ABORTED' WHERE intent_id=?",(intent_id,))
+                self.conn.execute("UPDATE llm_scenario_execution_batches SET status='ABORTED' WHERE intent_id=? AND status!='INTERRUPTED'",(intent_id,))
                 self.conn.commit()
                 raise
-            self.conn.execute("UPDATE llm_scenario_execution_batches SET status='COMPLETE' WHERE intent_id=? AND status!='ABORTED'",(intent_id,))
+            self.conn.execute("UPDATE llm_scenario_execution_batches SET status='COMPLETE' WHERE intent_id=? AND status NOT IN ('ABORTED','INTERRUPTED')",(intent_id,))
             self.conn.commit()
             return result
 
