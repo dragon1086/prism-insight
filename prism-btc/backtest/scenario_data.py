@@ -56,7 +56,7 @@ def load_market_data(path, *, timeframe="5m") -> pd.DataFrame:
     path = Path(path).resolve(strict=True)
     interval = 60_000 if timeframe == "1m" else TIMEFRAME_MS[timeframe]
     if path.suffix.lower() in (".db", ".sqlite", ".sqlite3"):
-        with sqlite3.connect(path.as_uri() + "?mode=ro") as conn:
+        with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as conn:
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             allowed = {"klines", "funding", "open_interest", "sqlite_sequence"}
             if "klines" not in tables or tables - allowed:
