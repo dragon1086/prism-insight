@@ -27,6 +27,20 @@ def _agent(market="KR", ticker="005930"):
     return SimpleNamespace(_decision_input_bars={ticker: dict(market=market, bars=bars, captured_at=captured)})
 
 
+class _FrozenDateTime(datetime):
+    """``datetime.now`` pinned to ENTERED so fixture bars never go stale as the calendar moves."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return ENTERED.astimezone(tz) if tz else ENTERED.replace(tzinfo=None)
+
+
+@pytest.fixture(autouse=True)
+def _frozen_now(monkeypatch):
+    import observability.b3_ae_capture as capture
+    monkeypatch.setattr(capture, "datetime", _FrozenDateTime)
+
+
 @pytest.fixture
 def live_on(monkeypatch):
     monkeypatch.setenv("MICRO_SPLIT_LIVE_ENABLED", "true")
