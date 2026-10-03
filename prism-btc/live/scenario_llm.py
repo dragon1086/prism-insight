@@ -5,6 +5,8 @@ import json
 import time
 from collections.abc import Callable
 
+from live.scenario_framing import decision_framing, framing_prompt
+
 MODEL = "gpt-6-luna"
 EFFORT = "high"
 TIMEOUT_SECONDS = 75
@@ -160,6 +162,7 @@ def propose(snapshot: dict, context: dict, response_contract: dict, *,
         schema = response_schema(context)
     except (KeyError, TypeError, ValueError):
         raise ScenarioModelError("invalid_contract_context") from None
+    context = {**context, "decision_framing": decision_framing(snapshot, context)}
     payload = {"market_snapshot": snapshot, "contract_context": context,
                "response_contract": response_contract}
     try:
@@ -170,7 +173,7 @@ def propose(snapshot: dict, context: dict, response_contract: dict, *,
         raise ScenarioModelError("input_size")
     started = clock()
     try:
-        result = generate(system_prompt=SYSTEM_PROMPT, user_prompt=prompt,
+        result = generate(system_prompt=SYSTEM_PROMPT + framing_prompt(context["decision_framing"]), user_prompt=prompt,
                           model=MODEL, reasoning_effort=EFFORT, fast_tier=True,
                           timeout=TIMEOUT_SECONDS, mcp_profile=None,
                           response_schema=schema)

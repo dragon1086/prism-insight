@@ -29,6 +29,7 @@ from live.scenario_control import _write as write_control
 from live.scenario_runtime import ScenarioRuntime
 from live.scenario_preview import response_contract
 from live.scenario_llm import propose,SYSTEM_PROMPT,ScenarioModelError
+from live.scenario_framing import framing_prompt
 from live.shared_entry_coordinator import mutation_lock
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -66,6 +67,9 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna"):
     return dict(schema=1,kind="SIMULATED_LLM_SCENARIO",decision_origin=origin,data_hash=bundle["data_hash"],
         start_ms=bundle["start_ms"],end_ms=bundle["end_ms"],path=path,initial_equity=initial_equity,
         model="gpt-6-luna",effort="high",tier="fast",prompt_hash=hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
+        prompt_hash_scope="base; framing fragments separately hashed and selected from recorded context",
+        framing_prompt_hashes={state:hashlib.sha256(framing_prompt({"state":state}).encode()).hexdigest()
+                               for state in ("OPPORTUNITY","TRANSITION","DEFENSIVE")},
         source_hashes=sources,runtime_versions={"python":sys.version.split()[0],"pandas":pd.__version__,"numpy":np.__version__},
         costs=dict(maker_fee=.0002*cost_multiplier,taker_fee=.00055*cost_multiplier,
                    slippage=.0005*cost_multiplier,spread=.0001,participation=.01),

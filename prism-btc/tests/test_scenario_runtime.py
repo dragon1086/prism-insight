@@ -60,6 +60,23 @@ def setup(tmp_path):
     return runtime, broker, now, path
 
 
+def test_framing_is_saved_before_proposal(setup):
+    import json
+    from live.scenario_framing import decision_framing
+    runtime, broker, now, path = setup
+    seen = []
+    def inspect(snapshot, ctx):
+        row = runtime.conn.execute("SELECT context FROM llm_scenario_decisions").fetchone()
+        saved = json.loads(row[0])
+        assert saved["decision_framing"] == decision_framing(snapshot, ctx)
+        assert saved["decision_framing"] == ctx["decision_framing"]
+        seen.append(saved["decision_framing"]["state"])
+        return wait_proposal(snapshot, ctx)
+    runtime.propose = inspect
+    assert runtime.tick()["status"] == "wait"
+    assert seen == ["DEFENSIVE"]  # Minimal fixture has no primary facts.
+
+
 def terminal():
     return dict(intent_id="action-1", terminal=True, protection_ok=True,
         orders_reconciled=True, executions_complete=True, execution_ids=["fill-1"], filled_quantity=1)
