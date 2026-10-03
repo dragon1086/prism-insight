@@ -16,17 +16,6 @@ SEOUL = ZoneInfo("Asia/Seoul")
 ENTERED = datetime(2026, 10, 2, 9, 35, tzinfo=SEOUL)
 
 
-@pytest.fixture(autouse=True)
-def _decision_time_matches_frozen_bars(monkeypatch):
-    """Fixture bars are historical; wall-clock drift must not invalidate them."""
-    from observability import b3_ae_capture
-    build_plan = b3_ae_capture.build_plan
-    def at_fixture_time(*args, **kwargs):
-        kwargs.setdefault("entered_at", ENTERED.isoformat())
-        return build_plan(*args, **kwargs)
-    monkeypatch.setattr(b3_ae_capture,"build_plan",at_fixture_time)
-
-
 def _agent(market="KR", ticker="005930"):
     bars, day = [], date(2026, 9, 1)
     while day < date(2026, 10, 2):
