@@ -1,0 +1,7 @@
+{
+  "mode": "SHADOW",
+  "policy_version": "reentry_campaign_v3",
+  "markets": ["KR", "US"],
+  "enabled": true,
+  "llm_recheck": true
+}

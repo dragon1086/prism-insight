@@ -96,9 +96,13 @@ async def _codex(system, user):
                          "latency_s": round(result.latency_s, 1)}
 
 
-def recheck(item, *, reports_root, archive_db, llm=None, instruction=None):
-    """One recheck record. `llm(system, user)` is an async callable returning (text, meta)."""
-    record = {"contract": RESULT_CONTRACT, "event_id": item["event_id"], "watch_ref": item["watch_ref"],
+def recheck(item, *, reports_root, archive_db, llm=None, instruction=None, prompt_fn=None, contract=None):
+    """One recheck record. `llm(system, user)` is an async callable returning (text, meta).
+
+    prompt_fn(item, report_text) and contract default to the v2 user prompt and result contract;
+    re-entry v3 passes its own.
+    """
+    record = {"contract": contract or RESULT_CONTRACT, "event_id": item["event_id"], "watch_ref": item["watch_ref"],
               "market": item["market"], "ticker": item["ticker"], "source": item["source"],
               "trigger_date": item["trigger_date"], "entry": item["entry"],
               "report_stale": (item.get("report_ref") or {}).get("stale"),
@@ -109,7 +113,7 @@ def recheck(item, *, reports_root, archive_db, llm=None, instruction=None):
     try:
         from cores.utils import parse_llm_json
         system = instruction if instruction is not None else recheck_instruction(item["market"])
-        raw, meta = asyncio.run((llm or _codex)(system, user_prompt(item, text)))
+        raw, meta = asyncio.run((llm or _codex)(system, (prompt_fn or user_prompt)(item, text)))
         scenario = parse_llm_json(raw, context="reentry v2 shadow recheck") or {}
         decision = str(scenario.get("decision", "")).strip().lower()
         return {**record, **meta, "status": "OK" if scenario else "PARSE_ERROR",
