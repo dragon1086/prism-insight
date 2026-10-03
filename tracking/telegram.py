@@ -11,6 +11,8 @@ from typing import List, Optional
 
 from telegram import Bot
 from telegram.error import TelegramError
+from prism_core.log_redaction import install as _install_log_redaction  # noqa: E402
+_install_log_redaction()
 
 logger = logging.getLogger(__name__)
 

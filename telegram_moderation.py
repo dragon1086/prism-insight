@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Any
 
 from telegram import ChatPermissions
+from prism_core.log_redaction import install as _install_log_redaction  # noqa: E402
+_install_log_redaction()
 
 logger = logging.getLogger(__name__)
 

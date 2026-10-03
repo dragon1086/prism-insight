@@ -20,6 +20,11 @@ code/test/deployment/forward-validation states and identify the next task.
 Memory stores the pointer and principles, not a competing copy of roadmap status.
 This checkpoint adds no runtime process, network query, or LLM call to trading.
 
+## Research lessons ledger
+
+새 전략·트리거·프롬프트 검토 전에 [`RESEARCH_LESSONS_ko.md`](RESEARCH_LESSONS_ko.md)를 읽는다. 이미 결론이 난 질문을
+다시 검증하지 않고, 연구를 마치면 결론과 교훈을 그 문서에 남긴다. 코드와 표만 남기는 연구 PR은 만들지 않는다.
+
 ## Strategy adoption and fit gate
 
 ### 언제 적용하는가
