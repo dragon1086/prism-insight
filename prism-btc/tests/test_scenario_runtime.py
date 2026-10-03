@@ -92,6 +92,26 @@ def test_intent_is_committed_before_submit(setup):
     assert r.tick()["status"] == "intent_pending"
 
 
+def test_plan_notice_distinguishes_held_quantity_from_requested_addition(setup):
+    r,b,now,_=setup
+    notices=[]
+    r._notice=lambda ident,event: notices.append(event) or True
+    assert r.tick()["status"] == "intent_pending"
+    first=next(x for x in notices if x["kind"]=="PLAN")
+    assert first["plan_action"] == "OPEN"
+    assert first["quantity"] == 1 and first["before_quantity"] == 0
+    assert first["scenario_initial_equity"] == 10000
+    b.ctx["positions"]=[dict(price=100,quantity=1)]
+    b.evidence=dict(intents=[terminal()])
+    now[0]+=300
+    r.propose=lambda s,c: dict(proposal(s,c),action="ADJUST",action_id="action-2",entries=[],hard_stop=95)
+    assert r.tick()["status"] == "intent_pending"
+    last=[x for x in notices if x["kind"]=="PLAN"][-1]
+    assert last["quantity"] == 0 and last["before_quantity"] == 1
+    assert last["before_hard_stop"] == 90 and last["hard_stop"] == 95
+    assert last["reference_entry_price"] == 100
+
+
 def test_slot_claim_blocks_second_runtime_during_llm(setup):
     r, b, now, path = setup
     other = ScenarioRuntime(sqlite3.connect(path), b, proposal, lambda: {}, clock=lambda: now[0])

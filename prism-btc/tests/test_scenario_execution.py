@@ -1,11 +1,155 @@
 """No-network executor invariants, including crash/ACK-loss recovery."""
 import json
 import sqlite3
+import copy
 
 import pytest
 
 from live.scenario_broker import BrokerNotReady, ScenarioDemoBroker
 from tests.test_scenario_broker import Session, reply
+
+
+def notice_fixture():
+    active=dict(scenario_id="notice",side="LONG",initial_equity=10000,hard_stop=98)
+    observed=dict(captured_at=1800000000,equity=10000,exchange_flat=False,legacy_fenced=False,
+        position=dict(size="1",avgPrice="101",stopLoss="98",leverage="10",side="Buy",positionIM="10.1"))
+    children=[dict(kind="tp",status="LIVE",order_id="tp1",evidence=dict(executions=[],
+        order=dict(price="105",leavesQty="0.5")))]
+    return active,children,observed
+
+
+def test_notice_economic_changes_durable_and_no_exchange_writes(live):
+    b,e=live
+    active,children,observed=notice_fixture()
+    first=b._notices(active,children,observed,True,None)
+    assert first[-1]["change_type"]=="initial_protection"
+    assert first[-1]["position_before"] is None
+    children[0]["evidence"]["order"]["price"]="106"
+    observed["captured_at"]+=300
+    second=b._notices(active,children,observed,True,None)[-1]
+    assert second["position_before"]["take_profits"][0]["price"]==105
+    assert second["position_after"]["take_profits"][0]["price"]==106
+    observed["position"].update(size="2",avgPrice="102",stopLoss="99")
+    third=b._notices(active,children,observed,True,None)[-1]
+    assert third["position_before"]["hard_stop"]==98
+    assert third["position_after"]["hard_stop"]==99
+    assert third["position_after"]["average_entry_price"]==102
+    assert third["position_after"]["quantity"]==2
+    children[0]["order_id"]="replacement-id"
+    observed.update(equity=9999,captured_at=observed["captured_at"]+300)
+    restarted=ScenarioDemoBroker(b.conn,session=e,expected_main_uid="123")
+    assert len(restarted._notices(active,children,observed,True,None))==3
+    assert e.writes==[]
+
+
+def test_initial_fill_seeds_snapshot_without_duplicate_protection(live):
+    b,e=live
+    active,children,observed=notice_fixture()
+    children.append(dict(kind="entry",status="TERMINAL",intent_id="none",evidence=dict(order={},
+        executions=[dict(execId="new-fill",execQty="1",execPrice="100",execTime="1800000000000")])))
+    events=b._notices(active,children,observed,True,None)
+    assert [n["kind"] for n in events]==["FILLED"]
+    assert events[0]["price"]==100
+    assert events[0]["position_after"]["average_entry_price"]==101
+    assert len(b._notices(active,children,observed,True,None))==1
+    assert e.writes==[]
+
+
+def test_flat_baseline_then_first_fill_has_one_rich_notice(live):
+    b,e=live
+    b.execute(persist(b),"a1")
+    b.reconcile()
+    baseline=json.loads(b.conn.execute("SELECT body FROM llm_scenario_notice_positions").fetchone()[0])
+    assert baseline["quantity"]==0
+    e.fill(next(iter(e.orders)),.1)
+    events=b.reconcile()["notices"]
+    assert [n["kind"] for n in events]==["FILLED"]
+    assert events[0]["position_before"]["quantity"]==0
+    assert events[0]["position_after"]["quantity"]==.1
+
+
+@pytest.mark.parametrize("kind,quantity,notice_kind",[("entry","2","FILLED"),("tp","0.5","PARTIAL")])
+def test_new_fill_compares_valid_baseline_without_duplicate_protection(live,kind,quantity,notice_kind):
+    b,e=live
+    active,children,observed=notice_fixture()
+    b._notices(active,children,observed,True,None)
+    observed["captured_at"]+=60
+    observed["position"].update(size=quantity,avgPrice="102")
+    children.append(dict(kind=kind,status="TERMINAL",intent_id="none",evidence=dict(order={},
+        executions=[dict(execId="added-fill",execQty="1",execPrice="103",execTime="1800000060000")])))
+    events=b._notices(active,children,observed,True,None)
+    assert [n["kind"] for n in events]==["PROTECTION",notice_kind]
+    assert events[-1]["position_before"]["quantity"]==1
+    assert events[-1]["position_after"]["quantity"]==float(quantity)
+
+
+def test_fill_before_baseline_timestamp_cannot_claim_baseline_as_before(live):
+    b,e=live
+    active,children,observed=notice_fixture()
+    b._notices(active,children,observed,True,None)
+    observed["captured_at"]+=30
+    observed["position"].update(size="2",avgPrice="102")
+    children.append(dict(kind="entry",status="TERMINAL",intent_id="none",evidence=dict(order={},
+        executions=[dict(execId="late-evidence",execQty="1",execPrice="103",execTime="1799999990000")])))
+    events=b._notices(active,children,observed,True,None)
+    fill=next(n for n in events if n["kind"]=="FILLED")
+    assert "position_before" not in fill
+    assert events[-1]["kind"]=="PROTECTION"
+
+
+def test_notice_unknown_evidence_does_not_invent_targets_or_costs(live):
+    from live.scenario_notice_evidence import position_snapshot
+    b,e=live
+    active,children,observed=notice_fixture()
+    snap=position_snapshot(active,children,observed,True,False,None)
+    assert "scenario_risk" not in snap
+    observed["position"].pop("positionIM")
+    assert position_snapshot(active,children,observed,True,False,None)["account_snapshot"]["position_margin"] is None
+    bad=copy.deepcopy(children)
+    bad[0]["evidence"]=None
+    assert position_snapshot(active,bad,observed,True,False,None) is None
+    assert position_snapshot(active,children,observed,True,True,None) is None
+    assert not b._notices(active,children,observed,False,None)
+
+
+def test_recovered_old_fill_has_no_current_account_snapshot(live):
+    b,e=live
+    active,children,observed=notice_fixture()
+    children.append(dict(kind="entry",status="TERMINAL",intent_id="none",evidence=dict(order={},
+        executions=[dict(execId="old-fill",execQty="1",execPrice="100",execTime="1799999000000")])))
+    events=b._notices(active,children,observed,True,None)
+    fill=next(n for n in events if n["kind"]=="FILLED")
+    assert "position_after" not in fill and "account_snapshot" not in fill
+    assert events[-1]["position_before"] is None
+
+
+def test_notice_risk_uses_confirmed_costs_and_pending_entries():
+    from live.scenario_notice_evidence import position_snapshot
+    from core.llm_scenario import risk_snapshot
+    active,children,observed=notice_fixture()
+    children.append(dict(kind="entry",status="LIVE",evidence=dict(executions=[],order=dict(price="100",leavesQty="0.2"))))
+    accounting=dict(status="confirmed",positions=[dict(price=101,quantity=1)],realized_loss=3,fees_paid=2,funding_paid=1)
+    snap=position_snapshot(active,children,observed,True,False,accounting)
+    expected=risk_snapshot(initial_equity=10000,side="LONG",hard_stop=98,positions=accounting["positions"],
+        pending_entries=[dict(price=100,quantity=.2)],entries=[],realized_loss=3,fees_paid=2,funding_paid=1,estimated_cost_rate=.002,slippage_bps=20)
+    assert snap["scenario_risk"]==expected["total_risk"]
+    assert snap["scenario_risk_includes_pending"] is True
+
+
+@pytest.mark.parametrize("side,tp,stops",[("LONG",[105,110],[99,98]),("SHORT",[95,90],[103,104])])
+def test_notice_targets_display_nearest_first(side,tp,stops):
+    from live.scenario_notice_evidence import position_snapshot
+    active,_,observed=notice_fixture()
+    active["side"]=side
+    observed["position"]["side"]="Buy" if side=="LONG" else "Sell"
+    children=[]
+    for kind,prices,field in [("tp",tp,"price"),("partial_sl",stops,"triggerPrice")]:
+        for price in reversed(prices):
+            children.append(dict(kind=kind,status="LIVE",evidence=dict(executions=[],
+                order={field:str(price),"leavesQty":"0.1"})))
+    snap=position_snapshot(active,children,observed,True,False,None)
+    assert [r["price"] for r in snap["take_profits"]]==tp
+    assert [r["price"] for r in snap["partial_stops"]]==stops
 
 
 class Exchange(Session):
@@ -115,6 +259,52 @@ def persist(b, **updates):
                    (p["action_id"],p["scenario_id"],json.dumps(p)))
     b.conn.commit()
     return p
+
+
+@pytest.mark.parametrize("failure",["snapshot","render","state_sql"])
+def test_optional_notice_failure_rolls_back_only_notices_and_retries(live,monkeypatch,failure):
+    import live.scenario_notice as notice
+    import live.scenario_notice_evidence as evidence
+    b,e=live
+    b.execute(persist(b),"a1")
+    link=next(iter(e.orders))
+    e.fill(link,.05)
+    e.fill(link,.05)
+    writes=list(e.writes)
+    with monkeypatch.context() as patch:
+        if failure=="snapshot":
+            def broken(*args,**kwargs):
+                raise ValueError("sensitive internal details")
+            patch.setattr(evidence,"position_snapshot",broken)
+        elif failure=="render":
+            original=notice.render_notice
+            calls=[]
+            def broken(event):
+                calls.append(event)
+                if len(calls)==2:
+                    raise ValueError("sensitive internal details")
+                return original(event)
+            patch.setattr(notice,"render_notice",broken)
+        else:
+            b.conn.execute("CREATE TEMP TRIGGER fail_notice_state BEFORE INSERT ON llm_scenario_notice_positions BEGIN SELECT RAISE(ABORT,'notice write unavailable'); END")
+            b.conn.commit()
+        result=b.reconcile()
+    assert result["protection_confirmed"] is True
+    assert result["notice_error"]=="optional_notice_capture_failed"
+    assert result["notices"]==[]
+    assert result["intents"][0]["filled_quantity"]==.1
+    assert b.conn.execute("SELECT count(*) FROM llm_scenario_broker_notices").fetchone()[0]==0
+    assert b.conn.execute("SELECT count(*) FROM llm_scenario_notice_positions").fetchone()[0]==0
+    assert b.conn.execute("SELECT count(*) FROM llm_scenario_broker_evidence WHERE kind='scenario_accounting'").fetchone()[0]>0
+    assert e.writes==writes
+    if failure=="state_sql":
+        b.conn.execute("DROP TRIGGER fail_notice_state")
+        b.conn.commit()
+    retried=b.reconcile()
+    assert retried["notice_error"] is None
+    assert len([n for n in retried["notices"] if n["kind"]=="FILLED"])==2
+    assert b.conn.execute("SELECT count(*) FROM llm_scenario_notice_positions").fetchone()[0]==1
+    assert e.writes==writes
 
 
 def test_paused_flat_account_still_has_verified_no_exposure(live):
