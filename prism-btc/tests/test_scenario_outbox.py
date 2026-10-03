@@ -37,3 +37,15 @@ def test_conflicting_identity_does_not_replace_notice(tmp_path):
     with pytest.raises(ValueError,match='conflicting_notice_identity'):
         enqueue(c,'e1',dict(kind='HALTED',timestamp=2000))
     c.close()
+
+
+@pytest.mark.parametrize('kind', ['MODEL_ERROR','MODEL_RECOVERED','PENDING','RESOLVED'])
+def test_incident_notices_are_private_without_public_fallback(monkeypatch, kind):
+    from live import ops_alerts
+    from live.scenario_outbox import _destination
+    monkeypatch.setenv('TELEGRAM_BOT_TOKEN','public-token')
+    monkeypatch.setenv('TELEGRAM_CHANNEL_ID','public-channel')
+    monkeypatch.setattr(ops_alerts,'_resolve_ops_destination',lambda:('private-token','private-chat'))
+    assert _destination(kind)==('private-token','private-chat')
+    monkeypatch.setattr(ops_alerts,'_resolve_ops_destination',lambda:(None,None))
+    assert _destination(kind)==(None,None)

@@ -69,9 +69,27 @@ def notify_runtime_status(conn,result,*,clock=time.time):
     """Deduplicated operator alert for host/model/protection failures, never trade proof."""
     from live.scenario_outbox import enqueue
     with mutation_lock(conn):
+        # Model failures are not exchange uncertainty. Keep their recovery
+        # independent from the once-per-minute protection heartbeat.
+        conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_model_incident (id INTEGER PRIMARY KEY CHECK(id=1),event_id TEXT,opened REAL,active INTEGER)")
+        model_row=conn.execute("SELECT event_id,opened,active FROM llm_scenario_model_incident WHERE id=1").fetchone()
+        model_failed=result.get("status")=="blocked" and result.get("reason") in {
+            "llm_output_contract_failed", "llm_call_failed"}
+        model_validated=result.get("status")=="wait" or (
+            result.get("status")=="intent_pending" and result.get("reason")=="awaiting_exact_evidence")
+        if model_failed and (not model_row or not model_row[2]):
+            identity="model-error-"+uuid.uuid4().hex
+            stamp=clock()
+            enqueue(conn,identity,{"kind":"MODEL_ERROR","timestamp":stamp,
+                "reason_code":result["reason"]})
+            conn.execute("INSERT OR REPLACE INTO llm_scenario_model_incident VALUES(1,?,?,1)",(identity,stamp))
+        elif model_validated and model_row and model_row[2]:
+            enqueue(conn,model_row[0]+"-resolved",{"kind":"MODEL_RECOVERED","timestamp":clock(),
+                "model_validation_confirmed":True})
+            conn.execute("UPDATE llm_scenario_model_incident SET active=0 WHERE id=1")
         conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_runner_incident (id INTEGER PRIMARY KEY CHECK(id=1),event_id TEXT,opened REAL,active INTEGER)")
         row=conn.execute("SELECT event_id,opened,active FROM llm_scenario_runner_incident WHERE id=1").fetchone()
-        failed=result.get("status")=="blocked" and result.get("reason")!="new_risk_halted"
+        failed=result.get("status")=="blocked" and result.get("reason")!="new_risk_halted" and not model_failed
         if failed and (not row or not row[2]):
             identity="runner-error-"+uuid.uuid4().hex
             stamp=clock()

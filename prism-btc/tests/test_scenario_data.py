@@ -23,6 +23,7 @@ def test_boundary_uses_only_last_known_close_not_next_open():
     assert result["valid"]
     forming = result["timeframes"]["1h"]["forming"]
     assert forming["elapsed_ms"] == 0
+    assert forming["observation_kind"] == "synthetic_boundary"
     assert forming["ohlcv"] == dict(open=101., high=101., low=101., close=101., volume=0.)
     assert "1h" in result["historical_replay"]["zero_progress_synthetic_timeframes"]
 
@@ -35,6 +36,7 @@ def test_future_changes_and_appends_cannot_affect_snapshot():
     assert HistoricalScenarioData(source).snapshot(now) == expected
     forming = expected["timeframes"]["1h"]["forming"]
     assert forming["elapsed_ms"] == 25*60_000
+    assert forming["observation_kind"] == "historical_completed_subbars"
     assert forming["ohlcv"]["volume"] == 50.
 
 
@@ -106,14 +108,23 @@ def test_manifest_hash_gaps_and_missing_cost_inputs():
     assert HistoricalScenarioData(source, mark=source).manifest()["mark"]["complete"]
 
 
-def test_sqlite_market_only_readonly_and_filters_provisional(tmp_path):
+def test_sqlite_market_only_readonly_and_filters_provisional(tmp_path, monkeypatch):
     path = tmp_path / "market.db"
     with sqlite3.connect(path) as conn:
         conn.execute("CREATE TABLE klines(timeframe,open_time,open,high,low,close,volume,confirmed)")
         conn.executemany("INSERT INTO klines VALUES(?,?,?,?,?,?,?,?)", [
             ("5m", 0, 100, 102, 98, 101, 10, 1), ("5m", 300000, 100, 102, 98, 101, 10, 0)])
     before = path.read_bytes()
-    assert len(load_market_data(path)) == 1
+    connect = sqlite3.connect
+    def readonly_connect(*args, **kwargs):
+        assert kwargs.get("uri") is True
+        conn = connect(*args, **kwargs)
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            conn.execute("CREATE TABLE forbidden_write(id)")
+        return conn
+    with monkeypatch.context() as patch:
+        patch.setattr(sqlite3, "connect", readonly_connect)
+        assert len(load_market_data(path)) == 1
     assert path.read_bytes() == before
     with sqlite3.connect(path) as conn:
         conn.execute("CREATE TABLE trades(id)")

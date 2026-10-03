@@ -10,7 +10,7 @@ def test_plan_is_not_fill_and_no_raw_payload():
     assert "거래소 적용 미확인" in out
 
 
-@pytest.mark.parametrize("kind", ["FILLED","PARTIAL","CLOSED","PROTECTION","RESOLVED"])
+@pytest.mark.parametrize("kind", ["FILLED","PARTIAL","CLOSED","PROTECTION","RESOLVED","MODEL_RECOVERED"])
 def test_unverified_claim_rejected(kind):
     with pytest.raises(ValueError):
         render_notice(dict(kind=kind,timestamp=1000,side="LONG"))
@@ -67,3 +67,19 @@ def test_recent_post_fill_snapshot_is_labeled_not_backdated():
     assert "체결 후 관측 증거금" in render_notice(event)
     event["account_snapshot"]["timestamp"]=1200
     assert "자료 미확인" in render_notice(event)
+
+
+@pytest.mark.parametrize('reason', ['llm_output_contract_failed', 'llm_call_failed'])
+def test_model_notice_never_exposes_payload_or_claims_exchange_uncertainty(reason):
+    out=render_notice(dict(kind='MODEL_ERROR',timestamp=1000,reason_code=reason,
+        details='secret exception',input_id='secret id',rationale='secret rationale'))
+    assert 'LLM' in out and '이번 판단 미반영' in out
+    assert '별도 확인 대상' in out and 'secret' not in out
+    assert '체결·취소·보호·정산의 불명확' not in out
+    out=render_notice(dict(kind='MODEL_RECOVERED',timestamp=1000,model_validation_confirmed=True))
+    assert '검증을 통과' in out and '매매 재개를 뜻하지' in out
+
+
+def test_model_error_requires_safe_reason_code():
+    with pytest.raises(ValueError,match='model_error_reason_required'):
+        render_notice(dict(kind='MODEL_ERROR',timestamp=1000,reason_code='raw exception'))

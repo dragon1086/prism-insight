@@ -238,6 +238,7 @@ def build_scenario_snapshot(
                     fact["forming"] = {
                         "open_time_ms": current_start, "observed_at_ms": observation,
                         "is_confirmed": False, "elapsed_ms": elapsed,
+                        "observation_kind": "observed",
                         "remaining_ms": current_start + duration - current_ms,
                         "observation_age_ms": current_ms - observation,
                         "progress_fraction_at_observation": elapsed / duration,

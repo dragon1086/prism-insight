@@ -26,7 +26,7 @@ def _local_open(request, timeout):
 
 
 def generate_scenario(*, system_prompt, user_prompt, model, reasoning_effort,
-                      fast_tier, timeout, mcp_profile=None, open_url=_local_open):
+                      fast_tier, timeout, response_schema, mcp_profile=None, open_url=_local_open):
     if (model != "gpt-6-luna" or reasoning_effort != "high"
             or fast_tier is not True or mcp_profile is not None):
         raise ValueError("scenario_model_policy")
@@ -41,6 +41,10 @@ def generate_scenario(*, system_prompt, user_prompt, model, reasoning_effort,
                "service_tier":"priority", "instructions":system_prompt,
                "input":[{"role":"user","content":user_prompt}],
                "tools":[],"tool_choice":"none","store":False,"stream":False}
+    if not isinstance(response_schema, dict) or response_schema.get("type") != "object":
+        raise ValueError("scenario_response_schema_required")
+    payload["text"] = {"format": {"type": "json_schema", "name": "btc_scenario",
+                                   "strict": True, "schema": response_schema}}
     request = Request(endpoint, data=json.dumps(payload,allow_nan=False).encode(),
                       headers={"Content-Type":"application/json"}, method="POST")
     try:

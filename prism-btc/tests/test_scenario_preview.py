@@ -8,10 +8,11 @@ from live.scenario_preview import preview, collect_snapshot
 
 def test_snapshot_model_validation_end_to_end_no_broker():
     def generate(**kw):
-        c=json.loads(kw['user_prompt'])['contract_context']
-        return SimpleNamespace(text=json.dumps(dict(schema_version=1,scenario_id='s1',revision=1,
-            input_id=c['input_id'],action_id='a1',action='WAIT',confidence=.2,expires_at=1100,
-            rationale='관망',entries=[],take_profits=[],partial_stops=[])))
+        c=json.loads(kw['user_prompt'])['response_contract']
+        return SimpleNamespace(text=json.dumps(dict(schema_version=1,scenario_id=c['scenario_id'],revision=1,
+            input_id=c['input_id'],action_id=c['action_id'],action='WAIT',confidence=.2,expires_at=1100,
+            rationale='관망',entries=[],take_profits=[],partial_stops=[],cancel_entry_ids=[],
+            side=None,hard_stop=None,chase=None,leverage=10)))
     r=preview(10000,snapshot=dict(valid=True,as_of_ms=1000000),generate=generate,clock=lambda:1000)
     assert r['orders_submitted']==0
     assert r['account_source']=='HYPOTHETICAL_NOT_BROKER'

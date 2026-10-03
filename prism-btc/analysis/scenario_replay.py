@@ -28,7 +28,7 @@ from live.scenario_broker import ScenarioDemoBroker
 from live.scenario_control import _write as write_control
 from live.scenario_runtime import ScenarioRuntime
 from live.scenario_preview import response_contract
-from live.scenario_llm import propose,SYSTEM_PROMPT
+from live.scenario_llm import propose,SYSTEM_PROMPT,ScenarioModelError
 from live.shared_entry_coordinator import mutation_lock
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -145,6 +145,8 @@ class Decisions:
             self.driver.advance_to(at+record["latency_ms"])
             if record["error"]:
                 self.failures+=1
+                if record["error"].startswith("ScenarioModelError:"):
+                    raise ScenarioModelError(record["error"].split(":",1)[1])
                 raise ValueError("recorded_model_failure")
             return record["proposal"]
         self.calls+=1;response=None;error=None;raw=[]
@@ -158,6 +160,10 @@ class Decisions:
                 def retain(**kwargs):
                     result=generate(**kwargs);raw.append(result.text);return result
                 response=propose(snapshot,context,response_contract(context),generate=retain,clock=self.driver.session.clock)
+        except ScenarioModelError as exc:
+            # Preserve only runtime classification, never arbitrary exception text.
+            category = "oauth_model_failed" if str(exc) in {"oauth_model_failed", "late_response"} else "response_contract_mismatch"
+            error = "ScenarioModelError:" + category
         except Exception as exc:
             error=type(exc).__name__
         latency=self.fixed_latency_ms if self.policy is not None else max(1,int((time.monotonic()-started)*1000))
@@ -166,6 +172,8 @@ class Decisions:
         self.driver.advance_to(at+latency)
         if error:
             self.failures+=1
+            if error.startswith("ScenarioModelError:"):
+                raise ScenarioModelError(error.split(":",1)[1])
             raise ValueError("model_proposal_failed")
         return response
 
