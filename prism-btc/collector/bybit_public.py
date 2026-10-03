@@ -30,6 +30,8 @@ def _get_klines(
     end_ms: int | None = None,
     limit: int = BYBIT_MAX_LIMIT,
     retries: int = 5,
+    *,
+    retry_rate_limit_only: bool = False,
 ) -> list[KlineRow]:
     """Single paginated request. Returns raw rows (newest first)."""
     params: dict[str, str | int] = {
@@ -41,7 +43,8 @@ def _get_klines(
     if end_ms is not None:
         params["end"] = end_ms
 
-    for attempt in range(retries):
+    attempts = min(retries, 3) if retry_rate_limit_only else retries
+    for attempt in range(attempts):
         try:
             resp = requests.get(
                 BYBIT_BASE_URL + BYBIT_KLINE_ENDPOINT,
@@ -52,10 +55,19 @@ def _get_klines(
             data = resp.json()
             if data.get("retCode") != 0:
                 log.warning("Bybit retCode %s: %s", data.get("retCode"), data.get("retMsg"))
+                if retry_rate_limit_only:
+                    # Scenario public reads only: never retry a ban, auth,
+                    # transport error or order; no sleep after the final try.
+                    if data.get("retCode") != 10006:
+                        raise RuntimeError("public_request_rejected")
+                    if attempt + 1 == attempts:
+                        raise ValueError("public_rate_limited")
                 time.sleep(2 ** attempt)
                 continue
             return data["result"]["list"]
         except requests.RequestException as exc:
+            if retry_rate_limit_only:
+                raise
             log.warning("Request error attempt %d: %s", attempt + 1, exc)
             time.sleep(2 ** attempt)
 

@@ -209,7 +209,7 @@ def test_generic_failure_records_fixed_stage_without_exception_data(setup, monke
 
 
 @pytest.mark.parametrize("code", ["empty_public_data", "collection_too_slow",
-    "candle_boundary_crossed_during_collection", "future_public_candle"])
+    "candle_boundary_crossed_during_collection", "future_public_candle", "public_rate_limited"])
 def test_collection_failure_code_requires_exact_value_error_and_stage(setup, code):
     import json
     r, b, _, _ = setup
@@ -269,7 +269,8 @@ def lock_clock(monkeypatch):
     return elapsed, sleeps
 
 
-def test_post_model_transient_contention_reconciles_and_executes_once(setup, monkeypatch, lock_clock):
+@pytest.mark.parametrize("hold_seconds", [.25, 9, 14])
+def test_post_model_transient_contention_reconciles_and_executes_once(setup, monkeypatch, lock_clock, hold_seconds):
     from contextlib import contextmanager
     import live.scenario_runtime as module
     from live.entry_reservations import LockBusy
@@ -281,7 +282,7 @@ def test_post_model_transient_contention_reconciles_and_executes_once(setup, mon
     def lock(conn):
         if returned:
             attempts.append(True)
-            if len(attempts) == 1:
+            if lock_clock[0][0] < hold_seconds:
                 raise LockBusy("protection finishing")
         with original(conn):
             yield
@@ -291,9 +292,9 @@ def test_post_model_transient_contention_reconciles_and_executes_once(setup, mon
     monkeypatch.setattr(module, "mutation_lock", lock)
     r.propose = model
     assert r.tick()["reason"] == "awaiting_exact_evidence"
-    assert len(returned) == 1 and len(attempts) == 2
+    assert len(returned) == 1 and len(attempts) == int(hold_seconds/.25) + 1
     assert b.reconciles == 2 and b.executed == ["action-1"]
-    assert lock_clock[0][0] == .25
+    assert lock_clock[0][0] == hold_seconds
     assert r.tick()["status"] == "intent_pending"
     assert b.executed == ["action-1"]
 
@@ -323,7 +324,7 @@ def test_protection_contention_after_model_keeps_safe_outcome_audit(setup, monke
     assert outcome == result
     assert json.loads(r.conn.execute("SELECT proposal FROM llm_scenario_decisions").fetchone()[0])["action"] == "WAIT"
     assert not b.executed
-    assert lock_clock[0][0] == 8
+    assert lock_clock[0][0] == 20
     assert b.reconciles == 1
 
 
