@@ -1,4 +1,6 @@
 import sqlite3
+import subprocess
+import sys
 import pytest
 from live.scenario_outbox import enqueue, flush
 
@@ -36,6 +38,86 @@ def test_conflicting_identity_does_not_replace_notice(tmp_path):
     c=setup(tmp_path)
     with pytest.raises(ValueError,match='conflicting_notice_identity'):
         enqueue(c,'e1',dict(kind='HALTED',timestamp=2000))
+    c.close()
+
+
+def test_receipt_saved_while_other_process_holds_trading_lock(tmp_path):
+    c=setup(tmp_path);calls=[];holder=None
+    def send(body,kind):
+        nonlocal holder
+        # Acquire the real cross-process flock only after the claim committed.
+        holder=subprocess.Popen(
+            [sys.executable,'-c',
+             'import fcntl,sys; f=open(sys.argv[1],"a"); '
+             'fcntl.flock(f,fcntl.LOCK_EX); print("locked",flush=True); sys.stdin.read()',
+             str(tmp_path/'outbox.db.btc-execution.lock')],
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True,
+        )
+        assert holder.stdout.readline().strip()=='locked'
+        calls.append(kind)
+        return 42
+    try:
+        assert flush(c,sender=send)==dict(sent=1,unknown=0)
+        assert c.execute('SELECT status,message_id FROM llm_scenario_outbox').fetchone()==('SENT',42)
+        assert calls==['HALTED']
+    finally:
+        if holder is not None:
+            holder.communicate(timeout=10)
+        c.close()
+
+
+def test_concurrent_flush_during_send_never_resends_claim(tmp_path):
+    c=setup(tmp_path);calls=[]
+    def send(body,kind):
+        other=sqlite3.connect(tmp_path/'outbox.db')
+        try:
+            assert flush(other,sender=lambda *a:pytest.fail('duplicate send'))==dict(sent=0,unknown=0)
+        finally:
+            other.close()
+        calls.append(kind)
+        return 42
+    assert flush(c,sender=send)==dict(sent=1,unknown=0)
+    assert calls==['HALTED']
+    c.close()
+
+
+def test_sender_error_stays_unknown_without_retry(tmp_path):
+    c=setup(tmp_path)
+    def send(*args):
+        raise RuntimeError('receipt lost')
+    assert flush(c,sender=send)==dict(sent=0,unknown=1)
+    assert c.execute('SELECT status,message_id FROM llm_scenario_outbox').fetchone()==('UNKNOWN',None)
+    assert flush(c,sender=lambda *a:pytest.fail('no retry'))==dict(sent=0,unknown=0)
+    c.close()
+
+
+def test_receipt_database_failure_preserves_unknown_claim_without_retry(tmp_path):
+    c=setup(tmp_path);calls=[]
+    c.execute("""CREATE TRIGGER reject_receipt BEFORE UPDATE ON llm_scenario_outbox
+        WHEN NEW.status='SENT' BEGIN SELECT RAISE(ABORT,'receipt unavailable'); END""")
+    c.commit()
+    def send(*args):
+        calls.append(1)
+        return 42
+    with pytest.raises(sqlite3.IntegrityError,match='receipt unavailable'):
+        flush(c,sender=send)
+    assert not c.in_transaction
+    assert c.execute('SELECT status,message_id FROM llm_scenario_outbox').fetchone()==('SENDING',None)
+    assert flush(c,sender=lambda *a:pytest.fail('no retry'))==dict(sent=0,unknown=0)
+    assert calls==[1]
+    c.close()
+
+
+def test_receipt_does_not_overwrite_changed_claim(tmp_path):
+    c=setup(tmp_path)
+    def send(*args):
+        other=sqlite3.connect(tmp_path/'outbox.db')
+        other.execute("UPDATE llm_scenario_outbox SET status='UNKNOWN'")
+        other.commit();other.close()
+        return 42
+    with pytest.raises(RuntimeError,match='notice_receipt_claim_lost'):
+        flush(c,sender=send)
+    assert c.execute('SELECT status,message_id FROM llm_scenario_outbox').fetchone()==('UNKNOWN',None)
     c.close()
 
 

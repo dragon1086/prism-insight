@@ -627,14 +627,16 @@ class ScenarioDemoBroker(ScenarioExecution):
                 event["reason_code"]={"tp":"TAKE_PROFIT","partial_sl":"PARTIAL_STOP","native_sl":"HARD_STOP"}[child["kind"]]
             candidates.append(event)
         changed=bool(snapshot and (before is None or economic_fingerprint(snapshot)!=economic_fingerprint(before)))
-        if changed and not observed["exchange_flat"] and not fresh_rich_comparison:
+        # First observation is a silent comparison baseline, not a new trade or
+        # protection change. Only a verified later economic change is public.
+        if changed and before is not None and not observed["exchange_flat"] and not fresh_rich_comparison:
             stop=float(observed["position"]["stopLoss"])
             revision=previous[0]+1 if previous else 1
             candidates.append(dict(event_id="scenario-position-"+hashlib.sha256(f'{active["scenario_id"]}:{revision}'.encode()).hexdigest()[:24],
                 kind="PROTECTION",timestamp=observed["captured_at"],side=active["side"],hard_stop=stop,
                 entry_timestamp=entry_at,
                 protection_confirmed=True,exchange_leverage=float(observed["position"]["leverage"]),remaining_quantity=float(observed["position"]["size"]),
-                position_before=before,position_after=snapshot,change_type="updated" if before else "initial_protection"))
+                position_before=before,position_after=snapshot,change_type="updated"))
         if settlement and settlement.get("execution_ids"):
             exit_fills=[e for c,e in fills if c["kind"]!="entry"]
             exit_qty=sum(float(e["execQty"]) for e in exit_fills)

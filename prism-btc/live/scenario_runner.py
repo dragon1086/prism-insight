@@ -19,6 +19,11 @@ from live.shared_entry_coordinator import mutation_lock
 from live.entry_reservations import LockBusy
 
 
+_FAILURE_STAGES = {"database_init", "control", "broker_init", "activation", "run"}
+_ERROR_TYPES = {"Exception", "ValueError", "RuntimeError", "PermissionError", "TimeoutError",
+                "OperationalError", "IntegrityError", "DatabaseError", "LockBusy"}
+
+
 def run_once(conn, broker, *, execute=False, protect_only=False,
              snapshot=collect_snapshot, proposal=propose):
     if getattr(broker,"environment",None)!="demo" or getattr(broker,"lane",None)!="MAIN":
@@ -61,8 +66,20 @@ def record_health(conn,result,*,snapshot=None):
         tracking.set_meta(conn,"scenario_input_asof_ms",snapshot_input_time(snapshot)*1000,"demo")
     status=result.get("status","unknown")
     if status=="blocked" and result.get("reason")!="new_risk_halted":
-        tracking.log_event(conn,"error","scenario tick blocked: "+str(result.get("reason","unknown")),level="error",mode="demo")
+        detail="scenario tick blocked: "+str(result.get("reason","unknown"))
+        if result.get("failure_stage") in _FAILURE_STAGES:
+            detail+="; failure_stage="+result["failure_stage"]
+        if result.get("error_type") in _ERROR_TYPES:
+            detail+="; error_type="+result["error_type"]
+        tracking.log_event(conn,"error",detail,level="error",mode="demo")
     tracking.log_event(conn,"heartbeat","scenario tick: "+status,mode="demo")
+
+
+def _record_health_best_effort(conn, result, *, snapshot=None):
+    try:
+        record_health(conn, result, snapshot=snapshot)
+    except Exception:
+        result["health_recording"] = "failed"
 
 
 def notify_runtime_status(conn,result,*,clock=time.time):
@@ -127,9 +144,12 @@ def main():
     if not args.root_db.is_file():
         print(json.dumps({"status":"blocked","reason":"existing_root_database_required"}))
         return 1
-    conn=sqlite3.connect(f"file:{args.root_db}?mode=rw",uri=True,timeout=10)
-    conn.row_factory=sqlite3.Row
+    conn=None
+    failure_stage="database_init"
     try:
+        conn=sqlite3.connect(f"file:{args.root_db}?mode=rw",uri=True,timeout=10)
+        conn.row_factory=sqlite3.Row
+        failure_stage="control"
         from live.scenario_control import read_control,existing_account_bindings
         control=read_control(conn)
         main_uid,swing_uid=existing_account_bindings(conn)
@@ -138,9 +158,11 @@ def main():
         if not args.activate and (control is None or control["state"] not in {"active","paused"}):
             print(json.dumps({"status":"execution_disabled","reason":"verified_handoff_required"}))
             return 1
+        failure_stage="broker_init"
         from live.scenario_broker import ScenarioDemoBroker
         broker=ScenarioDemoBroker(conn,expected_main_uid=main_uid,execution_enabled=True)
         if args.activate:
+            failure_stage="activation"
             from live.scenario_control import begin_transition,activate,flat_handoff_probe
             from live.swing import _make_swing_session
             from live.scenario_runtime import REQUIRED_CAPABILITIES
@@ -164,23 +186,38 @@ def main():
             value=collect_snapshot()
             snapshots.append(value)
             return value
+        failure_stage="run"
         result=run_once(conn,broker,execute=args.execute,protect_only=args.protect_only,snapshot=snapshot)
-        try:
-            record_health(conn,result,snapshot=snapshots[-1] if snapshots else None)
-        except Exception:
-            result["health_recording"]="failed"
+        _record_health_best_effort(conn,result,snapshot=snapshots[-1] if snapshots else None)
         # Disabled adapters cannot produce trade notices. Delivery occurs only
         # after the runtime released the trading lock and only for queued proofs.
-        deliver_notices(conn,result)
+        if result.get("status")!="lock_busy":
+            deliver_notices(conn,result)
         print(json.dumps(result,ensure_ascii=False))
         return 1 if result["status"] in {"blocked","execution_disabled"} else 0
-    except Exception:
-        result={"status":"blocked","reason":"scenario_runtime_unavailable"}
-        deliver_notices(conn,result)
+    except LockBusy:
+        # Expected contention is not trade uncertainty or verified recovery.
+        # In particular, do not flush old notices or touch incident state here.
+        result={"status":"lock_busy","failure_stage":failure_stage,
+                "error_type":"LockBusy"}
+        if failure_stage in {"control", "broker_init", "activation"}:
+            result["model_called"]=False
+        _record_health_best_effort(conn,result)
+        print(json.dumps(result))
+        return 0
+    except Exception as exc:
+        error_type=type(exc).__name__
+        result={"status":"blocked","reason":"scenario_runtime_unavailable",
+                "failure_stage":failure_stage,
+                "error_type":error_type if error_type in _ERROR_TYPES else "Exception"}
+        _record_health_best_effort(conn,result)
+        if conn is not None:
+            deliver_notices(conn,result)
         print(json.dumps(result))
         return 1
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 if __name__=="__main__":
