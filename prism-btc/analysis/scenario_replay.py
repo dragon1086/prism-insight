@@ -264,6 +264,9 @@ def run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplier
         if economic["unclosed_scenario"] or economic["pending_intents"]:reasons.append("UNSETTLED_END_STATE")
         report["readiness"]={"profitability_proven":False,"insufficiency_reasons":reasons}
         report["result_hash"]=digest(report)
+        # Run mechanics are outside the reproducible economic result hash.
+        report["execution_metadata"]={"mode":mode,"actual_model_calls":provider.calls,
+                                      "tape_records_consumed":len(tape.used)}
         (output/"report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False))
         (output/"exchange.json").write_text(json.dumps(session.snapshot(),indent=2,allow_nan=False))
         (output/"equity.json").write_text(json.dumps(driver.curve))
@@ -286,7 +289,8 @@ def main():
         report=run_replay(bundle,market,args.output,mode=args.mode,tape_path=args.tape,path=args.path,
             cost_multiplier=args.cost_multiplier,max_decisions=args.max_decisions)
         if blocked:raise RuntimeError("forbidden_network_attempt_detected")
-    print(json.dumps({"status":"complete","result_hash":report["result_hash"],"economic":report["economic"]},ensure_ascii=False))
+    print(json.dumps({"status":"complete","result_hash":report["result_hash"],"economic":report["economic"],
+                      "execution_metadata":report["execution_metadata"]},ensure_ascii=False))
 
 
 if __name__=="__main__":

@@ -39,6 +39,7 @@ def test_full_runtime_record_and_frozen_replay_same_hash(tmp_path):
     assert first['model_decisions']==2 and first['economic']['net_change']==0
     assert first['result_hash']==replay['result_hash']
     assert first['mode']=='SYNTHETIC_FIXTURE'
+    assert replay['execution_metadata']['actual_model_calls']==0
 
 
 def test_missing_mark_or_existing_output_never_runs_policy(tmp_path):
