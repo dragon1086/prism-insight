@@ -20,10 +20,10 @@ from live.scenario_llm import propose
 
 
 def response_contract(context):
-    from live.scenario_contract import identity_fields
+    from live.scenario_contract import identity_fields, response_schema
     return {
         **identity_fields(context),
-        "action": "WAIT | OPEN | ADJUST | EXIT",
+        "action": " | ".join(response_schema(context)["properties"]["action"]["enum"]),
         "side": "LONG | SHORT for OPEN/ADJUST; null for WAIT/EXIT",
         "confidence": "number 0..1 (NOT calibrated win probability)",
         "expires_at": "Unix seconds >now and <=now+3600",
@@ -38,10 +38,14 @@ def response_contract(context):
         "rules": ["Do not include this rules field in the response.",
                   "All schema fields are required. WAIT/EXIT require empty entries/take_profits/partial_stops and explicit null hard_stop, side and chase. OPEN/ADJUST require non-null side, hard_stop and chase.",
                   "OPEN only when no active scenario; ADJUST/EXIT only when active.",
-                  "Each exit list fractions sum <=1; leftover may be runner protected by hard stop.",
-                  "Budget=initial_equity*0.02. Per BTC loss=abs(entry-stop)+entry*(estimated_cost_rate+slippage_bps/10000).",
-                  "Total risk includes prior losses+fees+funding and all current/pending/new orders.",
-                  "New order risk <= original budget*confidence AND remaining budget. Round BTC quantity DOWN to .001."]}
+                  "cancel_entry_ids defaults to []. Only a unique subset of CURRENT contract_context.pending_entries[].id may be selected; never exchange/historical IDs. Cancel-only uses WAIT.",
+                  "ADJUST entries are incremental NEW orders, not copies of retained pending orders. Cancel requests retain reserved risk until confirmed. All new order IDs must be unique across all three lists and disjoint from current pending IDs, even if cancellation was requested.",
+                  "For OPEN the exit reference is quantity-weighted entry price; for active ADJUST it is current mark_price, NOT average entry. LONG TP must be strictly above reference, SHORT TP below. Partial SL must lie strictly between reference and hard_stop.",
+                  "Each exit list separately has fractions sum <=1; do not sum TP and partial SL lists together. Leftover may be a hard-stop-protected runner. target_qty=floor_down(max(0,min(remaining_capacity,revision_allocation*fraction-same_intent_target_fills)),quantity_step), not (allocation-fills)*fraction. New ADJUST uses a new remaining-position basis. Skip below-minimum quantities; never round up.",
+                  "Budget=host initial_equity*0.02, fixed from accepted OPEN including unfilled entries until reconciled flat. Profits do not enlarge it.",
+                  "For each lot D=price-hard_stop for LONG, hard_stop-price for SHORT. New/pending entries require D>0; filled positions allow profitable stops using max(0,D). Lot risk=quantity*(max(0,D)+price*estimated_cost_rate+hard_stop*slippage_bps/10000).",
+                  "Total risk=realized_loss+fees_paid+funding_paid+filled lot risk+ALL current pending lot risk+new lot risk. For new entries total risk <= budget; requested cancellation does not remove pending risk. Unknown costs are not zero.",
+                  "New order risk <= ORIGINAL budget*confidence AND remaining budget, not remaining budget*confidence. Round quantity DOWN to the supplied quantity_step and obey minimum_quantity/minimum_notional and price_tick. Code is the final risk/precision authority."]}
 
 
 def collect_snapshot(*, fetch=None, clock=time.time):

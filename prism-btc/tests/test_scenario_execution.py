@@ -210,6 +210,44 @@ def test_partial_fill_reconcile_installs_tp_with_full_stop_retained(live):
     assert len([w for w in e.writes if w[0]=="place"])==2
 
 
+def test_target_context_separates_intent_and_logical_id_from_execution_generation(live):
+    b,e=live
+    p=persist(b,take_profits=[dict(id="tp:near",price=105,fraction=.5)])
+    b.execute(p,"a1")
+    e.fill(next(iter(e.orders)),.05)
+    b.reconcile()
+    before=len(e.writes)
+    target=b.context()["target_status"][0]
+    assert target["intent_id"] == "a1"
+    assert target["logical_target_id"] == "tp:near"
+    assert target["target_id"].endswith(":tp:near")
+    assert target["target_id"] != target["logical_target_id"]
+    assert len(e.writes) == before
+
+
+@pytest.mark.parametrize("field,kind,prices", [
+    ("take_profits", "tp", (105,106)),
+    ("partial_stops", "partial_sl", (99,99.5)),
+])
+def test_partial_fill_quota_matches_exact_logical_target_not_suffix(live,field,kind,prices):
+    b,e=live
+    p=persist(b,**{field:[dict(id="near",price=prices[0],fraction=.25),
+                            dict(id="tp:near",price=prices[1],fraction=.25)]})
+    b.execute(p,"a1")
+    entry=next(iter(e.orders))
+    e.fill(entry,.05)
+    b.reconcile()
+    filled=next(c for c in b.children() if c["kind"]==kind
+                and c["local_id"].partition(":")[2]=="tp:near")
+    e.fill(filled["link_id"],.012)
+    e.fill(entry,.05)
+    evidence=b.reconcile()
+    targets={c["local_id"].partition(":")[2]:float(c["request"]["qty"])
+             for c in b.children() if c["kind"]==kind and c["status"]=="LIVE"}
+    assert targets == {"near":.025,"tp:near":.013}
+    assert evidence["protection_confirmed"] is True
+
+
 def test_completed_tp_does_not_resurrect(live):
     b,e=live
     p=persist(b,take_profits=[dict(id="tp1",price=105,fraction=.5)])

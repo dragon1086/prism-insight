@@ -388,6 +388,8 @@ class ScenarioDemoBroker(ScenarioExecution):
         protection=not float(observed["position"]["size"]) or bool(active and self._verify_protection(observed,active["hard_stop"],active["side"]))
         return dict(account_version=observed["account_version"],legacy_fenced=observed["legacy_fenced"],
             target_status=[dict(target_id=c["local_id"],kind=c["kind"],status=c["status"],
+                intent_id=c["intent_id"],
+                logical_target_id=c["local_id"].partition(":")[2] if ":" in c["local_id"] else None,
                 price=c["request"].get("price",c["request"].get("triggerPrice")),
                 filled_quantity=c["evidence"]["order"].get("cumExecQty") if c["evidence"] else None,
                 remaining_quantity=c["evidence"]["order"].get("leavesQty") if c["evidence"] else None)
