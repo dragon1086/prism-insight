@@ -1516,6 +1516,16 @@ class USStockTrackingAgent:
             db_lock.release()
             _lock_held = False
 
+            # F2 for negative-equity issuers ('' for everyone else -> byte-identical prompts).
+            from prism_core.negative_equity_f2 import block_for as _neg_equity_f2_block
+            neg_equity_block = ""
+            if ticker:
+                try:
+                    neg_equity_block = await asyncio.wait_for(asyncio.to_thread(
+                        _neg_equity_f2_block, ticker, getattr(self, "language", "ko")), timeout=30)
+                except asyncio.TimeoutError:
+                    logger.warning(f"[NEG_EQUITY_F2] {ticker} facts timed out; shared F2 rule applies")
+
             # Build trigger info section
             trigger_info_section = ""
             if trigger_type:
@@ -1551,6 +1561,7 @@ class USStockTrackingAgent:
             # Micro-split add scenarios (add_plan); '' unless micro-split LIVE is on for US.
             from prism_core.micro_split_live import add_plan_buy_block
             prompt_message += add_plan_buy_block(self, market="US", ticker=ticker, language="en")
+            prompt_message += neg_equity_block
             from prism_core.buy_report_depth_evidence import report_depth_evidence_active
             depth_on = report_depth_evidence_active(getattr(self.trading_agent, "instruction", ""))
             logger.info(f"[BUY_REPORT_DEPTH] enabled={str(depth_on).lower()} ticker={ticker_tag}")
