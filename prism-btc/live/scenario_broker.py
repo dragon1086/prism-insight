@@ -401,7 +401,8 @@ class ScenarioDemoBroker(ScenarioExecution):
         observed=self.capture_account()
         active=self._active()
         if not active:
-            self._daily(observed) if self.execution_enabled else None
+            if self.execution_enabled:
+                self._daily(observed)
             flat_verified=bool(self.execution_enabled and
                 observed["exchange_flat"] and not observed["open_orders"] and not observed["legacy_fenced"])
             return dict(intents=[],settlement=None,observation=observed,notices=self._pending_notices(),
@@ -418,7 +419,7 @@ class ScenarioDemoBroker(ScenarioExecution):
                 observed=self._ensure_protection(observed,active["hard_stop"],active["side"])
                 protection=True
             except Exception:
-                pass
+                protection=False
         unknown=False
         for child in self.children(active["scenario_id"]):
             try:

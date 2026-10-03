@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 
 
@@ -73,9 +74,10 @@ class ScenarioExecution:
         return json.loads(row[0]).get("active") if row else None
 
     def children(self, scenario_id=None):
-        query = "SELECT link_id,intent_id,scenario_id,kind,local_id,request,status,order_id,evidence,created_at FROM llm_scenario_children"
-        rows = self.conn.execute(query + (" WHERE scenario_id=?" if scenario_id else "") + " ORDER BY rowid",
-                                 (scenario_id,) if scenario_id else ()).fetchall()
+        rows = self.conn.execute(
+            "SELECT link_id,intent_id,scenario_id,kind,local_id,request,status,order_id,evidence,created_at "
+            "FROM llm_scenario_children WHERE (? IS NULL OR scenario_id=?) ORDER BY rowid",
+            (scenario_id or None, scenario_id or None)).fetchall()
         keys = ("link_id","intent_id","scenario_id","kind","local_id","request","status","order_id","evidence","created_at")
         result = []
         for row in rows:
@@ -186,8 +188,8 @@ class ScenarioExecution:
                 self._fail("native_stop_identity_missing")
             link="native_"+hashlib.sha256(oid.encode()).hexdigest()[:28]
             request=dict(qty=order["qty"],side=order["side"])
-            self.conn.execute("INSERT OR IGNORE INTO llm_scenario_children VALUES(?,?,?,?,?,?,'UNKNOWN',?,NULL,?)",
-                (link,entries[0]["intent_id"],active["scenario_id"],"native_sl",oid,encoded(request),oid,self.clock()))
+            self.conn.executemany("INSERT OR IGNORE INTO llm_scenario_children VALUES(?,?,?,?,?,?,'UNKNOWN',?,NULL,?)",
+                [(link,entries[0]["intent_id"],active["scenario_id"],"native_sl",oid,encoded(request),oid,self.clock())])
         self.conn.commit()
 
     def _submit(self, payload, intent_id, kind, local_id, request):
@@ -201,8 +203,8 @@ class ScenarioExecution:
         batch=self.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id=?",(intent_id,)).fetchone()
         if kind=="entry" and batch and batch[0]=="ABORTED":
             self._fail("unsubmitted_children_abandoned")
-        self.conn.execute("INSERT INTO llm_scenario_children VALUES(?,?,?,?,?,?,'UNKNOWN',NULL,NULL,?)",
-            (link,intent_id,payload["scenario_id"],kind,local_id,encoded(request),self.clock()))
+        self.conn.executemany("INSERT INTO llm_scenario_children VALUES(?,?,?,?,?,?,'UNKNOWN',NULL,NULL,?)",
+            [(link,intent_id,payload["scenario_id"],kind,local_id,encoded(request),self.clock())])
         self.conn.commit()  # Crash after this point can only recover by exact ID.
         response = self._write("place_order",**request)
         order_id = response.get("result",{}).get("orderId")
@@ -220,7 +222,7 @@ class ScenarioExecution:
         try:
             self._write("cancel_order",category="linear",symbol="BTCUSDT",orderLinkId=child["link_id"],orderId=child["order_id"])
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("Cancel acknowledgement unknown; exact terminal query required")
         child = self._query_child(child)
         if child["status"]!="TERMINAL":
             self._fail("cancel_not_confirmed")
@@ -356,8 +358,8 @@ class ScenarioExecution:
             own=self.children(active["scenario_id"])
             baseline=sum((decimal(fill["execQty"]) for c in own if c["kind"]=="entry" and c["evidence"]
                           for fill in c["evidence"]["executions"]),Decimal(0))
-            self.conn.execute("INSERT OR IGNORE INTO llm_scenario_exit_basis VALUES(?,?,?)",
-                (intent_id,text_number(observed["position"]["size"]),text_number(baseline)))
+            self.conn.executemany("INSERT OR IGNORE INTO llm_scenario_exit_basis VALUES(?,?,?)",
+                [(intent_id,text_number(observed["position"]["size"]),text_number(baseline))])
             self.conn.commit()
             if own:
                 observed=self._ensure_protection(observed,active["hard_stop"],active["side"])
