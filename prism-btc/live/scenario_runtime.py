@@ -1,4 +1,4 @@
-"""Durable orchestration boundary, deliberately without a production broker adapter.
+"""Durable orchestration with explicit broker proof and authorization boundaries.
 
 Broker contract: reconcile() must maintain protection even when new risk is
 disabled, returning exact intent evidence and optional settlement. context()
@@ -20,6 +20,7 @@ import uuid
 
 from core.llm_scenario import validate_scenario, update_circuit_breaker
 from live.shared_entry_coordinator import database_path, mutation_lock
+from live.entry_reservations import LockBusy
 
 REQUIRED_CAPABILITIES = frozenset({"exact_fills", "atomic_protection",
     "exact_settlement", "idempotent_intents", "fresh_risk_context"})
@@ -31,6 +32,18 @@ def _json(value):
 
 def _finite(value):
     return type(value) in (int, float) and math.isfinite(value)
+
+
+def snapshot_input_time(snapshot):
+    """Use the oldest primary observation, not the end of a sequential fetch."""
+    times = [snapshot.get("as_of_ms")]
+    for tf in ("30m", "1h"):
+        forming = snapshot.get("timeframes", {}).get(tf, {}).get("forming")
+        if isinstance(forming, dict):
+            times.append(forming.get("observed_at_ms"))
+    if any(not _finite(t) or t < 0 for t in times):
+        raise ValueError("invalid_snapshot_time")
+    return min(times) / 1000
 
 
 def _economic_evidence(item):
@@ -81,6 +94,21 @@ class ScenarioRuntime:
         self.conn.execute("UPDATE llm_scenario_state SET body=? WHERE id=1", (_json(state),))
         self.conn.commit()
 
+    def _notice(self, identity, event):
+        """Optional local publication must never undo a durable order intent."""
+        from live.scenario_outbox import enqueue
+        self.conn.execute("SAVEPOINT runtime_notice")
+        try:
+            enqueue(self.conn,identity,event)
+            self.conn.execute("RELEASE runtime_notice")
+            return True
+        except Exception:
+            self.conn.execute("ROLLBACK TO runtime_notice")
+            self.conn.execute("RELEASE runtime_notice")
+            self.conn.execute("INSERT INTO llm_scenario_notice_errors VALUES(?,?)",
+                              (self.clock(),"notice_validation_or_enqueue_failed"))
+            return False
+
     def _enabled(self):
         return (getattr(self.broker, "environment", None) == "demo" and
                 getattr(self.broker, "lane", None) == "MAIN" and
@@ -88,6 +116,18 @@ class ScenarioRuntime:
 
     def _reconcile(self, state):
         result = self.broker.reconcile() or {}
+        active = state["active"]
+        confirmed_stop = result.get("confirmed_hard_stop")
+        if (active and result.get("scenario_id") == active["scenario_id"]
+                and result.get("protection_confirmed") is True
+                and _finite(confirmed_stop) and confirmed_stop > 0):
+            old = active["hard_stop"]
+            improves = confirmed_stop >= old if active["side"] == "LONG" else confirmed_stop <= old
+            if not improves:
+                raise ValueError("broker_stop_regressed")
+            if confirmed_stop != old:
+                active["hard_stop"] = confirmed_stop
+                state["version"] += 1
         # Optional rendering must neither delay protection nor roll back a
         # verified economic transition. Enqueue is local, never network I/O.
         from live.scenario_outbox import enqueue
@@ -129,7 +169,7 @@ class ScenarioRuntime:
                 ids = item.get("exchange_order_ids")
                 if (not isinstance(ids, list) or not ids or
                         any(not isinstance(x, str) or not x for x in ids) or
-                        len(set(ids)) != len(ids) or not isinstance(orders, list) or not orders or
+                        len(set(ids)) != len(ids) or not isinstance(orders, list) or
                         any(not isinstance(o, dict) or set(o) != {"id", "price", "quantity"} or
                             not isinstance(o["id"], str) or not o["id"] or
                             not _finite(o["price"]) or o["price"] <= 0 or
@@ -157,7 +197,6 @@ class ScenarioRuntime:
                      and settlement.get("fees_complete") is True
                      and settlement.get("funding_complete") is True
                      and all(_finite(settlement.get(k)) for k in required)
-                     and settlement["fees"] >= 0
                      and isinstance(settlement.get("execution_ids"), list)
                      and all(isinstance(x, str) and x for x in settlement["execution_ids"])
                      and len(set(settlement["execution_ids"])) == len(settlement["execution_ids"]))
@@ -203,6 +242,11 @@ class ScenarioRuntime:
             ctx.update(initial_equity=active["initial_equity"], side=active["side"],
                        previous_hard_stop=active["hard_stop"])
         ctx["new_risk_blocked"] = bool(ctx["new_risk_blocked"] or state["breaker"].get("blocked"))
+        if state["breaker"].get("blocked") and not state.get("halt_notified"):
+            stamp=state.setdefault("halted_at",self.clock())
+            event={"kind":"HALTED","timestamp":stamp,"reason_code":
+                   "THREE_LOSSES" if "three_losses" in state["breaker"].get("reasons",[]) else "DAILY_LOSS"}
+            state["halt_notified"]=self._notice(f"halt:{stamp}",event)
         self._save(state)
         return ctx
 
@@ -221,6 +265,8 @@ class ScenarioRuntime:
                 ctx = self._context(state)
                 if ctx["legacy_fenced"] or not ctx["protection_ok"]:
                     return {"status": "fenced"}
+                if ctx["new_risk_blocked"] and state["active"] is None:
+                    return {"status":"blocked","reason":"new_risk_halted"}
                 if self.conn.execute("SELECT 1 FROM llm_scenario_intents WHERE status='PENDING'").fetchone():
                     return {"status": "intent_pending"}
                 if self.conn.execute("SELECT 1 FROM llm_scenario_slots WHERE slot=?", (slot,)).fetchone():
@@ -233,7 +279,7 @@ class ScenarioRuntime:
             snap = self.snapshot()
             if snap.get("valid") is not True:
                 raise ValueError("invalid_market_snapshot")
-            captured = snap.get("as_of_ms", 0) / 1000
+            captured = snapshot_input_time(snap)
             input_id = str(uuid.uuid4())
             ctx.update(now=self.clock(), input_id=input_id, input_captured_at=captured,
                        max_input_age_seconds=120)
@@ -261,19 +307,34 @@ class ScenarioRuntime:
                     if self.conn.execute("SELECT 1 FROM llm_scenario_settlements WHERE scenario_id=?", (validated["scenario_id"],)).fetchone():
                         return {"status": "reused_scenario"}
                     state["active"] = {"scenario_id": validated["scenario_id"], "initial_equity": fresh["initial_equity"],
-                        "side": validated["side"], "hard_stop": validated["hard_stop"], "revision": 0}
+                        "side": validated["side"], "hard_stop": validated["hard_stop"], "revision": 0,
+                        "created_at": self.clock(), "expires_at": validated["expires_at"]}
                 state["active"]["revision"] = validated["revision"]
                 if validated["action"] in ("OPEN", "ADJUST"):
-                    state["active"]["hard_stop"] = validated["hard_stop"]
+                    state["active"]["desired_hard_stop"] = validated["hard_stop"]
+                    state["active"]["expires_at"] = validated["expires_at"]
                 state["version"] += 1
                 self.conn.execute("INSERT INTO llm_scenario_intents VALUES(?,?,?,'PENDING',NULL)",
                                   (ident, validated["scenario_id"], _json(validated)))
                 self._save(state)  # Intent precedes the first exchange side effect.
+                if validated["action"] in {"OPEN","ADJUST"}:
+                    entries=validated.get("entries",[])
+                    quantity=sum(e["quantity"] for e in entries)
+                    price=sum(e["price"]*e["quantity"] for e in entries)/quantity if quantity else None
+                    self._notice("plan:"+ident,dict(kind="PLAN",timestamp=self.clock(),side=validated["side"],
+                        price=price,hard_stop=validated["hard_stop"],take_profits=validated.get("take_profits",[]),
+                        scenario_budget=validated["risk"]["budget"],scenario_risk=validated["risk"]["total_risk"]))
+                    self.conn.commit()
                 try:
                     self.broker.execute(validated, ident)
                 except Exception:
+                    self._notice("unknown:"+ident,dict(kind="PENDING",timestamp=self.clock()))
+                    self.conn.commit()
                     return {"status": "intent_pending", "reason": "submission_unknown"}
                 return {"status": "intent_pending", "reason": "awaiting_exact_evidence"}
+        except LockBusy:
+            self.conn.rollback()
+            return {"status":"lock_busy","reason":"another_protection_or_execution_tick"}
         except Exception:
             # No exception text/account data enters public notifications. Previously
             # committed intents and slot claims survive all failures.

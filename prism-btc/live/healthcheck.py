@@ -169,6 +169,16 @@ def _check_error_burst(conn, mode: str, now: datetime) -> dict | None:
 def _check_price_stale(conn, mode: str, now: datetime) -> dict | None:
     """3) 시세 갱신 정지: last_processed_30m_ns 나이 > 90분 → alert (없으면 warn)."""
     try:
+        if mode == "demo":
+            from live.scenario_control import legacy_management_allowed
+            if not legacy_management_allowed(conn):
+                ms = tracking.get_meta(conn,"scenario_input_asof_ms",mode)
+                if ms is None:
+                    return {"level":"warn","code":"price_stale","msg":"LLM 시나리오의 시세 관측 기록이 아직 없습니다."}
+                age = _ns_age_minutes(int(ms)*1_000_000,now)
+                if age is None or age > 15:
+                    return {"level":"alert","code":"price_stale","msg":"LLM 시나리오의 시세 관측이 15분 이상 지연됐습니다."}
+                return None
         ns = tracking.get_meta(conn, "last_processed_30m_ns", mode)
     except Exception:  # noqa: BLE001
         return None

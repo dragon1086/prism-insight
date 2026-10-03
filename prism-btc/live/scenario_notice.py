@@ -103,8 +103,9 @@ def render_notice(event: dict) -> str:
             im, equity = _number(snap.get("position_margin")), _number(snap.get("equity"))
             captured = _number(snap.get("timestamp"))
             mode = {"ISOLATED_MARGIN":"격리", "REGULAR_MARGIN":"교차", "PORTFOLIO_MARGIN":"포트폴리오"}.get(snap.get("margin_mode"))
-            if im is not None and equity is not None and equity > 0 and captured is not None and 0 <= at-captured <= 120:
-                lines.append(f"증거금: {_money(im)} · 같은 계좌 순자산 대비 {im/equity*100:.2f}%")
+            if im is not None and equity is not None and equity > 0 and captured is not None and abs(at-captured) <= 120:
+                label="체결 후 관측 증거금" if captured>at else "증거금"
+                lines.append(f"{label}: {_money(im)} · 같은 계좌 순자산 대비 {im/equity*100:.2f}%")
                 if mode:
                     lines.append(f"마진 방식: {mode}")
                 lines.append("계좌 자료 기준: " + datetime.fromtimestamp(captured,KST).strftime("%H:%M:%S KST"))
@@ -138,7 +139,7 @@ def render_notice(event: dict) -> str:
     if kind == "PENDING":
         lines.append("체결·취소·보호·정산의 불명확 상태를 확인 중입니다. 재주문하지 않습니다.")
     if kind == "RESOLVED":
-        resolution = {"CANCELLED_UNFILLED":"미체결 취소 확인", "FILLED_PROTECTED":"체결·보호 확인", "FLAT_SETTLED":"잔량 0·정산 확인"}.get(event.get("resolution"))
+        resolution = {"CANCELLED_UNFILLED":"미체결 취소 확인", "FILLED_PROTECTED":"체결·보호 확인", "FLAT_SETTLED":"잔량 0·정산 확인", "PROTECTION_QUERY_RECOVERED":"거래소 조회·보호 상태 확인 · 손익 정산 상태는 별도입니다."}.get(event.get("resolution"))
         if resolution is None:
             raise ValueError("resolution_type_required")
         lines.append(resolution)

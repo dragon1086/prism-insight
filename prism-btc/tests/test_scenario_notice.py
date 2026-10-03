@@ -58,3 +58,12 @@ def test_exit_preserves_holding_duration_and_reason():
     out=render_notice(dict(kind="PARTIAL",timestamp=1000,entry_timestamp=400,
                            fill_confirmed=True,reason_code="TAKE_PROFIT",remaining_quantity=.01))
     assert "부분 익절" in out and "10.0분" in out and "총잔량: 0.01" in out
+
+
+def test_recent_post_fill_snapshot_is_labeled_not_backdated():
+    event=dict(kind="FILLED",timestamp=1000,side="LONG",fill_confirmed=True,
+        account_snapshot=dict(same_event=True,same_account=True,timestamp=1040,
+            position_margin=100,equity=10000,margin_mode="REGULAR_MARGIN"))
+    assert "체결 후 관측 증거금" in render_notice(event)
+    event["account_snapshot"]["timestamp"]=1200
+    assert "자료 미확인" in render_notice(event)

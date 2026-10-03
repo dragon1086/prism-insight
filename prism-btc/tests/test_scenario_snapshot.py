@@ -145,3 +145,112 @@ def test_volume_extrapolation_uses_observed_elapsed_not_new_clock():
     forming = snapshot(now=now, observed=now - 60_000)["timeframes"]["1h"]["forming"]
     assert forming["volume_projection"]["projected_final"] == pytest.approx(5 * 3_600_000 / 540_000)
     assert forming["observation_age_ms"] == 60_000
+
+
+def intrabar_fixture():
+    start = NOW // TIMEFRAME_MS["1h"] * TIMEFRAME_MS["1h"]
+    now = start + 12*60_000
+    h, p = frames(now)
+    index = pd.date_range(pd.to_datetime(start-8*TIMEFRAME_MS["1h"],unit="ms",utc=True),
+                          periods=8*12+2, freq="5min")
+    h["5m"] = pd.DataFrame(dict(open=100.,high=102.,low=98.,close=100.,volume=10.),index=index)
+    return now, h, p
+
+
+def test_constant_narrow_gap_is_compressed_without_converging():
+    confirmed = snapshot()["timeframes"]["1h"]["confirmed"]
+    assert confirmed["convergence_bars"] == 0
+    assert confirmed["compression_bars"] == 16  # 50 rows minus 34 MA warmup.
+    assert confirmed["compression_duration_ms"] == 16*TIMEFRAME_MS["1h"]
+    assert confirmed["compression_gap_fraction_threshold"] == .0015
+
+
+def test_same_progress_complete_profiles_and_acceleration():
+    now,h,p = intrabar_fixture()
+    forming = snapshot(h,p,now=now)["timeframes"]["1h"]["forming"]
+    profile = forming["volume_projection"]["same_progress_profile"]
+    assert profile["status"] == "available"
+    assert profile["sample_count"] == 8
+    assert profile["matched_elapsed_ms"] == 600_000
+    assert profile["observed_prefix_volume"] == 20
+    assert profile["projected_final_median"] == 120
+    assert profile["empirical_projection_range"] == [120,120]
+    assert profile["calibrated_probability"] is False
+    assert forming["volume_acceleration"]["ratio"] == 1
+
+
+def test_future_5m_bars_do_not_change_primary_intrabar_features():
+    now,h,p = intrabar_fixture()
+    baseline = snapshot(h,p,now=now)["timeframes"]["1h"]["forming"]
+    future = h["5m"].tail(1).copy()
+    future.index += pd.Timedelta(minutes=5)
+    future.loc[:,"volume"] = 999999.
+    h["5m"] = pd.concat([h["5m"],future])
+    assert snapshot(h,p,now=now)["timeframes"]["1h"]["forming"] == baseline
+
+
+def test_oldest_primary_observation_controls_5m_availability():
+    now,h,p = intrabar_fixture()
+    observed = {tf:now for tf in TIMEFRAME_MS}
+    observed["30m"] = now-180_000  # At9m, the5-10m bucket was not confirmed.
+    result = build_scenario_snapshot(h,now,provisional_tf_data=p,observed_at_by_tf_ms=observed,
+                                     max_observation_age_ms=300_000)
+    profile=result["timeframes"]["1h"]["forming"]["volume_projection"]["same_progress_profile"]
+    assert profile["matched_elapsed_ms"] == 300_000
+    assert profile["observed_prefix_volume"] == 10
+    assert profile["available_at_ms"] == now-180_000
+
+
+def test_incomplete_historical_window_excluded_not_padded():
+    now,h,p = intrabar_fixture()
+    h["5m"] = h["5m"].drop(h["5m"].index[5])
+    forming=snapshot(h,p,now=now)["timeframes"]["1h"]["forming"]
+    assert forming["volume_projection"]["same_progress_profile"]["sample_count"] == 7
+    assert forming["volume_acceleration"]["status"] == "available"
+
+
+def test_recent_5m_gap_disables_acceleration():
+    now,h,p = intrabar_fixture()
+    h["5m"] = h["5m"].drop(h["5m"].index[-3])
+    forming=snapshot(h,p,now=now)["timeframes"]["1h"]["forming"]
+    assert forming["volume_acceleration"]["status"] == "unavailable"
+    assert forming["volume_acceleration"]["ratio"] is None
+
+
+def test_missing_5m_preserves_linear_fallback_without_gating():
+    now,h,p = intrabar_fixture()
+    del h["5m"]
+    del p["5m"]
+    result=snapshot(h,p,now=now)
+    assert result["valid"]
+    forming=result["timeframes"]["1h"]["forming"]
+    assert forming["volume_acceleration"]["status"] == "unavailable"
+    assert forming["volume_projection"]["same_progress_profile"]["status"] == "unavailable"
+    assert forming["volume_projection"]["method"] == "linear_elapsed_time_heuristic"
+
+
+def test_zero_volume_is_not_infinite_acceleration_or_empirical_confidence():
+    now,h,p=intrabar_fixture()
+    h["5m"].loc[:,"volume"]=0.
+    forming=snapshot(h,p,now=now)["timeframes"]["1h"]["forming"]
+    assert forming["volume_acceleration"]["ratio"] is None
+    assert forming["volume_projection"]["same_progress_profile"]["status"] == "unavailable"
+    json.dumps(forming,allow_nan=False)
+
+
+def test_acceleration_measures_recent_volume_not_price():
+    now,h,p=intrabar_fixture()
+    h["5m"].iloc[-3:,h["5m"].columns.get_loc("volume")]=20.
+    forming=snapshot(h,p,now=now)["timeframes"]["1h"]["forming"]
+    assert forming["volume_acceleration"]["ratio"] == 2
+    assert forming["volume_acceleration"]["previous_15m_volume"] == 30
+    assert forming["volume_acceleration"]["recent_15m_volume"] == 60
+
+
+def test_empirical_projection_range_preserves_different_historical_paths():
+    now,h,p=intrabar_fixture()
+    # First complete hour: same prefix20 but remaining10 buckets volume20.
+    h["5m"].iloc[2:12,h["5m"].columns.get_loc("volume")]=20.
+    profile=snapshot(h,p,now=now)["timeframes"]["1h"]["forming"]["volume_projection"]["same_progress_profile"]
+    assert profile["projected_final_median"] == 120
+    assert profile["empirical_projection_range"] == [120,220]

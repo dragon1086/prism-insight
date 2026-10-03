@@ -50,12 +50,13 @@ def response_contract(context):
 def collect_snapshot(*, fetch=None, clock=time.time):
     if fetch is None:
         from collector.bybit_public import _get_klines
-        from engine.config import TF_INTERVAL_MAP
-        fetch = lambda tf: _get_klines(TF_INTERVAL_MAP[tf], limit=100, retries=1)
+        from engine.config import TF_INTERVAL_MAP, PROTECTION_TF_INTERVAL_MAP
+        intervals = {**TF_INTERVAL_MAP, **PROTECTION_TF_INTERVAL_MAP}
+        fetch = lambda tf: _get_klines(intervals[tf], limit=1000 if tf=="5m" else 100, retries=1)
     started = clock()
     frames = {}
     received = {}
-    for tf in ("30m", "1h", "4h", "12h", "1d"):
+    for tf in ("30m", "1h", "4h", "12h", "1d", "5m"):
         rows = fetch(tf)
         received[tf] = clock()
         if not rows:
@@ -88,8 +89,9 @@ def preview(equity, *, snapshot=None, generate=None, clock=time.time):
     if type(equity) not in (float, int) or not math.isfinite(equity) or equity <= 0:
         raise ValueError("hypothetical_equity_required")
     snapshot = snapshot if snapshot is not None else collect_snapshot(clock=clock)
+    from live.scenario_runtime import snapshot_input_time
     ctx = dict(now=clock(), input_id=uuid.uuid4().hex,
-               input_captured_at=snapshot["as_of_ms"]/1000, max_input_age_seconds=120,
+               input_captured_at=snapshot_input_time(snapshot), max_input_age_seconds=120,
                scenario_id=None,revision=0,seen_action_ids=[],initial_equity=equity,
                positions=[],pending_entries=[],previous_hard_stop=None,realized_loss=0,
                fees_paid=0,funding_paid=0,estimated_cost_rate=0.0012,slippage_bps=10,

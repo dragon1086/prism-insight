@@ -9,12 +9,15 @@ import argparse
 import json
 import os
 import sqlite3
+import time
+import uuid
 from pathlib import Path
 
 from live.scenario_llm import propose
 from live.scenario_preview import collect_snapshot, response_contract
 from live.scenario_runtime import ScenarioRuntime
 from live.shared_entry_coordinator import mutation_lock
+from live.entry_reservations import LockBusy
 
 
 def run_once(conn, broker, *, execute=False, protect_only=False,
@@ -25,9 +28,23 @@ def run_once(conn, broker, *, execute=False, protect_only=False,
         try:
             with mutation_lock(conn):
                 evidence=broker.reconcile()
+                from live.scenario_outbox import enqueue
+                notices=evidence.get("notices",[]) if isinstance(evidence,dict) else []
+                if isinstance(notices,list):
+                    for notice in notices[:100]:
+                        conn.execute("SAVEPOINT protection_notice")
+                        try:
+                            enqueue(conn,notice["event_id"],notice)
+                            conn.execute("RELEASE protection_notice")
+                        except Exception:
+                            conn.execute("ROLLBACK TO protection_notice")
+                            conn.execute("RELEASE protection_notice")
+                    conn.commit()
             if not isinstance(evidence,dict) or evidence.get("protection_confirmed") is not True:
                 return {"status":"blocked","reason":"protection_not_verified_by_scenario_adapter","model_called":False}
             return {"status":"protection_checked","model_called":False}
+        except LockBusy:
+            return {"status":"lock_busy","model_called":False}
         except Exception:
             return {"status":"blocked","reason":"protection_unconfirmed","model_called":False}
     if not execute:
@@ -37,21 +54,58 @@ def run_once(conn, broker, *, execute=False, protect_only=False,
     return runtime.tick()
 
 
+def record_health(conn,result,*,snapshot=None):
+    """Keep existing BTC liveness monitoring, without forging legacy bar cursors."""
+    from live import tracking
+    from live.scenario_runtime import snapshot_input_time
+    if snapshot is not None and snapshot.get("valid") is True:
+        tracking.set_meta(conn,"scenario_input_asof_ms",snapshot_input_time(snapshot)*1000,"demo")
+    status=result.get("status","unknown")
+    if status=="blocked" and result.get("reason")!="new_risk_halted":
+        tracking.log_event(conn,"error","scenario tick blocked: "+str(result.get("reason","unknown")),level="error",mode="demo")
+    tracking.log_event(conn,"heartbeat","scenario tick: "+status,mode="demo")
+
+
+def notify_runtime_status(conn,result,*,clock=time.time):
+    """Deduplicated operator alert for host/model/protection failures, never trade proof."""
+    from live.scenario_outbox import enqueue
+    with mutation_lock(conn):
+        conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_runner_incident (id INTEGER PRIMARY KEY CHECK(id=1),event_id TEXT,opened REAL,active INTEGER)")
+        row=conn.execute("SELECT event_id,opened,active FROM llm_scenario_runner_incident WHERE id=1").fetchone()
+        failed=result.get("status")=="blocked" and result.get("reason")!="new_risk_halted"
+        if failed and (not row or not row[2]):
+            identity="runner-error-"+uuid.uuid4().hex
+            stamp=clock()
+            enqueue(conn,identity,{"kind":"PENDING","timestamp":stamp})
+            conn.execute("INSERT OR REPLACE INTO llm_scenario_runner_incident VALUES(1,?,?,1)",(identity,stamp))
+        elif result.get("status")=="protection_checked" and row and row[2]:
+            enqueue(conn,row[0]+"-resolved",{"kind":"RESOLVED","timestamp":clock(),
+                "resolution_confirmed":True,"resolution":"PROTECTION_QUERY_RECOVERED"})
+            conn.execute("UPDATE llm_scenario_runner_incident SET active=0 WHERE id=1")
+        conn.commit()
+
+
+def deliver_notices(conn,result):
+    try:
+        notify_runtime_status(conn,result)
+        from live.scenario_outbox import flush
+        result["notice_delivery"]=flush(conn)
+    except Exception:
+        result["notice_delivery"]={"status":"unconfirmed"}
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     modes=parser.add_mutually_exclusive_group()
     modes.add_argument("--execute",action="store_true")
     modes.add_argument("--protect-only",action="store_true")
+    modes.add_argument("--activate",action="store_true",help="verify both old accounts flat and activate approved demo handoff; no orders")
     parser.add_argument("--root-db",type=Path,
                         default=Path(__file__).resolve().parents[2]/"stock_tracking_db.sqlite")
     args=parser.parse_args()
-    if not args.execute and not args.protect_only:
+    if not args.execute and not args.protect_only and not args.activate:
         print(json.dumps({"status":"execution_disabled","reason":"explicit_activation_required"}))
         return 0
-    identity=os.environ.get("PRISM_BTC_MAIN_UID","")
-    if not identity.isascii() or not identity.isdigit() or int(identity)<=0:
-        print(json.dumps({"status":"blocked","reason":"verified_main_binding_required"}))
-        return 1
     # Fail without creating a different DB when a production path is wrong.
     if not args.root_db.is_file():
         print(json.dumps({"status":"blocked","reason":"existing_root_database_required"}))
@@ -59,18 +113,54 @@ def main():
     conn=sqlite3.connect(f"file:{args.root_db}?mode=rw",uri=True,timeout=10)
     conn.row_factory=sqlite3.Row
     try:
+        from live.scenario_control import read_control,existing_account_bindings
+        control=read_control(conn)
+        main_uid,swing_uid=existing_account_bindings(conn)
+        if control is not None and control["main_uid"]!=main_uid:
+            raise ValueError("scenario_binding_changed")
+        if not args.activate and (control is None or control["state"] not in {"active","paused"}):
+            print(json.dumps({"status":"execution_disabled","reason":"verified_handoff_required"}))
+            return 1
         from live.scenario_broker import ScenarioDemoBroker
-        broker=ScenarioDemoBroker(conn,expected_main_uid=identity)
-        result=run_once(conn,broker,execute=args.execute,protect_only=args.protect_only)
+        broker=ScenarioDemoBroker(conn,expected_main_uid=main_uid,execution_enabled=True)
+        if args.activate:
+            from live.scenario_control import begin_transition,activate,flat_handoff_probe
+            from live.swing import _make_swing_session
+            from live.scenario_runtime import REQUIRED_CAPABILITIES
+            if not REQUIRED_CAPABILITIES <= set(broker.capabilities):
+                raise ValueError("execution_not_implemented")
+            swing,error=_make_swing_session()
+            if swing is None or error:
+                raise ValueError("swing_handoff_unavailable")
+            with mutation_lock(conn):
+                proof=lambda:flat_handoff_probe(conn,broker,swing,swing_uid)
+                # Do not disable legacy entries when prerequisite observation fails.
+                evidence=proof()
+                if not all(evidence[k] for k in ("main_flat","swing_flat","all_orders_terminal","legacy_clear","broker_ready")):
+                    raise ValueError("handoff_not_flat")
+                begin_transition(conn,main_uid)
+                activate(conn,proof=proof)
+            print(json.dumps({"status":"active","orders_submitted":0,"schedule_changed":False}))
+            return 0
+        snapshots=[]
+        def snapshot():
+            value=collect_snapshot()
+            snapshots.append(value)
+            return value
+        result=run_once(conn,broker,execute=args.execute,protect_only=args.protect_only,snapshot=snapshot)
+        try:
+            record_health(conn,result,snapshot=snapshots[-1] if snapshots else None)
+        except Exception:
+            result["health_recording"]="failed"
         # Disabled adapters cannot produce trade notices. Delivery occurs only
         # after the runtime released the trading lock and only for queued proofs.
-        if result["status"] not in {"blocked","execution_disabled"}:
-            from live.scenario_outbox import flush
-            result["notice_delivery"]=flush(conn)
+        deliver_notices(conn,result)
         print(json.dumps(result,ensure_ascii=False))
         return 1 if result["status"] in {"blocked","execution_disabled"} else 0
     except Exception:
-        print(json.dumps({"status":"blocked","reason":"scenario_runtime_unavailable"}))
+        result={"status":"blocked","reason":"scenario_runtime_unavailable"}
+        deliver_notices(conn,result)
+        print(json.dumps(result))
         return 1
     finally:
         conn.close()

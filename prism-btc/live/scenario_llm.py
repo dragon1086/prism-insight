@@ -19,6 +19,11 @@ observed volume pace and remaining candle time. MA is lagging. Between MAs is
 mixed, not necessarily range-bound. Compression does not guarantee a breakout.
 Forming candles are provisional; volume projections are heuristic, not forecasts
 with calibrated probabilities. Never pretend confidence is a measured win rate.
+When supplied, use compression_bars separately from convergence_bars: a constant
+narrow MA gap is still compression. Compare same_progress_profile and the last
+three/previous three closed 5m volume acceleration, observing sample count and
+unavailability. The empirical historical range is NOT a calibrated prediction
+interval. Confirmed 5m context only measures pace, not an extra entry hard gate.
 Do not use RSI, relative strength or the old alignment/strength hard gates.
 ATR is optional risk context, not an entry gate. Wait when the edge is unclear.
 Seek net-of-cost opportunities, not a quota of trades or a target win rate.
@@ -28,10 +33,21 @@ One scenario runs from first fill to completely reconciled flat. Split entry,
 partial exits, re-entry and fees share its original 2% loss budget. Realized
 profits do NOT enlarge the budget. Pending orders also reserve risk. Do not
 rename a scenario to reset risk or propose trades while a halt is latched.
+If accounting_status is pending, missing loss/fee/funding values are UNKNOWN,
+not zero. Respect the observed live position even if settlement is incomplete;
+use WAIT or EXIT, never propose extra exposure or reset the scenario.
+chase.max_reprices>0 explicitly authorizes the host to reprice a still-live
+unfilled entry at most once per minute within chase.max_bps of its original
+limit and before expires_at, with exact cancellation and fresh risk checks.
+Use max_reprices=0 for a retest limit that must stay at the planned price.
+An explicit ADJUST is a new plan revision, NOT a reset of the scenario loss budget.
 Let winners run through protective stop tightening and retaining a runner, but
 provide explicit invalidation. Never chase indefinitely or average a broken thesis.
 Copy identity/version fields from contract_context exactly. All timestamps are
 Unix seconds. Quantities are BTC. Costs/risk are checked by code, not your prose.
+When provided, EVERY entry/TP/SL price must be an exact multiple of price_tick;
+quantity must be a multiple of quantity_step and satisfy minimum_quantity and
+minimum_notional. Round proposed quantity DOWN, never squeeze SL to fit more size.
 Use the supplied response_contract for exact field names and allowed actions.
 Give a concise Korean rationale naming the observed evidence and invalidation.
 """
@@ -76,7 +92,8 @@ def propose(snapshot: dict, context: dict, response_contract: dict, *,
     """
     if snapshot.get("valid") is not True:
         raise ScenarioModelError("snapshot_unavailable")
-    captured = snapshot.get("as_of_ms")
+    from live.scenario_runtime import snapshot_input_time
+    captured = snapshot_input_time(snapshot) * 1000
     now = clock()
     if (type(captured) not in (int, float) or
             not 0 <= now - captured / 1000 <= 120):

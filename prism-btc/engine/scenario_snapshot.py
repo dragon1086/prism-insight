@@ -16,6 +16,7 @@ from engine.indicators import atr, sma
 TIMEFRAME_MS = {"30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000,
                 "12h": 43_200_000, "1d": 86_400_000, "5m": 300_000}
 _OHLCV = ["open", "high", "low", "close", "volume"]
+COMPRESSION_GAP_FRACTION = 0.0015  # Descriptive feature, never an entry gate.
 
 
 def _number(value):
@@ -61,6 +62,11 @@ def _features(frame, duration):
         if pd.isna(change) or change >= 0:
             break
         decreasing += 1
+    compressed = 0
+    for value in reversed(absolute_gap.tolist()):
+        if pd.isna(value) or value > COMPRESSION_GAP_FRACTION:
+            break
+        compressed += 1
     fast, slow, price = _number(ma10.iloc[-1]), _number(ma35.iloc[-1]), float(row.close)
     position = None
     if fast is not None and slow is not None:
@@ -76,11 +82,80 @@ def _features(frame, duration):
         "convergence_bars": decreasing,
         "convergence_duration_ms": decreasing * duration,
         "convergence_definition": "consecutive strictly decreasing absolute MA gap / close; includes provisional bar when present",
+        "compression_bars": compressed,
+        "compression_duration_ms": compressed * duration,
+        "compression_gap_fraction_threshold": COMPRESSION_GAP_FRACTION,
+        "compression_definition": "consecutive abs(MA10-MA35)/close <= threshold, including constant gaps; provisional bar when present",
         "body_fraction": float((row.close - row.open) / row.open),
         "upper_wick_fraction": float((row.high - max(row.open, row.close)) / row.open),
         "lower_wick_fraction": float((min(row.open, row.close) - row.low) / row.open),
         "atr14_risk_only": _number(atr(frame).iloc[-1]),
     }
+
+
+def _intrabar_volume(history, available_at):
+    """Only fully elapsed 5m buckets at the oldest primary observation."""
+    unavailable = dict(status="unavailable", reason="confirmed_5m_history_unavailable",
+                       available_at_ms=available_at, ratio=None)
+    if available_at is None:
+        return None, unavailable
+    try:
+        frame = _frame(history, TIMEFRAME_MS["5m"])
+        starts = frame.index.asi8 // 1_000_000
+        frame = _validate_values(frame.loc[starts + TIMEFRAME_MS["5m"] <= available_at])
+        last = frame.tail(6)
+        expected_end = available_at // TIMEFRAME_MS["5m"] * TIMEFRAME_MS["5m"]
+        expected = list(range(expected_end-6*TIMEFRAME_MS["5m"], expected_end, TIMEFRAME_MS["5m"]))
+        if list(last.index.asi8 // 1_000_000) != expected:
+            return frame, {**unavailable, "reason": "six_recent_contiguous_5m_bars_required"}
+        previous, recent = float(last.volume.iloc[:3].sum()), float(last.volume.iloc[3:].sum())
+        return frame, dict(status="available" if previous > 0 else "unavailable",
+            reason=None if previous > 0 else "zero_previous_volume", available_at_ms=available_at,
+            completed_through_ms=expected_end, previous_15m_volume=previous, recent_15m_volume=recent,
+            ratio=recent/previous if previous > 0 else None,
+            definition="last 3 complete contiguous 5m volumes / previous 3; not a probability")
+    except (ValueError, TypeError, OverflowError):
+        return None, {**unavailable, "reason": "invalid_confirmed_5m_history"}
+
+
+def _same_progress_profile(frame, duration, start, available_at):
+    result = dict(status="unavailable", reason="comparable_intrabar_paths_unavailable",
+                  sample_count=0, available_at_ms=available_at, projected_final_median=None,
+                  empirical_projection_range=None, calibrated_probability=False)
+    if frame is None or available_at is None or available_at < start:
+        return result
+    step = TIMEFRAME_MS["5m"]
+    elapsed = min(duration, (available_at-start)//step*step)
+    result.update(matched_elapsed_ms=elapsed, matched_progress_fraction=elapsed/duration,
+                  definition="complete historical windows at same completed-5m progress; range is empirical min/max, not a confidence interval")
+    if elapsed <= 0 or elapsed >= duration:
+        return {**result, "reason": "no_completed_current_5m_progress"}
+    volumes = {int(timestamp.value//1_000_000): float(value) for timestamp, value in frame.volume.items()}
+    current_keys = list(range(start, start+elapsed, step))
+    if not all(key in volumes for key in current_keys):
+        return {**result, "reason": "current_5m_path_incomplete"}
+    current_volume = sum(volumes[key] for key in current_keys)
+    ratios, prefixes = [], []
+    for window in sorted({key//duration*duration for key in volumes}):
+        if window+duration > start or window+duration > available_at:
+            continue
+        keys = list(range(window, window+duration, step))
+        if not all(key in volumes for key in keys):
+            continue
+        prefix = sum(volumes[key] for key in keys[:elapsed//step])
+        if prefix <= 0:
+            continue
+        prefixes.append(prefix)
+        ratios.append(sum(volumes[key] for key in keys)/prefix)
+    result.update(sample_count=len(ratios), observed_prefix_volume=current_volume)
+    if len(ratios) < 5:
+        return {**result, "reason": "fewer_than_five_complete_comparable_paths"}
+    projections = pd.Series(ratios, dtype=float)*current_volume
+    result.update(status="available", reason=None,
+                  historical_prefix_volume_median=float(pd.Series(prefixes).median()),
+                  projected_final_median=float(projections.median()),
+                  empirical_projection_range=[float(projections.min()), float(projections.max())])
+    return result
 
 
 def build_scenario_snapshot(
@@ -101,6 +176,11 @@ def build_scenario_snapshot(
         raise ValueError("invalid_max_observation_age_ms")
     current_ms = int(current_ms)
     provisional_tf_data = provisional_tf_data or {}
+    primary_observations = [observed_at_by_tf_ms.get(tf) if observed_at_by_tf_ms is not None else observed_at_ms
+                            for tf in ("30m", "1h")]
+    available_at = min(primary_observations) if all(type(t) is int and 0 <= t <= current_ms
+                                                  for t in primary_observations) else None
+    intrabar, acceleration = _intrabar_volume(tf_data.get("5m"), available_at)
     output = {"as_of_ms": current_ms, "valid": True, "issues": [], "timeframes": {}}
     for tf, duration in TIMEFRAME_MS.items():
         observation = (observed_at_by_tf_ms.get(tf) if observed_at_by_tf_ms is not None
@@ -162,6 +242,7 @@ def build_scenario_snapshot(
                         "observation_age_ms": current_ms - observation,
                         "progress_fraction_at_observation": elapsed / duration,
                         "ohlcv": {key: float(current.iloc[-1][key]) for key in _OHLCV},
+                        "volume_acceleration": dict(acceleration),
                         **_features(combined, duration),
                         "volume_projection": {
                             "method": "linear_elapsed_time_heuristic",
@@ -172,6 +253,7 @@ def build_scenario_snapshot(
                             "uncertainty_interval": None,
                             "uncertainty_reason": "comparable_intrabar_paths_unavailable",
                             "calibrated_probability": False,
+                            "same_progress_profile": _same_progress_profile(intrabar, duration, current_start, available_at),
                         },
                     }
             fact["status"] = "ok" if not issues else "incomplete"

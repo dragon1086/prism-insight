@@ -174,7 +174,7 @@ def test_daily_loss_blocks_entry_not_reconciliation(setup):
     b.ctx["daily_net_pnl"] = -400
     assert r.tick()["status"] == "blocked"
     assert r.state()["breaker"]["blocked"]
-    assert b.reconciles == 2
+    assert b.reconciles == 1
     assert not b.executed
 
 
@@ -312,3 +312,49 @@ def test_reconciled_notice_is_queued_without_network(setup):
     assert r.tick()["status"] == "wait"
     assert r.conn.execute("SELECT status FROM llm_scenario_outbox").fetchone()[0] == "QUEUED"
     assert r.conn.execute("SELECT count(*) FROM llm_scenario_outbox").fetchone()[0] == 1
+
+
+def test_adjust_stop_is_not_confirmed_from_submission(setup):
+    r,b,now,_=setup
+    r.tick()
+    b.evidence={"intents":[terminal()]}
+    b.ctx.update(side="LONG",mark_price=100)
+    now[0]+=300
+    r.propose=lambda s,c:dict(proposal(s,c),action="ADJUST",action_id="tighten",entries=[],hard_stop=95)
+    assert r.tick()["status"]=="intent_pending"
+    assert r.state()["active"]["hard_stop"]==90
+    assert r.state()["active"]["desired_hard_stop"]==95
+    b.evidence.update(scenario_id="scenario-1",protection_confirmed=True,confirmed_hard_stop=95)
+    r.tick()
+    assert r.state()["active"]["hard_stop"]==95
+
+
+def test_live_reduce_orders_do_not_fence_llm_management(setup):
+    r,b,now,_=setup
+    r.tick()
+    b.evidence={"intents":[dict(live_evidence(),open_entries=[])]}
+    now[0]+=300
+    r.propose=lambda s,c:wait_proposal(s,c,action_id="wait-2")
+    assert r.tick()["status"]=="wait"
+
+
+def test_oldest_primary_observation_bounds_final_validation(setup):
+    r,b,now,_=setup
+    r.snapshot=lambda:{"valid":True,"as_of_ms":now[0]*1000,
+        "timeframes":{"30m":{"forming":{"observed_at_ms":(now[0]-100)*1000}}}}
+    def model(s,c):
+        value=proposal(s,c)
+        now[0]+=30
+        return value
+    r.propose=model
+    assert r.tick()["status"]=="blocked"
+    assert b.executed==[]
+
+
+def test_flat_halt_skips_llm_but_still_reconciles(setup):
+    r,b,now,_=setup
+    b.ctx["daily_net_pnl"]=-500
+    r.propose=lambda *args:pytest.fail("halted flat account must not call LLM")
+    assert r.tick()=={"status":"blocked","reason":"new_risk_halted"}
+    assert b.reconciles>0
+    assert r.state()["breaker"]["blocked"]
