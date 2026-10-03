@@ -7,8 +7,8 @@ from backtest.scenario_data import HistoricalScenarioData
 from engine.scenario_snapshot import TIMEFRAME_MS
 
 
-def inputs():
-    start=1790899200000;end=start+600000
+def inputs(duration_ms=600000):
+    start=1790899200000;end=start+duration_ms
     index=pd.to_datetime(range(start-86400000,end,60000),unit='ms',utc=True)
     frame=pd.DataFrame(dict(open=100.,high=101.,low=99.,close=100.,volume=100.),index=index)
     warm={}
@@ -114,3 +114,28 @@ def test_strict_wire_fresh_and_frozen_preserve_trade_or_rejection(tmp_path,inval
             with sqlite3.connect(tmp_path/path/'replay.sqlite') as conn:
                 outcomes.append([json.loads(row[0]) for row in conn.execute('SELECT outcome FROM llm_scenario_decisions ORDER BY slot')])
         assert outcomes[0]==outcomes[1]==[{'status':'blocked','reason':'llm_output_contract_failed'}]*2
+
+
+def test_cancel_replace_abort_settles_without_fill_and_allows_next_decision(tmp_path):
+    b,m=inputs(1200000);calls=[]
+    def policy(s,c):
+        calls.append(c)
+        p=wait_policy(s,c)
+        p.update(scenario_id=c['scenario_id'] or 'cancel-replace',expires_at=c['now']+600)
+        if len(calls)==1:
+            p.update(action='OPEN',side='LONG',confidence=.5,hard_stop=96,
+                     entries=[dict(id='old-entry',price=98,quantity=.1)],
+                     chase=dict(max_bps=0,max_reprices=0))
+        elif len(calls)==2:
+            p.update(action='ADJUST',side='LONG',confidence=.5,hard_stop=96,
+                     cancel_entry_ids=['old-entry'],entries=[dict(id='replacement',price=98.5,quantity=.1)],
+                     chase=dict(max_bps=0,max_reprices=0))
+        return p
+    with network_boundary('frozen') as blocked:
+        report=run_replay(b,m,tmp_path/'cancel-replace',mode='fixture',tape_path=tmp_path/'tape',policy=policy)
+    assert not blocked
+    assert len(calls)==4 and calls[2]['scenario_id'] is None
+    assert report['economic']['completed_scenarios']==0
+    assert report['economic']['fees']==0
+    assert report['economic']['pending_intents']==0
+    assert report['economic']['unclosed_scenario'] is False

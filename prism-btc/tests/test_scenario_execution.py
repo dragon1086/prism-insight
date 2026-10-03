@@ -362,6 +362,79 @@ def test_unknown_cancel_does_not_chase(live):
     assert len(e.writes)==1
 
 
+def aborted_replacement(live):
+    b, e = live
+    b.execute(persist(b, chase=dict(max_bps=0, max_reprices=0)), "a1")
+    old = next(iter(e.orders))
+    def delayed_cancel(**kw):
+        e.writes.append(("cancel", kw))
+        return dict(retCode=0, result={})
+    e.cancel_order = delayed_cancel
+    replacement = persist(b, action_id="a2", action="ADJUST",
+        cancel_entry_ids=["e1"], entries=[dict(id="e2", price=99, quantity=.1)],
+        chase=dict(max_bps=0, max_reprices=0))
+    with pytest.raises(BrokerNotReady, match="cancel_not_confirmed"):
+        b.execute(replacement, "a2")
+    assert b.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id='a2'").fetchone() == ("ABORTED",)
+    assert not [c for c in b.children() if c["intent_id"] == "a2"]
+    return b, e, old
+
+
+def test_aborted_zero_child_adjust_resolves_only_after_exact_cancel(live):
+    b, e, old = aborted_replacement(live)
+    assert not any(i["intent_id"] == "a2" for i in b.reconcile()["intents"])
+    e.orders[old]["orderStatus"] = "Cancelled"
+    writes = list(e.writes)
+    result = b.reconcile()
+    recovered = next(i for i in result["intents"] if i["intent_id"] == "a2")
+    assert recovered["terminal"] and recovered["orders_reconciled"]
+    assert recovered["executions_complete"] and recovered["protection_ok"]
+    assert recovered["filled_quantity"] == 0
+    assert recovered["execution_ids"] == recovered["exchange_order_ids"] == recovered["open_entries"] == []
+    assert result["settlement"]["no_fills_confirmed"] is True
+    assert e.writes == writes  # No retry, replacement, cancellation or fabricated fill.
+
+
+@pytest.mark.parametrize("blocker", ["crashed", "missing_batch", "complete_batch", "unknown_old",
+                                      "unknown_own", "nonflat", "external_order"])
+def test_aborted_adjust_uncertainty_never_becomes_terminal(live, blocker):
+    b, e, old = aborted_replacement(live)
+    e.orders[old]["orderStatus"] = "Cancelled"
+    if blocker == "crashed":
+        b.conn.execute("UPDATE llm_scenario_execution_batches SET status='EXECUTING' WHERE intent_id='a2'")
+    elif blocker == "missing_batch":
+        b.conn.execute("DELETE FROM llm_scenario_execution_batches WHERE intent_id='a2'")
+    elif blocker == "complete_batch":
+        b.conn.execute("UPDATE llm_scenario_execution_batches SET status='COMPLETE' WHERE intent_id='a2'")
+    elif blocker in {"unknown_old", "unknown_own"}:
+        if blocker == "unknown_own":
+            b.conn.execute("UPDATE llm_scenario_children SET intent_id='a2' WHERE link_id=?", (old,))
+        b.conn.execute("UPDATE llm_scenario_children SET status='UNKNOWN',evidence=NULL WHERE link_id=?", (old,))
+        def unknown(child):
+            raise BrokerNotReady("unknown_child_evidence")
+        b._query_child = unknown
+    elif blocker == "nonflat":
+        e.fill(old, .1)
+    else:
+        e.orders["external"] = dict(e.orders[old], orderId="external-id", orderLinkId="external",
+                                     orderStatus="New", leavesQty=".1")
+    b.conn.commit()
+    places = len([w for w in e.writes if w[0] == "place"])
+    for _ in range(3):
+        result = b.reconcile()
+        assert not any(i["intent_id"] == "a2" and i["terminal"] for i in result["intents"])
+    assert len([w for w in e.writes if w[0] == "place"]) == places
+    if blocker == "crashed":
+        assert b.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id='a2'").fetchone() == ("INTERRUPTED",)
+        proposal = json.loads(b.conn.execute("SELECT payload FROM llm_scenario_intents WHERE id='a2'").fetchone()[0])
+        writes = list(e.writes)
+        with pytest.raises(BrokerNotReady, match="interrupted_execution_requires_reconciliation"):
+            b.execute(proposal, "a2")
+        assert e.writes == writes
+        assert not any(c["intent_id"] == "a2" for c in b.children())
+        assert b.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id='a2'").fetchone() == ("INTERRUPTED",)
+
+
 def test_native_stop_hit_cancels_unfilled_entry_remainder(live):
     b,e=live
     b.execute(persist(b),"a1")
@@ -484,3 +557,44 @@ def test_runtime_broker_partial_adjust_exit_settlement_pipeline(live):
     assert rt.state()["breaker"]["consecutive_losses"]==1
     notice_bodies=[json.loads(r[0]) for r in b.conn.execute("SELECT body FROM llm_scenario_broker_notices")]
     assert {"FILLED","PARTIAL","PROTECTION","CLOSED"} <= {n["kind"] for n in notice_bodies}
+
+
+def test_runtime_aborted_adjust_settles_no_fills_then_requests_fresh_model(live):
+    from live.scenario_runtime import ScenarioRuntime, REQUIRED_CAPABILITIES
+    b, e = live
+    b.conn.execute("DELETE FROM llm_scenario_state")
+    b.conn.execute("DROP TABLE llm_scenario_intents")
+    b.conn.commit()
+    b.clock = lambda: e.now
+    b.capabilities = REQUIRED_CAPABILITIES
+    calls = []
+    def proposal(snapshot, context):
+        action = ("OPEN", "ADJUST", "WAIT")[len(calls)]
+        calls.append(context)
+        p = dict(schema_version=1, scenario_id=context.get("scenario_id") or "s1",
+                 revision=context["revision"]+1, input_id=context["input_id"],
+                 action_id="decision"+str(e.now), action=action, confidence=.8,
+                 expires_at=e.now+900, rationale="isolated cancellation regression", leverage=10)
+        if action != "WAIT":
+            p.update(side="LONG", hard_stop=98,
+                     entries=[dict(id="entry1" if action == "OPEN" else "entry2",
+                                   price=100 if action == "OPEN" else 99, quantity=.1)],
+                     cancel_entry_ids=[] if action == "OPEN" else ["entry1"],
+                     take_profits=[], partial_stops=[], chase=dict(max_bps=0, max_reprices=0))
+        return p
+    rt = ScenarioRuntime(b.conn, b, proposal,
+        lambda: dict(valid=True, as_of_ms=e.now*1000), clock=lambda: e.now)
+    assert rt.tick()["status"] == "intent_pending"
+    old = next(iter(e.orders))
+    e.cancel_order = lambda **kw: dict(retCode=0, result={})
+    e.now += 301
+    assert rt.tick()["status"] == "intent_pending"
+    assert len(calls) == 2
+    e.orders[old]["orderStatus"] = "Cancelled"
+    writes = list(e.writes)
+    e.now += 301
+    assert rt.tick()["status"] == "wait"
+    assert len(calls) == 3 and calls[-1]["scenario_id"] is None
+    assert rt.state()["active"] is None
+    assert rt.state()["breaker"].get("consecutive_losses", 0) == 0
+    assert e.writes == writes
