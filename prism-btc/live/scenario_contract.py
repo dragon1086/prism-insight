@@ -37,6 +37,10 @@ def response_schema(context):
     row = lambda quantity: _object({"id": {"type": "string"},
                                     "price": {"type": "number"},
                                     quantity: {"type": "number"}})
+    cancellation_id = {"type": "string"}
+    pending_ids = [row["id"] for row in context.get("pending_entries", [])]
+    if pending_ids:
+        cancellation_id["enum"] = pending_ids
     properties.update(action={"type": "string", "enum": ["WAIT", "ADJUST", "EXIT"]
                       if context.get("scenario_id") is not None else ["WAIT", "OPEN"]},
                       side={"type": ["string", "null"], "enum": ["LONG", "SHORT", None]},
@@ -45,7 +49,8 @@ def response_schema(context):
                       entries={"type": "array", "items": row("quantity")},
                       take_profits={"type": "array", "items": row("fraction")},
                       partial_stops={"type": "array", "items": row("fraction")},
-                      cancel_entry_ids={"type": "array", "items": {"type": "string"}},
+                      cancel_entry_ids={"type": "array", "items": cancellation_id,
+                                        "maxItems": min(20, len(pending_ids))},
                       chase={"anyOf": [_object({"max_bps": {"type": "number"},
                                                "max_reprices": {"type": "integer"}}),
                                        {"type": "null"}]},
@@ -77,7 +82,7 @@ def _matches(value, schema):
         return (set(value) == set(schema["required"]) and
                 all(_matches(value[key], child) for key, child in schema["properties"].items()))
     if actual == "array":
-        return len(value) <= 20 and all(_matches(item, schema["items"]) for item in value)
+        return len(value) <= min(20, schema.get("maxItems",20)) and all(_matches(item, schema["items"]) for item in value)
     return True
 
 

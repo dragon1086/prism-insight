@@ -461,7 +461,7 @@ class ScenarioExecution:
                     allocated+=decimal(existing["request"]["qty"])
                     continue
                 consumed=sum((decimal(e["execQty"]) for c in children if c["kind"]==kind and
-                    c["intent_id"]==intent_id and c["local_id"].endswith(":"+row["id"]) and c["evidence"]
+                    c["intent_id"]==intent_id and c["local_id"].partition(":")[2]==row["id"] and c["evidence"]
                     for e in c["evidence"]["executions"]),Decimal(0))
                 quantity=(max(Decimal(0),min(size-allocated,allocation*decimal(row["fraction"])-consumed))/instrument["step"]).to_integral_value(rounding=ROUND_DOWN)*instrument["step"]
                 allocated+=quantity
