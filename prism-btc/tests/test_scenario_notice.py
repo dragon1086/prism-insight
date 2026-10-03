@@ -21,18 +21,93 @@ def filled(after=None, **updates):
     return value
 
 
+def test_compact_initial_status_is_not_a_new_entry():
+    out = render_notice(dict(kind="PROTECTION", timestamp=1000,
+        entry_timestamp=900, protection_confirmed=True, change_type="initial_protection",
+        position_after=position(scenario_risk=48.57, scenario_risk_includes_pending=True)))
+    assert "기존 포지션" in out and "신규 진입 아님" in out
+    assert "비용·미체결 포함" in out
+    assert len(out) <= 650 and len(out.splitlines()) <= 11
+
+
+def test_compact_change_only_compares_changed_fields():
+    out = render_notice(dict(kind="PROTECTION", timestamp=1000, protection_confirmed=True,
+        position_before=position(timestamp=900), position_after=position(hard_stop=84600)))
+    assert "84,500.00 → 84,600.00" in out
+    assert "-25.00 → -15.00 USDT" in out
+    assert "변경 없음" not in out and "익절 목표" not in out
+    assert len(out) <= 650 and len(out.splitlines()) <= 11
+
+
+def test_protection_without_before_keeps_event_timestamp():
+    out = render_notice(dict(kind="PROTECTION", timestamp=1000, protection_confirmed=True,
+        position_after=position(timestamp=1050)))
+    assert "01/01 09:16:40 KST" in out.splitlines()[0]
+    assert "01/01 09:17:30 KST" in out
+
+
+@pytest.mark.parametrize("unknown_targets", [None, [None], "invalid"])
+def test_changed_notice_groups_unknown_protection_not_unchanged(unknown_targets):
+    before = position(timestamp=900, hard_stop=None, take_profits=unknown_targets,
+        partial_stops=unknown_targets)
+    after = position(hard_stop=None, take_profits=unknown_targets, partial_stops=unknown_targets)
+    out = render_notice(dict(kind="PROTECTION", timestamp=1000, protection_confirmed=True,
+        position_before=before, position_after=after))
+    assert "미확인: 손절 SL·익절 TP·부분 손절" in out
+    assert out.count("미확인:") == 1
+    assert "변경 없음" not in out
+
+
+@pytest.mark.parametrize("stage,title", [("initial", "첫 진입"), ("additional", "추가 체결"), (None, "체결 확인")])
+def test_entry_stage_has_explicit_lifecycle_title(stage, title):
+    out = render_notice(filled(entry_stage=stage, entry_timestamp=900, reason_code="BREAKOUT"))
+    assert title in out
+    assert len(out) <= 650 and len(out.splitlines()) <= 11
+
+
+def test_additional_fill_compares_verified_quantity_and_average():
+    out = render_notice(filled(entry_stage="additional", position_before=position(
+        timestamp=900, quantity=.05, average_entry_price=84000)))
+    assert "0.05 BTC → 0.1 BTC" in out
+    assert "84,000.00 USDT → 84,750.00 USDT" in out
+    assert "+27.00 USDT" in out
+
+
+def test_final_exit_fill_is_not_called_partial_or_settled():
+    out = render_notice(dict(kind="PARTIAL", timestamp=1000, fill_confirmed=True,
+        position_after=position(quantity=0, average_entry_price=None, hard_stop=None)))
+    assert "전량 청산 체결" in out and "정산 미확정" in out
+    assert "부분 청산" not in out and "정산 확인" not in out
+
+
+def test_unknown_exit_quantity_does_not_assert_partial_or_flat():
+    out = render_notice(dict(kind="PARTIAL", timestamp=1000, fill_confirmed=True))
+    assert "잔량 확인 중" in out
+    assert "부분 청산" not in out and "전량 청산" not in out
+
+
+def test_partial_exit_is_compact_and_keeps_remaining_protection_and_settlement():
+    out = render_notice(dict(kind="PARTIAL", timestamp=1000, fill_confirmed=True,
+        protection_confirmed=True, quantity=.06, price=85200, entry_price=84750,
+        entry_timestamp=500, reason_code="TAKE_PROFIT",
+        position_after=position(quantity=.04, take_profits=[])))
+    assert "부분 청산" in out and "보유 0.04 BTC" in out
+    assert "남은 물량 SL" in out and "정산 미확정" in out
+    assert len(out) <= 650 and len(out.splitlines()) <= 11
+
+
 def test_readable_sample_math_and_distinct_risk_bases():
     out = render_notice(filled())
-    for expected in ("8.86%", "보유물량 60%", "+0.53%", "+5.31%", "+27.00 USDT",
+    for expected in ("8.86%", "60%(0.06 BTC)", "+0.53%", "+5.31%", "+27.00 USDT",
                      "+0.28%", "-25.00 USDT", "-0.26%", "-0.29%", "-2.95%", "2.00%",
-                     "증거금은 최대손실", "수수료·슬리피지·펀딩"):
+                     "증거금≠손실한도", "수수료·슬리피지·펀딩"):
         assert expected in out
 
 
 def test_add_uses_whole_position_average_not_last_fill():
     out = render_notice(filled(price=86000, quantity=.01))
     assert "이번 체결: 0.01 BTC" in out
-    assert "전체 평균 진입가: 84,750.00" in out
+    assert "평단 84,750.00" in out
     assert "+27.00 USDT" in out
 
 
@@ -48,7 +123,7 @@ def test_verified_before_after_includes_target_only_change_and_timestamps():
     after = position(take_profits=[dict(price=85300, quantity=.06)])
     out = render_notice(dict(kind="PROTECTION", timestamp=1000, side="LONG",
         protection_confirmed=True, change_type="updated", position_before=before, position_after=after))
-    assert "변경 전" in out and "변경 후" in out and "변경 없음" in out
+    assert "조회" in out and "변경 없음" not in out
     assert "85,200.00" in out and "85,300.00" in out and "→" in out
 
 
@@ -75,18 +150,19 @@ def test_missing_margin_does_not_hide_valid_equity_based_risk(margin):
 
 
 def test_unknown_leverage_not_invented_and_bad_target_quantity_rejected():
-    assert "10배 단순환산" not in render_notice(filled(position(exchange_leverage=None)))
+    out = render_notice(filled(position(exchange_leverage=None)))
+    assert "10배" not in out and "배율 미확인" in out
     for targets in ([dict(price=85200, quantity=.2)],
                     [dict(price=85200, quantity=.06), dict(price=85300, quantity=.06)],
                     [dict(price=float("inf"), quantity=.06)]):
         out = render_notice(filled(position(take_profits=targets)))
-        assert "+27.00 USDT" not in out and "익절 목표: 미확인" in out
+        assert "+27.00 USDT" not in out and "미확인: 익절 TP" in out
 
 
 def test_initial_protection_never_fabricates_before():
     out = render_notice(dict(kind="PROTECTION", timestamp=1000, side="LONG",
         protection_confirmed=True, change_type="initial_protection", position_after=position()))
-    assert "최초 확인" in out and "이전 상태 미확인" in out
+    assert "기존 포지션" in out and "이전 상태 미확인" in out
     assert "변경 전:" not in out
 
 
@@ -102,7 +178,7 @@ def test_malformed_optional_values_do_not_drop_confirmed_fill():
     out = render_notice(filled(position(hard_stop=float("nan"), exchange_leverage=-10,
         scenario_budget=float("inf"), take_profits=[None])))
     assert "이번 체결: 0.1 BTC" in out and "nan" not in out and "inf" not in out
-    assert "환산 -" not in out and "익절 목표: 미확인" in out
+    assert "환산 -" not in out and "미확인: 손절 SL·익절 TP" in out
     out = render_notice(filled(position(timestamp=10**100)))
     assert "전체 포지션 기준 수익률 미확인" in out
     event = filled()
@@ -115,8 +191,8 @@ def test_partial_stop_and_flat_before_after_are_explicit():
     after = position(partial_stops=[dict(price=84600, quantity=.02)])
     out = render_notice(filled(after, position_before=position(quantity=0, average_entry_price=None,
         hard_stop=None, take_profits=[], partial_stops=[])))
-    assert "0 BTC → 0.1 BTC" in out and "부분 손절 목표" in out
-    assert "현재 보유물량 20%" in out and "-3.00 USDT" in out
+    assert "0 BTC → 0.1 BTC" in out and "부분 손절" in out
+    assert "20%(0.02 BTC)" in out and "-3.00 USDT" in out
     out = render_notice(filled(position(quantity=0, average_entry_price=None, hard_stop=None)))
     assert "현재 보유 포지션 없음" in out and "예상 손익" not in out
 
@@ -150,7 +226,7 @@ def test_account_and_position_overflow_never_prints_infinite_return():
 def test_partial_with_after_shows_actual_remaining_quantity():
     out = render_notice(dict(kind="PARTIAL", timestamp=1000, side="LONG", fill_confirmed=True,
         quantity=.06, position_after=position(quantity=.04, take_profits=[])))
-    assert "전체 보유량: 0.04 BTC" in out and "정리 수량: 0.06 BTC" in out
+    assert "보유 0.04 BTC" in out and "정리 수량: 0.06 BTC" in out
     assert "정산 미확정" in out
 
 
@@ -158,9 +234,9 @@ def test_short_direction_return_and_reserved_risk_percent_are_unambiguous():
     out = render_notice(filled(position(side="SHORT", average_entry_price=100, hard_stop=101,
         take_profits=[dict(price=95, quantity=.06)], scenario_risk=96.1309241435,
         scenario_risk_includes_pending=True), side="SHORT"))
-    assert "숏(가격 하락에 투자)" in out and "1배 포지션 수익률 +5.00%" in out
+    assert "숏" in out and "1배 +5.00%" in out
     assert "가격 기준" not in out
-    assert "비용·미체결까지 반영한 계획 위험: 96.13 USDT (시나리오 시작 순자산의 1.00%)" in out
+    assert "누적손실+잔여위험 1.00%(96.13 USDT)" in out
     assert "분할 진입 체결" not in out and "진입 체결" in out
 
 
@@ -172,10 +248,21 @@ def test_twenty_targets_are_valid_and_message_is_bounded_without_wrong_runner(ma
     after = position(**{**before, "hard_stop":84600*magnitude})
     out = render_notice(dict(kind="PROTECTION", timestamp=1000, side="LONG", protection_confirmed=True,
         position_before=before, position_after=after))
-    assert "총 20개" in out and "나머지 18개 상세 생략" in out
-    assert "목표 익절 후 남길 물량" not in out
+    assert "총 20개" not in out  # unchanged targets are omitted
     assert len(out.encode("utf-16-le")) // 2 < 4096
-    assert "실제 손실은 계획 한도를 넘을 수 있습니다" in out
+    assert "실제 손실은 목표 초과 가능" in out
+    changed_targets = [dict(price=item['price'] + 100*magnitude, quantity=item['quantity'])
+                       for item in targets]
+    changed = position(**{**after, "take_profits": changed_targets, "partial_stops": changed_targets})
+    events = [filled(after), dict(kind="PROTECTION", timestamp=1000, side="LONG",
+        protection_confirmed=True, position_before=before, position_after=changed)]
+    for event in events:
+        out = render_notice(event)
+        assert out.count("총 20개") == 2
+        assert out.count("나머지 18개 상세 생략") == 2
+        assert "익절 후" not in out  # all quantity is assigned across the full 20 targets
+        assert len(out.encode("utf-16-le")) // 2 < 4096
+        assert "실제 손실은 목표 초과 가능" in out
 
 
 def test_stop_before_after_impact_uses_each_snapshot_own_equity_and_size():
@@ -184,12 +271,12 @@ def test_stop_before_after_impact_uses_each_snapshot_own_equity_and_size():
     after = position(hard_stop=84600, quantity=.2)
     out = render_notice(dict(kind="PROTECTION", timestamp=1000, side="LONG",
         protection_confirmed=True, position_before=before, position_after=after))
-    assert "SL 가격 정리 가정 손익: -25.00 → -30.00 USDT" in out
-    assert "각 조회 시점 순자산 기준): -0.50% → -0.31%" in out
+    assert "SL 손익 -25.00 → -30.00 USDT" in out
+    assert "계좌 -0.50% → -0.31%" in out
     before["account_snapshot"]["same_account"] = False
     out = render_notice(dict(kind="PROTECTION", timestamp=1000, side="LONG",
         protection_confirmed=True, position_before=before, position_after=after))
-    assert "각 조회 시점 순자산 기준): 미확인 → -0.31%" in out
+    assert "계좌 미확인 → -0.31%" in out
 
 
 def test_profitable_short_stop_before_after_preserves_signed_gain():
@@ -201,8 +288,8 @@ def test_profitable_short_stop_before_after_preserves_signed_gain():
     after["account_snapshot"].update(equity=200)
     out = render_notice(dict(kind="PROTECTION", timestamp=1000, side="SHORT",
         protection_confirmed=True, position_before=before, position_after=after))
-    assert "SL 가격 정리 가정 손익: +0.10 → +0.50 USDT" in out
-    assert "각 조회 시점 순자산 기준): +0.10% → +0.25%" in out
+    assert "SL 손익 +0.10 → +0.50 USDT" in out
+    assert "계좌 +0.10% → +0.25%" in out
 
 
 def test_plan_is_not_fill_and_no_raw_payload():

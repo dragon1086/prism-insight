@@ -17,6 +17,7 @@ import json
 import math
 import time
 import uuid
+from contextlib import ExitStack, contextmanager
 
 from core.llm_scenario import validate_scenario, update_circuit_breaker
 from live.shared_entry_coordinator import database_path, mutation_lock
@@ -25,6 +26,23 @@ from live.scenario_llm import ScenarioModelError
 
 REQUIRED_CAPABILITIES = frozenset({"exact_fills", "atomic_protection",
     "exact_settlement", "idempotent_intents", "fresh_risk_context"})
+
+
+@contextmanager
+def _post_model_mutation_lock(conn):
+    """Briefly wait for protection; retry acquisition, never the guarded work."""
+    deadline = time.monotonic() + 8
+    with ExitStack() as stack:
+        while True:
+            try:
+                stack.enter_context(mutation_lock(conn))
+                break
+            except LockBusy:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                time.sleep(min(.25, remaining))
+        yield
 
 
 def _json(value):
@@ -284,6 +302,7 @@ class ScenarioRuntime:
     def _tick(self, claimed):
         """One synchronous tick; callers may run independent protection separately."""
         slot = int(self.clock() // 300)
+        stage = "initial_reconcile"
         try:
             if (getattr(self.broker, "environment", None) != "demo" or
                     getattr(self.broker, "lane", None) != "MAIN"):
@@ -307,25 +326,31 @@ class ScenarioRuntime:
                 self.conn.commit()  # Crash during LLM deliberately burns this slot.
                 claimed.append(slot)
                 version = state["version"]
+            stage = "snapshot_collection"
             snap = self.snapshot()
+            stage = "snapshot_validation"
             if snap.get("valid") is not True:
                 raise ValueError("invalid_market_snapshot")
             captured = snapshot_input_time(snap)
             input_id = str(uuid.uuid4())
             ctx.update(now=self.clock(), input_id=input_id, input_captured_at=captured,
                        max_input_age_seconds=120)
+            stage = "snapshot_persist"
             with mutation_lock(self.conn):
                 self.conn.execute("UPDATE llm_scenario_decisions SET snapshot=?, context=? WHERE slot=?",
                                   (_json(snap), _json(ctx), slot))
                 self.conn.commit()
+            stage = "proposal_call"
             payload = self.propose(snap, ctx)  # No broker mutation lock held.
             # Audit-only write: an already-claimed slot is owned by this caller.
             # Persist the proposal even if independent protection owns the trading
             # mutex when the model returns. This does NOT authorize execution.
+            stage = "proposal_persist"
             self.conn.execute("UPDATE llm_scenario_decisions SET proposal=? WHERE slot=? AND proposal IS NULL",
                               (_json(payload), slot))
             self.conn.commit()
-            with mutation_lock(self.conn):
+            stage = "post_model_reconcile"
+            with _post_model_mutation_lock(self.conn):
                 state = self.state()
                 self._reconcile(state)
                 fresh = self._context(state)
@@ -334,9 +359,11 @@ class ScenarioRuntime:
                     return {"status": "stale_proposal"}
                 fresh.update(now=self.clock(), input_id=input_id, input_captured_at=captured,
                              max_input_age_seconds=120)
+                stage = "validation"
                 validated = validate_scenario(payload, fresh)
                 if validated["action"] == "WAIT" and not validated.get("cancel_entry_ids"):
                     return {"status": "wait"}
+                stage = "execution"
                 ident = validated["action_id"]
                 if state["active"] is None:
                     if self.conn.execute("SELECT 1 FROM llm_scenario_settlements WHERE scenario_id=?", (validated["scenario_id"],)).fetchone():
@@ -383,11 +410,21 @@ class ScenarioRuntime:
         except LockBusy:
             self.conn.rollback()
             return {"status":"lock_busy","reason":"another_protection_or_execution_tick"}
-        except Exception:
+        except Exception as exc:
             # No exception text/account data enters public notifications. Previously
             # committed intents and slot claims survive all failures.
             self.conn.rollback()
-            return {"status": "blocked", "reason": "reconciliation_or_proposal_failed"}
+            outcome = {"status": "blocked", "reason": "reconciliation_or_proposal_failed",
+                       "failure_stage": stage}
+            safe_codes = {
+                "snapshot_collection": {"empty_public_data", "collection_too_slow",
+                    "candle_boundary_crossed_during_collection", "future_public_candle"},
+                "snapshot_validation": {"invalid_market_snapshot", "invalid_snapshot_time"},
+            }
+            code = exc.args[0] if type(exc) is ValueError and len(exc.args) == 1 else None
+            if isinstance(code, str) and code in safe_codes.get(stage, ()):
+                outcome["failure_code"] = code
+            return outcome
 
     def tick(self):
         claimed = []

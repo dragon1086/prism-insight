@@ -583,10 +583,12 @@ class ScenarioDemoBroker(ScenarioExecution):
         before=json.loads(previous[1]) if previous else None
         fresh_rich_comparison=False
         fills=[(c,e) for c in children if c["evidence"] for e in c["evidence"]["executions"]]
+        fills.sort(key=lambda item:(float(item[1]["execTime"]),item[1]["execId"]))
         entry_fills=[e for c,e in fills if c["kind"]=="entry"]
         entry_qty=sum(float(e["execQty"]) for e in entry_fills)
         avg=sum(float(e["execQty"])*float(e["execPrice"]) for e in entry_fills)/entry_qty if entry_qty else None
         entry_at=min((float(e["execTime"])/1000 for e in entry_fills),default=None)
+        first_entry=entry_fills[0] if entry_fills else None
         candidates=[]
         incident=self.conn.execute("SELECT episode,active FROM llm_scenario_broker_incidents WHERE scenario_id=?",(active["scenario_id"],)).fetchone()
         episode,was_pending=incident if incident else (0,0)
@@ -606,6 +608,10 @@ class ScenarioDemoBroker(ScenarioExecution):
                 hard_stop=float(observed["position"].get("stopLoss",0)) or active["hard_stop"],
                 protection_confirmed=protected,exchange_leverage=float(observed["position"]["leverage"]),
                 scenario_budget=active["initial_equity"]*.02,settlement_confirmed=False)
+            if child["kind"]=="entry" and not pending:
+                # More fills belong to this same scenario, not a fresh cycle.
+                # Unknown earlier evidence cannot establish the first entry.
+                event["entry_stage"]="initial" if fill["execId"]==first_entry["execId"] else "additional"
             if snapshot and 0<=observed["captured_at"]-event["timestamp"]<=120:
                 event.update(position_after=snapshot,position_snapshot_scope="post_observation_total",
                     remaining_quantity=snapshot["quantity"],account_snapshot=snapshot["account_snapshot"])
@@ -626,6 +632,7 @@ class ScenarioDemoBroker(ScenarioExecution):
             revision=previous[0]+1 if previous else 1
             candidates.append(dict(event_id="scenario-position-"+hashlib.sha256(f'{active["scenario_id"]}:{revision}'.encode()).hexdigest()[:24],
                 kind="PROTECTION",timestamp=observed["captured_at"],side=active["side"],hard_stop=stop,
+                entry_timestamp=entry_at,
                 protection_confirmed=True,exchange_leverage=float(observed["position"]["leverage"]),remaining_quantity=float(observed["position"]["size"]),
                 position_before=before,position_after=snapshot,change_type="updated" if before else "initial_protection"))
         if settlement and settlement.get("execution_ids"):
