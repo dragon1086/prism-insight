@@ -241,6 +241,15 @@ class ScenarioRuntime:
         if active:
             ctx.update(initial_equity=active["initial_equity"], side=active["side"],
                        previous_hard_stop=active["hard_stop"])
+            plans=self.conn.execute("SELECT payload,status,evidence FROM llm_scenario_intents WHERE scenario_id=? ORDER BY rowid DESC LIMIT 5",
+                                    (active["scenario_id"],)).fetchall()
+            ctx["current_plan"]=json.loads(plans[0][0]) if plans else None
+            ctx["recent_actions"]=[{
+                "action":json.loads(payload)["action"],"revision":json.loads(payload)["revision"],
+                "status":status,"verified_executed_quantity":json.loads(evidence).get("filled_quantity") if evidence else None
+            } for payload,status,evidence in reversed(plans)]
+        else:
+            ctx.update(current_plan=None,recent_actions=[])
         ctx["new_risk_blocked"] = bool(ctx["new_risk_blocked"] or state["breaker"].get("blocked"))
         if state["breaker"].get("blocked") and not state.get("halt_notified"):
             stamp=state.setdefault("halted_at",self.clock())

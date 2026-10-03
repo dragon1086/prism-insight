@@ -36,6 +36,10 @@ rename a scenario to reset risk or propose trades while a halt is latched.
 If accounting_status is pending, missing loss/fee/funding values are UNKNOWN,
 not zero. Respect the observed live position even if settlement is incomplete;
 use WAIT or EXIT, never propose extra exposure or reset the scenario.
+Read current_plan, recent_actions and target_status before revising a scenario.
+ADJUST replaces the target plan for the remaining position. Do not automatically
+recreate already filled TP targets; retain a protected runner when the thesis
+remains valid. Refer to the previous plan and actual fills in your revision reason.
 chase.max_reprices>0 explicitly authorizes the host to reprice a still-live
 unfilled entry at most once per minute within chase.max_bps of its original
 limit and before expires_at, with exact cancellation and fresh risk checks.

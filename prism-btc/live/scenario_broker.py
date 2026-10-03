@@ -387,6 +387,11 @@ class ScenarioDemoBroker(ScenarioExecution):
                     realized_loss=None,fees_paid=None,funding_paid=None)
         protection=not float(observed["position"]["size"]) or bool(active and self._verify_protection(observed,active["hard_stop"],active["side"]))
         return dict(account_version=observed["account_version"],legacy_fenced=observed["legacy_fenced"],
+            target_status=[dict(target_id=c["local_id"],kind=c["kind"],status=c["status"],
+                price=c["request"].get("price",c["request"].get("triggerPrice")),
+                filled_quantity=c["evidence"]["order"].get("cumExecQty") if c["evidence"] else None,
+                remaining_quantity=c["evidence"]["order"].get("leavesQty") if c["evidence"] else None)
+                for c in children if c["kind"] in {"tp","partial_sl"}],
             accounting_status="confirmed" if financial_ok else "pending",
             price_tick=float(instrument["tick"]),quantity_step=float(instrument["step"]),
             minimum_quantity=float(instrument["minimum"]),minimum_notional=float(instrument["notional"]),

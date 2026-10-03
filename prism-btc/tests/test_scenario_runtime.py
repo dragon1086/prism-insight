@@ -358,3 +358,17 @@ def test_flat_halt_skips_llm_but_still_reconciles(setup):
     assert r.tick()=={"status":"blocked","reason":"new_risk_halted"}
     assert b.reconciles>0
     assert r.state()["breaker"]["blocked"]
+
+
+def test_next_judgment_receives_previous_plan_and_verified_action_history(setup):
+    r,b,now,_=setup
+    r.tick()
+    b.evidence={'intents':[terminal()]}
+    now[0]+=300
+    def model(s,c):
+        assert c['current_plan']['action']=='OPEN'
+        assert c['current_plan']['take_profits'][0]['price']==120
+        assert c['recent_actions'][-1]['verified_executed_quantity']==1
+        return wait_proposal(s,c,action_id='wait-2')
+    r.propose=model
+    assert r.tick()['status']=='wait'
