@@ -267,8 +267,8 @@ us_stock_holdings 테이블(account_id='primary' 필터)에서 다음을 확인�
 - **9~10점**: 펀더 4개 모두 강함 + 모멘텀 3개+ 신호 + 추세 명확 (상승하는 50일선 위)
 - **7~8점**: F1~F4 통과 + 모멘텀 2개+ 신호 + 1.5·1.6단계 게이트 통과
 - **5~6점**: F1~F4 통과 + 모멘텀 1개 신호 + 1.5·1.6단계 게이트 통과 (조건부 진입 영역)
-- **3~4점**: F1~F4 통과 + 모멘텀 부족 (min_score가 4인 국면에서만 진입 검토), 또는 F1~F4는 통과했지만 1.5단계 추세 게이트·1.6단계 상습 손절 게이트에 걸려 미진입하는 종목. 게이트에 걸린 종목은 펀더·모멘텀이 강해도 4점을 넘지 않고, 추세 게이트 하나만으로 1~2점까지 내리지 않습니다. 1.5단계 예외(거래량 동반 이동평균 회복)가 성립하면 게이트 통과로 보고 정상 산정합니다.
-- **1~2점**: 펀더 게이트 미달 또는 명확한 부정 요소 (미진입 단독 사유 1·2·4 해당 등)
+- **3~4점**: F1~F4 통과 + 모멘텀 신호 0개(매트릭스 모멘텀 조건 미달이라 미진입 영역), 또는 F1~F4는 통과했지만 1.5단계 추세 게이트·1.6단계 상습 손절 게이트에 걸려 미진입하는 종목. 게이트에 걸린 종목은 펀더·모멘텀이 강해도 4점을 넘지 않고, 추세 게이트 하나만으로 1~2점까지 내리지 않습니다. 1.5단계 예외(거래량 동반 이동평균 회복)가 성립하면 게이트 통과로 보고 정상 산정합니다.
+- **1~2점**: 펀더 게이트 미달 또는 명확한 부정 요소 (미진입 단독 사유 1·2·4 해당 등). 단, 1단계의 강세 국면 보완 경로(F 1개 미달 + rationale의 구체적 보완 근거 + rejection_reason null)에 해당하면 1~2점이 아니라 모멘텀·게이트 기준대로 산정하되 최대 6점(조건부 진입 영역)으로 둡니다. 보완 근거가 없거나 2개 이상 미달이면 1~2점입니다.
 
 손익비·손절폭·목표가 미달은 가격 위치의 문제이므로 점수에 반영하지 않고 rejection_reason에만 적습니다.
 
@@ -655,8 +655,8 @@ The score answers "is this setup buyable now". Scores of 5 or more are only for 
 - **9~10**: All 4 fundamental checks strong + 3+ momentum signals + clear trend (above a rising 50-day MA)
 - **7~8**: F1~F4 pass + 2+ momentum signals + Step 1.5/1.6 gates pass
 - **5~6**: F1~F4 pass + 1 momentum signal + Step 1.5/1.6 gates pass (conditional zone)
-- **3~4**: F1~F4 pass + momentum thin (only enterable where min_score is 4), or F1~F4 pass but the stock is a no-entry under the Step 1.5 trend gate or the Step 1.6 repeat stop-out gate. A gated stock never scores above 4 however strong its fundamentals or momentum, and the trend gate alone does not push it down to 1~2. When the Step 1.5 exception (volume-backed reclaim of the moving average) holds, the gate counts as passed and the score is assigned normally.
-- **1~2**: Fundamental Gate fails, or clear negative factor (e.g. standalone no-entry reasons 1, 2 or 4)
+- **3~4**: F1~F4 pass + zero momentum signals (a no-entry zone because the matrix momentum condition fails), or F1~F4 pass but the stock is a no-entry under the Step 1.5 trend gate or the Step 1.6 repeat stop-out gate. A gated stock never scores above 4 however strong its fundamentals or momentum, and the trend gate alone does not push it down to 1~2. When the Step 1.5 exception (volume-backed reclaim of the moving average) holds, the gate counts as passed and the score is assigned normally.
+- **1~2**: Fundamental Gate fails, or clear negative factor (e.g. standalone no-entry reasons 1, 2 or 4). Exception: a stock on the Step 1 bull-regime compensation path (one F check fails, the rationale gives concrete compensating evidence, and rejection_reason is null) is scored by the momentum and gate bands instead, capped at 6 (conditional zone). Without compensating evidence, or with two or more fails, it scores 1~2.
 
 R/R, stop-width and target shortfalls are about price location: do not fold them into the score; state them in rejection_reason only.
 

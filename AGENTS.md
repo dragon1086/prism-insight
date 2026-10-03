@@ -116,6 +116,9 @@ Avoid broad production-like runs unless the task requires them.
   source locations and same-candidate tests before claiming compatibility.
   Keep execution/data bug repair separate
   and do not delay a proven safety fix under the guise of strategy research.
+- For every BUY/SELL/holding-review prompt change, apply the harness's prompt framing and
+  logical-consistency review: trace the assembled prompt like a program, list contradictions
+  with existing rules, and ask the user to decide any contradiction whose fix changes direction.
 
 ### BTC roadmap governance
 
