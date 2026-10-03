@@ -100,10 +100,15 @@ def _scenario(sid, intents, children, settlement, proposals, asof, start, seen):
     for intent in intents:
         payload = object_json(intent["payload"])
         require(payload.get("action_id") == intent["id"] and payload.get("scenario_id") == sid)
-        if (intent["id"], sid) not in proposals:
+        candidates = [decision for decision in proposals.get((intent["id"], sid), [])
+                      if decision["input_link_valid"] and decision["input_id"] == payload.get("input_id")
+                      and decision["action"] == payload.get("action")]
+        if not candidates:
             issues.add("MISSING_DECISION_ACTION_LINK")
+        elif len(candidates) != 1:
+            issues.add("AMBIGUOUS_DECISION_ACTION_LINK")
         else:
-            decision = proposals[(intent["id"], sid)]
+            decision = candidates[0]
             starts.append(decision["slot_start"])
             if (payload.get("action") == decision["action"] == "OPEN"
                     and decision["input_link_valid"] and payload.get("input_id") == decision["input_id"]):
@@ -212,6 +217,7 @@ def build_packet(db, prospective_start=None):
                   profitability_proven=False, auto_promotion=False, prospective_start=start,
                   exporter_source_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                   trading_code_version=None, source_asof=None,
+                  decision_scope="GLOBAL_STORED_HISTORY_NOT_POST_BOUNDARY",
                   insufficiency_reasons=["MISSING_FUNDING_SCHEDULE", "MISSING_FINANCIAL_SCENARIO_FK",
                                          "MISSING_TRADING_CODE_VERSION", "MISSING_SETTLEMENT_TIMESTAMP"],
                   scenarios=None, decision_outcomes=None, notice_statuses=None, notice_receipts=None,
@@ -235,11 +241,10 @@ def build_packet(db, prospective_start=None):
                 key = (proposal["action_id"], proposal["scenario_id"])
                 slot_start = float(number(row["slot"]) * 300)
                 context = object_json(row["context"]) if row.get("context") else {}
-                require(key not in proposals)
-                proposals[key] = dict(slot_start=slot_start, action=proposal.get("action"),
+                proposals.setdefault(key, []).append(dict(slot_start=slot_start, action=proposal.get("action"),
                     input_id=proposal.get("input_id"), input_link_valid=(
                         isinstance(proposal.get("input_id"), str) and bool(proposal["input_id"])
-                        and proposal["input_id"] == context.get("input_id")))
+                        and proposal["input_id"] == context.get("input_id"))))
             result = object_json(row["outcome"]) if row["outcome"] else {}
             outcome = result.get("status", "MISSING")
             outcomes[outcome if outcome in OUTCOMES or outcome == "MISSING" else "OTHER"] += 1
