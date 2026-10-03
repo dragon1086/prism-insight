@@ -51,9 +51,12 @@ scenario_notice.py는 계산/표시만 담당하고, scenario_notice_evidence.py
 알림 생성/렌더링/상태 저장 오류는 별도 SAVEPOINT로 격리해 검증된 주문·회계·보호 결과를
 롤백하지 않는다. 알림만 실패하면 미완료 알림 상태를 성공으로 꾸미지 않는다.
 
-최종 로컬 전체 BTC 테스트2,735 passed /12 skipped /네트워크 시도0건. Ruff F/E9·구문·
+초기 통합 검증은 전체 BTC 테스트2,735 passed /12 skipped /네트워크 시도0건. Ruff F/E9·구문·
 diff 검사를 통과했다. Python LSP는tsc 기반이므로 별도 Python 타입검사로 주장하지 않는다.
 최종 CI/서버 격리/배포/자연 실행은 PR과 전달 보고서에 따로 기록한다.
+정적 검사 과정에서 savepoint 정리 자체가 실패할 때 부분 알림 기록이 남는 반례도 재현했다.
+핵심 회계는 이미 커밋된 상태이므로 선택적 알림 트랜잭션 전체를 rollback하는 대체 경로를
+추가했고, 알림 기록 제거·회계 보존·추가 주문 없음의 회귀를 고정했다.
 
 근거: [Bybit 손익 설명](https://www.bybit.com/en/help-center/article/Profit-Loss-calculations-USDT-Contract),
 [Bybit P&L FAQ](https://www.bybit.com/en/help-center/article/FAQ-Profit-Loss-Calculation).
