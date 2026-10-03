@@ -22,8 +22,8 @@ def test_notice_economic_changes_durable_and_no_exchange_writes(live):
     b,e=live
     active,children,observed=notice_fixture()
     first=b._notices(active,children,observed,True,None)
-    assert first[-1]["change_type"]=="initial_protection"
-    assert first[-1]["position_before"] is None
+    assert first==[]
+    assert b.conn.execute("SELECT revision FROM llm_scenario_notice_positions").fetchone()[0]==1
     children[0]["evidence"]["order"]["price"]="106"
     observed["captured_at"]+=300
     second=b._notices(active,children,observed,True,None)[-1]
@@ -38,7 +38,7 @@ def test_notice_economic_changes_durable_and_no_exchange_writes(live):
     children[0]["order_id"]="replacement-id"
     observed.update(equity=9999,captured_at=observed["captured_at"]+300)
     restarted=ScenarioDemoBroker(b.conn,session=e,expected_main_uid="123")
-    assert len(restarted._notices(active,children,observed,True,None))==3
+    assert len(restarted._notices(active,children,observed,True,None))==2
     assert e.writes==[]
 
 
@@ -82,16 +82,36 @@ def test_pending_evidence_does_not_claim_first_entry(live):
     assert e.writes==[]
 
 
-def test_existing_position_status_references_original_entry_not_new_trade(live):
+def test_existing_position_baseline_never_reannounces_old_entry(live):
     b,e=live
     active,children,observed=notice_fixture()
     children.append(dict(kind="entry",status="TERMINAL",intent_id="none",evidence=dict(order={},
         executions=[dict(execId="old-entry",execQty="1",execPrice="100",execTime="1799999000000")])))
-    events=b._notices(active,children,observed,True,None)
-    status=next(n for n in events if n["kind"]=="PROTECTION")
-    assert status["entry_timestamp"]==1799999000
-    assert status["position_before"] is None
-    assert status["position_after"]["quantity"]==1
+    # The original fill was already announced before snapshot tracking existed.
+    old_fill=dict(event_id="scenario-fill-old-entry",kind="FILLED")
+    b.conn.execute("INSERT INTO llm_scenario_broker_notices VALUES(?,?,?)",
+        (old_fill["event_id"],active["scenario_id"],json.dumps(old_fill)))
+    b.conn.execute("CREATE TABLE llm_scenario_outbox(event_id TEXT PRIMARY KEY)")
+    b.conn.execute("INSERT INTO llm_scenario_outbox VALUES(?)",(old_fill["event_id"],))
+    assert b._notices(active,children,observed,True,None)==[]
+    baseline=json.loads(b.conn.execute("SELECT body FROM llm_scenario_notice_positions").fetchone()[0])
+    assert baseline["quantity"]==1
+    b.conn.commit()
+    restarted=ScenarioDemoBroker(b.conn,session=e,expected_main_uid="123")
+    observed["captured_at"]+=300
+    observed["equity"]+=10
+    observed["position"]["positionIM"]="11"
+    children[0]["order_id"]="replacement-id"
+    assert restarted._notices(active,children,observed,True,None)==[]
+    assert b.conn.execute("SELECT count(*) FROM llm_scenario_broker_notices").fetchone()[0]==1
+    # A genuine subsequent TP change still produces one before/after event.
+    children[0]["evidence"]["order"]["price"]="106"
+    changed=restarted._notices(active,children,observed,True,None)
+    assert len(changed)==1 and changed[0]["kind"]=="PROTECTION"
+    assert changed[0]["position_before"]["take_profits"][0]["price"]==105
+    assert changed[0]["position_after"]["take_profits"][0]["price"]==106
+    b.conn.execute("INSERT INTO llm_scenario_outbox VALUES(?)",(changed[0]["event_id"],))
+    assert restarted._notices(active,children,observed,True,None)==[]
     assert e.writes==[]
 
 
@@ -118,7 +138,7 @@ def test_new_fill_compares_valid_baseline_without_duplicate_protection(live,kind
     children.append(dict(kind=kind,status="TERMINAL",intent_id="none",evidence=dict(order={},
         executions=[dict(execId="added-fill",execQty="1",execPrice="103",execTime="1800000060000")])))
     events=b._notices(active,children,observed,True,None)
-    assert [n["kind"] for n in events]==["PROTECTION",notice_kind]
+    assert [n["kind"] for n in events]==[notice_kind]
     assert events[-1]["position_before"]["quantity"]==1
     assert events[-1]["position_after"]["quantity"]==float(quantity)
 
@@ -160,7 +180,7 @@ def test_recovered_old_fill_has_no_current_account_snapshot(live):
     events=b._notices(active,children,observed,True,None)
     fill=next(n for n in events if n["kind"]=="FILLED")
     assert "position_after" not in fill and "account_snapshot" not in fill
-    assert events[-1]["position_before"] is None
+    assert [n["kind"] for n in events]==["FILLED"]
 
 
 def test_notice_risk_uses_confirmed_costs_and_pending_entries():

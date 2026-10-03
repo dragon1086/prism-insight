@@ -1,8 +1,118 @@
 import sqlite3
+import json
+import sys
 import pytest
 from types import SimpleNamespace
 
 from live.scenario_runner import run_once
+
+
+def _main_failure_fixture(tmp_path, monkeypatch, error, stage):
+    from live import scenario_runner, scenario_control, scenario_broker, tracking
+    path = tmp_path / 'runner.db'
+    c = tracking.get_connection(path)
+    tracking.ensure_schema(c)
+    c.close()
+    monkeypatch.setattr(sys, 'argv', ['scenario_runner', '--execute', '--root-db', str(path)])
+    monkeypatch.setattr(scenario_control, 'read_control', lambda conn: {'main_uid': '123', 'state': 'active'})
+    monkeypatch.setattr(scenario_control, 'existing_account_bindings', lambda conn: ('123', '456'))
+    calls = []
+    def fail(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(scenario_broker, 'ScenarioDemoBroker', fail if stage == 'broker_init' else lambda *a, **k: object())
+    monkeypatch.setattr(scenario_runner, 'run_once', fail if stage == 'run' else lambda *a, **k: calls.append('run'))
+    if stage == 'control':
+        monkeypatch.setattr(scenario_control, 'read_control', fail)
+    monkeypatch.setattr(scenario_runner, 'deliver_notices', lambda conn, result: calls.append('delivery'))
+    return scenario_runner, path, calls
+
+
+@pytest.mark.parametrize('mode', ['--execute', '--protect-only'])
+def test_main_constructor_lock_contention_is_skip_without_delivery(tmp_path, monkeypatch, capsys, mode):
+    from live.entry_reservations import LockBusy
+    runner, path, calls = _main_failure_fixture(tmp_path, monkeypatch, LockBusy('secret'), 'broker_init')
+    monkeypatch.setattr(sys, 'argv', ['scenario_runner', mode, '--root-db', str(path)])
+    health = []
+    monkeypatch.setattr(runner, 'record_health', lambda conn, result, **kw: health.append(dict(result)))
+    assert runner.main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['status'] == 'lock_busy'
+    assert result['failure_stage'] == 'broker_init'
+    assert result['model_called'] is False
+    assert health == [result]
+    assert calls == []
+    assert 'secret' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('stage', ['control', 'broker_init', 'run'])
+def test_main_unexpected_failure_records_safe_stage_and_remains_blocked(tmp_path, monkeypatch, capsys, stage):
+    runner, path, calls = _main_failure_fixture(tmp_path, monkeypatch, ValueError('token=secret'), stage)
+    health = []
+    monkeypatch.setattr(runner, 'record_health', lambda conn, result, **kw: health.append(dict(result)))
+    assert runner.main() == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result['status'] == 'blocked'
+    assert result['reason'] == 'scenario_runtime_unavailable'
+    assert result['failure_stage'] == stage
+    assert result['error_type'] == 'ValueError'
+    assert health == [result]
+    assert calls == ['delivery']
+    assert 'secret' not in json.dumps(result)
+
+
+def test_lock_skip_never_resolves_existing_incident(tmp_path):
+    from live.scenario_runner import notify_runtime_status
+    c = sqlite3.connect(tmp_path / 'state.db')
+    notify_runtime_status(c, {'status': 'blocked', 'reason': 'protection_unconfirmed'})
+    notify_runtime_status(c, {'status': 'lock_busy', 'failure_stage': 'broker_init'})
+    assert c.execute('SELECT active FROM llm_scenario_runner_incident').fetchone()[0] == 1
+    assert c.execute('SELECT kind FROM llm_scenario_outbox').fetchall() == [('PENDING',)]
+    c.close()
+
+
+@pytest.mark.parametrize('failure', [sqlite3.OperationalError('secret db path'), PermissionError('secret auth')])
+def test_main_real_failure_health_record_is_error_not_recovery(tmp_path, monkeypatch, capsys, failure):
+    runner, path, calls = _main_failure_fixture(tmp_path, monkeypatch, failure, 'broker_init')
+    assert runner.main() == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result['status'] == 'blocked'
+    c = sqlite3.connect(path)
+    rows = c.execute('SELECT kind, message FROM btc_events').fetchall()
+    assert rows == [
+        ('error', 'scenario tick blocked: scenario_runtime_unavailable; failure_stage=broker_init; error_type=' + type(failure).__name__),
+        ('heartbeat', 'scenario tick: blocked'),
+    ]
+    assert 'secret' not in str(rows)
+    assert calls == ['delivery']
+    c.close()
+
+
+def test_main_unknown_exception_type_and_health_failure_are_sanitized(tmp_path, monkeypatch, capsys):
+    error = type('SecretTokenInClassName', (Exception,), {})('secret payload')
+    runner, _, calls = _main_failure_fixture(tmp_path, monkeypatch, error, 'broker_init')
+    def unavailable(*args, **kwargs):
+        raise sqlite3.OperationalError('secret database')
+    monkeypatch.setattr(runner, 'record_health', unavailable)
+    assert runner.main() == 1
+    output = capsys.readouterr().out
+    result = json.loads(output)
+    assert result['status'] == 'blocked'
+    assert result['error_type'] == 'Exception'
+    assert result['health_recording'] == 'failed'
+    assert 'secret' not in output.lower()
+    assert calls == ['delivery']
+
+
+def test_main_lock_skip_records_only_non_success_heartbeat(tmp_path, monkeypatch, capsys):
+    from live.entry_reservations import LockBusy
+    runner, path, calls = _main_failure_fixture(tmp_path, monkeypatch, LockBusy('secret'), 'broker_init')
+    assert runner.main() == 0
+    assert json.loads(capsys.readouterr().out)['status'] == 'lock_busy'
+    c = sqlite3.connect(path)
+    assert c.execute('SELECT kind, message FROM btc_events').fetchall() == [('heartbeat', 'scenario tick: lock_busy')]
+    assert not c.execute("SELECT name FROM sqlite_master WHERE name LIKE 'llm_scenario_%incident'").fetchall()
+    assert calls == []
+    c.close()
 
 
 def test_default_does_not_construct_runtime_or_call_broker(tmp_path):

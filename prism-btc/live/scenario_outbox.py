@@ -72,10 +72,19 @@ def flush(conn, *, sender=None, limit=10):
         except Exception:
             receipt=None
         confirmed=type(receipt) is int and receipt>0
-        with mutation_lock(conn):
-            conn.execute("UPDATE llm_scenario_outbox SET status=?,message_id=? WHERE event_id=?",
-                         ('SENT' if confirmed else 'UNKNOWN',receipt if confirmed else None,event_id))
+        # The claim is already durable. Receipt-only bookkeeping must not lose
+        # a known ACK merely because trading acquired its separate flock while
+        # the network call was in flight. SQLite serializes this conditional
+        # update; no order/risk state is read or changed here.
+        try:
+            changed=conn.execute("UPDATE llm_scenario_outbox SET status=?,message_id=? WHERE event_id=? AND status='SENDING'",
+                                 ('SENT' if confirmed else 'UNKNOWN',receipt if confirmed else None,event_id)).rowcount
+            if changed != 1:
+                raise RuntimeError("notice_receipt_claim_lost")
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         sent+=int(confirmed)
         unknown+=int(not confirmed)
     return {"sent":sent,"unknown":unknown}
