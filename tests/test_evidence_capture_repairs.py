@@ -121,10 +121,12 @@ def test_buy_prompt_reconciles_evidence_without_new_gate(market, language):
             # 2026-09-30 reviewed: 3 US institutional-flow lines note the data is not supplied (never scored).
             # 2026-10-01 reviewed: JSON tail only — sell_triggers hard stop / -7% lines describe the
             # executed intraday hard stop (live price <= stop_loss x 0.995). Decision rules unchanged.
+            # 2026-10-03 reviewed: rules hash only — buy_score rubric aligned with the Step 1.5/1.6 gates
+            # (a gated no-entry scores at most 4 with no positive macro bonus; R/R stays out of the score).
             # Unrelated execution rules retain their original hashes.
-            "ko": ("2079b13a8e95c80b76537fb257215baa65581bc625c0a5a09c58693f0625f9a4",
+            "ko": ("3b2363e6e88705c09d9f84d9c45bea26f55c0affb4517888c380d8638eca0bd8",
                    "2ebd835f36185c5b6411ea7a600c8549b07cd670e14c85deec71e4918cf931b6"),
-            "en": ("1b1e25e5eb6175ec7020811579293ca968c331fe708c471694ba66e0e6ac6982",
+            "en": ("8202fe9ddcab2ac4524bcb5da5f5869c46a449b1e5ad54bf28ab00e8b3b5d137",
                    "da048b5f3c28327f95d7b0e7b7ab11c6db72096d1d203200d364569aec188543"),
         }
         tool_heading = "## 도구 사용" if language == "ko" else "## Tool Usage"
