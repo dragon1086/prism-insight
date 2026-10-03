@@ -35,6 +35,8 @@ from telegram_summary_agent import TelegramSummaryGenerator, process_all_reports
 
 # Import required functions from telegram_bot_agent.py
 from telegram_bot_agent import TelegramBotAgent
+from prism_core.log_redaction import install as _install_log_redaction  # noqa: E402
+_install_log_redaction()
 
 async def run_pipeline(args):
     """

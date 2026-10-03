@@ -7,6 +7,8 @@ from telegram import Bot
 from telegram.error import BadRequest, NetworkError, TelegramError, RetryAfter
 from telegram.request import HTTPXRequest
 from messaging.telegram_delivery import TelegramDeliveryUnknown, send_message_once_or_rate_retry
+from prism_core.log_redaction import install as _install_log_redaction  # noqa: E402
+_install_log_redaction()
 
 # Logging setup
 logging.basicConfig(
