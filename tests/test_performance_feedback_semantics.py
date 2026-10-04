@@ -132,9 +132,24 @@ def test_actual_mode_applies_penalty_and_candidate_rows_do_not_change_it(db):
     )
     connection.commit()
     feedback = get_trigger_feedback(cursor, "KR", "Gap")
-    adjustment = resolve_actual_adjustment(feedback, mode="actual")
+    adjustment = resolve_actual_adjustment(feedback, mode="actual", screening_priority=False)
     assert adjustment["would_adjust"] == -1
     assert adjustment["applied_adjust"] == -1
+    assert adjustment["suppressed_by"] is None
+
+
+def test_actual_mode_is_not_double_counted_while_screening_priority_is_active(db, monkeypatch):
+    connection, cursor = db
+    _seed(cursor, "KR")
+    connection.commit()
+    feedback = get_trigger_feedback(cursor, "KR", "Gap")
+    monkeypatch.delenv("TRIGGER_QUALITY_PRIORITY", raising=False)
+    adjustment = resolve_actual_adjustment(feedback, mode="actual")
+    assert adjustment["would_adjust"] == -1
+    assert adjustment["applied_adjust"] == 0
+    assert adjustment["suppressed_by"] == "TRIGGER_QUALITY_PRIORITY"
+    monkeypatch.setenv("TRIGGER_QUALITY_PRIORITY", "false")
+    assert resolve_actual_adjustment(feedback, mode="actual")["applied_adjust"] == -1
 
 
 def test_insufficient_actual_samples_never_adjust(db):
