@@ -47,7 +47,10 @@ def test_real_kr_trigger_final_observation_preserves_selection(monkeypatch, empt
         if observer_fails:
             raise RuntimeError("synthetic optional observer failure")
     monkeypatch.setattr(oneil_watchlist, "observe_batch", observe)
+    from prism_core import trigger_quality
+    monkeypatch.setenv("TRIGGER_QUALITY_PRIORITY", "false")  # neutral; selection is stubbed here
     ns = {"datetime": dt, "logging": logging, "logger": MagicMock(), "ch": MagicMock(),
+          "trigger_quality": trigger_quality,
           "_resolve_trade_date": lambda _: "20260916",
           "load_market_snapshot_bundle": lambda _: SimpleNamespace(snapshot=None, prev_snapshot=None,
               prev_date="20260915", cap_df=[]), "select_final_tickers": lambda *a, **kw: final}

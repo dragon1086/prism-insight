@@ -139,13 +139,29 @@ def trigger_feedback_mode(value: str | None = None) -> str:
     return mode if mode in _VALID_MODES else "shadow"
 
 
+def screening_trigger_priority_active(value: str | None = None) -> bool:
+    """Mirror of prism_core.trigger_quality.priority_enabled (TRIGGER_QUALITY_PRIORITY).
+
+    Read directly so this file stays importable by file path from both runtimes.
+    """
+    raw = value if value is not None else os.getenv("TRIGGER_QUALITY_PRIORITY", "true")
+    return str(raw or "true").strip().lower() not in {"0", "false", "no", "off"}
+
+
 def resolve_actual_adjustment(
     feedback: dict[str, Any],
     *,
     mode: str | None = None,
     min_samples: int = 5,
+    screening_priority: bool | None = None,
 ) -> dict[str, Any]:
-    """Return would/applied adjustment; Candidate stats never affect it."""
+    """Return would/applied adjustment; Candidate stats never affect it.
+
+    Trigger-level history is applied in one decision layer only. While the
+    screening trigger-quality priority is active it already ranks triggers by
+    the same realized outcomes, so ``actual`` mode keeps logging the would-be
+    adjustment but applies none to the BUY score (no double counting).
+    """
     resolved_mode = trigger_feedback_mode(mode)
     actual = feedback.get("actual_trigger") or {}
     n = int(actual.get("n") or 0)
@@ -156,13 +172,17 @@ def resolve_actual_adjustment(
             would_adjust = -1
         elif float(win_rate) > 0.65:
             would_adjust = 1
+    if screening_priority is None:
+        screening_priority = screening_trigger_priority_active()
+    suppressed = resolved_mode == "actual" and bool(screening_priority) and would_adjust != 0
     return {
         "mode": resolved_mode,
         "min_samples": min_samples,
         "actual_n": n,
         "actual_win_rate": win_rate,
         "would_adjust": would_adjust,
-        "applied_adjust": would_adjust if resolved_mode == "actual" else 0,
+        "applied_adjust": would_adjust if resolved_mode == "actual" and not suppressed else 0,
+        "suppressed_by": "TRIGGER_QUALITY_PRIORITY" if suppressed else None,
     }
 
 
@@ -186,6 +206,7 @@ def feedback_log_payload(
         "mode": adjustment.get("mode"),
         "would_adjust": adjustment.get("would_adjust"),
         "applied_adjust": adjustment.get("applied_adjust"),
+        "suppressed_by": adjustment.get("suppressed_by"),
         "min_samples": adjustment.get("min_samples"),
     }
 
@@ -232,5 +253,6 @@ __all__ = [
     "format_trigger_feedback",
     "get_trigger_feedback",
     "resolve_actual_adjustment",
+    "screening_trigger_priority_active",
     "trigger_feedback_mode",
 ]
