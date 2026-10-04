@@ -26,6 +26,7 @@ Design and evidence: docs/REENTRY_V3_LIVE_ko.md.
 from __future__ import annotations
 
 import bisect
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -240,8 +241,8 @@ def _local_time(iso, market):
 
 def decide(watch, quote, frames, completed, decision_day, market, ctx):
     """Record the decision-time evaluation for one watch, per campaign rule (a rule inside a shakeout
-    window only checks SHAKEOUT_RECLAIM). Returns the decision; "trigger" is the primary rule's fired
-    trigger, else the first fired one, else None."""
+    window and only checks SHAKEOUT_RECLAIM). Returns the decision; "trigger" is the primary (L97) rule's
+    fired trigger or None (an SS-only trigger stays in by_rule as a parallel record)."""
     bars, bench = _frames_for(watch, frames, completed)
     ledger = watch["ledger"]
     share = quote.get("volume_share")
@@ -258,7 +259,7 @@ def decide(watch, quote, frames, completed, decision_day, market, ctx):
                                       window=window, volume_projected=projected)
         by_rule[rule], checks[rule] = results[key]["trigger"], results[key]["checks"]
     primary = C.POLICY["primary_rule"]
-    trigger = by_rule.get(primary) or next((t for t in by_rule.values() if t), None)
+    trigger = by_rule.get(primary)       # only the primary L97 rule is rechecked / traded; SS is a record
     first = next(iter(results.values()))
     decision = {"phase": "intraday", "decision_day": decision_day, "decision_time": quote["observed_at"],
                 "decision_price": quote["price"], "day_low": quote.get("low"),
@@ -302,7 +303,8 @@ def freeze_inputs(market, watch, decision, frames, completed, reports_root, arch
     for rule, number in decision["eligible_rules"].items():
         if not decision["by_rule"].get(rule):
             continue
-        prior = [{k: t.get(k) for k in ("date", "trigger", "entry", "exit_date", "exit_reason", "ret", "mode")}
+        prior = [{k: t.get(k) for k in ("date", "trigger", "entry", "exit_date", "exit_reason", "ret", "mode",
+                                        "real")}
                  for t in ledger["campaigns"][rule]["attempts"]]
         attempts[rule] = {"attempt": number, "max": C.POLICY["max_attempts"], "prior": prior}
     broke = ledger["flags"]["above"]
@@ -311,7 +313,7 @@ def freeze_inputs(market, watch, decision, frames, completed, reports_root, arch
     item = {
         "contract": INPUT_CONTRACT, "policy_version": C.POLICY_VERSION, "market": market,
         "event_id": _hash(watch["watch_id"], day, trigger["trigger"]), "watch_ref": watch["watch_id"],
-        "ticker": watch["ticker"], "source": watch["source"], "trigger_date": day, "trigger": trigger["trigger"],
+        "ticker": watch["ticker"], "source": watch["source"], "trigger_date": day, "trigger": trigger["trigger"], "live_rule": C.POLICY["primary_rule"],
         "trigger_label": trigger["label"], "entry": decision["decision_price"],
         "decision_price": decision["decision_price"], "decision_time": decision["decision_time"],
         "decision_time_local": _local_time(decision["decision_time"], market), "day_low": decision["day_low"],
@@ -468,8 +470,12 @@ def _items_for(p, records):
     return items
 
 
-def _entry_context(entry, state, frames, completed, reports_root, market):
-    """Everything the tracker entry needs beyond the scenario: name, sector, decision bars, report path."""
+def _entry_context(entry, state, frames, completed, reports_root, market, db_path=None):
+    """Everything the tracker entry needs beyond the scenario: name, sector, decision bars, report path.
+
+    Sector: the recheck scenario's, else the original decision row's (trading/watchlist history), else
+    "Unknown" (which the tracker's sector limit does not count).
+    """
     from observability.reentry_recheck_inputs import REPORT_DIRS
     watch = next((w for w in state["watches"] if w["watch_id"] == entry["watch_id"]), None)
     if watch is None:
@@ -478,7 +484,8 @@ def _entry_context(entry, state, frames, completed, reports_root, market):
     ref = entry["item"].get("report_ref") or {}
     report_path = str(Path(reports_root) / REPORT_DIRS[market] / ref["name"]) if ref.get("kind") == "file" else None
     return {"company_name": watch["row"].get("company_name") or watch["ticker"],
-            "sector": (entry["record"].get("scenario") or {}).get("sector") or "Unknown",
+            "sector": ((entry["record"].get("scenario") or {}).get("sector")
+                       or (LIVE.original_sector(db_path, market, watch["row"]) if db_path else None) or "Unknown"),
             "bars": bars[-80:], "report_path": report_path}
 
 
@@ -486,12 +493,15 @@ def run(market, completed, *, collector, phase="close", decision_day=None, quote
         root=STATE_DIR, reports_root=ROOT, archive_db=ARCHIVE_DB, dry_run=False, llm_recheck=None, llm=None,
         live_executor=None, now_fn=None):
     p = paths(market, root)
-    p["state"].parent.mkdir(parents=True, exist_ok=True)
-    with p["lock"].open("a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return {"mode": "SHADOW", "trading_impact": "none", "skipped": "lock_held", "market": market}
+    if not dry_run:
+        p["state"].parent.mkdir(parents=True, exist_ok=True)
+    # A dry run writes nothing (not even the lock file); it never orders, so it needs no run lock.
+    with (contextlib.nullcontext(None) if dry_run else p["lock"].open("a")) as lock:
+        if lock is not None:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {"mode": "SHADOW", "trading_impact": "none", "skipped": "lock_held", "market": market}
         state = _load(p["state"], market)
         _sync_live_exits(state, market, db_path)
         rows = candidates(db_path, market, completed, lookback_days=LOOKBACK_DAYS, include_blocked=True)
@@ -540,9 +550,15 @@ def run(market, completed, *, collector, phase="close", decision_day=None, quote
                                                                "watch_ref": watch["watch_id"],
                                                                "source": watch["source"], **attrs}, event_time=now)
         rechecked = []
-        if not dry_run and (llm_recheck if llm_recheck is not None else llm_recheck_enabled()):
-            rechecked = _run_rechecks(state, market, completed, p, reports_root, archive_db, llm)
         live_enabled = LIVE.live_enabled(market)
+        if not dry_run and (llm_recheck if llm_recheck is not None else llm_recheck_enabled()):
+            cap = {}
+            if phase == "intraday" and live_enabled:
+                # Today's triggers: recheck at most the remaining daily cap + 1, in LIVE rank order.
+                remaining = LIVE.cap_remaining(LIVE.load_journal(p["live"]), decision_day)
+                cap = {"only_day": decision_day, "limit": remaining + 1 if remaining else 0,
+                       "stop_after_approvals": remaining}
+            rechecked = _run_rechecks(state, market, completed, p, reports_root, archive_db, llm, **cap)
         live_results = []
         if phase == "intraday" and not dry_run and live_enabled and rechecked:
             def _emit_live(name, watch, key, attrs):
@@ -555,8 +571,9 @@ def run(market, completed, *, collector, phase="close", decision_day=None, quote
             live_results = LIVE.process(
                 state, market, decision_day, rechecked, _items_for(p, rechecked), p["live"],
                 live_executor or LIVE.subprocess_executor,
-                entry_context=lambda e: _entry_context(e, state, frames, completed, reports_root, market),
-                now=now_fn() if now_fn else None, emit=_emit_live, save_state=lambda: _atomic(p["state"], state))
+                entry_context=lambda e: _entry_context(e, state, frames, completed, reports_root, market, db_path),
+                now=now_fn() if now_fn else None, emit=_emit_live, save_state=lambda: _atomic(p["state"], state),
+                db_path=db_path)
         status = {}
         attempts = {"open": 0, "closed": 0}
         for watch in state["watches"]:
@@ -581,11 +598,18 @@ def run(market, completed, *, collector, phase="close", decision_day=None, quote
         return summary
 
 
-def _run_rechecks(state, market, completed, p, reports_root, archive_db, llm):
-    """One BUY recheck per live trigger, retried once after a failure on a later run (or phase)."""
+def _run_rechecks(state, market, completed, p, reports_root, archive_db, llm, only_day=None, limit=None,
+                  stop_after_approvals=None):
+    """One BUY recheck per live trigger, retried once after a failure on a later run (or phase).
+
+    With LIVE on, the decision run passes only_day/limit/stop_after_approvals: today's triggers are
+    rechecked in prism_core.reentry_v3_live.live_rank_key order, at most limit of them, and none after
+    the approvals fill the remaining daily cap; the rest are marked SKIPPED_CAP (final, no LLM call).
+    """
     todo = [(watch, event_id, rc) for watch in state["watches"]
             for event_id, rc in (watch.get("rechecks") or {}).items()
-            if rc["status"] not in RC3.FINAL and rc["attempts"] < RC3.MAX_ATTEMPTS and rc.get("last") != completed]
+            if rc["status"] not in RC3.FINAL and rc["status"] != "SKIPPED_CAP"
+            and rc["attempts"] < RC3.MAX_ATTEMPTS and rc.get("last") != completed]
     if not todo or not p["inputs"].exists():
         return []
     wanted = {event_id for _, event_id, _ in todo}
@@ -595,10 +619,18 @@ def _run_rechecks(state, market, completed, p, reports_root, archive_db, llm):
             item = json.loads(line)
             if item.get("event_id") in wanted:
                 items[item["event_id"]] = item
-    system, results = None, []
-    for watch, event_id, rc in todo:
+    if only_day is not None:
+        todo = sorted((t for t in todo if (items.get(t[1]) or {}).get("trigger_date") == only_day),
+                      key=lambda t: LIVE.live_rank_key(items[t[1]]))
+    system, results, approvals = None, [], 0
+    for position, (watch, event_id, rc) in enumerate(todo):
         item = items.get(event_id)
         if item is None:
+            continue
+        if limit is not None and (position >= limit or (stop_after_approvals is not None
+                                                        and approvals >= stop_after_approvals)):
+            rc.update(status="SKIPPED_CAP", last=completed)
+            _atomic(p["state"], state)
             continue
         if system is None and item.get("report_ref"):
             system = RC3.instruction(market)
@@ -610,6 +642,7 @@ def _run_rechecks(state, market, completed, p, reports_root, archive_db, llm):
         with p["results"].open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
         rc.update(status=record["status"], attempts=attempts, last=completed, approved=record.get("approved"))
+        approvals += int(LIVE.approved(record))
         _atomic(p["state"], state)
         attrs = {"mode": "SHADOW", "trading_impact": "none", "policy_version": C.POLICY_VERSION,
                  "watch_ref": watch["watch_id"], "trigger_date": item["trigger_date"], "trigger": item["trigger"],

@@ -4717,15 +4717,29 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
     async def _enter_eligible_candidate(self, *, account, state, ticker, company_name, current_price, scenario,
                                         analysis_result, is_add, rebound_pilot, entry_cash_amount, rank_change_msg,
                                         source_decision_id, adjusted_score, trigger_type, trigger_info,
-                                        scenario_slot_limit, signaled_tickers, effects, source="us_batch"):
+                                        scenario_slot_limit, signaled_tickers, effects, source="us_batch",
+                                        lock_held=False, require_micro_plan=False):
         """Entry steps for a candidate that passed every decision gate (adaptive routing, micro-split
         sizing, strategy row, broker order with the fresh broker quote and gate, signal publish).
         Returns 1 when a strategy entry was recorded, else 0; ``state`` carries the batch's
         traded/skip bookkeeping.
 
         Factored out of process_reports without behaviour change so the re-entry v3 LIVE path
-        (enter_reentry_candidate) reuses the exact batch entry pipeline.
+        (enter_reentry_candidate) reuses the exact batch entry pipeline. Runs under the market entry
+        lock shared with re-entry v3 (prism_core/entry_lock.py; the batch waits up to 120s, then goes on
+        as before). require_micro_plan (re-entry only) never falls back to a full slot.
         """
+        if not lock_held:
+            from prism_core.entry_lock import entry_lock
+            async with entry_lock("US", timeout=120):
+                return await self._enter_eligible_candidate(
+                    account=account, state=state, ticker=ticker, company_name=company_name,
+                    current_price=current_price, scenario=scenario, analysis_result=analysis_result, is_add=is_add,
+                    rebound_pilot=rebound_pilot, entry_cash_amount=entry_cash_amount,
+                    rank_change_msg=rank_change_msg, source_decision_id=source_decision_id,
+                    adjusted_score=adjusted_score, trigger_type=trigger_type, trigger_info=trigger_info,
+                    scenario_slot_limit=scenario_slot_limit, signaled_tickers=signaled_tickers, effects=effects,
+                    source=source, lock_held=True, require_micro_plan=require_micro_plan)
         # is_add => pyramiding additional independent row (#288)
         if effects is not None:
             if is_add or await self._is_ticker_in_holdings(ticker):
@@ -4763,6 +4777,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                "relaxed-score entry skipped", ticker)
                 state["skip_reason"] = state["skip_reason"] or "micro_split_plan_unavailable"
                 return 0
+        if require_micro_plan and micro_plan is None:
+            logger.warning("[REENTRY_V3][US] %s micro-split plan unavailable; no full-slot re-entry", ticker)
+            state["skip_reason"] = "no_micro_plan"
+            return 0
         buy_result = await self._buy_stock_with_position(
             ticker,
             company_name,
@@ -5001,110 +5019,155 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         entry checks for an approved re-entry recheck, then the batch entry pipeline
         (_enter_eligible_candidate).
 
-        Same checks and order as process_reports for a fresh entry: fresh quote and scenario
-        contract, adaptive-owned routing, already held (no pyramiding for re-entries), scenario slot
-        limit, sector limit, regime score floor (env-gated), journal and macro score adjustment,
-        micro-split score floor, effective score >= min score, final buy gate, re-entry cooldown.
-        Returns {"bought", "reason", "holding_ids", "entry_price", "account_refs"}; no watchlist row
-        or skip message is written for a refused re-entry.
+        Runs under the US entry lock shared with the batch (fail closed when busy). Checks, in order:
+        fresh quote and the signal price band, regime/trend stamp, the stop cap of the tracker regime and
+        the scenario contract, adaptive-owned routing, already held and slots (strict reads: a DB error
+        skips the buy; no pyramiding for re-entries), sector limit, regime score floor (env-gated),
+        journal and macro score adjustment, micro-split score floor, effective score >= min score, final
+        buy gate, re-entry cooldown, an available micro-split plan (never a full slot). Emits the batch's
+        micro-split shadow / candidate.evaluated / decision-input events. Returns {"bought", "reason",
+        "holding_ids", "entry_price", "account_refs"}; no watchlist row or skip message for a refusal.
         """
-        from prism_core.reentry_v3_live import APPROVE, account_ref
+        from prism_core import micro_split_live
+        from prism_core import reentry_v3_live as live
+        from prism_core.entry_lock import entry_lock
         effects = effects_for(self, "process_reports")
         if effects is None:
             require_execution_runtime(self)
         self._set_active_account(account)
         scenario = dict(scenario)
         scenario.setdefault("_decision_id", source_decision_id)
-        if str(scenario.get("decision", "")).strip().lower() not in APPROVE:
+        meta = scenario.get("reentry") or {}
+        if str(scenario.get("decision", "")).strip().lower() not in live.APPROVE:
             return {"bought": False, "reason": "not_an_entry"}
-        # Same as-of snapshot the batch stamps on a fresh BUY scenario (regime, trend facts) so the
-        # final gate validates the same deterministic inputs.
-        scenario = self._stamp_scenario_market_regime(scenario)
-        try:
-            trend_facts = self._get_trend_facts(ticker)
-        except Exception:  # noqa: BLE001 - missing facts keep the gate's existing behaviour
-            trend_facts = ""
-        if trend_facts:
-            scenario["_deterministic_trend_facts"] = trend_facts
-        current_price = effects.quote(ticker) if effects is not None else await self._refresh_buy_quote(ticker)
-        scenario = apply_buy_scenario_contract(scenario, market="US", entry_price=current_price)
-        if effects is None:
-            from prism_core.oneil_routing import route_owned_entry
-            if await route_owned_entry(self, account, ticker):
-                return {"bought": False, "reason": "adaptive_owned"}
-        if await self._is_ticker_in_holdings(ticker):
-            return {"bought": False, "reason": "already_held"}
-        current_slots = await self._get_current_slots_count()
-        scenario_slot_limit = _scenario_slot_limit(scenario, hard_max=self.max_slots)
-        if current_slots >= scenario_slot_limit:
-            return {"bought": False, "reason": "max_slots"}
-        if not await self._check_sector_diversity(sector, is_pyramiding_add=False):
-            return {"bought": False, "reason": "sector_limit"}
-        min_score = _safe_number(scenario.get("min_score", 0))
-        try:
-            _rp = self._regime_policy_mod()
-            if _rp is not None and _rp.regime_min_score_floor_enabled():
-                pulse = effects.market_pulse() if effects is not None else _rp.get_market_pulse_state("us")
-                min_score = max(min_score, _rp.effective_min_score(min_score, self._buy_floor_regime(), pulse))
-        except EffectsFailure:
-            raise
-        except Exception as floor_error:  # same fail-open as the batch
-            logger.warning(f"[REGIME_MIN_SCORE_FLOOR] fail-open, LLM min_score 유지: {floor_error}")
-        trigger_info = getattr(self, "trigger_info_map", {}).get(ticker, {})
-        trigger_type = trigger_info.get("trigger_type", "")
-        score_adjustment = 0
-        if self.enable_journal and ticker:
-            score_adjustment, _ = self.get_score_adjustment(ticker, sector, trigger_type=trigger_type)
-        adjusted_score = _effective_buy_score(scenario, journal_adjustment=score_adjustment)["effective_score"]
-        if getattr(self, "_no_order_effects", None) is None:
-            from prism_core import micro_split_live
-            min_score, scenario = micro_split_live.relaxed_min_score(
-                self, market="US", ticker=ticker, current_price=current_price, scenario=scenario,
-                min_score=min_score, is_add=False, rebound_pilot=False, logger=logger)
-        if adjusted_score < min_score:
-            return {"bought": False, "reason": f"score_below_min({adjusted_score:g}<{min_score:g})"}
-        buy_gate = self._evaluate_production_buy_gate(scenario, current_price, score_override=adjusted_score,
-                                                      is_add=False)
-        if not buy_gate.get("allowed"):
-            return {"bought": False, "reason": f"buy_gate:{buy_gate.get('reason', 'blocked')}"}
-        try:
-            from reentry_cooldown import COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE, reentry_block
-            cooldown = reentry_block("US", ticker, account_key=self._account_scope()[0], db_path=self.db_path,
-                                     fail_closed=True)
-            enforce = bool(cooldown) and (bool(cooldown.get("check_error")) or (COOLDOWN_LIVE and (
-                COOLDOWN_RISK_EXIT_LIVE or not (cooldown.get("risk_exit") and not cooldown.get("after_loss")))))
-        except Exception as cooldown_error:  # fail closed like the batch
-            logger.error("[REENTRY_COOLDOWN][US][reentry_v3] check failed closed: %s", cooldown_error)
-            enforce = True
-        if enforce:
-            return {"bought": False, "reason": "reentry_cooldown"}
-        scenario["_decision_context"] = {"decision": "entry", "adjusted_score": adjusted_score, "min_score": min_score,
-                                         "gate_allowed": True, "gate_reason": buy_gate.get("reason"),
-                                         "gate_findings": buy_gate.get("findings") or [], "sector_diverse": True,
-                                         "rebound_pilot": False, "slots_used": current_slots,
-                                         "slots_max": scenario_slot_limit, "is_add": False, "source": "reentry_v3"}
-        state = {"report_path": report_path, "traded": False, "should_save_watchlist": False, "skip_reason": None}
-        analysis_result = {"ticker": ticker, "company_name": company_name, "current_price": current_price,
-                           "decision": "entry", "scenario": scenario, "sector": sector}
-        bought = await self._enter_eligible_candidate(
-            account=account, state=state, ticker=ticker, company_name=company_name, current_price=current_price,
-            scenario=scenario, analysis_result=analysis_result, is_add=False, rebound_pilot=False,
-            entry_cash_amount=None, rank_change_msg=rank_change_msg, source_decision_id=source_decision_id,
-            adjusted_score=adjusted_score, trigger_type=trigger_type, trigger_info=trigger_info,
-            scenario_slot_limit=scenario_slot_limit, signaled_tickers=set(), effects=effects, source="us_reentry_v3")
-        if not bought:
-            return {"bought": False, "reason": state.get("skip_reason") or "entry_not_completed"}
-        account_key = self._account_scope()[0]
-        holding_ids, entry_price = [], None
-        try:
-            row = self.cursor.execute("SELECT id, buy_price FROM us_stock_holdings WHERE ticker = ? AND account_key = ? "
-                                      "ORDER BY id DESC LIMIT 1", (ticker, account_key)).fetchone()
-            if row:
-                holding_ids, entry_price = [int(row[0])], row[1]
-        except Exception:  # noqa: BLE001 - the link is bookkeeping only
-            pass
-        return {"bought": True, "reason": "bought", "holding_ids": holding_ids, "entry_price": entry_price,
-                "account_refs": [account_ref(account_key)]}
+        async with entry_lock("US", timeout=30) as locked:
+            if not locked:
+                return {"bought": False, "reason": "entry_lock_busy"}
+            try:
+                current_price = float(effects.quote(ticker) if effects is not None
+                                      else await self._refresh_buy_quote(ticker))
+            except Exception as error:  # noqa: BLE001 - no fresh quote, no order
+                logger.warning("[REENTRY_V3][US] %s fresh quote unavailable: %s", ticker, type(error).__name__)
+                return {"bought": False, "reason": "quote_unavailable"}
+            if not live.price_in_band(meta.get("signal"), meta.get("band_level"), current_price):
+                return {"bought": False, "reason": f"outside_band({current_price:g})"}
+            # Same as-of snapshot the batch stamps on a fresh BUY scenario (regime, trend facts) so the
+            # final gate validates the same deterministic inputs; the stop is capped with that regime too.
+            scenario = self._stamp_scenario_market_regime(scenario)
+            try:
+                trend_facts = self._get_trend_facts(ticker)
+            except Exception:  # noqa: BLE001 - missing facts keep the gate's existing behaviour
+                trend_facts = ""
+            if trend_facts:
+                scenario["_deterministic_trend_facts"] = trend_facts
+            scenario = live.apply_stop_cap(scenario, current_price, scenario.get("_deterministic_market_regime"))
+            scenario = apply_buy_scenario_contract(scenario, market="US", entry_price=current_price)
+            if effects is None:
+                from prism_core.oneil_routing import route_owned_entry
+                if await route_owned_entry(self, account, ticker):
+                    return {"bought": False, "reason": "adaptive_owned"}
+            account_key = self._account_scope()[0]
+            try:
+                held, current_slots = live.strict_position_counts(self.cursor, "us_stock_holdings", ticker,
+                                                                  account_key)
+            except Exception as error:  # noqa: BLE001 - fail closed on the re-entry path
+                logger.error("[REENTRY_V3][US] holdings check failed closed: %s", type(error).__name__)
+                return {"bought": False, "reason": "holdings_check_error"}
+            if held:
+                return {"bought": False, "reason": "already_held"}
+            scenario_slot_limit = _scenario_slot_limit(scenario, hard_max=self.max_slots)
+            if current_slots >= scenario_slot_limit:
+                return {"bought": False, "reason": "max_slots"}
+            if not await self._check_sector_diversity(sector, is_pyramiding_add=False):
+                return {"bought": False, "reason": "sector_limit"}
+            min_score = _safe_number(scenario.get("min_score", 0))
+            try:
+                _rp = self._regime_policy_mod()
+                if _rp is not None and _rp.regime_min_score_floor_enabled():
+                    pulse = effects.market_pulse() if effects is not None else _rp.get_market_pulse_state("us")
+                    min_score = max(min_score, _rp.effective_min_score(min_score, self._buy_floor_regime(), pulse))
+            except EffectsFailure:
+                raise
+            except Exception as floor_error:  # same fail-open as the batch
+                logger.warning(f"[REGIME_MIN_SCORE_FLOOR] fail-open, LLM min_score 유지: {floor_error}")
+            trigger_info = getattr(self, "trigger_info_map", {}).get(ticker, {})
+            trigger_type = trigger_info.get("trigger_type", "")
+            score_adjustment = 0
+            if self.enable_journal and ticker:
+                score_adjustment, _ = self.get_score_adjustment(ticker, sector, trigger_type=trigger_type)
+            adjusted_score = _effective_buy_score(scenario, journal_adjustment=score_adjustment)["effective_score"]
+            if getattr(self, "_no_order_effects", None) is None:
+                min_score, scenario = micro_split_live.relaxed_min_score(
+                    self, market="US", ticker=ticker, current_price=current_price, scenario=scenario,
+                    min_score=min_score, is_add=False, rebound_pilot=False, logger=logger)
+            if adjusted_score < min_score:
+                return {"bought": False, "reason": f"score_below_min({adjusted_score:g}<{min_score:g})"}
+            buy_gate = self._evaluate_production_buy_gate(scenario, current_price, score_override=adjusted_score,
+                                                          is_add=False)
+            if not buy_gate.get("allowed"):
+                return {"bought": False, "reason": f"buy_gate:{buy_gate.get('reason', 'blocked')}"}
+            try:
+                from reentry_cooldown import COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE, reentry_block
+                cooldown = reentry_block("US", ticker, account_key=account_key, db_path=self.db_path,
+                                         fail_closed=True)
+                enforce = bool(cooldown) and (bool(cooldown.get("check_error")) or (COOLDOWN_LIVE and (
+                    COOLDOWN_RISK_EXIT_LIVE or not (cooldown.get("risk_exit") and not cooldown.get("after_loss")))))
+            except Exception as cooldown_error:  # fail closed like the batch
+                logger.error("[REENTRY_COOLDOWN][US][reentry_v3] check failed closed: %s", cooldown_error)
+                enforce = True
+            if enforce:
+                return {"bought": False, "reason": "reentry_cooldown"}
+            if not micro_split_live.live_enabled("US") or not micro_split_live.plan_available(
+                    self, market="US", ticker=ticker, current_price=current_price,
+                    stop_loss=scenario.get("stop_loss")):
+                return {"bought": False, "reason": "no_micro_plan"}
+            scenario["_decision_context"] = {"decision": "entry", "adjusted_score": adjusted_score,
+                                             "min_score": min_score, "gate_allowed": True,
+                                             "gate_reason": buy_gate.get("reason"),
+                                             "gate_findings": buy_gate.get("findings") or [], "sector_diverse": True,
+                                             "rebound_pilot": False, "slots_used": current_slots,
+                                             "slots_max": scenario_slot_limit, "is_add": False, "source": "reentry_v3"}
+            observe_or_emit(self, emit_micro_split_shadow, market="US", ticker=ticker, decision_id=source_decision_id,
+                            account_id=str(account.get("account_key") or "default"),
+                            unit_amount=account.get("buy_amount_usd"), current_price=current_price,
+                            regime=(buy_gate.get("effective_regime") or scenario.get("_deterministic_market_regime")
+                                    or scenario.get("market_condition") or "unknown"))
+            observe_or_emit(self, emit_trading_context, "candidate.evaluated", market="US", ticker=ticker,
+                            company_name=company_name, decision_id=source_decision_id, trigger_type=trigger_type,
+                            trigger_mode=trigger_info.get("trigger_mode"), scenario=scenario,
+                            decision_context={**scenario["_decision_context"], "selected_for_entry": True,
+                                              "price": current_price},
+                            portfolio_context={"slots_used": current_slots, "slots_max": scenario_slot_limit},
+                            entry_quality_context=_capture_entry_quality_context(
+                                cursor=self.cursor, scenario=scenario, current_price=current_price,
+                                trigger_type=trigger_type),
+                            source="us_reentry_v3_decision",
+                            research_context=getattr(self, "_trend_research_snapshots", {}).get(ticker))
+            from observability.decision_inputs import emit_decision_inputs
+            emit_decision_inputs(self, market="US", ticker=ticker, decision_id=source_decision_id, scenario=scenario,
+                                 current_price=current_price, decision="Enter", source="us_reentry_v3_decision")
+            state = {"report_path": report_path, "traded": False, "should_save_watchlist": False, "skip_reason": None}
+            analysis_result = {"ticker": ticker, "company_name": company_name, "current_price": current_price,
+                               "decision": "entry", "scenario": scenario, "sector": sector}
+            bought = await self._enter_eligible_candidate(
+                account=account, state=state, ticker=ticker, company_name=company_name,
+                current_price=current_price, scenario=scenario, analysis_result=analysis_result, is_add=False,
+                rebound_pilot=False, entry_cash_amount=None, rank_change_msg=rank_change_msg,
+                source_decision_id=source_decision_id, adjusted_score=adjusted_score, trigger_type=trigger_type,
+                trigger_info=trigger_info, scenario_slot_limit=scenario_slot_limit, signaled_tickers=set(),
+                effects=effects, source="us_reentry_v3", lock_held=True, require_micro_plan=True)
+            if not bought:
+                return {"bought": False, "reason": state.get("skip_reason") or "entry_not_completed"}
+            holding_ids, entry_price = [], None
+            try:
+                row = self.cursor.execute("SELECT id, buy_price FROM us_stock_holdings WHERE ticker = ? AND "
+                                          "account_key = ? ORDER BY id DESC LIMIT 1", (ticker, account_key)).fetchone()
+                if row:
+                    holding_ids, entry_price = [int(row[0])], row[1]
+            except Exception:  # noqa: BLE001 - the link is bookkeeping only (reconciled later)
+                pass
+            return {"bought": True, "reason": "bought", "holding_ids": holding_ids, "entry_price": entry_price,
+                    "account_refs": [live.account_ref(account_key)]}
 
     async def _notify_firebase(self, message: str, chat_id: str, message_id: int = None, msg_type=None):
         """Send Firebase Bridge notification for Prism Mobile push (never affects Telegram delivery)."""

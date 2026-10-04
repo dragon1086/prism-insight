@@ -452,8 +452,17 @@ def _close_all(campaign, bars, j, reason):
         _close_attempt(campaign, bars, j, bars[j]["close"], reason, campaign["rule"])
 
 
-def _close_real(campaign, exit_info, j=None):
-    """Close the LIVE position's attempt with the real sale from trading_history (the sell logic decided)."""
+def _exit_index(bars, exit_date):
+    """Session index of a real sale: the first bar on/after its date, else the next session (len(bars))."""
+    return next((k for k, b in enumerate(bars) if b["date"] >= exit_date), len(bars))
+
+
+def _close_real(campaign, exit_info, j):
+    """Close the LIVE position's attempt with the real sale from trading_history (the sell logic decided).
+
+    j is the session index of the sale (len(bars) when it happened after the last completed bar, e.g.
+    earlier today), so the exit-day block and the stop cooldown apply to real sells as well.
+    """
     pos = campaign["attempts"][campaign["_pos"]]
     price = float(exit_info["price"])
     ret = price / pos["entry"] - 1
@@ -514,7 +523,8 @@ def _open(campaign, setup, bars, i, trigger, *, mode, decision, regime, pulse, s
         record.update(decision_price=decision.get("decision_price"), decision_time=decision.get("decision_time"),
                       decision_low=decision.get("day_low"))
         live = decision.get("live") or {}
-        if live.get("status") == "BOUGHT":   # LIVE order: the existing sell logic manages it from here
+        if live.get("status") == "BOUGHT" and campaign["rule"] == policy["primary_rule"]:
+            # LIVE order (primary rule only; SS stays a record): the existing sell logic manages it.
             record["real"] = True
             record["live"] = {k: live.get(k) for k in ("key", "holding_ids", "entry_price", "exit")}
             record["exit_rule"] = "REAL"
@@ -523,6 +533,10 @@ def _open(campaign, setup, bars, i, trigger, *, mode, decision, regime, pulse, s
     bar = bars[i]
     record["close_on_entry_day"] = bar["close"]
     record["close_vs_decision_pct"] = round((bar["close"] / entry - 1) * 100, 4)
+    exit_info = (record.get("live") or {}).get("exit")
+    if record.get("real") and exit_info and exit_info["date"] <= bar["date"]:
+        _close_real(campaign, exit_info, i)        # sold on the entry day: closes on the entry bar
+        return
     # An entry at the decision time still lives through the rest of the session: a new low after
     # the decision that reaches the stop exits on the entry day (the low so far was above the stop).
     low_so_far = record.get("decision_low")
@@ -613,9 +627,20 @@ def replay(setup, bars, anchor, *, decisions=None, regime_at=None, pulse_at=None
                 continue
             _step(camp, bars, i)
             changes[rule] = _transition(camp, setup, bars, i, broke, a, policy)
-        open_ok = {r: c for r, c in camps.items() if eligible(c, i, a, policy)[0]}
         decision = decisions.get(bar["date"])
         regime = regime_at(bar["date"])
+        real_trigger = _real_buy_trigger(decision, policy)
+        if real_trigger is not None:
+            primary = camps[policy["primary_rule"]]
+            if not eligible(primary, i, a, policy)[0]:
+                # The real order exists, so the ledger follows it even when the replay disagrees
+                # (data revision, ended watch): close any virtual position and open the real attempt.
+                if primary["_pos"] is not None and not primary["attempts"][primary["_pos"]].get("real"):
+                    _close_attempt(primary, bars, i, real_trigger["entry"], "superseded_by_real", "REAL")
+                stats["conflicts"].append({"date": bar["date"], "reason": "real_buy_forced"})
+                _fire(stats, primary, setup, bars, i, real_trigger, "INTRADAY", decision, regime, pulse_at,
+                      stop_dates, policy)
+        open_ok = {r: c for r, c in camps.items() if eligible(c, i, a, policy)[0]}
         if open_ok and decision is not None:
             by_rule = decision.get("by_rule") or {}
             for rule, camp in open_ok.items():
@@ -671,7 +696,7 @@ def replay(setup, bars, anchor, *, decisions=None, regime_at=None, pulse_at=None
         if camp["_pos"] is not None and camp["attempts"][camp["_pos"]].get("real"):
             exit_info = (camp["attempts"][camp["_pos"]].get("live") or {}).get("exit")
             if exit_info:
-                _close_real(camp, exit_info)
+                _close_real(camp, exit_info, _exit_index(bars, exit_info["date"]))
     complete = a + policy["horizon"] <= n - 1
     upcoming = {}
     if last == n - 1 and not complete:
@@ -694,6 +719,13 @@ def replay(setup, bars, anchor, *, decisions=None, regime_at=None, pulse_at=None
         end_index = camps[policy["primary_rule"]].get("_end_index")
         ledger["controls"] = {"PIVOT": pivot_control(setup, bars, a, end_index, market, policy, regime_at)}
     return ledger
+
+
+def _real_buy_trigger(decision, policy):
+    """The primary-rule trigger of a decision that led to a LIVE buy, else None."""
+    if not decision or (decision.get("live") or {}).get("status") != "BOUGHT":
+        return None
+    return (decision.get("by_rule") or {}).get(policy["primary_rule"])
 
 
 def _fire(stats, camp, setup, bars, i, trigger, mode, decision, regime, pulse_at, stop_dates, policy):

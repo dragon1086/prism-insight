@@ -17,7 +17,10 @@ Prompt wording uses plain investor terms (user decision 2026-10-04); code ids st
 from __future__ import annotations
 
 from observability import reentry_v2_recheck as RC
-from observability.reentry_recheck_inputs import recheck_instruction, strip_embedded_images
+from observability.reentry_recheck_inputs import (
+    recheck_instruction,
+    strip_embedded_images,
+)
 
 RESULT_CONTRACT = "reentry_v3_recheck_result_v1"
 MAX_ATTEMPTS = RC.MAX_ATTEMPTS
@@ -36,7 +39,8 @@ RECHECK_V3_KO = """
   기준 가격 위 +3% 이내입니다.
 - 기준 가격 눌림 지지 매수: 직전 종가가 기준 가격 이상이고, 오늘 현재까지의 저가가 기준 가격 ±3% 안에 닿았으며,
   현재가가 기준 가격 이상 +5% 이내입니다.
-- 흔들기 후 회복 매수: 종가가 기준 가격의 97% 아래로 내려간 뒤 5거래일 안에 현재가가 기준 가격 위 +5% 이내로 회복했고,
+- 흔들기 후 회복 매수: 종가가 흔들기 확인 시작선(입력에 표시) 아래로 내려간 뒤 5거래일 안에 현재가가 회복 기준(입력에
+  표시) 위 +5% 이내로 돌아왔고,
   판단 시각 누적 거래량으로 추정한 오늘 거래량이 20일 평균 이상입니다.
 입력의 보고서는 매수 신호 전날까지 작성된 가장 최근 보고서이며 작성일을 확인하십시오.
 - 원래 손절·보류·차단 사유가 현재 기술적 사실(추세, 위치, 거래량)과 시장 상태로 해소됐는지 재점검하십시오.
@@ -55,7 +59,8 @@ RECHECK_V3_KO = """
   사용하고 입력에 없는 값은 미확인으로 두십시오.
 - 진입 가격(entry_price)은 입력의 판단 시각 현재가입니다. 오늘 봉은 미완성이므로 장중 누적 거래량을 확정 거래량과
   같은 것처럼 비교하지 마십시오(거래량 해석 기준 그대로). 입력의 '추정 오늘 거래량'은 시간대 비중으로 나눈 추정치입니다.
-- 입력의 "이전 시도"는 SHADOW 가상 기록이며 실제 매매가 아닙니다. 원래 판단과 손절은 실제 기록입니다.
+- 입력의 "이전 시도"에는 실제 매수(실계좌)와 시스템의 가상 기록이 섞여 있으며 줄마다 구분해 표시합니다. 원래 판단과
+  손절은 실제 기록입니다.
 - 출력 JSON 형식과 채점 규칙은 기존과 동일합니다.
 """
 
@@ -115,11 +120,12 @@ def _attempts_block(attempts):
         lines.append(f"- 이번 시도: {info['attempt']}/{info['max']}번째 ({RULE_TEXT.get(rule, rule)} 감시)")
         if not prior:
             continue
-        lines.append("  이전 시도(SHADOW 가상 기록, 실제 매매 아님):")
+        lines.append("  이전 시도:")
         for p in prior:
             ret = "보유 중" if p.get("ret") is None else f"{p['ret'] * 100:+.2f}%"
-            lines.append(f"  · {p['date']} {TRIGGER_TEXT.get(p['trigger'], p['trigger'])} 진입 {_money(p['entry'])} → "
-                         f"{p.get('exit_date') or '-'} {p.get('exit_reason') or ''} {ret}")
+            kind = "실제 매수" if p.get("real") else "가상 기록, 실제 매매 아님"
+            lines.append(f"  · [{kind}] {p['date']} {TRIGGER_TEXT.get(p['trigger'], p['trigger'])} 진입 "
+                         f"{_money(p['entry'])} → {p.get('exit_date') or '-'} {p.get('exit_reason') or ''} {ret}")
     return "\n".join(lines) + "\n"
 
 
@@ -137,9 +143,11 @@ def _trigger_lines(item):
                 f"- 현재가 {_money(price)} (기준 가격 대비 {_pct(price, level)}, 추격 한도 +5%)\n")
     elif t == "SHAKEOUT_RECLAIM":
         shake = item.get("shakeout") or {}
-        reclaim = item["campaign"].get("reclaim_level") or level
-        body = (f"- {shake.get('window_start')} 종가가 기준 가격의 97% 아래로 내려가 흔들기 확인 기간(5거래일)이 시작됨, "
-                f"흔들기 저점 {_money(shake.get('shakeout_low'))}\n"
+        window = (item["campaign"].get("windows") or {}).get(item.get("live_rule") or "L97") or {}
+        reclaim = window.get("R") or item["campaign"].get("reclaim_level") or level
+        line = window.get("line")
+        body = (f"- {shake.get('window_start')} 종가가 흔들기 확인 시작선 {_money(line)} 아래로 내려가 흔들기 확인 "
+                f"기간(5거래일)이 시작됨, 흔들기 저점 {_money(shake.get('shakeout_low'))}\n"
                 f"- 현재가 {_money(price)} (회복 기준 {_money(reclaim)} 대비 {_pct(price, reclaim)}, 한도 +5%)\n"
                 f"- 추정 오늘 거래량: 20일 평균의 {shake.get('volume_ratio')}배 (판단 시각 누적 거래량 ÷ 이 시각까지의 "
                 f"하루 거래량 비중 {item.get('volume_share')})\n")

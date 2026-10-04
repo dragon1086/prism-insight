@@ -30,8 +30,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from observability import reentry_v3_shadow as V3  # noqa: E402
-from tools import run_reentry_shadow as collectors  # noqa: E402
+from observability import reentry_v3_shadow as V3
+from tools import run_reentry_shadow as collectors
 
 HISTORY_DAYS = 480          # 52-week high for the BUY 2a target + 70-day enrolment + 60-session watch
 KR_CACHE_DIR = ROOT / "runtime/reentry_v3_kr_daily_cache"
@@ -40,13 +40,13 @@ CALENDARS = {"KR": "XKRX", "US": "NYSE"}
 log = logging.getLogger("reentry_v3_shadow")
 
 
-def _kospi_rows(completed):
+def _kospi_rows(completed, cache_dir=KR_CACHE_DIR):
     """KOSPI daily rows for the deterministic KR regime, kept in the same per-session cache."""
     import pandas as pd
 
     from cores.market_data.kis_source import KisSource
     from observability.reentry_shadow import _atomic
-    cache = KR_CACHE_DIR / (completed + ".json")
+    cache = Path(cache_dir) / (completed + ".json")
     try:
         data = json.loads(cache.read_text()) if cache.exists() else {}
     except ValueError:
@@ -66,11 +66,11 @@ def _kospi_rows(completed):
     return data.get("1001") or []
 
 
-def collect(market, tickers, completed):
+def collect(market, tickers, completed, cache_dir=KR_CACHE_DIR):
     collectors.HISTORY_DAYS = HISTORY_DAYS
     if market == "KR":
-        out = collectors.collect_kr(tickers, completed, cache_dir=KR_CACHE_DIR)
-        out["__regime_rows"] = _kospi_rows(completed)
+        out = collectors.collect_kr(tickers, completed, cache_dir=cache_dir)
+        out["__regime_rows"] = _kospi_rows(completed, cache_dir)
         return out
     out = collectors.collect_us(tickers, completed)
     out["__regime_rows"] = next(iter((out.get("__benchmark_rows") or {}).values()), [])   # SPY (S&P 500 proxy)
@@ -202,7 +202,12 @@ def main(argv=None):
             log.info("reentry v3 intraday: no open %s session now", args.market)
             return 0
         quote_fn = kr_quote_fn() if args.market == "KR" else us_quote_fn()
-    summary = V3.run(args.market, completed, collector=lambda t, c: collect(args.market, t, c), phase=args.phase,
+    # A dry run keeps the KIS daily cache in a throwaway directory (nothing under runtime/ is written).
+    import tempfile
+    scratch = tempfile.TemporaryDirectory(prefix="reentry-v3-dry-") if args.dry_run else None
+    cache_dir = scratch.name if scratch else KR_CACHE_DIR
+    summary = V3.run(args.market, completed, collector=lambda t, c: collect(args.market, t, c, cache_dir),
+                     phase=args.phase,
                      decision_day=day, quote_fn=quote_fn, db_path=args.db, root=args.state_root,
                      reports_root=args.reports_root, archive_db=args.archive_db, dry_run=args.dry_run,
                      llm_recheck=False if args.no_llm else None)

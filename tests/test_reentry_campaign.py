@@ -438,8 +438,8 @@ def test_shakeout_recovery_needs_projected_volume_and_otherwise_returns_to_norma
     assert C.projected_volume(1250, "KR") == pytest.approx(1562.5)
     assert C.projected_volume(700, "US") == pytest.approx(1000.0)
     assert C.projected_volume(700, "US", share=0.5) == pytest.approx(1400.0)
-    kw = dict(bars=bars[:71], i=71, flags=before["flags"], price=12100.0, day_low=11480.0, regime="sideways",
-              window=nxt["window"])
+    kw = {"bars": bars[:71], "i": 71, "flags": before["flags"], "price": 12100.0, "day_low": 11480.0,
+          "regime": "sideways", "window": nxt["window"]}
     assert C.evaluate(setup, volume_projected=C.projected_volume(1250, "KR"), **kw)["trigger"]["trigger"] == \
         "SHAKEOUT_RECLAIM"
     out = C.evaluate(setup, volume_projected=C.projected_volume(700, "KR"), **kw)
@@ -512,8 +512,8 @@ def test_trigger_registry_is_pluggable():
 
 
 # ---------------------------------------------------------------- runtime (SHADOW)
-from observability import reentry_v3_recheck as RC3  # noqa: E402
-from observability import reentry_v3_shadow as V3  # noqa: E402
+from observability import reentry_v3_recheck as RC3
+from observability import reentry_v3_shadow as V3
 
 
 def _db(path, bars, exit_price=11600):
@@ -571,7 +571,7 @@ def test_runtime_dry_runs_write_nothing_and_never_call_the_llm(tmp_path, monkeyp
     summary = run(70, phase="intraday", decision_day=bars[71]["date"], quote_fn=quote, dry_run=True,
                   llm_recheck=True, llm=_fake_llm(calls))
     assert summary["new_triggers"] == 1 and summary["llm_calls"] == 0 and calls == []
-    assert [f.name for f in root.iterdir()] == ["reentry_v3_state_kr.lock"] and sent == []
+    assert not root.exists() and sent == []          # no state, no lock file, no cache under runtime/
 
 
 def test_runtime_intraday_decision_recheck_and_close_replay(tmp_path, monkeypatch):
@@ -618,7 +618,7 @@ def test_runtime_intraday_decision_recheck_and_close_replay(tmp_path, monkeypatc
 
 
 def test_runtime_shakeout_recovery_is_decided_per_rule(tmp_path, monkeypatch):
-    bars, root, sent, run, quote = _runtime(tmp_path, monkeypatch, rows=_yc_shakeout_rows(), exit_price=11500,
+    bars, root, _sent, run, quote = _runtime(tmp_path, monkeypatch, rows=_yc_shakeout_rows(), exit_price=11500,
                                             quote_price=12100.0, quote_low=11480.0, quote_volume=1250.0)
     calls = []
     run(70, llm_recheck=False)
