@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 LEADER_PCT = 20.0          # O'Neil first milestone: a "leader" reached at least +20% after entry
 BIG_PCT = 30.0             # a missed winner rose at least +30% after we skipped or sold it
-DEFAULT_SLOTS = 10         # fallback book size when no holding records max_portfolio_size
+BOOK_SLOTS = 10            # capital is sized as a fixed 10-slot book (MAX_SLOTS in the trackers)
 MESSAGE_LIMIT = 3400       # prism_core.ops_alert truncates at 3500 characters
 TOP_ROWS = 5
 EXIT_LABELS = {"stop": "손절 규칙", "trend_exit": "추세 이탈", None: "매도 판단"}
@@ -101,7 +101,7 @@ class Trade:
     reentry: dict
     runner: str | None
     highest: float | None
-    max_slots: int = DEFAULT_SLOTS
+    max_slots: int = BOOK_SLOTS
     mfe: float | None = None
     exit_reason: str = ""
 
@@ -137,7 +137,8 @@ class Analysis:
     trades: list[Trade] = field(default_factory=list)
     missed: list[Missed] = field(default_factory=list)
     candidates: int = 0
-    max_slots: int = DEFAULT_SLOTS
+    max_slots: int = BOOK_SLOTS
+    regime_cap: int | None = None    # market-based holding cap from the latest scenario
     price_gaps: int = 0
     notes: list[str] = field(default_factory=list)
 
@@ -240,7 +241,7 @@ def load_trades(conn, market, cutoff) -> tuple[list[Trade], int]:
     holdings = conn.execute(sql["holdings"]).fetchall()
     sizes = [_scenario(row["scenario"]).get("max_portfolio_size") for row in holdings]
     sizes = [size for size in sizes if isinstance(size, int) and size > 0]
-    max_slots = sizes[-1] if sizes else DEFAULT_SLOTS
+    regime_cap = sizes[-1] if sizes else None
     pairs = [(row, False) for row in holdings]
     pairs += [(row, True) for row in conn.execute(sql["history"], (cutoff, cutoff)).fetchall()]
     seen, trades = set(), []
@@ -249,10 +250,10 @@ def load_trades(conn, market, cutoff) -> tuple[list[Trade], int]:
         if key in seen:
             continue
         seen.add(key)
-        trade = _build_trade(market, row, closed, max_slots)
+        trade = _build_trade(market, row, closed, BOOK_SLOTS)
         if trade is not None:
             trades.append(trade)
-    return trades, max_slots
+    return trades, regime_cap
 
 
 def attach_exit_reasons(conn, market, trades, cutoff):
@@ -340,7 +341,7 @@ def analyze(conn, market, as_of, weeks, fetcher, max_calls) -> Analysis:
         result.notes.append(f"{market} 보유 테이블이 없어 이 시장은 건너뜁니다.")
         return result
     conn.row_factory = sqlite3.Row
-    trades, result.max_slots = load_trades(conn, market, result.cutoff)
+    trades, result.regime_cap = load_trades(conn, market, result.cutoff)
     result.trades = trades
     attach_exit_reasons(conn, market, trades, result.cutoff)
     entries = {}
@@ -438,10 +439,11 @@ def section_summary(a: Analysis) -> str:
              f"- 신규 진입 {len(opened)}건, 청산 {len(closed)}건(손실 청산 {len(losses)}건, 그중 손절 규칙 {len(stops)}건)입니다."]
     if closed:
         lines.append(f"- 청산 실현 손익은 평균 {_p(sum(t.ret for t in closed) / len(closed))}, "
-                     f"계좌 기여 {sum(t.contribution for t in closed):+.2f}%p(슬롯 가중, {a.max_slots}슬롯 기준)입니다.")
+                     f"계좌 기여 {sum(t.contribution for t in closed):+.2f}%p(슬롯 가중, 계좌 {a.max_slots}슬롯 기준)입니다.")
     else:
         lines.append("- 이번 주 청산 거래가 없어 실현 손익은 없습니다.")
-    lines.append(f"- 보유 {len(holding)}종목, 슬롯 사용 {used:.1f}/{a.max_slots}({used / a.max_slots:.0%})입니다.")
+    cap = f", 시장 국면상 최대 {a.regime_cap}종목" if a.regime_cap and a.regime_cap != a.max_slots else ""
+    lines.append(f"- 보유 {len(holding)}종목, 슬롯 사용 {used:.1f}/{a.max_slots}({used / a.max_slots:.0%}{cap})입니다.")
     return "\n".join(lines)
 
 

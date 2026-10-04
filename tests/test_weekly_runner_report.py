@@ -111,7 +111,7 @@ def test_load_dedupes_accounts_and_reads_micro_split(db):
     assert holding.is_open and holding.path == [25, 50] and holding.fraction == 0.5
     assert holding.entry == pytest.approx(0.5 / (0.25 / 10000 + 0.25 / 11000))
     assert holding.runner == "적용" and holding.reentry["attempt_label"] == "2/3"
-    assert result.max_slots == 8
+    assert result.max_slots == 10 and result.regime_cap == 8   # book stays 10 slots; scenario cap is display only
 
 
 def test_mfe_uses_scenario_highest_and_price_bars(db):
@@ -157,7 +157,7 @@ def test_report_has_all_six_sections_in_polite_korean(db):
 
 def test_week_summary_counts_only_the_last_seven_days(db):
     text = wrr.section_summary(_analysis(db))
-    assert "신규 진입 0건, 청산 2건" in text and "슬롯 사용 0.5/8" in text
+    assert "신규 진입 0건, 청산 2건" in text and "슬롯 사용 0.5/10(5%, 시장 국면상 최대 8종목)" in text
 
 
 def test_trigger_rows_group_cohort_entries(db):
