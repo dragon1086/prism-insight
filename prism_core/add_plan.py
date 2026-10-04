@@ -18,6 +18,7 @@ import json
 import re
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 CONTRACT = "micro-split-add-plan-v1"
@@ -97,6 +98,41 @@ def next_weekday(day):
     return day
 
 
+# Exchange calendars so a plan is never dated for a holiday (e.g. KR 2026-10-05, the
+# National Foundation Day substitute). Falls back to weekdays if the calendar is missing.
+_CALENDARS = {"KR": "XKRX", "US": "XNYS"}
+USE_EXCHANGE_CALENDAR = True
+
+
+@lru_cache(maxsize=8)
+def _sessions(market, year):
+    import pandas_market_calendars as calendars
+    schedule = calendars.get_calendar(_CALENDARS[market]).schedule(
+        start_date=f"{year - 1}-12-01", end_date=f"{year + 1}-01-31")
+    return frozenset(ts.date() for ts in schedule.index)
+
+
+def is_session(market, day):
+    """True when ``day`` is a trading session of the market (weekday fallback)."""
+    market = str(market).upper()
+    if USE_EXCHANGE_CALENDAR and market in _CALENDARS:
+        try:
+            return day in _sessions(market, day.year)
+        except Exception:  # noqa: BLE001 - calendar unavailable: weekday rule
+            return day.weekday() < 5
+    return day.weekday() < 5
+
+
+def next_session(market, day):
+    """The first trading session after ``day``."""
+    day = next_weekday(day)
+    for _ in range(15):
+        if is_session(market, day):
+            return day
+        day = next_weekday(day)
+    return day
+
+
 def _local(market, at):
     return _time(at).astimezone(SESSIONS[str(market).upper()][0])
 
@@ -104,27 +140,26 @@ def _local(market, at):
 def entry_session_date(market, entered_at):
     """The session an entry belongs to: today before the close, else the next weekday (US reserved fill)."""
     local = _local(market, entered_at)
-    if local.weekday() < 5 and local.time() < SESSIONS[str(market).upper()][2]:
+    if is_session(market, local.date()) and local.time() < SESSIONS[str(market).upper()][2]:
         return local.date()
-    return next_weekday(local.date())
+    return next_session(market, local.date())
 
 
 def buy_valid_for(market, entered_at):
     """A BUY plan is for the session after the entry session (no add on the entry day)."""
-    return next_weekday(entry_session_date(market, entered_at)).isoformat()
+    return next_session(market, entry_session_date(market, entered_at)).isoformat()
 
 
 def review_valid_for(market, now):
     """KR morning / US pre-open reviews revise today's plan; later reviews plan the next session.
 
-    Weekdays only: on an exchange holiday the plan simply expires unused (no add),
-    and the next review issues a new one.
+    Sessions follow the exchange calendar, so a plan is never dated for a holiday.
     """
     local = _local(market, now)
     cutoff = SESSIONS[str(market).upper()][3]
-    if local.weekday() < 5 and local.time() < cutoff:
+    if is_session(market, local.date()) and local.time() < cutoff:
         return local.date().isoformat()
-    return next_weekday(local.date()).isoformat()
+    return next_session(market, local.date()).isoformat()
 
 
 def session_index(entry_session, session_date):
