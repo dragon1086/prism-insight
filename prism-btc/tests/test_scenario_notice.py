@@ -13,6 +13,43 @@ def position(**updates):
     return value
 
 
+@pytest.mark.parametrize('invalid', ['missing', 'nonflat', 'wrong_account', 'wrong_event', 'unverified', 'stale', 'prefill', 'negative', 'nan', 'infinity', 'boolean'])
+def test_closed_equity_requires_same_event_verified_post_exit_flat_snapshot(invalid):
+    snapshot = position(quantity=0, timestamp=1063)
+    snapshot['account_snapshot'].update(timestamp=1063, equity=10046.15)
+    if invalid == 'missing':
+        snapshot = None
+    elif invalid == 'nonflat':
+        snapshot['quantity'] = .1
+    elif invalid == 'unverified':
+        snapshot['verified'] = False
+    elif invalid in ('stale', 'prefill'):
+        snapshot['timestamp'] = 1121 if invalid == 'stale' else 999
+        snapshot['account_snapshot']['timestamp'] = snapshot['timestamp']
+    else:
+        account = snapshot['account_snapshot']
+        if invalid in ('wrong_account', 'wrong_event'):
+            account['same_account' if invalid == 'wrong_account' else 'same_event'] = False
+        else:
+            account['equity'] = {'negative': -1, 'nan': float('nan'), 'infinity': float('inf'), 'boolean': True}[invalid]
+    event = dict(kind='CLOSED', timestamp=1000, position_after=snapshot,
+                 settlement_confirmed=True, flat_confirmed=True, orders_terminal=True,
+                 net_pnl=46.15, fees=1., funding=0., scenario_initial_equity=10000)
+    out = render_notice(event)
+    assert '💰 종료 후 순자산: 미확인' in out
+    assert '10,046.15 USDT' not in out
+
+
+@pytest.mark.parametrize('account_time', [999, 1000, 1064, 1121])
+def test_closed_equity_account_and_flat_observation_must_be_identical(account_time):
+    snapshot = position(quantity=0, timestamp=1063)
+    snapshot['account_snapshot'].update(timestamp=account_time, equity=10046.15)
+    event = dict(kind='CLOSED', timestamp=1000, position_after=snapshot,
+                 settlement_confirmed=True, flat_confirmed=True, orders_terminal=True,
+                 net_pnl=46.15, fees=1., funding=0., scenario_initial_equity=10000)
+    assert '종료 후 순자산: 미확인' in render_notice(event)
+
+
 def filled(after=None, **updates):
     value = dict(kind="FILLED", timestamp=1000, side="LONG", fill_confirmed=True,
         protection_confirmed=True, price=84750, quantity=.1,
