@@ -432,6 +432,12 @@ def test_buy_prompt_block_states_the_frame_and_what_it_supersedes(live_on):
     en = live.buy_prompt_block("US", "en")
     assert "scout entry" in en and "System constraint 4" in en and "within +3% of the current" in en
     assert "Standalone no-entry reason 1" in en and "effective_score >= 5" in en
+    # 2026-10-04: the 7-holdings "buy_score >= 6 only" portfolio rule keeps precedence over the floor of 5.
+    assert "보유 종목이 7개 이상이면 '6점 이상만 진입' 규칙은 그대로 적용됩니다" in ko
+    assert "7개 이상일 때의 6점 규칙은 예외로 유지" in ko
+    assert "With 7 or more holdings, the 'only buy_score >= 6' rule still applies" in en
+    assert "the 6-point rule for 7 or more holdings stays as an exception" in en
+    assert live.buy_prompt_block("US", "ko") == ko  # US Korean prompt gets the same block
 
 
 # ---------------------------------------------------------------- conviction tilt (2026-10-04, design 2)
