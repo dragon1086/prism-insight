@@ -181,6 +181,8 @@ from prism_core.isolated_agent_runtime import (
 )
 from prism_core.trading_scenario_contract import apply_buy_scenario_contract
 from prism_core.isolated_strategy_effects import effects_for, EffectsFailure, observe_or_emit  # noqa: E402 - existing agent path bootstrap
+from prism_core.log_redaction import install as _install_log_redaction  # noqa: E402
+_install_log_redaction()
 
 # Pre-load telegram_translator_agent from main project (used in multiple methods)
 _translator_module = _import_from_main_cores(

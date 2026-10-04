@@ -38,6 +38,8 @@ with open(CONFIG_FILE, encoding="UTF-8") as f:
 from trading.domestic_stock_trading import DomesticStockTrading
 from trading import kis_auth as ka
 from telegram_bot_agent import TelegramBotAgent
+from prism_core.log_redaction import install as _install_log_redaction  # noqa: E402
+_install_log_redaction()
 
 # Import US trading module (optional - may not be available)
 try:
