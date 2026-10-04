@@ -15,6 +15,7 @@ from cores.kis_market_snapshot import (
     MarketSnapshotBundle, build_kis_snapshot_bundle, fetch_kis_master_universe,
 )
 from cores.rs_rating import oneil_weighted_return, percentile_ratings
+from prism_core import trigger_quality
 
 # Logger configuration
 logger = logging.getLogger(__name__)
@@ -1296,9 +1297,11 @@ def _get_regime_selection_plan(market_regime: str) -> tuple[int, int, int]:
     )
 
 
-def _build_topdown_pool(trigger_candidates: dict, macro_context: dict, score_column: str) -> list:
+def _build_topdown_pool(trigger_candidates: dict, macro_context: dict, score_column: str,
+                        trigger_weights: dict = None) -> list:
     """Build top-down candidate pool from leading sectors.
 
+    trigger_weights: optional trigger-quality priority (prism_core.trigger_quality).
     Returns list of (ticker, trigger_name, topdown_score, ticker_df) sorted by topdown_score desc.
     """
     if not macro_context:
@@ -1342,6 +1345,9 @@ def _build_topdown_pool(trigger_candidates: dict, macro_context: dict, score_col
                 base_score = df.loc[ticker, score_column]
                 confidence = sector_confidence.get(matched_sector, 0.5)
                 topdown_score = base_score * (1 + confidence * 0.3)
+                if trigger_weights:
+                    topdown_score = trigger_quality.weighted_score(
+                        topdown_score, trigger_weights.get(trigger_name, 1.0))
                 pool.append((ticker, trigger_name, topdown_score, df.loc[[ticker]]))
 
     # Sort by topdown_score descending
@@ -1361,6 +1367,7 @@ def _counterfactual_bottomup_order(
     score_column: str,
     *,
     limit: int = 3,
+    trigger_weights: dict = None,
 ) -> list[dict]:
     """Mirror the current bottom-up ordering without changing live selection."""
     selected = set()
@@ -1392,8 +1399,11 @@ def _counterfactual_bottomup_order(
         )
         selected.add(ticker)
 
-    # Phase 2 mirror: one unique leader from each trigger in registration order.
-    for trigger_name, frame in trigger_candidates.items():
+    # Phase 2 mirror: one unique leader from each trigger that keeps the
+    # guaranteed pick under trigger quality (all triggers when neutral).
+    for trigger_name in trigger_quality.guaranteed_pick_triggers(
+            trigger_candidates, trigger_weights):
+        frame = trigger_candidates[trigger_name]
         if frame.empty:
             continue
         sorted_frame = (
@@ -1424,7 +1434,11 @@ def _counterfactual_bottomup_order(
                 "composite_score",
                 "CompositeScore",
             )
-            remaining.append((float(score or 0.0), trigger_name, ticker, frame))
+            score = float(score or 0.0)
+            if trigger_weights:
+                score = trigger_quality.weighted_score(
+                    score, trigger_weights.get(trigger_name, 1.0))
+            remaining.append((score, trigger_name, ticker, frame))
     remaining.sort(key=lambda item: item[0], reverse=True)
     for _, trigger_name, ticker, frame in remaining:
         if ticker in selected:
@@ -1445,6 +1459,7 @@ def _emit_weak_regime_third_slot_shadow(
     market_regime: str,
     topdown_slots: int,
     max_selections: int,
+    trigger_weights: dict = None,
 ) -> None:
     """Record a 2-vs-3 counterfactual; never mutate the returned candidates."""
     if (
@@ -1463,7 +1478,8 @@ def _emit_weak_regime_third_slot_shadow(
         if not shadow_enabled():
             return
         counterfactual = _counterfactual_bottomup_order(
-            trigger_candidates, score_column, limit=3
+            trigger_candidates, score_column, limit=3,
+            trigger_weights=trigger_weights,
         )
         if len(counterfactual) != 3:
             return
@@ -1509,6 +1525,7 @@ def select_final_tickers(
     lookback_days: int = 10,
     macro_context: dict = None,
     trigger_mode: str | None = None,
+    trigger_weights: dict = None,
 ) -> dict:
     """
     Consolidate stocks selected from each trigger and choose final stocks.
@@ -1525,6 +1542,8 @@ def select_final_tickers(
         use_hybrid: Whether to use hybrid selection (default: True)
         lookback_days: Number of past business days for descriptive price evidence (default: 10)
         trigger_mode: Batch session used only for third-slot SHADOW identity
+        trigger_weights: Optional trigger-quality priority {trigger: weight}.
+            None/empty keeps the legacy ordering exactly.
 
     Returns:
         Dictionary of finally selected stocks
@@ -1647,7 +1666,8 @@ def select_final_tickers(
         topdown_slots, max_selections = (0, 3)
 
     # Build top-down pool
-    topdown_pool = _build_topdown_pool(trigger_candidates, macro_context, score_column)
+    topdown_pool = _build_topdown_pool(trigger_candidates, macro_context, score_column,
+                                       trigger_weights)
 
     # Diagnostics
     if topdown_pool:
@@ -1673,8 +1693,15 @@ def select_final_tickers(
             stock_sector = macro_context.get("sector_map", {}).get(ticker, "N/A") if macro_context else "N/A"
             logger.info(f"[TOP-DOWN] {ticker} selected (sector={stock_sector}, score={td_score:.3f}, trigger={trigger_name})")
 
-    # Phase 2: Fill bottom-up slots (per-trigger top-1 logic)
-    for name, df in trigger_candidates.items():
+    # Phase 2: Fill bottom-up slots (per-trigger top-1 logic). Triggers with
+    # measurably weak history lose only this guarantee and compete in Phase 3.
+    phase2_order = trigger_quality.guaranteed_pick_triggers(trigger_candidates, trigger_weights)
+    for name in trigger_candidates:
+        if name not in phase2_order:
+            logger.info("[TRIGGER_QUALITY] %s w=%.3f -> no guaranteed pick, competes in weighted fill",
+                        name, trigger_weights.get(name, 1.0))
+    for name in phase2_order:
+        df = trigger_candidates[name]
         if not df.empty and len(selected_tickers) < max_selections:
             if score_column in df.columns:
                 sorted_df = df.sort_values(score_column, ascending=False)
@@ -1699,6 +1726,8 @@ def select_final_tickers(
             for ticker in df.index:
                 if ticker not in selected_tickers:
                     score = df.loc[ticker, score_column] if score_column in df.columns else 0
+                    if trigger_weights:
+                        score = trigger_quality.weighted_score(score, trigger_weights.get(name, 1.0))
                     all_candidates.append((name, ticker, score, df.loc[[ticker]]))
         all_candidates.sort(key=lambda x: x[2], reverse=True)
 
@@ -1727,6 +1756,7 @@ def select_final_tickers(
         market_regime=market_regime,
         topdown_slots=topdown_slots,
         max_selections=max_selections,
+        trigger_weights=trigger_weights,
     )
 
     return final_result
@@ -1765,6 +1795,8 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
     today_str = datetime.datetime.today().strftime("%Y%m%d")
     trade_date = _resolve_trade_date(today_str)
     logger.info(f"Batch reference trading date: {trade_date}")
+    quality_snapshot = trigger_quality.load_trigger_quality("KR", trade_date)
+    trigger_quality.log_snapshot(quality_snapshot, logger)
 
     market_data = load_market_snapshot_bundle(trade_date)
     snapshot = market_data.snapshot
@@ -1831,6 +1863,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
         trade_date=trade_date,
         macro_context=macro_context,
         trigger_mode=trigger_time,
+        trigger_weights=quality_snapshot.weights,
     )
 
     # Optional research observes final selection, including an empty candidate set.
@@ -1901,6 +1934,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
 
                     if "SelectionChannel" in stocks_df.columns:
                         stock_info["selection_channel"] = str(stocks_df.loc[ticker, "SelectionChannel"])
+                    stock_info["trigger_quality_weight"] = quality_snapshot.weight(trigger_type)
 
                     if "liquidity_lane" in stocks_df.columns:
                         stock_info["liquidity_lane"] = str(stocks_df.loc[ticker, "liquidity_lane"])
@@ -1947,6 +1981,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             "bottomup_count": _bottomup_count,
             "emerging_liquidity_min_trade_value": EMERGING_LIQUIDITY_MIN_TRADE_VALUE,
             "emerging_liquidity_max_candidates": EMERGING_LIQUIDITY_MAX_CANDIDATES,
+            "trigger_quality": quality_snapshot.to_metadata(),
         }
 
         # Save JSON file
