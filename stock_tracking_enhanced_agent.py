@@ -1816,6 +1816,10 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             from prism_core.micro_split_live import review_prompt_block
             prompt_message += review_prompt_block(scenario_str, market="KR", language=self.language,
                                                   stop_loss=stop_loss)
+            # Protected runner: per-holding hold-rule appendix (after the micro-split block it
+            # supersedes); '' for every other holding, so their prompts stay byte-identical.
+            from prism_core.runner_hold_live import prompt_block as runner_prompt_block
+            prompt_message += runner_prompt_block(stock_data, market="KR", language=self.language)
 
             response = None
             codex_sell_enabled = os.environ.get(
@@ -1906,6 +1910,10 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     return await self._fallback_sell_decision(stock_data)
 
                 logger.info(f"Sell decision parse successful: {json.dumps(decision_json, ensure_ascii=False)[:500]}")
+                # Runner hold guard before any side effect: a blocked sell takes the hold branch
+                # (holding decision, add plan kept) and a trailing new_stop_loss is dropped.
+                from prism_core.runner_hold_live import guard_decision
+                decision_json = guard_decision(self, "KR", stock_data, decision_json, logger=logger)
                 try:  # micro-split add plan for the next session (LIVE only; never affects the sell decision)
                     from prism_core.micro_split_live import apply_review
                     apply_review(self, market="KR", row_id=stock_data.get('id'), ticker=ticker,

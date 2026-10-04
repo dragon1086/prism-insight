@@ -236,6 +236,11 @@ def test_runner_label_is_layout_tolerant():
     assert wrr.runner_label({"state": "HOLD"}) == "적용(HOLD)"
     assert wrr.runner_label({"active": True}) == "적용"
     assert wrr.runner_label({"note": "x"}) == "기록만 있음"
+    # Actual prism_core.runner_hold layout (docs/RUNNER_HOLD_RULE_ko.md).
+    assert wrr.runner_label({"version": "runner-hold-r5-v1", "status": "RUNNER",
+                             "hold_until": "2026-11-27"}) == "적용(주도주, 보유 기한 2026-11-27)"
+    assert wrr.runner_label({"version": "runner-hold-r5-v1", "status": "EXCLUDED",
+                             "reason": "SPIKE_FAST"}) == "제외(SPIKE_FAST)"
 
 
 def test_dry_run_prints_and_never_sends(db, capsys, monkeypatch):

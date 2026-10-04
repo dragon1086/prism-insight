@@ -197,6 +197,11 @@ def runner_label(runner) -> str | None:
     """Describe scenario["runner"] (runner-hold flags) without depending on its final layout."""
     if not isinstance(runner, dict) or not runner:
         return None
+    # prism_core.runner_hold layout: status RUNNER (protected) or EXCLUDED (spike, existing exits).
+    if runner.get("status") == "RUNNER":
+        return f"적용(주도주, 보유 기한 {runner['hold_until']})" if runner.get("hold_until") else "적용(주도주)"
+    if runner.get("status") == "EXCLUDED":
+        return f"제외({runner.get('reason') or '판정 제외'})"
     state = runner.get("state") or runner.get("status")
     if state:
         return f"적용({state})"

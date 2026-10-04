@@ -34,6 +34,8 @@ os.chdir(str(PRISM_US_DIR))
 from messaging.publish_guard import DISABLE_ENV_VAR  # noqa: E402
 
 os.environ[DISABLE_ENV_VAR] = "1"
+# Runner hold rule: no daily-bar network fetch in the default US run; its tests opt in.
+os.environ.setdefault("RUNNER_HOLD_ENABLED", "false")
 
 
 # =============================================================================

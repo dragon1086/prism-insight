@@ -553,16 +553,23 @@ def used_slots(scenarios):
 
 def keep_fresh_record(cursor, market, row_id, scenario):
     """Before rewriting a holding's scenario from an older snapshot (e.g. the highest_price ratchet),
-    carry over the row's current micro_split block so a worker add or plan written meanwhile is not lost."""
-    if row_id is None or not isinstance(scenario, dict) or SCENARIO_KEY not in scenario:
+    carry over the row's current micro_split block so a worker add or plan written meanwhile is not lost,
+    and the row's current runner-hold block (prism_core.runner_hold) for the same reason."""
+    from prism_core.runner_hold import SCENARIO_KEY as RUNNER_KEY, record as runner_record
+
+    if row_id is None or not isinstance(scenario, dict):
         return scenario
     try:
         row = cursor.execute(_SCENARIO_SQL[str(market).upper()], (row_id,)).fetchone()
-        fresh = record(json.loads(row[0])) if row and row[0] else None
+        loaded = json.loads(row[0]) if row and row[0] else None
     except (ValueError, TypeError):
-        fresh = None
+        loaded = None
+    fresh = record(loaded) if SCENARIO_KEY in scenario else None
     if fresh is not None:
         scenario[SCENARIO_KEY] = fresh
+    runner = runner_record(loaded) if isinstance(loaded, dict) else None
+    if runner is not None:
+        scenario[RUNNER_KEY] = runner
     return scenario
 
 
