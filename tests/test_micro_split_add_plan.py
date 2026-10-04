@@ -14,6 +14,26 @@ from prism_core import add_plan as P
 SEOUL = ZoneInfo("Asia/Seoul")
 NY = ZoneInfo("America/New_York")
 SESSION = "2026-10-05"  # Monday after a Friday 2026-10-02 entry
+
+
+@pytest.fixture(autouse=True)
+def _weekday_sessions(monkeypatch):
+    """These fixtures use synthetic weekday sessions (10/5 is a real KR holiday); the
+    exchange-calendar behaviour has its own test below."""
+    monkeypatch.setattr(P, "USE_EXCHANGE_CALENDAR", False)
+
+
+def test_plan_dates_skip_exchange_holidays(monkeypatch):
+    """2026-10-05 is the KR National Foundation Day substitute holiday: a Friday KR entry plans
+    for Tuesday 10/6, while US (open on 10/5) keeps Monday."""
+    monkeypatch.setattr(P, "USE_EXCHANGE_CALENDAR", True)
+    friday_kr = datetime(2026, 10, 2, 10, 0, tzinfo=ZoneInfo("Asia/Seoul")).isoformat()
+    assert P.buy_valid_for("KR", friday_kr) == "2026-10-06"
+    assert P.review_valid_for("KR", datetime(2026, 10, 2, 14, 46, tzinfo=ZoneInfo("Asia/Seoul")).isoformat()) == "2026-10-06"
+    assert not P.is_session("KR", date(2026, 10, 5)) and P.is_session("US", date(2026, 10, 5))
+    assert P.next_session("KR", date(2026, 10, 8)) == date(2026, 10, 12)  # 10/9 Hangul Day
+    friday_us = datetime(2026, 10, 2, 10, 0, tzinfo=ZoneInfo("America/New_York")).isoformat()
+    assert P.buy_valid_for("US", friday_us) == "2026-10-05"
 OPEN = datetime(2026, 10, 5, 9, 0, tzinfo=SEOUL)
 
 
