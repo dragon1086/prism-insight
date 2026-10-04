@@ -41,7 +41,8 @@ def fixture(root, *, name="A", path="OHLC", multiplier=1):
                     wins=1, losses=0, largest_winner_removed_net=0)
     report = dict(simulated_only=True, mode="HISTORICAL_LLM_RESEARCH", decisions=1,
                   decision_outcomes={"WAIT": 1}, contract=contract, contract_hash=comparison.digest(contract),
-                  exchange_hash=comparison.digest(exchange), economic=economic)
+                  exchange_hash=comparison.digest(exchange), economic=economic,
+                  readiness=dict(profitability_proven=False, insufficiency_reasons=[]))
     report["result_hash"] = comparison.digest(report)
     for mode in ("fresh", "frozen"):
         data = dict(report, execution_metadata=dict(mode=mode, actual_model_calls=1 if mode == "fresh" else 0))
@@ -265,3 +266,28 @@ def test_empty_curve_point_is_invalid(tmp_path):
     registered(tmp_path)
     save(tmp_path / "A/fresh/equity.json", [[]])
     assert comparison.compare(tmp_path)["arms"][0]["error"] == "invalid_equity_curve_shape"
+
+
+def test_preserves_model_and_unsettled_warnings(tmp_path):
+    registered(tmp_path)
+    for mode in ("fresh", "frozen"):
+        path = tmp_path / "A" / mode / "report.json"
+        report = comparison.read(path)
+        report["readiness"]["insufficiency_reasons"] = ["MODEL_FAILURES", "UNSETTLED_END_STATE"]
+        save(path, report)
+        rehash(tmp_path, mode)
+    result = comparison.compare(tmp_path)
+    assert result["arms"][0]["status"] == "VERIFIED"
+    assert {"MODEL_FAILURES", "UNSETTLED_END_STATE"} <= set(result["arms"][0]["insufficiency_reasons"])
+    assert result["postprocessor_source_sha256"]
+
+
+def test_cannot_omit_or_forge_source_readiness(tmp_path):
+    registered(tmp_path)
+    for mode in ("fresh", "frozen"):
+        path = tmp_path / "A" / mode / "report.json"
+        report = comparison.read(path)
+        report["readiness"] = {"profitability_proven": True, "insufficiency_reasons": []}
+        save(path, report)
+        rehash(tmp_path, mode)
+    assert comparison.compare(tmp_path)["arms"][0]["status"] == "INVALID"

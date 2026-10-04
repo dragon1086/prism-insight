@@ -63,6 +63,11 @@ def verify_run(directory, variant, registry, *, frozen=False):
             "invalid_artifact_shape")
     require(report["simulated_only"] is True and exchange["simulation"] is True,
             "simulation_required")
+    readiness = report["readiness"]
+    require(isinstance(readiness, dict) and readiness.get("profitability_proven") is False
+            and isinstance(readiness.get("insufficiency_reasons"), list)
+            and all(isinstance(reason, str) for reason in readiness["insufficiency_reasons"]),
+            "research_readiness_contract")
     require(report["result_hash"] == digest({k: v for k, v in report.items()
             if k not in {"result_hash", "execution_metadata"}}), "result_hash_mismatch")
     require(report["exchange_hash"] == digest(exchange), "exchange_hash_mismatch")
@@ -220,13 +225,16 @@ def compare(root):
                         and exchange == replay_exchange and curve == replay_curve,
                         "fresh_frozen_mismatch")
                 row.update(status="VERIFIED", frozen_status="VERIFIED_ZERO_MODEL_CALLS")
-            row["insufficiency_reasons"] = ["NO_FORWARD_PROFITABILITY_EVIDENCE"]
-            if report["economic"]["completed_scenarios"] < 60:
+            row["insufficiency_reasons"] = sorted(set(report["readiness"]["insufficiency_reasons"]
+                                                      + ["NO_FORWARD_PROFITABILITY_EVIDENCE"]))
+            if (report["economic"]["completed_scenarios"] < 60
+                    and "CLOSED_SCENARIOS_LT_60" not in row["insufficiency_reasons"]):
                 row["insufficiency_reasons"].append("CLOSED_SCENARIOS_LT_60")
         except (ValueError, KeyError, TypeError, OSError, ArithmeticError) as exc:
             row.update(status="INVALID", error=str(exc))
     matching = bool(cohorts) and all(c == cohorts[0] for c in cohorts)
     return {"schema": 1, "registry_hash": digest(registry), "arms": rows,
+            "postprocessor_source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "cohort_contracts_match": matching,
             "comparison_complete": matching and all(r["status"] == "VERIFIED" for r in rows),
             "verdict": "PREREGISTER_REPLAY", "profitability_proven": False,
