@@ -33,6 +33,7 @@ from prism_core.sell_regime_context import kr_live_regime_block
 from prism_core.execution_service import ExecutionService, OrderOutcomeUnknown
 from prism_core.order_intents import OrderIntent
 from observability.trading_context import emit_trading_context
+from observability.fallbacks import note_sell_fallback
 from observability.micro_split import emit_initial_shadow as emit_micro_split_shadow
 
 logging.basicConfig(
@@ -1902,12 +1903,14 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             try:
                 if not response or not response.strip():
                     logger.warning(f"{ticker} Empty response from LLM, falling back to legacy algorithm")
-                    return await self._fallback_sell_decision(stock_data)
+                    return note_sell_fallback("KR", stock_data, "empty_response",
+                                              await self._fallback_sell_decision(stock_data))
 
                 decision_json = parse_llm_json(response, context=f'{ticker} sell decision')
                 if decision_json is None:
                     logger.error(f"{ticker} sell decision parse failed. Full response: {response}")
-                    return await self._fallback_sell_decision(stock_data)
+                    return note_sell_fallback("KR", stock_data, "parse_failed",
+                                              await self._fallback_sell_decision(stock_data))
 
                 logger.info(f"Sell decision parse successful: {json.dumps(decision_json, ensure_ascii=False)[:500]}")
                 # Runner hold guard before any side effect: a blocked sell takes the hold branch
@@ -1970,7 +1973,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                 # Fallback to legacy algorithm when parsing fails
                 logger.warning(f"{ticker} AI analysis failed, falling back to legacy algorithm")
-                return await self._fallback_sell_decision(stock_data)
+                return note_sell_fallback("KR", stock_data, "json_error",
+                                          await self._fallback_sell_decision(stock_data))
 
         except EffectsFailure:
             raise
@@ -1979,7 +1983,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             logger.error(traceback.format_exc())
 
             # Fallback to legacy algorithm on error
-            return await self._fallback_sell_decision(stock_data)
+            return note_sell_fallback("KR", stock_data, "analysis_error",
+                                      await self._fallback_sell_decision(stock_data))
 
     async def _fallback_sell_decision(self, stock_data):
         """Legacy algorithm-based sell decision (fallback)"""

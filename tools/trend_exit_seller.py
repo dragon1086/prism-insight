@@ -601,7 +601,7 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                                         view, market, "en" if market == "US" else "ko"), True))
                                 elif bool(should_sell) and _is_trend_exit_signal(reason):
                                     summary["runner_held"] += 1
-                                    _log_runner_hold(market, ticker, h, reason)
+                                    _log_runner_hold(market, ticker, h, reason, cur_price, view)
                                 continue
                             if bool(should_sell) and _is_trend_exit_signal(reason):
                                 signals.append((rows, h, reason, False))
@@ -669,16 +669,25 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
     return summary
 
 
-def _log_runner_hold(market: str, ticker: str, holding: Dict[str, Any], reason: str) -> None:
-    """Stable reason code for a trend-exit tier skipped on a protected runner."""
+def _log_runner_hold(market: str, ticker: str, holding: Dict[str, Any], reason: str,
+                     current_price: Optional[float] = None, view: Optional[Dict[str, Any]] = None) -> None:
+    """Stable reason code for a trend-exit tier skipped on a protected runner.
+
+    The price at block time and the runner block are recorded so a later close can
+    show whether holding helped (docs/TWO_WEEK_REVIEW_ko.md).
+    """
     from prism_core.runner_hold import classify_reason
+    from prism_core.runner_hold_live import _price_facts
     code = classify_reason(reason)
-    logger.info("[RUNNER_HOLD] blocked sell reason=%s source=trend_exit market=%s ticker=%s detail=%s",
-                code, market, ticker, reason)
+    logger.info("[RUNNER_HOLD] blocked sell reason=%s source=trend_exit market=%s ticker=%s price=%s detail=%s",
+                code, market, ticker, current_price, reason)
+    view = view or {}
     from observability.events import emit_event
     emit_event("runner.sell_blocked", service=f"prism-{market.lower()}-runner-hold", market=market,
                ticker=ticker, position_id=f"legacy:{market}:{holding.get('id')}",
-               attributes={"code": code, "source": "trend_exit", "sell_reason": str(reason)[:300]})
+               attributes={"code": code, "source": "trend_exit", "sell_reason": str(reason)[:300],
+                           "phase": view.get("phase"),
+                           **_price_facts(dict(holding, current_price=current_price), view.get("record"))})
 
 
 def _holding_age_min(buy_date) -> Optional[float]:

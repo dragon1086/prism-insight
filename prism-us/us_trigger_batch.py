@@ -1213,7 +1213,7 @@ def get_us_sector_map(tickers: list) -> dict:
 def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: bool = True,
                          lookback_days: int = 10, macro_context: dict = None,
                          quality_capture: dict = None, expected_completed_session: str = None,
-                         trigger_weights: dict = None) -> dict:
+                         trigger_weights: dict = None, selection_diagnostics: dict = None) -> dict:
     """
     Aggregate selected stocks from all triggers and make final selection.
 
@@ -1411,6 +1411,8 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
         if name not in phase2_order:
             logger.info("[TRIGGER_QUALITY] %s w=%.3f -> no guaranteed pick, competes in weighted fill",
                         name, trigger_weights.get(name, 1.0))
+    before_guarantee = set(selected_tickers)
+    fill_picks = []
     for name in phase2_order:
         df = trigger_candidates[name]
         if remaining_slots <= 0:
@@ -1462,7 +1464,14 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
                 else:
                     final_result[trigger_name] = tagged_df
                 selected_tickers.add(ticker)
+                fill_picks.append((trigger_name, ticker))
                 remaining_slots -= 1
+
+    if selection_diagnostics is not None:
+        # Evidence only (docs/TWO_WEEK_REVIEW_ko.md): candidates that lost the guaranteed pick.
+        selection_diagnostics["trigger_quality"] = trigger_quality.selection_record(
+            trigger_candidates, phase2_order, before_guarantee, selected_tickers, fill_picks,
+            trigger_weights, score_column, max_selections=max_selections)
 
     # Summary log
     bottomup_filled = len(selected_tickers) - topdown_filled
@@ -1950,8 +1959,13 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
     quality_capture = ({} if os.getenv('US_SCREENING_QUALITY_CAPTURE_ENABLED', '').lower() == 'true' else None)
     capture_args = ({'quality_capture': quality_capture, 'expected_completed_session': prev_date}
                     if quality_capture is not None else {})
+    selection_diagnostics = {}
     final_results = select_final_tickers(triggers, trade_date=trade_date, macro_context=macro_context,
-                                         trigger_weights=quality_snapshot.weights, **capture_args)
+                                         trigger_weights=quality_snapshot.weights,
+                                         selection_diagnostics=selection_diagnostics, **capture_args)
+    selection_record = selection_diagnostics.get("trigger_quality")
+    trigger_quality.emit_selection_record(selection_record, market="US", trade_date=trade_date,
+                                          trigger_mode=trigger_time, log=logger)
 
     # Research observes a copy boundary, never modifies ranking, JSON or BUY inputs.
     if watch_batch_ref:
@@ -2063,7 +2077,8 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             "capacity_fill_candidate_count": capacity_fill_candidate_count,
             "market_cap_lookup_attempted": cap_lookup_attempted,
             "market_cap_lookup_coverage": cap_lookup_coverage,
-            "trigger_quality": quality_snapshot.to_metadata(),
+            "trigger_quality": {**quality_snapshot.to_metadata(),
+                                **({"selection": selection_record} if selection_record else {})},
         }
 
         with open(output_file, 'w', encoding='utf-8') as f:

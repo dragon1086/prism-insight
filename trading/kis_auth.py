@@ -1397,7 +1397,18 @@ def _url_fetch(
         return ar
     else:
         print("Error Code : " + str(res.status_code) + " | " + res.text)
+        _note_rate_limit(url, res.status_code, res.text)
         return APIRespError(res.status_code, res.text)
+
+
+def _note_rate_limit(url, status_code, body):
+    """Durable evidence of EGW00201 rejections (stdout logs are truncated weekly); fail-open."""
+    try:
+        from observability.fallbacks import note_kis_rate_limit
+    except ImportError:
+        logging.getLogger(__name__).debug("observability unavailable; KIS rate-limit event skipped")
+        return
+    note_kis_rate_limit(url, status_code, body)
 
 
 # auth()

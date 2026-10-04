@@ -42,6 +42,8 @@ _LOOP_SQL = ("SELECT submitted_ts FROM loop_a_inflight_orders WHERE ticker=? AND
 _BREACH_SQL = "SELECT last_breach_date FROM loop_b_position_state WHERE ticker=? AND market=?"
 DB_LOCAL = ZoneInfo("Asia/Seoul")  # legacy rows store server-local (KST) timestamps for both markets
 EVALUATION_WINDOW = timedelta(seconds=90)  # live-capture clock allows 120 s incl. fetch
+# Conditions held but a code safety rail blocked the add (recorded once per plan/session/scenario).
+RAIL_BLOCKS = frozenset({"RISK_LIMIT", "CHASE_LIMIT", "PYRAMID_STEP", "STEP_TOO_LARGE"})
 
 
 def utc_now():
@@ -196,6 +198,8 @@ class B3AeWorker:
             return out
         if decision["action"] != "ADD":
             out["reasons"] = decision.get("reasons")
+            self._record_rail_blocks(cid, campaign, symbol, current, decision, state, attributes,
+                                     price=(evidence or {}).get("price"))
             return out
         meta = {k: decision[k] for k in ("scenario_id", "scenario_type", "lens", "plan_hash", "trigger_price",
                                          "rationale")}
@@ -206,7 +210,9 @@ class B3AeWorker:
                           lens=decision["lens"], target_allocation=decision["target_allocation"],
                           price=decision["price"], trigger_price=decision["trigger_price"],
                           risk_clipped=decision["risk_clipped"], rail=decision.get("rail"),
-                          acceleration=decision.get("acceleration"))
+                          acceleration=decision.get("acceleration"),
+                          planned_target=decision.get("planned_target"), current_stop=state["current_stop"],
+                          initial_stop=state["initial_stop"])
         self.store.record_event(cid, current, "add_plan.qualified", attributes)
         emit_event("micro_split.add_plan_qualified", service=service, market=self.market, ticker=symbol,
                    position_id=campaign["position_id"], attributes=attributes)
@@ -217,6 +223,28 @@ class B3AeWorker:
         out["submitted"] = bool((live.get("broker") or {}).get("success"))
         self.store.record_event(cid, current, "add_plan.executed", dict(attributes, live=out["live"]))
         return out
+
+    def _record_rail_blocks(self, cid, campaign, symbol, now, decision, state, attributes, *, price=None):
+        """Once per plan/session/scenario: a scenario whose conditions held but a safety rail blocked it.
+
+        Evidence only (docs/TWO_WEEK_REVIEW_ko.md): the price at the block lets a later close
+        judge the rail (risk clip on the effective stop, chase limit, pyramid step).
+        """
+        from observability.events import emit_event
+        from prism_core import add_plan
+        blocked = {sid: why for sid, why in (decision.get("reasons") or {}).items() if why in RAIL_BLOCKS}
+        for sid, why in sorted(blocked.items()):
+            key = ("rail", decision.get("plan_hash"), decision.get("session_date"), sid, why)
+            if key in self._announced:
+                continue
+            self._announced.add(key)
+            data = dict(attributes, scenario_id=sid, block=why, session_date=decision.get("session_date"),
+                        rail=add_plan.ACCELERATION if sid == add_plan.ACCELERATION else None,
+                        acceleration=decision.get("acceleration"), current_stop=state["current_stop"],
+                        initial_stop=state["initial_stop"], price=price)
+            self.store.record_event(cid, now, "add_plan.rail_blocked", data)
+            emit_event("micro_split.add_blocked", service=f"prism-{self.market.lower()}-micro-split",
+                       market=self.market, ticker=symbol, position_id=campaign["position_id"], attributes=data)
 
     def once(self):
         now = self.clock()

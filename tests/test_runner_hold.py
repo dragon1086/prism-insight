@@ -276,7 +276,7 @@ def test_ai_trailing_stop_above_the_entry_is_reset_to_the_entry_on_detection(mar
     scenario, stop = agent.row()
     assert stop == 100.0 and scenario["runner"]["stop_set_from"] == 115.0
     assert ("runner.stop_reset_to_entry", {"stop_loss": 100.0, "previous_stop_loss": 115.0,
-                                           "entry_ref": 100.0}) in events
+                                           "entry_ref": 100.0, "current_price": 125.0}) in events
 
 
 def test_concurrent_micro_split_write_is_kept_by_the_runner_write(monkeypatch):
@@ -440,3 +440,37 @@ def test_exit_reason_texts_name_the_rule_in_both_languages():
     assert "20일선" in R.exit_reason(view, "KR", "ko") and "20-day MA" in R.exit_reason(view, "US", "en")
     view["exit"] = "BREAKEVEN_CLOSE"
     assert "본전" in R.exit_reason(view, "KR", "ko") and "breakeven" in R.exit_reason(view, "US", "en")
+
+
+# ---------------------------------------------------------------- two-week review evidence
+
+def test_blocked_sell_records_the_price_at_block_time(monkeypatch):
+    block = {"version": R.VERSION, "status": R.RUNNER, "entry_ref": 100.0, "session": 6, "gain_pct": 21.0,
+             "hold_until": "2026-12-01", "peak_close": 135.0}
+    stock = {"id": 7, "ticker": "T", "buy_price": 100.0, "current_price": 130.0, "stop_loss": 100.0,
+             "scenario": json.dumps({"runner": block})}
+    events = []
+    monkeypatch.setattr(L, "_emit", lambda event, **kw: events.append((event, kw["attributes"])))
+    assert L.guard_result(object(), "KR", stock, True, "목표가 도달", logger=None)[0] is False
+    (name, attrs), = events
+    assert name == "runner.sell_blocked" and attrs["source"] == "final" and attrs["phase"] == R.HOLD
+    assert (attrs["current_price"], attrs["entry_ref"], attrs["gain_now_pct"], attrs["stop_loss"],
+            attrs["peak_close"], attrs["hold_until"]) == (130.0, 100.0, 30.0, 100.0, 135.0, "2026-12-01")
+
+
+def test_trend_exit_runner_block_records_price_and_phase(trend_db, monkeypatch):
+    import observability.events as ev
+    bars, start, days = build("KR", [101, 103, 106, 110, 115, 121, 124, 130, 140, 150])
+    now = at("KR", days[days.index(bars[-1]["date"]) + 1], 11, 0)
+    monkeypatch.setattr(L, "_now", lambda: now)
+    monkeypatch.setattr(L, "fetch_daily_bars", lambda m, t, now=None: bars)
+    _enable(monkeypatch, live=False, confirm=2)
+    _trend_seed(trend_db, {"highest_price": 150, "runner": _stored_runner(bars, start)}, bars, start)
+    calls, events = [], []
+    monkeypatch.setattr(ev, "emit_event", lambda name, **kw: events.append((name, kw["attributes"])))
+    _patch(monkeypatch, FakeTrader({"005930": 130.0}, calls=calls), agent_holder=FakeAgent(calls))
+    asyncio.run(lb.run_market("KR", "run1"))
+    blocked = [attrs for name, attrs in events if name == "runner.sell_blocked"]
+    assert blocked and blocked[0]["source"] == "trend_exit" and blocked[0]["current_price"] == 130.0
+    assert blocked[0]["entry_ref"] == 100.0 and blocked[0]["phase"] == R.HOLD
+    assert blocked[0]["gain_now_pct"] == 30.0
