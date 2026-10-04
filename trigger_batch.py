@@ -1526,6 +1526,7 @@ def select_final_tickers(
     macro_context: dict = None,
     trigger_mode: str | None = None,
     trigger_weights: dict = None,
+    selection_diagnostics: dict | None = None,
 ) -> dict:
     """
     Consolidate stocks selected from each trigger and choose final stocks.
@@ -1700,6 +1701,8 @@ def select_final_tickers(
         if name not in phase2_order:
             logger.info("[TRIGGER_QUALITY] %s w=%.3f -> no guaranteed pick, competes in weighted fill",
                         name, trigger_weights.get(name, 1.0))
+    before_guarantee = set(selected_tickers)
+    fill_picks = []
     for name in phase2_order:
         df = trigger_candidates[name]
         if not df.empty and len(selected_tickers) < max_selections:
@@ -1740,7 +1743,14 @@ def select_final_tickers(
                 else:
                     final_result[trigger_name] = tagged_df
                 selected_tickers.add(ticker)
+                fill_picks.append((trigger_name, ticker))
                 logger.info(f"[BOTTOM-UP] {ticker} selected (fill, trigger={trigger_name})")
+
+    if selection_diagnostics is not None:
+        # Evidence only (docs/TWO_WEEK_REVIEW_ko.md): candidates that lost the guaranteed pick.
+        selection_diagnostics["trigger_quality"] = trigger_quality.selection_record(
+            trigger_candidates, phase2_order, before_guarantee, selected_tickers, fill_picks,
+            trigger_weights, score_column, max_selections=max_selections)
 
     # Log selection summary
     bottomup_count = len(selected_tickers) - topdown_filled
@@ -1858,13 +1868,18 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             logger.debug(f"Detailed information:\n{df}\n{'-'*40}")
 
     # Final selection results
+    selection_diagnostics = {}
     final_results = select_final_tickers(
         triggers,
         trade_date=trade_date,
         macro_context=macro_context,
         trigger_mode=trigger_time,
         trigger_weights=quality_snapshot.weights,
+        selection_diagnostics=selection_diagnostics,
     )
+    selection_record = selection_diagnostics.get("trigger_quality")
+    trigger_quality.emit_selection_record(selection_record, market="KR", trade_date=trade_date,
+                                          trigger_mode=trigger_time, log=logger)
 
     # Optional research observes final selection, including an empty candidate set.
     if watch_batch_ref:
@@ -1981,7 +1996,8 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             "bottomup_count": _bottomup_count,
             "emerging_liquidity_min_trade_value": EMERGING_LIQUIDITY_MIN_TRADE_VALUE,
             "emerging_liquidity_max_candidates": EMERGING_LIQUIDITY_MAX_CANDIDATES,
-            "trigger_quality": quality_snapshot.to_metadata(),
+            "trigger_quality": {**quality_snapshot.to_metadata(),
+                                **({"selection": selection_record} if selection_record else {})},
         }
 
         # Save JSON file

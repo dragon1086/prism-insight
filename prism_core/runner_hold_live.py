@@ -240,6 +240,7 @@ async def review_holding(agent, market, stock, *, logger=None, now=None):
     block = view["record"]
     detail = {k: block.get(k) for k in ("status", "reason", "since", "session", "gain_pct", "entry_ref",
                                         "ma50_at_trigger", "ma50_extension", "hold_until")}
+    detail["current_price"] = R._num(stock.get("current_price"))
     if written["excluded"]:
         log.warning("[RUNNER_HOLD][%s] %s spike excluded reason=%s session=%s gain=%s ext=%s", market, ticker,
                     block.get("reason"), block.get("session"), block.get("gain_pct"), block.get("ma50_extension"))
@@ -254,14 +255,16 @@ async def review_holding(agent, market, stock, *, logger=None, now=None):
         log.warning("[RUNNER_HOLD][%s] %s stop %s -> %s (initial entry; runner rule replaces trailing)", market,
                     ticker, before, after)
         _emit(event, market=market, ticker=ticker, row_id=row_id,
-              attributes={"stop_loss": after, "previous_stop_loss": before, "entry_ref": block.get("entry_ref")})
+              attributes={"stop_loss": after, "previous_stop_loss": before, "entry_ref": block.get("entry_ref"),
+                          "current_price": R._num(stock.get("current_price"))})
     if view["phase"] is not None and view["exit"]:
         language = "en" if market == "US" else "ko"
         reason = R.exit_reason(view, market, language)
         log.warning("[RUNNER_HOLD][%s] %s runner exit code=%s", market, ticker, view["exit"])
         _emit("runner.exit_forced", market=market, ticker=ticker, row_id=row_id,
               attributes={"code": view["exit"], "phase": view["phase"],
-                          **{k: view["exit_facts"].get(k) for k in ("date", "close", "ma50", "ma20")}})
+                          **{k: view["exit_facts"].get(k) for k in ("date", "close", "ma50", "ma20")},
+                          **_price_facts(stock, block)})
         return reason
     return None
 
@@ -277,12 +280,24 @@ def _protected(stock):
     return view if view.get("phase") else None
 
 
-def _block(market, stock, reason, code, source, log):
+def _price_facts(stock, block):
+    """Price evidence at the moment of a runner decision, so a later close can judge it."""
+    block = block or {}
+    price, entry = R._num(stock.get("current_price")), R._num(block.get("entry_ref") or stock.get("buy_price"))
+    return {"current_price": price, "entry_ref": entry, "buy_price": R._num(stock.get("buy_price")),
+            "stop_loss": R._num(stock.get("stop_loss")), "peak_close": R._num(block.get("peak_close")),
+            "hold_until": block.get("hold_until"),
+            "gain_now_pct": round((price / entry - 1) * 100, 2) if price and entry else None}
+
+
+def _block(market, stock, reason, code, source, log, view=None):
     ticker = stock.get("ticker")
-    log.warning("[RUNNER_HOLD] blocked sell reason=%s source=%s market=%s ticker=%s detail=%s", code, source, market,
-                ticker, " ".join(str(reason or "").split())[:200])
+    view = view or {}
+    log.warning("[RUNNER_HOLD] blocked sell reason=%s source=%s market=%s ticker=%s price=%s detail=%s", code, source,
+                market, ticker, stock.get("current_price"), " ".join(str(reason or "").split())[:200])
     _emit("runner.sell_blocked", market=market, ticker=ticker, row_id=stock.get("id"),
-          attributes={"code": code, "source": source, "sell_reason": str(reason or "")[:300]})
+          attributes={"code": code, "source": source, "sell_reason": str(reason or "")[:300],
+                      "phase": view.get("phase"), **_price_facts(stock, view.get("record"))})
 
 
 def guard_result(agent, market, stock, should_sell, reason, *, logger=None):
@@ -298,7 +313,7 @@ def guard_result(agent, market, stock, should_sell, reason, *, logger=None):
                                  stop_loss=stock.get("stop_loss"), buy_price=stock.get("buy_price"), reason=reason)
     if allow:
         return should_sell, reason
-    _block(market, stock, reason, code, "final", logger or _LOG)
+    _block(market, stock, reason, code, "final", logger or _LOG, view)
     return False, R.blocked_reason(code, reason, "en" if market == "US" else "ko")
 
 
@@ -334,7 +349,7 @@ def guard_decision(agent, market, stock, decision, *, logger=None):
                                  stop_loss=stock.get("stop_loss"), buy_price=stock.get("buy_price"), reason=reason)
     if allow:
         return decision
-    _block(market, stock, reason, code, "llm", log)
+    _block(market, stock, reason, code, "llm", log, view)
     decision["should_sell"] = False
     decision["sell_reason"] = R.blocked_reason(code, reason, "en" if market == "US" else "ko")
     return decision

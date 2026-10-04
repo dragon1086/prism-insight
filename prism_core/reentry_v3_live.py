@@ -340,14 +340,16 @@ def process(state, market, decision_day, records, items, journal_path, executor,
             emit("reentry_v3.live_entry", watches[entry["watch_id"]], entry["key"],
                  {"status": status, "reason": outcome.get("reason"), "signal": entry["signal"],
                   "decision_price": entry["price"], "attempt": entry["scenario"]["reentry"]["attempt"],
-                  "stop_loss": entry["scenario"].get("stop_loss"), "target_price": entry["scenario"].get("target_price")})
+                  "stop_loss": entry["scenario"].get("stop_loss"), "target_price": entry["scenario"].get("target_price"),
+                  "entry_price": outcome.get("entry_price"), "holding_count": len(outcome.get("holding_ids") or [])})
     for entry in skipped:
         status = REASON_STATUS.get(entry["reason"], "SKIPPED")
         results.append({"key": entry["key"], "ticker": entry["ticker"], "signal": entry["signal"], "status": status,
                         "reason": entry["reason"]})
         if emit:
             emit("reentry_v3.live_skipped", watches[entry["watch_id"]], f"{entry['key']}|{entry['reason']}",
-                 {"status": status, "reason": entry["reason"], "signal": entry["signal"]})
+                 {"status": status, "reason": entry["reason"], "signal": entry["signal"],
+                  "decision_price": entry.get("price")})
     if entries and save_state:
         save_state()
     return results

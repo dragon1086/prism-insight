@@ -70,6 +70,7 @@ from observability.micro_split import emit_initial_shadow as emit_micro_split_sh
 from observability.scenario_shadow import emit_initial_capture as emit_scenario_shadow_capture  # noqa: E402
 from observability.oneil_capture import capture_exit as capture_oneil_exit, capture_holding as capture_oneil_holding, holding_observation as oneil_holding_observation  # noqa: E402
 from observability.oneil_capture import defer_exit_capture  # noqa: E402
+from observability.fallbacks import note_sell_fallback  # noqa: E402
 from observability.trading_context import (  # noqa: E402
     emit_trading_context,
     execution_profile_ref,
@@ -2662,7 +2663,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
             if not response or not response.strip():
                 logger.warning(f"{ticker} Empty LLM response, falling back to rule-based decision")
-                return await self._fallback_sell_decision(stock_data)
+                return note_sell_fallback("US", stock_data, "empty_response",
+                                          await self._fallback_sell_decision(stock_data))
 
             # Parse JSON from response
             json_str = None
@@ -2688,7 +2690,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
             if not json_str:
                 logger.warning(f"{ticker} No JSON found in LLM response, falling back to rule-based decision")
-                return await self._fallback_sell_decision(stock_data)
+                return note_sell_fallback("US", stock_data, "parse_failed",
+                                          await self._fallback_sell_decision(stock_data))
 
             json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
             try:
@@ -2728,7 +2731,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             raise
         except Exception as e:
             logger.error(f"{ticker} AI sell analysis error: {e}, falling back to rule-based decision")
-            return await self._fallback_sell_decision(stock_data)
+            return note_sell_fallback("US", stock_data, "analysis_error",
+                                      await self._fallback_sell_decision(stock_data))
 
     def _get_live_regime_safe(self) -> Optional[str]:
         """매도 사이클의 '현재' 시장 레짐을 yfinance(S&P500/VIX) 기반으로 1회 계산.

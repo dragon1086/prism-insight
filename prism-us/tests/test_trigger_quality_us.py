@@ -67,6 +67,24 @@ def test_us_capacity_fill_keeps_its_last_position():
         ("GAP1", "Gap Up Momentum Top"), ("VST1", "Volume Surge Top")]
 
 
+def test_us_selection_evidence_records_the_displaced_legacy_pick():
+    """Two-week review evidence: VST1 lost its guaranteed slot to GAP2."""
+    diagnostics = {}
+    us_trigger_batch.select_final_tickers(
+        _morning(), use_hybrid=False, trigger_weights=WEIGHTS, selection_diagnostics=diagnostics,
+        macro_context={"market_regime": "sideways", "leading_sectors": []})
+    record = diagnostics["trigger_quality"]
+    assert [(c["ticker"], c["trigger"], c["weight"]) for c in record["displaced"]] == [
+        ("VST1", "Volume Surge Top", 0.86)]
+    assert [c["ticker"] for c in record["fill_picks"]] == ["GAP2"]
+    assert record["excluded_triggers"] == ["Volume Surge Top", "Macro Sector Leader"]
+    neutral = {}
+    us_trigger_batch.select_final_tickers(
+        _morning(), use_hybrid=False, trigger_weights={}, selection_diagnostics=neutral,
+        macro_context={"market_regime": "sideways", "leading_sectors": []})
+    assert neutral["trigger_quality"] is None
+
+
 def test_us_topdown_pool_scales_by_trigger_weight():
     triggers = {
         "Macro Sector Leader": pd.DataFrame({"FinalScore": [0.80]}, index=["MAC1"]),

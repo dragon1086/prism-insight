@@ -509,7 +509,11 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
                            "allocation_before": before,
                            "allocation_after": after, "add_price": price, "average_entry": average,
                            "order_cash": cash, "intent_id": intent.id, "broker_success": bool(result.get("success")),
-                           "broker_status": result.get("status") or result.get("intent_status")})
+                           "broker_status": result.get("status") or result.get("intent_status"),
+                           "broker_quantity": result.get("quantity"),
+                           "broker_reason": result.get("reason_code") or result.get("message"),
+                           "planned_target": decision.get("target_allocation"), "trigger_price": meta.get("trigger_price"),
+                           "session": meta.get("session")})
     return {"status": "EXECUTED", "allocation": after, "cash": cash, "broker": result}
 
 

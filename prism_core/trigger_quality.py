@@ -335,14 +335,114 @@ def guaranteed_pick_triggers(
     return [name for name in names if weights.get(name, 1.0) > GUARANTEE_FLOOR]
 
 
+def _cell(frame: Any, ticker: Any, columns: Iterable[str]) -> Any:
+    for column in columns:
+        if column in frame.columns:
+            value = frame.loc[[ticker], column].iloc[0]
+            return value.item() if hasattr(value, "item") else value
+    return None
+
+
+def _candidate(name: str, ticker: Any, frame: Any, weights: Mapping[str, float], score_column: str,
+               price_columns: Iterable[str], name_columns: Iterable[str]) -> dict[str, Any]:
+    weight = float(weights.get(name, 1.0))
+    score = _finite(_cell(frame, ticker, [score_column]))
+    return {
+        "ticker": str(ticker),
+        "name": str(_cell(frame, ticker, name_columns) or ""),
+        "trigger": name,
+        "score": score,
+        "weight": round(weight, 4),
+        "weighted_score": weighted_score(score, weight) if score is not None else None,
+        "reference_price": _finite(_cell(frame, ticker, price_columns)),
+    }
+
+
+def selection_record(
+    trigger_candidates: Mapping[str, Any],
+    guaranteed: Iterable[str],
+    before_guarantee: Iterable[Any],
+    selected: Iterable[Any],
+    fill_picks: Iterable[tuple[str, Any]],
+    weights: Mapping[str, float] | None,
+    score_column: str,
+    *,
+    max_selections: int,
+    price_columns: Iterable[str] = ("Close",),
+    name_columns: Iterable[str] = ("stock_name", "CompanyName"),
+) -> dict[str, Any] | None:
+    """Evidence of what the weighted selection changed (no I/O; None when weights are neutral).
+
+    ``displaced``: candidates the legacy per-trigger pass (every trigger guaranteed, in
+    registration order, until ``max_selections``) would have taken for a trigger that lost
+    its guarantee, when they did not end up selected. ``fill_picks``: candidates chosen by
+    the weighted fill. Reference prices let a later close judge both groups. The legacy
+    pass is replayed from the same top-down picks (``before_guarantee``).
+    """
+    if not weights:
+        return None
+    keep, taken, chosen = set(guaranteed), set(before_guarantee), set(selected)
+    displaced = []
+    for name, frame in trigger_candidates.items():
+        if len(taken) >= max_selections:
+            break
+        if frame is None or frame.empty:
+            continue
+        ordered = frame.sort_values(score_column, ascending=False) if score_column in frame.columns else frame
+        legacy_pick = next((ticker for ticker in ordered.index if ticker not in taken), None)
+        if legacy_pick is None:
+            continue
+        taken.add(legacy_pick)
+        if name not in keep and legacy_pick not in chosen:
+            displaced.append(_candidate(name, legacy_pick, ordered, weights, score_column, price_columns,
+                                        name_columns))
+    picks = [_candidate(name, ticker, trigger_candidates[name], weights, score_column, price_columns, name_columns)
+             for name, ticker in fill_picks if name in trigger_candidates]
+    return {
+        "version": VERSION,
+        "excluded_triggers": [name for name in trigger_candidates if name not in keep],
+        "displaced": displaced,
+        "fill_picks": picks,
+        "selected_count": len(chosen),
+    }
+
+
+def emit_selection_record(
+    record: Mapping[str, Any] | None,
+    *,
+    market: str,
+    trade_date: Any,
+    trigger_mode: str | None = None,
+    log: logging.Logger | None = None,
+) -> None:
+    """Log and append the selection evidence to the observability spool (fail-open)."""
+    if not record:
+        return
+    target = log or logger
+    for item in record.get("displaced") or []:
+        target.info(
+            "[TRIGGER_QUALITY] displaced ticker=%s trigger=%s score=%s weight=%s price=%s trade_date=%s",
+            item["ticker"], item["trigger"], item["score"], item["weight"], item["reference_price"], trade_date,
+        )
+    from observability.events import emit_event
+    emit_event(
+        "trigger_quality.selection",
+        service=f"prism-{str(market).lower()}-trigger-quality",
+        market=str(market).upper(),
+        attributes={"trade_date": str(trade_date), "trigger_mode": trigger_mode, **dict(record)},
+    )
+
+
 __all__ = [
     "ENV_FLAG",
     "GUARANTEE_FLOOR",
     "TriggerQualitySnapshot",
     "compute_weights",
+    "emit_selection_record",
     "guaranteed_pick_triggers",
     "load_trigger_quality",
     "log_snapshot",
     "priority_enabled",
+    "selection_record",
     "weighted_score",
 ]

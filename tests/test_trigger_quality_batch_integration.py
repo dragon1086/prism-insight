@@ -246,6 +246,16 @@ def test_real_batch_priority_reorders_only_when_enabled(tmp_path, market, mode):
     assert weighted_weak < legacy_weak
     assert (legacy, weighted) == EXPECTED[(market, mode)]
 
+    # Evidence for the two-week review: the legacy pick that lost its slot, with a reference price.
+    selection = quality["selection"]
+    assert sorted((c["ticker"], c["trigger"]) for c in selection["displaced"]) == sorted(set(legacy) - set(weighted))
+    assert all(c["reference_price"] for c in selection["displaced"] + selection["fill_picks"])
+    assert "selection" not in disabled["metadata"]["trigger_quality"]
+    assert "[TRIGGER_QUALITY] displaced ticker=" in log
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    recorded = [e for e in events if e["event_type"] == "trigger_quality.selection" and e["market"] == market]
+    assert recorded and recorded[-1]["attributes"]["trigger_mode"] == mode
+
 
 # Legacy: the weak trigger takes the second slot through the per-trigger
 # guarantee. Weighted: it loses only that guarantee and the strong trigger's
