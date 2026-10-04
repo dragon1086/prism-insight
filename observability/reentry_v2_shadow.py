@@ -138,6 +138,27 @@ def levels_text(levels):
             "- 보고서의 과거 저항·목표가가 이 가격 아래에 있으면 돌파로 무효화된 수준입니다.\n")
 
 
+def report_reference(market, ticker, trigger_date, reports_root, archive_db):
+    """Latest report before the trigger day by reference + hash (file first, else archive.db); None if absent.
+
+    Shared with re-entry v3 (observability/reentry_v3_shadow.py).
+    """
+    report = latest_report(reports_root, market, ticker, trigger_date)
+    if report is None and archive_db and Path(archive_db).exists():
+        report = archived_report(archive_db, market, ticker, trigger_date)
+        kind = "archive"
+    else:
+        kind = "file"
+    if report is None:
+        return None
+    text = report.read_text(encoding="utf-8")
+    stamp = re.search(r"_(\d{8})_", report.name).group(1)
+    age = (date.fromisoformat(trigger_date) - date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:]))).days
+    return {"kind": kind, "name": report.name, "sha256": hashlib.sha256(text.encode()).hexdigest(),
+            "report_date": f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:]}", "age_days": age,
+            "stale": age > REPORT_MAX_AGE_DAYS}
+
+
 def freeze_inputs(market, watch, result, bars, bench_rows, reports_root, archive_db):
     """Everything the later LLM recheck needs, fixed at the trigger. Report text by reference+hash."""
     i, entry, day = result["index"], result["day"]["entry"], result["day"]
@@ -152,20 +173,7 @@ def freeze_inputs(market, watch, result, bars, bench_rows, reports_root, archive
     if not base:
         base = {"pivot": day["pivot"], "base_low": min(b["low"] for b in bars[max(0, i - 30):i])}
     trigger_date = bars[i]["date"]
-    report = latest_report(reports_root, market, watch["ticker"], trigger_date)
-    report_ref = None
-    if report is None and archive_db and Path(archive_db).exists():
-        report = archived_report(archive_db, market, watch["ticker"], trigger_date)
-        kind = "archive"
-    else:
-        kind = "file"
-    if report is not None:
-        text = report.read_text(encoding="utf-8")
-        stamp = re.search(r"_(\d{8})_", report.name).group(1)
-        age = (date.fromisoformat(trigger_date) - date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:]))).days
-        report_ref = {"kind": kind, "name": report.name, "sha256": hashlib.sha256(text.encode()).hexdigest(),
-                      "report_date": f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:]}", "age_days": age,
-                      "stale": age > REPORT_MAX_AGE_DAYS}
+    report_ref = report_reference(market, watch["ticker"], trigger_date, reports_root, archive_db)
     levels = fresh_levels(entry, base)
     row = watch["row"]
     return {"contract": INPUT_CONTRACT, "policy_version": P.POLICY_VERSION, "market": market,

@@ -1859,6 +1859,8 @@ class StockTrackingAgent:
         entry_policy = scenario.get("regime_entry_policy") or {}
         if entry_policy.get("mode") == "rebound_pilot":
             message += "주문 예산 상한: 정상 예산의 50% (상승 전환 파일럿)\n정수 수량 내림으로 미사용 예산이 남을 수 있으며, 체결 비중 50%를 보장하지 않습니다.\n"
+        from prism_core.reentry_v3_live import entry_message_line as reentry_message_line
+        message += reentry_message_line(scenario, "KR")          # '' unless a re-entry v3 LIVE entry
 
         trigger_win_rate = self._get_trigger_win_rate(trigger_type)
         if trigger_win_rate:
@@ -2918,6 +2920,8 @@ class StockTrackingAgent:
                 message += "주문 예산 상한: 정상 예산의 50% (상승 전환 파일럿)\n정수 수량 내림으로 미사용 예산이 남을 수 있으며, 체결 비중 50%를 보장하지 않습니다.\n"
             from prism_core.micro_split_live import entry_message_line
             message += entry_message_line(scenario, "KR")
+            from prism_core.reentry_v3_live import entry_message_line as reentry_message_line
+            message += reentry_message_line(scenario, "KR")      # '' unless a re-entry v3 LIVE entry
 
             # Add trigger win rate
             trigger_win_rate = self._get_trigger_win_rate(trigger_type)

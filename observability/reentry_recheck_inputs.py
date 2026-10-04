@@ -81,17 +81,18 @@ def latest_report(root, market, ticker, day):
     return best[1] if best else None
 
 
-def recheck_instruction(market, root=None):
-    """The production BUY agent instruction (current prompt flags) plus the re-entry recheck section."""
+def recheck_instruction(market, root=None, section=RECHECK_KO):
+    """The production BUY agent instruction (current prompt flags) plus a re-entry recheck section
+    (v2 section by default; re-entry v3 passes its own)."""
     if market == "KR":
         from cores.agents.trading_agents import create_trading_scenario_agent
-        return create_trading_scenario_agent(language="ko").instruction + RECHECK_KO
+        return create_trading_scenario_agent(language="ko").instruction + section
     import importlib.util
     root = Path(root) if root else Path(__file__).resolve().parents[1]
     spec = importlib.util.spec_from_file_location("us_agents_recheck", root / "prism-us/cores/agents/trading_agents.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.create_us_trading_scenario_agent(language="ko").instruction + RECHECK_KO
+    return module.create_us_trading_scenario_agent(language="ko").instruction + section
 
 
 def market_facts(bench_bars, day):
@@ -105,15 +106,23 @@ def market_facts(bench_bars, day):
     return {"state": state, "distribution_days": int(getattr(pulse, "distribution_days", 0) or 0)}
 
 
-def technical_block(bars, i, entry, pivot, market, bench_bars, trigger="INTRADAY_BREAKOUT"):
-    """Facts as of the trigger: completed bars before day i plus the breakout price."""
+def _pct(a, b):
+    return None if a is None or not b else (a / b - 1) * 100
+
+
+def _fmt(v, suffix="%"):
+    return "결측" if v is None else f"{v:+.2f}{suffix}"
+
+
+def trend_fact_lines(bars, i, bench_bars):
+    """Trend, RS and Market Pulse lines as of the session before day i (completed bars only).
+
+    bars[i] may be a forming bar (re-entry v3 intraday); only its date is read.
+    """
     closes = [b["close"] for b in bars[:i]]
 
     def ma(n):
         return sum(closes[-n:]) / n if len(closes) >= n else None
-
-    def pct(a, b):
-        return None if a is None or not b else (a / b - 1) * 100
 
     ma20, ma50, ma200 = ma(20), ma(50), ma(200)
     ma20_prev = sum(closes[-25:-5]) / 20 if len(closes) >= 25 else None
@@ -124,22 +133,24 @@ def technical_block(bars, i, entry, pivot, market, bench_bars, trigger="INTRADAY
     mkt = market_facts(bench_bars, bars[i]["date"])
     t1 = ma50 is not None and closes[-1] < ma50
     t2 = ma20 is not None and ma20_prev is not None and ma20 < ma20_prev and closes[-1] <= ma20 * 0.95
-
-    def fmt(v, suffix="%"):
-        return "결측" if v is None else f"{v:+.2f}{suffix}"
-
-    lines = [
+    return [
         f"### 📉 개별 추세 팩트 (재진입 트리거일 {bars[i]['date']} 기준, 직전 확정일 {bars[i - 1]['date']})",
-        f"- 직전 종가 {closes[-1]:,.2f}: MA20 대비 {fmt(pct(closes[-1], ma20))}, MA50 대비 {fmt(pct(closes[-1], ma50))}, "
-        f"MA200 대비 {fmt(pct(closes[-1], ma200))}",
+        f"- 직전 종가 {closes[-1]:,.2f}: MA20 대비 {_fmt(_pct(closes[-1], ma20))}, MA50 대비 {_fmt(_pct(closes[-1], ma50))}, "
+        f"MA200 대비 {_fmt(_pct(closes[-1], ma200))}",
         f"- MA20 기울기: {'상승' if ma20 and ma20_prev and ma20 > ma20_prev else '하락'} / T1_hit: {t1} / T2_hit: {t2}",
-        f"- RS(60일, 종목-지수): {fmt(rs, '%p')}",
+        f"- RS(60일, 종목-지수): {_fmt(rs, '%p')}",
         f"- Market Pulse(지수 재생): {mkt['state']} | 분산일 {mkt['distribution_days']}",
+    ]
+
+
+def technical_block(bars, i, entry, pivot, market, bench_bars, trigger="INTRADAY_BREAKOUT"):
+    """Facts as of the trigger: completed bars before day i plus the breakout price."""
+    lines = trend_fact_lines(bars, i, bench_bars) + [
         "",
         "### 🚀 재진입 트리거",
         (f"- 눌림 반등: 지지선 {pivot:,.2f} 부근까지 되돌린 뒤 전일 고가 {bars[i - 1]['high']:,.2f} 돌파, "
-         f"진입 기준가 {entry:,.2f} (지지선 대비 {fmt(pct(entry, pivot))})" if trigger == "PULLBACK_BOUNCE" else
-         f"- 피벗(베이스 저항선) {pivot:,.2f} 돌파({trigger}), 진입 기준가 {entry:,.2f} (피벗 대비 {fmt(pct(entry, pivot))})"),
+         f"진입 기준가 {entry:,.2f} (지지선 대비 {_fmt(_pct(entry, pivot))})" if trigger == "PULLBACK_BOUNCE" else
+         f"- 피벗(베이스 저항선) {pivot:,.2f} 돌파({trigger}), 진입 기준가 {entry:,.2f} (피벗 대비 {_fmt(_pct(entry, pivot))})"),
         f"- 돌파일 거래량: 20일 평균의 {bars[i]['volume'] / (sum(b['volume'] for b in bars[i - 20:i]) / 20):.2f}배",
     ]
     result = compute(bars[:i], market=market, observed_at=_as_dt(bars[i - 1]["date"]), current_price=entry)

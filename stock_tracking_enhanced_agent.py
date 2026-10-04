@@ -825,337 +825,14 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                 # Process buy if entry decision
                 if entry_eligible:
-                    try:
-                        current_price = await self._refresh_buy_boundary(
-                            ticker, scenario, analysis_result,
-                            buy_score=buy_score, is_add=is_add,
-                        )
-                    except EffectsFailure:
-                        raise
-                    except Exception as quote_error:
-                        logger.warning("[BUY_QUOTE][KR][enhanced] %s entry blocked: %s", ticker, quote_error)
-                        scenario["_decision_context"].update(
-                            gate_allowed=False,
-                            gate_reason="fresh_quote_revalidation_failed",
-                        )
-                        # A completed analysis is still reportable when the final
-                        # safety gate blocks entry. Never classify this as a buy.
-                        skip_message = (
-                            f"⚠️ 매수 보류: {company_name}({ticker})\n\n"
-                            f"매수 Score: {buy_score}점 (최소 기준: {min_score}점)\n"
-                            "최종 결과: 매수 보류 — 주문하지 않았습니다.\n\n"
-                            "분석 후 최신 가격을 확인하는 과정에서 가격 조회 또는 "
-                            "매수 조건 재검증을 통과하지 못했습니다. "
-                            "분석 의견과 별개로 안전 검증에 따라 진입을 차단했습니다."
-                        )
-                        self._msg_types.append("analysis")
-                        self.message_queue.append(skip_message)
-                        await self._save_watchlist_item(
-                            ticker=ticker, company_name=company_name,
-                            current_price=current_price, buy_score=buy_score,
-                            min_score=min_score, decision="Watch",
-                            skip_reason="Fresh quote unavailable or scenario invalid at refreshed price",
-                            scenario=scenario, sector=sector, was_traded=False,
-                        )
-                        continue
-                    if not is_add:
-                        account = getattr(self, "active_account", None) or {}
-                        observe_or_emit(self, emit_micro_split_shadow,
-                            market="KR", ticker=ticker,
-                            decision_id=source_decision_id,
-                            account_id=str(account.get("account_key") or "default"),
-                            unit_amount=account.get("buy_amount_krw"),
-                            current_price=current_price,
-                            baseline_position_fraction=(scenario.get("regime_entry_policy") or {}).get("position_fraction"),
-                            regime=(
-                                _buy_gate.get("effective_regime")
-                                or scenario.get("_deterministic_market_regime")
-                                or scenario.get("market_condition")
-                                or "unknown"
-                            ),
-                        )
-                    micro_plan = None
-                    if effects is None and not is_add and not rebound_pilot:
-                        # Micro-split LIVE: B3 first allocation sizes the real order (legacy full slot if OFF/unavailable).
-                        from prism_core import micro_split_live
-                        micro_plan, micro_cash, scenario = micro_split_live.prepare_entry(
-                            self, market="KR", ticker=ticker, current_price=current_price, scenario=scenario,
-                            decision_ref=scenario.get("_decision_id") or source_decision_id,
-                            account=getattr(self, "active_account", None), logger=logger)
-                        if micro_plan is not None:
-                            entry_cash_amount = micro_cash
-                            analysis_result["scenario"] = scenario
-                        elif micro_split_live.gate_score_override(scenario) is not None:
-                            # Admitted only by the micro-split score floor: never buy a full slot.
-                            logger.warning("[MICRO_SPLIT_SCORE][KR] %s(%s) plan unavailable at order time; "
-                                           "relaxed-score entry skipped", company_name, ticker)
-                            continue
-                    if effects is not None:
-                        if is_add or await self._is_ticker_in_holdings(ticker):
-                            raise EffectsFailure("Existing strategy campaign requires explicit lifecycle transition")
-                        if await self._get_current_slots_count() >= self.max_slots:
-                            raise EffectsFailure("Strategy slot capacity changed at entry boundary")
-                        applied = effects.record_entry(ticker=ticker, company_name=company_name,
-                            price=current_price, scenario=scenario, is_add=False)
-                        effects.observe("strategy_entry", status="RECORDED" if applied else "REPLAYED", ticker=ticker)
-                        buy_count += int(applied)
-                        continue
-                    if self._position_pending_kr_enabled():
-                        prepared = None
-                        active_account = getattr(self, "active_account", None)
-                        account_label = (
-                            self._safe_account_log_label(active_account)
-                            if active_account
-                            else "unavailable"
-                        )
-                        try:
-                            if scenario.get("target_price", 0) <= 0:
-                                scenario["target_price"] = (
-                                    await self._dynamic_target_price(
-                                        ticker, current_price
-                                    )
-                                )
-                            if scenario.get("stop_loss", 0) <= 0:
-                                scenario["stop_loss"] = await self._dynamic_stop_loss(
-                                    ticker, current_price
-                                )
-                            prepared = self._prepare_pending_kr_entry(
-                                ticker=ticker,
-                                company_name=company_name,
-                                current_price=current_price,
-                                scenario=scenario,
-                                rank_change_msg=rank_change_msg,
-                                source_decision_id=(
-                                    f"report:{os.path.basename(pdf_report_path)}"
-                                ),
-                                source="kr_enhanced_batch",
-                                is_add=bool(is_add),
-                                expected_open_count=(
-                                    analysis_result.get("existing_row_count")
-                                    if is_add
-                                    else None
-                                ),
-                                cash_amount=entry_cash_amount,
-                            )
-                            trade_result = await self._execute_pending_kr_entry(
-                                prepared, current_price=current_price
-                            )
-                            intent_status = str(
-                                trade_result.get("intent_status", "UNKNOWN")
-                            ).upper()
-                            if intent_status != "SUBMITTED":
-                                if intent_status == "FAILED":
-                                    self._fail_pending_kr_entry(prepared)
-                                logger.critical(
-                                    "[POSITION-PENDING][KR] enhanced entry unresolved "
-                                    "account=%s symbol=%s intent=%s status=%s "
-                                    "action=manual_review",
-                                    account_label,
-                                    ticker,
-                                    prepared.intent.id,
-                                    intent_status,
-                                )
-                                continue
-                            self._complete_pending_kr_entry(prepared)
-                            self._record_broker_entry_observation(ticker, source_decision_id, getattr(prepared.intent, "source_position_id", None), prepared.intent.id, trade_result)
-                            if not is_add and not rebound_pilot:
-                                try:  # fail-open: never affects the entry
-                                    from observability.b3_ae_capture import capture_entry as _b3_ae_entry
-                                    _b3_ae_entry(
-                                        self, market="KR", ticker=ticker,
-                                        account_key=self._account_scope()[0],
-                                        position_id=getattr(prepared.intent, "source_position_id", None),
-                                        entry_price=current_price, stop_loss=scenario.get("stop_loss"),
-                                        decision_ref=scenario.get("_decision_id") or source_decision_id,
-                                        plan=micro_plan, mode="LIVE" if micro_plan is not None else "SHADOW",
-                                    )
-                                except Exception as b3_error:  # noqa: BLE001 - SHADOW must never affect the trade
-                                    logger.warning("[B3_AE] capture unavailable: %s", b3_error)
-                        except asyncio.CancelledError:
-                            logger.critical(
-                                "[POSITION-PENDING][KR] enhanced entry cancelled "
-                                "account=%s symbol=%s intent=%s status=UNKNOWN "
-                                "action=manual_review",
-                                account_label,
-                                ticker,
-                                prepared.intent.id if prepared else "unreserved",
-                            )
-                            raise
-                        except Exception as error:
-                            logger.critical(
-                                "[POSITION-PENDING][KR] enhanced entry unresolved "
-                                "account=%s symbol=%s intent=%s status=%s "
-                                "action=manual_review error=%s",
-                                account_label,
-                                ticker,
-                                prepared.intent.id if prepared else "unreserved",
-                                "UNKNOWN" if prepared else "PREPARE_FAILED",
-                                type(error).__name__,
-                            )
-                            continue
-
-                        if trade_result["success"]:
-                            logger.info(
-                                f"Actual purchase successful: {trade_result['message']}"
-                            )
-                        else:
-                            logger.error(
-                                f"Actual purchase failed: {trade_result['message']}"
-                            )
-
-                        try:
-                            from messaging.redis_signal_publisher import publish_buy_signal
-                            await publish_buy_signal(
-                                ticker=ticker,
-                                company_name=company_name,
-                                price=current_price,
-                                scenario=scenario,
-                                source="AI Analysis",
-                                trade_result=trade_result,
-                            )
-                        except Exception as signal_err:
-                            logger.warning(
-                                f"Buy signal publish failed (non-critical): {signal_err}"
-                            )
-
-                        try:
-                            from messaging.gcp_pubsub_signal_publisher import publish_buy_signal as gcp_publish_buy_signal
-                            await gcp_publish_buy_signal(
-                                ticker=ticker,
-                                company_name=company_name,
-                                price=current_price,
-                                scenario=scenario,
-                                source="AI Analysis",
-                                trade_result=trade_result,
-                            )
-                        except Exception as signal_err:
-                            logger.warning(
-                                f"GCP buy signal publish failed (non-critical): {signal_err}"
-                            )
-
-                        buy_count += 1
-                        logger.info(
-                            f"Strategy entry recorded: {company_name}({ticker}) @ "
-                            f"{current_price:,.0f} KRW"
-                        )
-                        continue
-
-                    # Process buy (is_add => pyramiding additional independent row, #288)
-                    buy_result = await self._buy_stock_with_position(
-                        ticker,
-                        company_name,
-                        current_price,
-                        scenario,
-                        rank_change_msg,
-                        is_add=is_add,
+                    buy_count += await self._enter_eligible_candidate(
+                        ticker=ticker, company_name=company_name, current_price=current_price,
+                        scenario=scenario, analysis_result=analysis_result, buy_score=buy_score,
+                        min_score=min_score, is_add=is_add, rebound_pilot=rebound_pilot,
+                        entry_cash_amount=entry_cash_amount, rank_change_msg=rank_change_msg,
+                        source_decision_id=source_decision_id, sector=sector, buy_gate=_buy_gate,
+                        effects=effects,
                     )
-                    buy_success = buy_result.success
-
-                    if buy_success:
-                        account_key, account_name = self._account_scope()
-                        opened_position_id = legacy_position_id(
-                            "KR", buy_result.legacy_holding_id
-                        )
-                        if not is_add and not rebound_pilot:
-                            # B3 all-entries SHADOW: fail-open, before the broker order.
-                            try:  # fail-open: never affects the entry
-                                from observability.b3_ae_capture import capture_entry as _b3_ae_entry
-                                _b3_ae_entry(
-                                    self, market="KR", ticker=ticker, account_key=account_key,
-                                    position_id=opened_position_id, entry_price=current_price,
-                                    stop_loss=scenario.get("stop_loss"),
-                                    decision_ref=scenario.get("_decision_id") or source_decision_id,
-                                    plan=micro_plan, mode="LIVE" if micro_plan is not None else "SHADOW",
-                                )
-                            except Exception as b3_error:  # noqa: BLE001 - SHADOW must never affect the trade
-                                logger.warning("[B3_AE] capture unavailable: %s", b3_error)
-                        order_intent = OrderIntent.create(
-                            market="KR",
-                            account_id=account_key,
-                            symbol=ticker,
-                            side="buy",
-                            order_style="smart",
-                            source="kr_enhanced_batch",
-                            source_decision_id=f"report:{os.path.basename(pdf_report_path)}",
-                            source_position_id=opened_position_id,
-                            cash_amount=entry_cash_amount,
-                            limit_price=current_price,
-                            reason="AI analysis entry",
-                        )
-                        # Call actual account trading function (async)
-                        try:
-                            trade_result = self._pilot_broker_budget_block(scenario, entry_cash_amount, current_price)
-                            if trade_result is None:
-                                async with ExecutionService.domestic(
-                                    account_name=account_name,
-                                    db_path=self.db_path,
-                                ) as trading:
-                                    # Execute async buy with limit price for reserved orders
-                                    trade_result = await trading.execute_buy(
-                                        stock_code=ticker,
-                                        buy_amount=entry_cash_amount,
-                                        limit_price=current_price,
-                                        intent=order_intent,
-                                        quote_validator=self._buy_quote_validator(scenario, is_add=is_add, ticker=ticker, account_key=order_intent.account_id),
-                                        **({"strict_budget": True} if ((scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" or scenario.get("micro_split")) else {}),
-                                    )
-                        except OrderOutcomeUnknown as error:
-                            self._link_position_entry_intent(
-                                legacy_holding_id=buy_result.legacy_holding_id,
-                                account_key=account_key,
-                                intent_id=error.intent_id,
-                            )
-                            raise
-
-                        persisted_intent_id = trade_result.get("intent_id")
-                        if persisted_intent_id:
-                            self._link_position_entry_intent(
-                                legacy_holding_id=buy_result.legacy_holding_id,
-                                account_key=account_key,
-                                intent_id=persisted_intent_id,
-                            )
-
-                        self._record_broker_entry_observation(ticker, source_decision_id, opened_position_id, trade_result.get("intent_id") or order_intent.id, trade_result)
-                        if trade_result['success']:
-                            logger.info(f"Actual purchase successful: {trade_result['message']}")
-                        else:
-                            logger.error(f"Actual purchase failed: {trade_result['message']}")
-
-                        # [Optional] Publish buy signal via Redis Streams
-                        # Auto-skipped if Redis not configured (requires UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN)
-                        try:
-                            from messaging.redis_signal_publisher import publish_buy_signal
-                            await publish_buy_signal(
-                                ticker=ticker,
-                                company_name=company_name,
-                                price=current_price,
-                                scenario=scenario,
-                                source="AI Analysis",
-                                trade_result=trade_result
-                            )
-                        except Exception as signal_err:
-                            logger.warning(f"Buy signal publish failed (non-critical): {signal_err}")
-
-                        # [Optional] Publish buy signal via GCP Pub/Sub
-                        # Auto-skipped if GCP not configured (requires GCP_PROJECT_ID, GCP_PUBSUB_TOPIC_ID)
-                        try:
-                            from messaging.gcp_pubsub_signal_publisher import publish_buy_signal as gcp_publish_buy_signal
-                            await gcp_publish_buy_signal(
-                                ticker=ticker,
-                                company_name=company_name,
-                                price=current_price,
-                                scenario=scenario,
-                                source="AI Analysis",
-                                trade_result=trade_result
-                            )
-                        except Exception as signal_err:
-                            logger.warning(f"GCP buy signal publish failed (non-critical): {signal_err}")
-
-                    if buy_success:
-                        buy_count += 1
-                        logger.info(f"Strategy entry recorded: {company_name}({ticker}) @ {current_price:,.0f} KRW")
-                    else:
-                        logger.warning(f"Purchase failed: {company_name}({ticker})")
 
             # A silently skipped candidate is a buy decision that never ran —
             # surface it to the channel (2026-07-13: KRX outage skipped all 3
@@ -1185,6 +862,497 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 raise EffectsFailure("Isolated enhanced report processing did not complete") from None
             logger.error(traceback.format_exc())
             return 0, 0
+
+    async def _enter_eligible_candidate(self, *, ticker, company_name, current_price, scenario, analysis_result,
+                                        buy_score, min_score, is_add, rebound_pilot, entry_cash_amount,
+                                        rank_change_msg, source_decision_id, sector, buy_gate, effects,
+                                        source="kr_enhanced_batch", lock_held=False, require_micro_plan=False):
+        """Entry steps for a candidate that passed every decision gate (fresh quote, micro-split sizing,
+        pending/legacy order path, B3 capture, signal publish). Returns 1 when a strategy entry was
+        recorded, else 0.
+
+        Factored out of process_reports without behaviour change so the re-entry v3 LIVE path
+        (enter_reentry_candidate) reuses the exact batch entry pipeline. Runs under the market entry
+        lock shared with re-entry v3 (prism_core/entry_lock.py; the batch waits up to 120s, then goes on
+        as before). Virtual-account runs (effects is not None) never touch the real lock.
+        require_micro_plan (re-entry only) never falls back to a full slot.
+        """
+        if not lock_held and effects is None:
+            from prism_core.entry_lock import entry_lock
+            async with entry_lock("KR", timeout=120):
+                return await self._enter_eligible_candidate(
+                    ticker=ticker, company_name=company_name, current_price=current_price, scenario=scenario,
+                    analysis_result=analysis_result, buy_score=buy_score, min_score=min_score, is_add=is_add,
+                    rebound_pilot=rebound_pilot, entry_cash_amount=entry_cash_amount,
+                    rank_change_msg=rank_change_msg, source_decision_id=source_decision_id, sector=sector,
+                    buy_gate=buy_gate, effects=effects, source=source, lock_held=True,
+                    require_micro_plan=require_micro_plan)
+        try:
+            current_price = await self._refresh_buy_boundary(
+                ticker, scenario, analysis_result,
+                buy_score=buy_score, is_add=is_add,
+            )
+        except EffectsFailure:
+            raise
+        except Exception as quote_error:
+            logger.warning("[BUY_QUOTE][KR][enhanced] %s entry blocked: %s", ticker, quote_error)
+            scenario["_decision_context"].update(
+                gate_allowed=False,
+                gate_reason="fresh_quote_revalidation_failed",
+            )
+            # A completed analysis is still reportable when the final
+            # safety gate blocks entry. Never classify this as a buy.
+            skip_message = (
+                f"⚠️ 매수 보류: {company_name}({ticker})\n\n"
+                f"매수 Score: {buy_score}점 (최소 기준: {min_score}점)\n"
+                "최종 결과: 매수 보류 — 주문하지 않았습니다.\n\n"
+                "분석 후 최신 가격을 확인하는 과정에서 가격 조회 또는 "
+                "매수 조건 재검증을 통과하지 못했습니다. "
+                "분석 의견과 별개로 안전 검증에 따라 진입을 차단했습니다."
+            )
+            self._msg_types.append("analysis")
+            self.message_queue.append(skip_message)
+            await self._save_watchlist_item(
+                ticker=ticker, company_name=company_name,
+                current_price=current_price, buy_score=buy_score,
+                min_score=min_score, decision="Watch",
+                skip_reason="Fresh quote unavailable or scenario invalid at refreshed price",
+                scenario=scenario, sector=sector, was_traded=False,
+            )
+            return 0
+        if not is_add:
+            account = getattr(self, "active_account", None) or {}
+            observe_or_emit(self, emit_micro_split_shadow,
+                market="KR", ticker=ticker,
+                decision_id=source_decision_id,
+                account_id=str(account.get("account_key") or "default"),
+                unit_amount=account.get("buy_amount_krw"),
+                current_price=current_price,
+                baseline_position_fraction=(scenario.get("regime_entry_policy") or {}).get("position_fraction"),
+                regime=(
+                    buy_gate.get("effective_regime")
+                    or scenario.get("_deterministic_market_regime")
+                    or scenario.get("market_condition")
+                    or "unknown"
+                ),
+            )
+        micro_plan = None
+        if effects is None and not is_add and not rebound_pilot:
+            # Micro-split LIVE: B3 first allocation sizes the real order (legacy full slot if OFF/unavailable).
+            from prism_core import micro_split_live
+            micro_plan, micro_cash, scenario = micro_split_live.prepare_entry(
+                self, market="KR", ticker=ticker, current_price=current_price, scenario=scenario,
+                decision_ref=scenario.get("_decision_id") or source_decision_id,
+                account=getattr(self, "active_account", None), logger=logger)
+            if micro_plan is not None:
+                entry_cash_amount = micro_cash
+                analysis_result["scenario"] = scenario
+            elif micro_split_live.gate_score_override(scenario) is not None:
+                # Admitted only by the micro-split score floor: never buy a full slot.
+                logger.warning("[MICRO_SPLIT_SCORE][KR] %s(%s) plan unavailable at order time; "
+                               "relaxed-score entry skipped", company_name, ticker)
+                return 0
+        if require_micro_plan and micro_plan is None:
+            logger.warning("[REENTRY_V3][KR] %s(%s) micro-split plan unavailable; no full-slot re-entry",
+                           company_name, ticker)
+            return 0
+        if effects is not None:
+            if is_add or await self._is_ticker_in_holdings(ticker):
+                raise EffectsFailure("Existing strategy campaign requires explicit lifecycle transition")
+            if await self._get_current_slots_count() >= self.max_slots:
+                raise EffectsFailure("Strategy slot capacity changed at entry boundary")
+            applied = effects.record_entry(ticker=ticker, company_name=company_name,
+                price=current_price, scenario=scenario, is_add=False)
+            effects.observe("strategy_entry", status="RECORDED" if applied else "REPLAYED", ticker=ticker)
+            return int(applied)
+        if self._position_pending_kr_enabled():
+            prepared = None
+            active_account = getattr(self, "active_account", None)
+            account_label = (
+                self._safe_account_log_label(active_account)
+                if active_account
+                else "unavailable"
+            )
+            try:
+                if scenario.get("target_price", 0) <= 0:
+                    scenario["target_price"] = (
+                        await self._dynamic_target_price(
+                            ticker, current_price
+                        )
+                    )
+                if scenario.get("stop_loss", 0) <= 0:
+                    scenario["stop_loss"] = await self._dynamic_stop_loss(
+                        ticker, current_price
+                    )
+                prepared = self._prepare_pending_kr_entry(
+                    ticker=ticker,
+                    company_name=company_name,
+                    current_price=current_price,
+                    scenario=scenario,
+                    rank_change_msg=rank_change_msg,
+                    source_decision_id=source_decision_id,
+                    source=source,
+                    is_add=bool(is_add),
+                    expected_open_count=(
+                        analysis_result.get("existing_row_count")
+                        if is_add
+                        else None
+                    ),
+                    cash_amount=entry_cash_amount,
+                )
+                trade_result = await self._execute_pending_kr_entry(
+                    prepared, current_price=current_price
+                )
+                intent_status = str(
+                    trade_result.get("intent_status", "UNKNOWN")
+                ).upper()
+                if intent_status != "SUBMITTED":
+                    if intent_status == "FAILED":
+                        self._fail_pending_kr_entry(prepared)
+                    logger.critical(
+                        "[POSITION-PENDING][KR] enhanced entry unresolved "
+                        "account=%s symbol=%s intent=%s status=%s "
+                        "action=manual_review",
+                        account_label,
+                        ticker,
+                        prepared.intent.id,
+                        intent_status,
+                    )
+                    return 0
+                self._complete_pending_kr_entry(prepared)
+                self._record_broker_entry_observation(ticker, source_decision_id, getattr(prepared.intent, "source_position_id", None), prepared.intent.id, trade_result)
+                if not is_add and not rebound_pilot:
+                    try:  # fail-open: never affects the entry
+                        from observability.b3_ae_capture import capture_entry as _b3_ae_entry
+                        _b3_ae_entry(
+                            self, market="KR", ticker=ticker,
+                            account_key=self._account_scope()[0],
+                            position_id=getattr(prepared.intent, "source_position_id", None),
+                            entry_price=current_price, stop_loss=scenario.get("stop_loss"),
+                            decision_ref=scenario.get("_decision_id") or source_decision_id,
+                            plan=micro_plan, mode="LIVE" if micro_plan is not None else "SHADOW",
+                        )
+                    except Exception as b3_error:  # noqa: BLE001 - SHADOW must never affect the trade
+                        logger.warning("[B3_AE] capture unavailable: %s", b3_error)
+            except asyncio.CancelledError:
+                logger.critical(
+                    "[POSITION-PENDING][KR] enhanced entry cancelled "
+                    "account=%s symbol=%s intent=%s status=UNKNOWN "
+                    "action=manual_review",
+                    account_label,
+                    ticker,
+                    prepared.intent.id if prepared else "unreserved",
+                )
+                raise
+            except Exception as error:
+                logger.critical(
+                    "[POSITION-PENDING][KR] enhanced entry unresolved "
+                    "account=%s symbol=%s intent=%s status=%s "
+                    "action=manual_review error=%s",
+                    account_label,
+                    ticker,
+                    prepared.intent.id if prepared else "unreserved",
+                    "UNKNOWN" if prepared else "PREPARE_FAILED",
+                    type(error).__name__,
+                )
+                return 0
+
+            if trade_result["success"]:
+                logger.info(
+                    f"Actual purchase successful: {trade_result['message']}"
+                )
+            else:
+                logger.error(
+                    f"Actual purchase failed: {trade_result['message']}"
+                )
+
+            try:
+                from messaging.redis_signal_publisher import publish_buy_signal
+                await publish_buy_signal(
+                    ticker=ticker,
+                    company_name=company_name,
+                    price=current_price,
+                    scenario=scenario,
+                    source="AI Analysis",
+                    trade_result=trade_result,
+                )
+            except Exception as signal_err:
+                logger.warning(
+                    f"Buy signal publish failed (non-critical): {signal_err}"
+                )
+
+            try:
+                from messaging.gcp_pubsub_signal_publisher import publish_buy_signal as gcp_publish_buy_signal
+                await gcp_publish_buy_signal(
+                    ticker=ticker,
+                    company_name=company_name,
+                    price=current_price,
+                    scenario=scenario,
+                    source="AI Analysis",
+                    trade_result=trade_result,
+                )
+            except Exception as signal_err:
+                logger.warning(
+                    f"GCP buy signal publish failed (non-critical): {signal_err}"
+                )
+
+            logger.info(
+                f"Strategy entry recorded: {company_name}({ticker}) @ "
+                f"{current_price:,.0f} KRW"
+            )
+            return 1
+
+        # Process buy (is_add => pyramiding additional independent row, #288)
+        buy_result = await self._buy_stock_with_position(
+            ticker,
+            company_name,
+            current_price,
+            scenario,
+            rank_change_msg,
+            is_add=is_add,
+        )
+        buy_success = buy_result.success
+
+        if buy_success:
+            account_key, account_name = self._account_scope()
+            opened_position_id = legacy_position_id(
+                "KR", buy_result.legacy_holding_id
+            )
+            if not is_add and not rebound_pilot:
+                # B3 all-entries SHADOW: fail-open, before the broker order.
+                try:  # fail-open: never affects the entry
+                    from observability.b3_ae_capture import capture_entry as _b3_ae_entry
+                    _b3_ae_entry(
+                        self, market="KR", ticker=ticker, account_key=account_key,
+                        position_id=opened_position_id, entry_price=current_price,
+                        stop_loss=scenario.get("stop_loss"),
+                        decision_ref=scenario.get("_decision_id") or source_decision_id,
+                        plan=micro_plan, mode="LIVE" if micro_plan is not None else "SHADOW",
+                    )
+                except Exception as b3_error:  # noqa: BLE001 - SHADOW must never affect the trade
+                    logger.warning("[B3_AE] capture unavailable: %s", b3_error)
+            order_intent = OrderIntent.create(
+                market="KR",
+                account_id=account_key,
+                symbol=ticker,
+                side="buy",
+                order_style="smart",
+                source=source,
+                source_decision_id=source_decision_id,
+                source_position_id=opened_position_id,
+                cash_amount=entry_cash_amount,
+                limit_price=current_price,
+                reason="AI analysis entry",
+            )
+            # Call actual account trading function (async)
+            try:
+                trade_result = self._pilot_broker_budget_block(scenario, entry_cash_amount, current_price)
+                if trade_result is None:
+                    async with ExecutionService.domestic(
+                        account_name=account_name,
+                        db_path=self.db_path,
+                    ) as trading:
+                        # Execute async buy with limit price for reserved orders
+                        trade_result = await trading.execute_buy(
+                            stock_code=ticker,
+                            buy_amount=entry_cash_amount,
+                            limit_price=current_price,
+                            intent=order_intent,
+                            quote_validator=self._buy_quote_validator(scenario, is_add=is_add, ticker=ticker, account_key=order_intent.account_id),
+                            **({"strict_budget": True} if ((scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" or scenario.get("micro_split")) else {}),
+                        )
+            except OrderOutcomeUnknown as error:
+                self._link_position_entry_intent(
+                    legacy_holding_id=buy_result.legacy_holding_id,
+                    account_key=account_key,
+                    intent_id=error.intent_id,
+                )
+                raise
+
+            persisted_intent_id = trade_result.get("intent_id")
+            if persisted_intent_id:
+                self._link_position_entry_intent(
+                    legacy_holding_id=buy_result.legacy_holding_id,
+                    account_key=account_key,
+                    intent_id=persisted_intent_id,
+                )
+
+            self._record_broker_entry_observation(ticker, source_decision_id, opened_position_id, trade_result.get("intent_id") or order_intent.id, trade_result)
+            if trade_result['success']:
+                logger.info(f"Actual purchase successful: {trade_result['message']}")
+            else:
+                logger.error(f"Actual purchase failed: {trade_result['message']}")
+
+            # [Optional] Publish buy signal via Redis Streams
+            # Auto-skipped if Redis not configured (requires UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN)
+            try:
+                from messaging.redis_signal_publisher import publish_buy_signal
+                await publish_buy_signal(
+                    ticker=ticker,
+                    company_name=company_name,
+                    price=current_price,
+                    scenario=scenario,
+                    source="AI Analysis",
+                    trade_result=trade_result
+                )
+            except Exception as signal_err:
+                logger.warning(f"Buy signal publish failed (non-critical): {signal_err}")
+
+            # [Optional] Publish buy signal via GCP Pub/Sub
+            # Auto-skipped if GCP not configured (requires GCP_PROJECT_ID, GCP_PUBSUB_TOPIC_ID)
+            try:
+                from messaging.gcp_pubsub_signal_publisher import publish_buy_signal as gcp_publish_buy_signal
+                await gcp_publish_buy_signal(
+                    ticker=ticker,
+                    company_name=company_name,
+                    price=current_price,
+                    scenario=scenario,
+                    source="AI Analysis",
+                    trade_result=trade_result
+                )
+            except Exception as signal_err:
+                logger.warning(f"GCP buy signal publish failed (non-critical): {signal_err}")
+
+        if buy_success:
+            logger.info(f"Strategy entry recorded: {company_name}({ticker}) @ {current_price:,.0f} KRW")
+            return 1
+        logger.warning(f"Purchase failed: {company_name}({ticker})")
+        return 0
+
+
+    async def enter_reentry_candidate(self, *, ticker, company_name, current_price, scenario, sector,
+                                      source_decision_id, rank_change_msg=""):
+        """Re-entry v3 LIVE (prism_core/reentry_v3_live.py): the batch's deterministic entry checks for an
+        approved re-entry recheck, then the batch entry pipeline (_enter_eligible_candidate).
+
+        Runs under the KR entry lock shared with the batch (fail closed when busy). Checks, in order:
+        already held and slots (strict reads: a DB error skips the buy), sector limit, the signal price
+        band on a fresh quote, regime/trend stamp and the stop cap of the tracker regime, regime score
+        floor (env-gated), micro-split score floor, buy score >= min score, final buy gate, re-entry
+        cooldown, an available micro-split plan (never a full slot). Emits the batch's
+        candidate.evaluated / decision-input events. Returns {"bought", "reason", "holding_ids",
+        "entry_price", "account_refs"}; no watchlist row or skip message is written for a refusal.
+        """
+        from prism_core import micro_split_live
+        from prism_core import reentry_v3_live as live
+        from prism_core.entry_lock import entry_lock
+        effects = effects_for(self, "process_reports")
+        if effects is None:
+            require_execution_runtime(self)
+        scenario = dict(scenario)
+        scenario.setdefault("_decision_id", source_decision_id)
+        meta = scenario.get("reentry") or {}
+        if str(scenario.get("decision", "")).strip().lower() not in live.APPROVE:
+            return {"bought": False, "reason": "not_an_entry"}
+        async with entry_lock("KR", timeout=30) as locked:
+            if not locked:
+                return {"bought": False, "reason": "entry_lock_busy"}
+            account_key = self._account_scope()[0]
+            try:
+                held, slots_used = live.strict_position_counts(self.cursor, "stock_holdings", ticker, account_key)
+            except Exception as error:  # noqa: BLE001 - fail closed on the re-entry path
+                logger.error("[REENTRY_V3][KR] holdings check failed closed: %s", type(error).__name__)
+                return {"bought": False, "reason": "holdings_check_error"}
+            if held:
+                return {"bought": False, "reason": "already_held"}
+            if slots_used >= self.max_slots:
+                return {"bought": False, "reason": "max_slots"}
+            if not await self._check_sector_diversity(sector):
+                return {"bought": False, "reason": "sector_limit"}
+            try:
+                current_price = float(effects.quote(ticker) if effects is not None
+                                      else (await self._get_fresh_buy_quote(ticker))["price"])
+            except Exception as error:  # noqa: BLE001 - no fresh quote, no order
+                logger.warning("[REENTRY_V3][KR] %s fresh quote unavailable: %s", ticker, type(error).__name__)
+                return {"bought": False, "reason": "quote_unavailable"}
+            if not live.price_in_band(meta.get("signal"), meta.get("band_level"), current_price):
+                return {"bought": False, "reason": f"outside_band({current_price:g})"}
+            # Same as-of snapshot the batch stamps on a fresh BUY scenario (regime, trend facts) so the
+            # final gate validates the same deterministic inputs; the stop is capped with that regime too.
+            scenario = self._stamp_scenario_market_regime(scenario)
+            try:
+                trend_facts = self._get_trend_facts(ticker)
+            except Exception:  # noqa: BLE001 - missing facts keep the gate's existing behaviour
+                trend_facts = ""
+            if trend_facts:
+                scenario["_deterministic_trend_facts"] = trend_facts
+            scenario = live.apply_stop_cap(scenario, current_price, scenario.get("_deterministic_market_regime"))
+            buy_score = scenario.get("buy_score", 0) or 0
+            min_score = scenario.get("min_score", 0) or 0
+            try:
+                from cores.regime_policy import (effective_min_score, get_market_pulse_state,
+                                                 regime_min_score_floor_enabled)
+                if regime_min_score_floor_enabled():
+                    pulse = effects.market_pulse() if effects is not None else get_market_pulse_state("kr")
+                    min_score = max(min_score, effective_min_score(min_score, self._buy_floor_regime(), pulse))
+            except EffectsFailure:
+                raise
+            except Exception as floor_error:  # same fail-open as the batch
+                logger.warning(f"[REGIME_MIN_SCORE_FLOOR] fail-open, LLM min_score 유지: {floor_error}")
+            if effects is None:
+                min_score, scenario = micro_split_live.relaxed_min_score(
+                    self, market="KR", ticker=ticker, current_price=current_price, scenario=scenario,
+                    min_score=min_score, is_add=False, rebound_pilot=False, logger=logger)
+            if buy_score < min_score:
+                return {"bought": False, "reason": f"score_below_min({buy_score}<{min_score})"}
+            buy_gate = self._evaluate_production_buy_gate(scenario, current_price, score_override=buy_score,
+                                                          is_add=False)
+            if not buy_gate.get("allowed"):
+                return {"bought": False, "reason": f"buy_gate:{buy_gate.get('reason', 'blocked')}"}
+            try:
+                from reentry_cooldown import COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE, reentry_block
+                cooldown = reentry_block("KR", ticker, account_key=account_key, db_path=self.db_path,
+                                         fail_closed=True)
+                enforce = bool(cooldown) and (bool(cooldown.get("check_error")) or (COOLDOWN_LIVE and (
+                    COOLDOWN_RISK_EXIT_LIVE or not (cooldown.get("risk_exit") and not cooldown.get("after_loss")))))
+            except Exception as cooldown_error:  # fail closed like the batch
+                logger.error("[REENTRY_COOLDOWN][KR][reentry_v3] check failed closed: %s", cooldown_error)
+                enforce = True
+            if enforce:
+                return {"bought": False, "reason": "reentry_cooldown"}
+            if not micro_split_live.live_enabled("KR") or not micro_split_live.plan_available(
+                    self, market="KR", ticker=ticker, current_price=current_price,
+                    stop_loss=scenario.get("stop_loss")):
+                return {"bought": False, "reason": "no_micro_plan"}
+            scenario["_decision_context"] = {"decision": "Enter", "buy_score": buy_score, "min_score": min_score,
+                                             "gate_allowed": True, "gate_reason": buy_gate.get("reason"),
+                                             "gate_findings": buy_gate.get("findings") or [], "sector_diverse": True,
+                                             "is_add": False, "rebound_pilot": False, "slots_used": slots_used,
+                                             "slots_max": getattr(self, "max_slots", 10), "source": "reentry_v3"}
+            trigger_info = getattr(self, "trigger_info_map", {}).get(ticker, {}) or {}
+            observe_or_emit(self, emit_trading_context, "candidate.evaluated", market="KR", ticker=ticker,
+                            company_name=company_name, decision_id=source_decision_id,
+                            trigger_type=trigger_info.get("trigger_type"), trigger_mode=trigger_info.get("trigger_mode"),
+                            scenario=scenario,
+                            decision_context={**scenario["_decision_context"], "selected_for_entry": True,
+                                              "price": current_price},
+                            portfolio_context={"slots_used": slots_used, "slots_max": getattr(self, "max_slots", 10)},
+                            source="kr_reentry_v3_decision",
+                            research_context=getattr(self, "_trend_research_snapshots", {}).get(ticker))
+            from observability.decision_inputs import emit_decision_inputs
+            emit_decision_inputs(self, market="KR", ticker=ticker, decision_id=source_decision_id, scenario=scenario,
+                                 current_price=current_price, decision="Enter", source="kr_reentry_v3_decision")
+            analysis_result = {"ticker": ticker, "company_name": company_name, "current_price": current_price,
+                               "decision": "Enter", "scenario": scenario, "sector": sector}
+            bought = await self._enter_eligible_candidate(
+                ticker=ticker, company_name=company_name, current_price=current_price, scenario=scenario,
+                analysis_result=analysis_result, buy_score=buy_score, min_score=min_score, is_add=False,
+                rebound_pilot=False, entry_cash_amount=None, rank_change_msg=rank_change_msg,
+                source_decision_id=source_decision_id, sector=sector, buy_gate=buy_gate, effects=effects,
+                source="kr_reentry_v3", lock_held=True, require_micro_plan=True)
+            if not bought:
+                return {"bought": False, "reason": "entry_not_completed"}
+            holding_ids, entry_price = [], None
+            try:
+                row = self.cursor.execute("SELECT id, buy_price FROM stock_holdings WHERE ticker = ? AND account_key = ? "
+                                          "ORDER BY id DESC LIMIT 1", (ticker, account_key)).fetchone()
+                if row:
+                    holding_ids, entry_price = [int(row[0])], row[1]
+            except Exception as link_error:  # noqa: BLE001 - the link is bookkeeping only (reconciled later)
+                logger.warning("[REENTRY_V3][KR] %s holding link lookup failed (%s); ledger reconciles later",
+                               ticker, type(link_error).__name__)
+            return {"bought": True, "reason": "bought", "holding_ids": holding_ids, "entry_price": entry_price,
+                    "account_refs": [live.account_ref(account_key)]}
 
     async def _buy_stock_with_position(self, ticker: str, company_name: str, current_price: float, scenario: Dict[str, Any], rank_change_msg: str = "", is_add: bool = False) -> LegacyPositionWriteResult:
         """

@@ -25,6 +25,8 @@ import os
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from messaging.publish_guard import DISABLE_ENV_VAR
 
 # Set at import time — before pytest imports a single test module, and before
@@ -107,3 +109,15 @@ def pytest_configure(config):
 
 def pytest_report_header(config):
     return f"signal publishing: DISABLED ({DISABLE_ENV_VAR}=1)"
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _temporary_entry_lock_dir(tmp_path_factory):
+    """Keep the per-market entry lock (prism_core/entry_lock.py) out of runtime/ for every test run."""
+    previous = os.environ.get("PRISM_ENTRY_LOCK_DIR")
+    os.environ["PRISM_ENTRY_LOCK_DIR"] = str(tmp_path_factory.mktemp("entry_locks"))
+    yield
+    if previous is None:
+        os.environ.pop("PRISM_ENTRY_LOCK_DIR", None)
+    else:
+        os.environ["PRISM_ENTRY_LOCK_DIR"] = previous
