@@ -50,8 +50,10 @@ def audit(conn, sid, *, now):
     for table in ("llm_scenario_broker_notices", "llm_scenario_outbox"):
         require(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone(),
                 "notice_schema_required")
-        if conn.execute(f"SELECT 1 FROM {table} WHERE event_id=?", (eid,)).fetchone():
-            return None
+    if conn.execute("SELECT 1 FROM llm_scenario_broker_notices WHERE event_id=? "
+                    "UNION ALL SELECT 1 FROM llm_scenario_outbox WHERE event_id=? LIMIT 1",
+                    (eid, eid)).fetchone():
+        return None
     record = conn.execute("SELECT evidence FROM llm_scenario_settlements WHERE scenario_id=?", (sid,)).fetchone()
     require(record is not None, "persisted_settlement_required")
     settlement = object_json(record[0])
