@@ -6,10 +6,11 @@ decides where, on which conditions and up to which allocation; this module only
 checks a closed condition vocabulary and executes it deterministically. The code
 safety rails cannot be exceeded by any scenario: one slot cap, 5%p grid, at most
 25%p and no more than the previous leg per add (pyramid), one add per session
-(an acceleration scenario may add once more), the risk clip versus the current
-stop on the initial-entry basis, profitable positions only, a chase limit versus
-the trigger price, a plan valid for one session, and no add on a sell/stop day.
-There is deliberately no market-regime ban (user decision, 2026-10-02).
+(two in a deterministic ACCELERATION session: price >= initial entry +8% and
+volume pace >= 1.5x, decided by code, never by the scenario label), the risk clip
+versus the current stop on the initial-entry basis, profitable positions only, a
+chase limit versus the trigger price, a plan valid for one session, and no add on
+a sell/stop day. There is deliberately no market-regime ban (user decision, 2026-10-02).
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ import hashlib
 import json
 import re
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import ROUND_DOWN, Decimal, InvalidOperation
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
@@ -39,6 +40,13 @@ ZONE_WINDOW = 10  # completed sessions searched for the pullback touch
 DRY_UP_WINDOW = 5  # completed sessions searched for the volume dry-up
 AVERAGE_WINDOW = 20
 MIN_PACE_SAMPLES = 10
+# Acceleration rail (2026-10-04, user-approved design 2): a confirmed runner may add twice in
+# one session so it can reach one slot in about three sessions instead of one small step per
+# session. Decided by code from price and volume only; every other rail still applies.
+ACCELERATION = "ACCELERATION"
+ACCELERATION_GAIN = Decimal("0.08")  # price versus the initial entry
+ACCELERATION_PACE = Decimal("1.5")  # matched intraday volume pace, or daily volume at the close
+ADDS_PER_SESSION, ACCELERATION_ADDS_PER_SESSION = 1, 2
 # Local session per market: zone, open, close, and the review cutoff before which a
 # review revises the same session's plan (KR morning batch; US before the open).
 SESSIONS = {"KR": (ZoneInfo("Asia/Seoul"), time(9, 0), time(15, 30), time(12, 0)),
@@ -268,16 +276,40 @@ def _validate_scenario(raw, allocation, last_step):
     return scenario, ({"id": sid, "reason": "CHASE_CLAMPED"} if chase > MAX_CHASE_PCT else None)
 
 
-def validate_plan(raw, *, market, source, created_at, valid_for, allocation, last_step):
+def rebase_targets(raw, delta):
+    """Copy of a BUY ``add_plan`` with every scenario target shifted by ``delta`` (conviction tilt).
+
+    The BUY prompt never mentions the tilt, so the LLM writes targets for the volatility
+    initial; shifting by (tilted - base) keeps each planned step. Targets are re-snapped to
+    the 5%p grid and capped at one slot; malformed targets are left for the validator.
+    """
+    delta = Decimal(str(delta))
+    if not isinstance(raw, dict) or not isinstance(raw.get("scenarios"), list):
+        return raw
+    out = dict(raw, scenarios=[])
+    for item in raw["scenarios"]:
+        target = _dec(item.get("target_allocation")) if isinstance(item, dict) else None
+        if target is not None and target <= 1:
+            moved = min((target + delta) / GRID, 1 / GRID).to_integral_value(rounding=ROUND_HALF_UP) * GRID
+            item = dict(item, target_allocation=str(moved.quantize(Decimal("0.01"))))
+        out["scenarios"].append(item)
+    return out
+
+
+def validate_plan(raw, *, market, source, created_at, valid_for, allocation, last_step, rebase=None):
     """(plan or None, issues). Invalid scenarios are dropped with a reason code, never executed.
 
     ``allocation`` is the current slot allocation, ``last_step`` the previous leg's
     allocation (the initial allocation before any add). A review may cancel with
-    ``{"cancel": true, "reason": ...}``.
+    ``{"cancel": true, "reason": ...}``. ``rebase`` (the conviction-tilt delta) shifts
+    the targets first and is recorded on the plan (``rebased``, ``rebase_delta``).
     """
     allocation, last_step = Decimal(str(allocation)), Decimal(str(last_step))
     base = {"contract": CONTRACT, "market": str(market).upper(), "source": source, "created_at": created_at,
             "valid_for": valid_for, "allocation_at_plan": str(allocation)}
+    if rebase is not None:
+        raw = rebase_targets(raw, rebase)
+        base.update(rebased=True, rebase_delta=str(Decimal(str(rebase))))
     if not isinstance(raw, dict):
         return None, [{"id": None, "reason": "PLAN_NOT_OBJECT"}]
     if raw.get("cancel") is True:
@@ -375,8 +407,13 @@ def weighted_entry(legs):
 
 
 def risk_clip(*, legs, target, price, initial_entry, initial_stop, current_stop, fee_rate):
-    """Largest target (5%p grid, <= ``target``) whose loss at the current stop stays within
-    the initial-entry risk of one slot: (entry - stop) / entry.
+    """Largest target (5%p grid, <= ``target``) whose loss at the current effective stop stays
+    within the initial-entry risk of one slot: (entry - initial stop) / entry.
+
+    The effective stop is max(initial stop, the holding's current stop_loss); stops only move
+    up (review ratchet, runner/trailing floor at entry), so a runner whose stop was raised can
+    reach one slot while the total risk stays within the initial one-slot budget (user decision,
+    2026-10-04).
 
     Same ledger math as ``oneil_adaptive_policy.evaluate_target`` (B3 risk clip).
     """
@@ -535,13 +572,84 @@ def needs_intraday_pace(plan):
                for s in (plan or {}).get("scenarios") or [])
 
 
+def acceleration_price(initial_entry):
+    """Price from which the acceleration rail can apply (providers then fetch the volume pace)."""
+    return float(Decimal(str(initial_entry)) * (1 + ACCELERATION_GAIN))
+
+
+def acceleration(state, evidence, *, bars, daily, price, phase):
+    """Deterministic ACCELERATION check: price >= initial entry +8% AND volume pace >= 1.5x.
+
+    The pace is the cumulative volume versus the 20-session average at the same elapsed
+    time (intraday), or the daily volume versus its 20-session average (CLOSE).
+    """
+    gain = Decimal(str(price)) / Decimal(str(state["initial_entry"])) - 1
+    out = {"gain_pct": float((gain * 100).quantize(Decimal("0.01")))}
+    if gain < ACCELERATION_GAIN:
+        return dict(out, active=False, reason="GAIN_BELOW_THRESHOLD")
+    pace = _volume_pace(evidence, bars, phase, daily)
+    if pace is None:
+        return dict(out, active=False, reason="VOLUME_PACE_UNAVAILABLE")
+    out["volume_pace"] = float(pace.quantize(Decimal("0.01")))
+    if pace < ACCELERATION_PACE:
+        return dict(out, active=False, reason="VOLUME_PACE_LOW")
+    return dict(out, active=True, reason=ACCELERATION)
+
+
 def add_key(session_date, scenario_id):
     """Idempotency key of one scenario in one session (stored as the leg's bar_end)."""
     return f"add-plan:{session_date}:{scenario_id}"
 
 
+def acceleration_key(session_date, scenario_id):
+    """Key of the deterministic second add that follows ``scenario_id`` in an ACCELERATION session."""
+    return f"{add_key(session_date, scenario_id)}:acceleration"
+
+
+def _continuation(plan, state, *, added, allocation, last_step, price, session_date, used, accel):
+    """The deterministic second add of an ACCELERATION session, or (None, reason).
+
+    It repeats today's executed scenario at its own trigger: one pyramid step (<= 0.25 and
+    <= the previous leg, 5%p grid), the same chase limit versus that trigger, the risk clip.
+    """
+    leg = added[-1]
+    sid = leg.get("scenario_id")
+    if not sid or _dec(leg.get("trigger_price")) is None:
+        return None, "ACCELERATION_NO_TRIGGER"
+    key = acceleration_key(session_date, sid)
+    if key in used:
+        return None, "DONE_THIS_SESSION"
+    target = min(allocation + min(MAX_STEP, last_step), Decimal(1))
+    target = (target / GRID).to_integral_value(rounding=ROUND_DOWN) * GRID
+    if target <= allocation:
+        return None, "TARGET_REACHED"
+    scenario = next((s for s in plan["scenarios"] if s["id"] == sid), None)
+    chase = Decimal(str(scenario["max_chase_pct"])) if scenario else MAX_CHASE_PCT
+    trigger_price = _dec(leg["trigger_price"])
+    cap = trigger_price * (1 + chase / 100)
+    if price > cap:
+        return None, "CHASE_LIMIT"
+    clipped = risk_clip(legs=state["legs"], target=target, price=price, initial_entry=state["initial_entry"],
+                        initial_stop=state["initial_stop"], current_stop=state["current_stop"],
+                        fee_rate=state.get("fee_rate", 0))
+    if clipped <= allocation:
+        return None, "RISK_LIMIT"
+    lens = scenario["lens"] if scenario else list(leg.get("lens") or [])
+    return {"action": "ADD", "reason": "QUALIFIED", "rail": ACCELERATION, "acceleration": accel,
+            "plan_hash": plan["plan_hash"], "session_date": session_date, "scenario_id": sid,
+            "scenario_type": leg.get("scenario_type") or (scenario or {}).get("type"), "lens": lens,
+            "rationale": (scenario or {}).get("rationale") or "", "target_allocation": str(clipped),
+            "planned_target": str(target), "delta": str(clipped - allocation), "risk_clipped": clipped < target,
+            "price": _num(price), "limit_price": _num(min(price, cap)), "trigger_price": _num(trigger_price),
+            "key": key}, None
+
+
 def evaluate_plan(plan, state, evidence, *, now):
     """At most one qualified add for this evaluation, or WAIT/INVALIDATED with reason codes.
+
+    One add per session; in an ACCELERATION session (``acceleration``) a second add comes
+    from another qualifying scenario or, failing that, the deterministic continuation of
+    today's executed scenario. Such a second add carries ``rail="ACCELERATION"``.
 
     ``state``: allocation, legs (micro_split legs), initial_entry, initial_stop,
     current_stop, fee_rate, entry_session (date), blocked (reason or None).
@@ -585,17 +693,19 @@ def evaluate_plan(plan, state, evidence, *, now):
     bars = _bars(evidence, current)
     added = [leg for leg in legs if leg.get("kind") == "ADD" and leg.get("session") == session_date]
     used = {leg.get("bar_end") for leg in legs}
-    accelerated = any(leg.get("scenario_type") == "acceleration" for leg in added)
     position = session_index(state["entry_session"], session_date)
     last_step = Decimal(str(legs[-1]["allocation"]))
+    accel = acceleration(state, evidence, bars=bars, daily=daily, price=price, phase=phase) if added else None
+    limit = ACCELERATION_ADDS_PER_SESSION if accel and accel["active"] else ADDS_PER_SESSION
+    rail = ACCELERATION if added else None
     reasons = {}
     for scenario in plan["scenarios"]:
         sid, trigger = scenario["id"], scenario["trigger"]
         if add_key(session_date, sid) in used:
             reasons[sid] = "DONE_THIS_SESSION"
             continue
-        if added and (scenario["type"] != "acceleration" or accelerated or len(added) >= 2):
-            reasons[sid] = "ONE_ADD_PER_SESSION"
+        if len(added) >= limit:
+            reasons[sid] = "ONE_ADD_PER_SESSION" if limit == ADDS_PER_SESSION else "SESSION_ADD_LIMIT"
             continue
         if position < trigger.get("earliest_session", 1):
             reasons[sid] = "TOO_EARLY"
@@ -626,13 +736,20 @@ def evaluate_plan(plan, state, evidence, *, now):
         if clipped <= allocation:
             reasons[sid] = "RISK_LIMIT"
             continue
-        return {"action": "ADD", "reason": "QUALIFIED", "plan_hash": plan["plan_hash"],
+        return {"action": "ADD", "reason": "QUALIFIED", "rail": rail, "acceleration": accel,
+                "plan_hash": plan["plan_hash"],
                 "session_date": session_date, "phase": phase, "scenario_id": sid, "scenario_type": scenario["type"],
                 "lens": scenario["lens"], "rationale": scenario["rationale"], "target_allocation": str(clipped),
                 "planned_target": str(target), "delta": str(clipped - allocation), "risk_clipped": clipped < target,
                 "price": _num(price), "limit_price": _num(min(price, cap)), "trigger_price": _num(trigger_price),
                 "key": add_key(session_date, sid), "reasons": reasons}
-    return wait("NO_SCENARIO_QUALIFIED", reasons=reasons, session_date=session_date)
+    if added and len(added) < limit:
+        decision, why = _continuation(plan, state, added=added, allocation=allocation, last_step=last_step,
+                                      price=price, session_date=session_date, used=used, accel=accel)
+        if decision is not None:
+            return dict(decision, phase=phase, reasons=reasons)
+        reasons[ACCELERATION] = why
+    return wait("NO_SCENARIO_QUALIFIED", reasons=reasons, session_date=session_date, acceleration=accel)
 
 
 # ---------------------------------------------------------------- display

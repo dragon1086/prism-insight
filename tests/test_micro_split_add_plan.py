@@ -226,29 +226,161 @@ def test_chase_limit_profitable_only_and_risk_clip():
     assert full == Decimal("0.95")
 
 
-def test_one_add_per_session_with_one_acceleration_exception():
+PACE = {"end_at": _iso(OPEN + timedelta(minutes=60)), "samples": [200] * 20}  # 12 bars x 40 = 2.4x
+
+
+def _added_today(step="0.25", price="10800", trigger=10800, current_stop=10300, sid="breakout_1"):
+    """0.45 initial at 10,000 plus today's scenario add; the stop was raised by a review (risk room)."""
+    first = _state()["legs"][0]
+    leg = {"kind": "ADD", "allocation": step, "price": price, "session": SESSION, "scenario_id": sid,
+           "scenario_type": "breakout", "trigger_price": trigger, "bar_end": P.add_key(SESSION, sid)}
+    allocation = str(Decimal("0.45") + Decimal(step))
+    return _state(allocation, legs=[first, leg], current_stop=current_stop)
+
+
+def _accel_evidence(closes=(10820, 10850), price=10850, volume=40, **extra):
+    return _evidence(closes=closes, price=price, volume=volume, prior_cumulative=dict(PACE), **extra)
+
+
+def test_acceleration_allows_a_second_add_by_price_and_volume_only():
+    # 2026-10-04 design 2: +8% over the initial entry AND volume pace >= 1.5x -> two adds this session.
+    plan, issues = _plan(_scenario(target=0.70, price_above=10800), _scenario("b2", target=0.70, price_above=12000))
+    assert issues == []
+    decision = P.evaluate_plan(plan, _added_today(), _accel_evidence(), now=_now())
+    assert decision["action"] == "ADD" and decision["rail"] == P.ACCELERATION
+    assert decision["key"] == "add-plan:2026-10-05:breakout_1:acceleration"
+    assert decision["scenario_id"] == "breakout_1" and decision["trigger_price"] == 10800
+    assert decision["target_allocation"] == "0.95" and decision["delta"] == "0.25"  # one step <= previous leg
+    assert decision["limit_price"] == 10850 and decision["acceleration"] == {
+        "gain_pct": 8.5, "volume_pace": 2.4, "active": True, "reason": P.ACCELERATION}
+    assert decision["reasons"] == {"breakout_1": "DONE_THIS_SESSION", "b2": "PRICE_NOT_ABOVE"}
+    # Below either threshold: one add per session, whatever the scenario says.
+    below = [(_accel_evidence(closes=(10690, 10700), price=10700), "GAIN_BELOW_THRESHOLD"),  # +7%
+             (_accel_evidence(volume=20), "VOLUME_PACE_LOW"),  # 1.2x
+             (dict(_accel_evidence(), prior_cumulative=None), "VOLUME_PACE_UNAVAILABLE")]
+    for evidence, reason in below:
+        waited = P.evaluate_plan(plan, _added_today(), evidence, now=_now())
+        assert waited["action"] == "WAIT" and waited["reasons"]["b2"] == "ONE_ADD_PER_SESSION", reason
+        assert waited["acceleration"]["reason"] == reason and P.ACCELERATION not in waited["reasons"]
+    # An "acceleration" scenario label no longer buys a second add below the code thresholds.
     accel = _scenario("accel_1", "acceleration", 0.65, ("druckenmiller",), gap_up_min_pct=3,
                       hold_above_open_minutes=30, volume_pace_min=2.0)
-    plan, _ = _plan(_scenario(), accel)  # BUY plan at 0.45; breakout already added to 0.60 today
-    added = _state("0.60", legs=_state()["legs"] + [{"kind": "ADD", "allocation": "0.15", "price": "10450",
-                                                     "session": SESSION, "scenario_type": "breakout",
-                                                     "bar_end": "add-plan:2026-10-05:breakout_1"}])
-    evidence = _evidence(closes=(10500, 10520), price=10520, open_price=10350, volume=40,
-                         prior_cumulative={"end_at": _iso(OPEN + timedelta(minutes=60)), "samples": [200] * 20})
-    decision = P.evaluate_plan(plan, added, evidence, now=_now())
-    assert decision["action"] == "ADD" and decision["scenario_id"] == "accel_1"
-    assert decision["reasons"]["breakout_1"] == "DONE_THIS_SESSION"
-    assert decision["target_allocation"] == "0.65" and decision["trigger_price"] == 10350
-    accelerated = dict(added, legs=added["legs"] + [{"kind": "ADD", "allocation": "0.05", "price": "10520",
-                                                     "session": SESSION, "scenario_type": "acceleration",
-                                                     "bar_end": "add-plan:2026-10-05:accel_1"}],
-                       allocation="0.65")
-    again = P.evaluate_plan(plan, accelerated, evidence, now=_now())
-    assert again["action"] == "WAIT" and set(again["reasons"].values()) == {"DONE_THIS_SESSION"}
-    # A non-acceleration scenario after one add in the session waits.
-    other, _ = _plan(_scenario(), _scenario("b2", price_above=10500, target=0.75), allocation="0.60",
-                     last_step="0.15")
-    assert P.evaluate_plan(other, added, evidence, now=_now())["reasons"]["b2"] == "ONE_ADD_PER_SESSION"
+    labelled, _ = _plan(_scenario(), accel)
+    gap = _evidence(closes=(10500, 10520), price=10520, open_price=10350, volume=40, prior_cumulative=dict(PACE))
+    early = P.evaluate_plan(labelled, _added_today("0.15", "10450", 10400), gap, now=_now())
+    assert early["action"] == "WAIT" and early["reasons"]["accel_1"] == "ONE_ADD_PER_SESSION"
+
+
+def test_acceleration_second_add_from_another_scenario_keeps_its_rails():
+    plan, _ = _plan(_scenario(target=0.55, price_above=10400), _scenario("b2", target=0.65, price_above=10800))
+    decision = P.evaluate_plan(plan, _added_today("0.10", "10450", 10400), _accel_evidence(), now=_now())
+    assert decision["scenario_id"] == "b2" and decision["rail"] == P.ACCELERATION
+    assert decision["target_allocation"] == "0.65" and decision["key"] == "add-plan:2026-10-05:b2"
+    # Pyramid: the continuation step never exceeds the previous leg (0.10 here).
+    only, _ = _plan(_scenario(target=0.55, price_above=10400), _scenario("b2", target=0.60, price_above=12000))
+    step = P.evaluate_plan(only, _added_today("0.10", "10450", 10700), _accel_evidence(), now=_now())
+    assert step["scenario_id"] == "breakout_1" and step["delta"] == "0.10" and step["target_allocation"] == "0.65"
+
+
+def test_acceleration_caps_two_adds_and_keeps_chase_profit_risk_and_sell_day_rails():
+    plan, _ = _plan(_scenario(target=0.70, price_above=10800), _scenario("b2", target=0.70, price_above=10600))
+    twice = _added_today()
+    twice = dict(twice, allocation="0.95", legs=twice["legs"] + [
+        {"kind": "ADD", "allocation": "0.25", "price": "10850", "session": SESSION, "scenario_id": "breakout_1",
+         "trigger_price": 10800, "rail": P.ACCELERATION, "bar_end": P.acceleration_key(SESSION, "breakout_1")}])
+    capped = P.evaluate_plan(plan, twice, _accel_evidence(), now=_now())
+    assert capped["action"] == "WAIT" and capped["reasons"] == {"breakout_1": "DONE_THIS_SESSION",
+                                                                "b2": "SESSION_ADD_LIMIT"}
+    chased = P.evaluate_plan(_plan(_scenario(target=0.70, price_above=10800),
+                                   _scenario("b2", target=0.70, price_above=12000))[0],
+                             _added_today(), _accel_evidence(closes=(11050, 11100), price=11100), now=_now())
+    assert chased["action"] == "WAIT" and chased["reasons"][P.ACCELERATION] == "CHASE_LIMIT"  # 10800 x 1.02
+    losing = _added_today(price="14000")  # cost-weighted entry above the quote
+    assert P.evaluate_plan(plan, losing, _accel_evidence(), now=_now())["reason"] == "NOT_PROFITABLE"
+    blocked = dict(_added_today(), blocked="LOOP_SELL_ORDER")
+    assert P.evaluate_plan(plan, blocked, _accel_evidence(), now=_now())["reason"] == "SELL_DAY_BLOCK"
+    # The risk clip on the initial-entry stop still binds: with the stop at 9,300 a 0.70 position at
+    # +8.5% has no risk room left, so the acceleration add is refused (raise the stop to make room).
+    no_room = P.evaluate_plan(_plan(_scenario(target=0.70, price_above=10800),
+                                    _scenario("b2", target=0.70, price_above=12000))[0],
+                              _added_today(current_stop=9300), _accel_evidence(), now=_now())
+    assert no_room["action"] == "WAIT" and no_room["reasons"][P.ACCELERATION] == "RISK_LIMIT"
+
+
+def test_raised_holding_stop_lets_a_runner_reach_one_slot_within_the_initial_risk():
+    # 2026-10-04 decision: the clip uses max(initial stop, holding stop_loss); stops only move up.
+    plan, _ = _plan(_scenario(target=0.70, price_above=10800), _scenario("b2", target=0.70, price_above=12000))
+    raised = P.evaluate_plan(plan, _added_today(current_stop=10000), _accel_evidence(), now=_now())
+    assert raised["action"] == "ADD" and raised["target_allocation"] == "0.95" and raised["risk_clipped"] is False
+    legs = _added_today()["legs"] + [{"allocation": "0.25", "price": "10850"}]
+    full = P.risk_clip(legs=legs, target="1.00", price=11500, initial_entry=10000, initial_stop=9300,
+                       current_stop=10000, fee_rate="0.001")
+    assert full == Decimal("1.00")
+    # Total loss at the effective stop stays within the initial one-slot risk (7%).
+    legs.append({"allocation": "0.05", "price": "11500"})
+    units = sum(Decimal(leg["allocation"]) / Decimal(leg["price"]) for leg in legs)
+    assert 1 - units * 10000 <= Decimal("0.07")
+    # A holding stop below the initial stop never loosens the clip.
+    lower = P.risk_clip(legs=_added_today()["legs"], target="0.95", price=10850, initial_entry=10000,
+                        initial_stop=9300, current_stop=9000, fee_rate="0.001")
+    assert lower == Decimal("0.70")
+
+
+def test_rebase_targets_keeps_steps_on_the_grid_and_is_recorded():
+    raw = {"thesis_check": "t", "scenarios": [_scenario(target=0.55), _scenario("b2", target="0.60"),
+                                              _scenario("bad", target="x"), _scenario("big", target=1.2), "junk"]}
+    moved = P.rebase_targets(raw, "0.2000")
+    assert [s["target_allocation"] if isinstance(s, dict) else s for s in moved["scenarios"]] == [
+        "0.75", "0.80", "x", 1.2, "junk"]
+    assert raw["scenarios"][0]["target_allocation"] == 0.55  # input untouched
+    capped = P.rebase_targets({"scenarios": [_scenario(target=0.90), _scenario("b2", target=0.75)]}, "0.0223")
+    assert [s["target_allocation"] for s in capped["scenarios"]] == ["0.90", "0.75"]  # 0.9223 -> 0.90 grid
+    top = P.rebase_targets({"scenarios": [_scenario(target=0.95)]}, "0.20")
+    assert top["scenarios"][0]["target_allocation"] == "1.00"
+    plan, issues = P.validate_plan({"scenarios": [_scenario(target=0.55), _scenario("b2", target=0.60, price_above=10500)]},
+                                   market="US", source="BUY", created_at="t", valid_for=SESSION, allocation="0.5888",
+                                   last_step="0.5888", rebase=Decimal("0.2000"))
+    assert issues == [] and plan["rebased"] is True and plan["rebase_delta"] == "0.2000" and P.plan_intact(plan)
+    assert [s["target_allocation"] for s in plan["scenarios"]] == ["0.75", "0.80"]
+    plain, _ = _plan()
+    assert "rebased" not in plain
+
+
+@pytest.mark.parametrize("market,language", [("KR", "ko"), ("KR", "en"), ("US", "en")])
+def test_prompt_rails_match_the_acceleration_rule_and_examples_validate(market, language):
+    from prism_core import add_plan_prompts as prompts
+
+    block = {"allocation": "0.45", "legs": [{"kind": "INITIAL", "allocation": "0.45", "price": "10000"}]}
+    texts = [prompts.buy_block(market, language, 0.45),
+             prompts.review_block(block, market=market, language=language, valid_for=SESSION, stop_loss=9300)]
+    for text in texts:
+        assert "acceleration만 1회 추가" not in text and "may add once more" not in text
+        if language == "ko":
+            assert "최초 진입가보다 8% 이상" in text and "1.5배 이상" in text and "2회까지 증액" in text
+            assert "시나리오 type(acceleration 포함)과 관계없이" in text
+        else:
+            assert "at least 8% above the initial entry" in text and "at least 1.5x" in text
+            assert "two adds in that session" in text and "whatever the scenario type" in text
+    # The format example in the prompt is a valid plan under the unchanged vocabulary.
+    example = json.loads(prompts._EXAMPLE[market])
+    plan, issues = P.validate_plan(example, market=market, source="BUY", created_at=_iso(OPEN), valid_for=SESSION,
+                                   allocation="0.45", last_step="0.45")
+    assert issues == [] and plan["status"] == "ACTIVE" and len(plan["scenarios"]) == 2
+
+
+def test_acceleration_at_the_close_uses_the_daily_volume_multiple():
+    plan, _ = _plan(_scenario(target=0.70, price_above=10800), _scenario("b2", target=0.70, price_above=12000))
+    close = dict(_evidence(phase="CLOSE", price=10850),
+                 today_daily={"date": SESSION, "open": 10500, "high": 10900, "low": 10450, "close": 10850,
+                              "volume": 1600})
+    decision = P.evaluate_plan(plan, _added_today(), close, now=_now(420))
+    assert decision["action"] == "ADD" and decision["phase"] == "CLOSE" and decision["rail"] == P.ACCELERATION
+    assert decision["acceleration"]["volume_pace"] == 1.6
+    quiet = dict(close, today_daily=dict(close["today_daily"], volume=1400))
+    assert P.evaluate_plan(plan, _added_today(), quiet, now=_now(420))["acceleration"]["reason"] == "VOLUME_PACE_LOW"
+    # Without an add today nothing changes: the first add is a plain scenario add (no rail).
+    first = P.evaluate_plan(plan, _state(), _accel_evidence(), now=_now())
+    assert first["rail"] is None and first["acceleration"] is None and first["target_allocation"] == "0.70"
 
 
 def test_acceleration_needs_gap_hold_and_volume_pace():
@@ -401,7 +533,7 @@ def live_worker(tmp_path, monkeypatch):
     now = OPEN + timedelta(minutes=60, seconds=20)
     inputs = []
 
-    def add_inputs(symbol, at, phase, active_plan):
+    def add_inputs(symbol, at, phase, active_plan, pace_above=None):
         inputs.append((symbol, phase, active_plan["plan_hash"]))
         return _evidence()
 
@@ -449,6 +581,56 @@ def test_worker_executes_a_qualified_plan_add_once_per_scenario_and_session(live
     assert "add_plan.qualified" in kinds and "add_plan.executed" in kinds
 
 
+def test_worker_fetches_pace_after_todays_add_and_records_the_acceleration_rail(live_worker, monkeypatch):
+    worker, seen = live_worker.worker, []
+    original = worker.providers["add_inputs"]
+
+    def add_inputs(symbol, at, phase, plan, pace_above=None):
+        seen.append(pace_above)
+        return original(symbol, at, phase, plan)
+
+    worker.providers["add_inputs"] = add_inputs
+    worker.once()  # breakout_1 adds 0.7777 -> 0.90 (first add today)
+    real = P.evaluate_plan
+
+    def accelerated(plan, state, evidence, *, now):
+        real(plan, state, evidence, now=now)
+        accel = {"gain_pct": 8.5, "volume_pace": 2.4, "active": True, "reason": P.ACCELERATION}
+        return {"action": "ADD", "reason": "QUALIFIED", "rail": P.ACCELERATION, "acceleration": accel,
+                "plan_hash": plan["plan_hash"], "session_date": SESSION, "phase": "INTRADAY",
+                "scenario_id": "breakout_1", "scenario_type": "breakout", "lens": ["oneil"], "rationale": "r",
+                "target_allocation": "1.00", "planned_target": "1.00", "delta": "0.10", "risk_clipped": False,
+                "price": 10460, "limit_price": 10460, "trigger_price": 10400,
+                "key": P.acceleration_key(SESSION, "breakout_1"), "reasons": {}}
+
+    monkeypatch.setattr(P, "evaluate_plan", accelerated)
+    rows = _plan_rows(worker.once())
+    assert seen == [None, 10800.0]  # the pace is requested only after today's first add
+    assert rows[0]["status"] == "ADD" and rows[0]["live"]["status"] == "EXECUTED"
+    block = json.loads(live_worker.conn.execute("SELECT scenario FROM stock_holdings").fetchone()[0])["micro_split"]
+    assert block["allocation"] == "1.0000" and block["legs"][-1]["rail"] == P.ACCELERATION
+    assert block["legs"][-1]["bar_end"] == "add-plan:2026-10-05:breakout_1:acceleration"
+    assert "가속 구간: 이번 세션 두 번째 증액 (최초 진입가 대비 +8.5%, 거래량 2.4배)" in \
+        live_worker.executor.message_queue[-1]
+    executed = [kw for name, kw in live_worker.emitted if name == "micro_split.add_executed"][-1]
+    assert executed["attributes"]["rail"] == P.ACCELERATION
+
+
+def test_worker_clips_with_the_holdings_current_stop(live_worker, monkeypatch):
+    seen = []
+    real = P.evaluate_plan
+
+    def capture(plan, state, evidence, *, now):
+        seen.append((state["initial_stop"], state["current_stop"]))
+        return real(plan, state, evidence, now=now)
+
+    monkeypatch.setattr(P, "evaluate_plan", capture)
+    live_worker.conn.execute("UPDATE stock_holdings SET stop_loss = 10000 WHERE id = 7")  # review ratchet
+    live_worker.conn.commit()
+    live_worker.worker.once()
+    assert float(seen[0][0]) == 9300 and seen[0][1] == 10000
+
+
 def test_kill_switch_stops_plan_adds_and_sell_day_blocks(live_worker, monkeypatch):
     monkeypatch.setenv("MICRO_SPLIT_LIVE_ADDS_ENABLED", "false")
     result = live_worker.worker.once()
@@ -466,7 +648,7 @@ def test_close_phase_runs_once_per_session(live_worker):
     worker = live_worker.worker
     worker.providers["session_open"] = lambda moment: False
     worker.providers["close_ready"] = lambda moment: SESSION
-    worker.providers["add_inputs"] = lambda symbol, at, phase, plan: dict(
+    worker.providers["add_inputs"] = lambda symbol, at, phase, plan, pace_above=None: dict(
         _evidence(phase="CLOSE", price=10450), today_daily={"date": SESSION, "open": 10000, "high": 10500, "low": 9990,
                                                                 "close": 10450, "volume": 900})
     first = _plan_rows(worker.once())

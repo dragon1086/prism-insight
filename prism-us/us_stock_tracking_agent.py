@@ -4795,10 +4795,11 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         if not is_add and not rebound_pilot:
             # Micro-split LIVE: B3 first allocation sizes the real order (legacy full slot if OFF/unavailable).
             from prism_core import micro_split_live
+            # Conviction tilt only for regular batch entries; re-entry v3 (require_micro_plan) passes none.
             micro_plan, micro_cash, scenario = micro_split_live.prepare_entry(
                 self, market="US", ticker=ticker, current_price=current_price, scenario=scenario,
                 decision_ref=scenario.get("_decision_id") or source_decision_id,
-                account=account, logger=logger)
+                account=account, logger=logger, trigger_type=None if require_micro_plan else trigger_type)
             if micro_plan is not None:
                 entry_cash_amount = micro_cash
             elif micro_split_live.gate_score_override(scenario) is not None:
