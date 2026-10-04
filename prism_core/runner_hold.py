@@ -328,20 +328,22 @@ def _mmdd(day):
 
 
 def exit_reason(view, market, language):
-    """Sell reason text for the deterministic runner exit (contains 'MA50'/'50일선' for exit_kind)."""
+    """Sell reason text for the deterministic runner exit (prefix RUNNER_MA50 keeps exit_kind trend_exit)."""
     facts = view.get("exit_facts") or {}
     block = view.get("record") or {}
-    breakeven = view.get("exit") == "BREAKEVEN_CLOSE"
+    code = view.get("exit")
     if language == "en":
         money = _money_en
-        why = (f"below the initial entry {money(block.get('entry_ref'), market)} (breakeven)" if breakeven
-               else f"below the 50-day MA {money(facts.get('ma50'), market)}")
+        why = {"BREAKEVEN_CLOSE": f"below the initial entry {money(block.get('entry_ref'), market)} (breakeven)",
+               "MA20_CLOSE": f"below the 20-day MA {money(facts.get('ma20'), market)} after the hold window",
+               }.get(code, f"below the 50-day MA {money(facts.get('ma50'), market)}")
         return (f"RUNNER_MA50: runner hold rule exit — completed close {money(facts.get('close'), market)} "
                 f"({facts.get('date')}) {why}.")
-    why = (f"최초 매수가 {_money(block.get('entry_ref'), market)}(본전) 아래" if breakeven
-           else f"50일선 {_money(facts.get('ma50'), market)} 아래")
+    why = {"BREAKEVEN_CLOSE": f"최초 매수가 {_money(block.get('entry_ref'), market)}(본전) 아래",
+           "MA20_CLOSE": f"보유 기한 이후 20일선 {_money(facts.get('ma20'), market)} 아래",
+           }.get(code, f"50일선 {_money(facts.get('ma50'), market)} 아래")
     return (f"RUNNER_MA50: 주도주 보유 규칙 매도 — {facts.get('date')} 확정 종가 {_money(facts.get('close'), market)}가 "
-            f"{why}로 마감했습니다(50일선·본전 이탈 시 매도 규칙).")
+            f"{why}로 마감했습니다.")
 
 
 def blocked_reason(code, reason, language):

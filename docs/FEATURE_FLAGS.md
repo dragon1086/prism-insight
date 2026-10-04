@@ -34,6 +34,7 @@
 | KR 약세·횡보장 가상 3순위 | **SHADOW** | KR 오전·오후 cron `REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED=true` | prospective 20거래일·성숙 10일 outcome 30건·무영향/중복/누수 0 + 사전등록 효과 기준 | 기존 2종목은 그대로 두고 같은 bottom-up 순서의 가상 3순위와 실제 1·2순위를 함께 기록. 1·3·5·10거래일 종가·MFE·MAE만 추적하며 추가 분석·LLM·주문·메시지 없음 |
 | US O'Neil RS Rating | **LIVE** | `RS_RATING_ENABLED=true` (기본값) | KR/US 2022~2026 백테스트, 49회 리밸런스 | 기존 60일 수익률 RS를 O'Neil 1~99 백분위로 대체. US 스크리닝에만 적용. 긴급 롤백은 `false` |
 | 손절폭 변동성 shadow | **SHADOW** | `cores/buy_gate.py` ATR20/ADR20 팩트 | 균형 표본에서 손실 포착·승자 제거율 확인 후 판단 | `손절폭 < 0.5×max(ATR20, ADR20)`만 로그. 현재 매수 veto 아님 |
+| 주도주 보유 규칙(오닐 8주 R5) | **LIVE(배포 시, 기본 켜짐)** | `.env RUNNER_HOLD_ENABLED=true`(기본) · `RUNNER_HOLD_MARKETS=KR,US` | 청산 사후 분석 R5 KR +57%p(1건 제외 +14%p), 표본 11건 표본 내 → 주간 리포트로 관측 | 4~15거래일 +20% 종가 & 50일선×1.4 이하면 주도주: 손절가 = 최초 매수가, 50일선·본전 종가 이탈만 매도(40거래일 뒤 20일선 추가). AI 매도·trailing·목표가·추세 이탈 루프 TIER1.5/2/3 차단. 킬: `RUNNER_HOLD_ENABLED=false`. [설계](RUNNER_HOLD_RULE_ko.md) |
 | TIER0 이벤트 강제청산(뉴스 자율매도 + KIS 51 관리종목) | **LIVE** | 코드 상시 | 더존 등 실증 | KR+US 매도 프롬프트 핵심-0 |
 | Loop A — 고빈도 하드스톱(−7%/시나리오손절) | **LIVE** | `.env HARDSTOP_LIVE=true` (구 `LOOP_A_LIVE`, alias 유효) + cron 10분 | SHADOW 관측 후 승격(06-20) | KR 9–15 / US 9–16. 킬: `HARDSTOP_ENABLED=false` |
 | Loop B — 50MA 종가확인 추세이탈 | **LIVE** | `.env TREND_EXIT_LIVE=true` (구 `LOOP_B_LIVE`) + cron(KR 9–15 / US 9–16) | 백테스트 KR/US 순효과(휩쏘0·추가DD0) + 사용자 승인(06-24) | 코드: `tools/trend_exit_seller.py` (구 `tools/loop_b_trend_exit.py` shim 유효). 킬: `TREND_EXIT_ENABLED=false` |

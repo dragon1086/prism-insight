@@ -398,3 +398,45 @@ def test_trend_exit_is_unchanged_for_a_non_runner(trend_db, monkeypatch):
     _patch(monkeypatch, FakeTrader({"005930": 130.0}, calls=calls), agent_holder=FakeAgent(calls))
     summary = asyncio.run(lb.run_market("KR", "run1"))
     assert summary["runner_held"] == 0 and summary["signaled"] == 1 and _inflight(trend_db, "SHADOW") == 1
+
+
+# ---------------------------------------------------------------- phase transitions through the tracker hook
+
+@pytest.mark.parametrize("market", ["KR", "US"])
+def test_phase_0_1_non_runner_keeps_stop_trailing_and_sells_unchanged(market, monkeypatch):
+    agent, stock, bars, now = _runner_case(market, [101, 104, 106, 108, 107, 109], price=109.0, stop=103.0)
+    monkeypatch.setattr(L, "fetch_daily_bars", lambda m, t, now=None: bars)
+    assert asyncio.run(L.review_holding(agent, market, stock, now=now)) is None
+    scenario, stop = agent.row()
+    assert "runner" not in scenario and stop == 103.0 and L.CTX_KEY not in stock
+    assert L.guard_result(agent, market, stock, True, "TIER2_TRAIL", logger=None) == (True, "TIER2_TRAIL")
+    decision = {"should_sell": False, "portfolio_adjustment": {"needed": True, "new_stop_loss": 105}}
+    assert L.guard_decision(agent, market, stock, decision) == decision
+
+
+@pytest.mark.parametrize("market", ["KR", "US"])
+def test_phase_3_after_hold_until_a_close_below_ma20_forces_the_exit(market, monkeypatch):
+    path = [101, 103, 106, 110, 115, 121] + [121 + i for i in range(40)]
+    bars, start, days = build(market, path)
+    block = R.new_record(R.detect(bars, entry_ref=100, entry_session=start), market=market, entry_ref=100,
+                         entry_session=start, detected_at="t")
+    agent = Agent(market, {"runner": block}, 100.0)
+    stock = {"id": 1, "ticker": "T", "buy_price": 100.0, "buy_date": buy_date(market, start), "current_price": 150.0,
+             "stop_loss": 100.0, "scenario": json.dumps({"runner": block})}
+    nxt = days[days.index(bars[-1]["date"]) + 1]
+    monkeypatch.setattr(L, "fetch_daily_bars", lambda m, t, now=None: bars)
+    assert asyncio.run(L.review_holding(agent, market, stock, now=at(market, nxt, 11, 0))) is None
+    assert stock[L.CTX_KEY]["phase"] == R.EXTENDED
+    dip = bars + [{"date": nxt, "close": 150.0, "volume": 1000.0}]
+    later = days[days.index(nxt) + 1]
+    monkeypatch.setattr(L, "fetch_daily_bars", lambda m, t, now=None: dip)
+    reason = asyncio.run(L.review_holding(agent, market, dict(stock), now=at(market, later, 11, 0)))
+    assert reason and reason.startswith("RUNNER_MA50") and "20" in reason
+
+
+def test_exit_reason_texts_name_the_rule_in_both_languages():
+    view = {"exit": "MA20_CLOSE", "record": {"entry_ref": 100.0},
+            "exit_facts": {"date": "2026-10-01", "close": 150.0, "ma50": 140.0, "ma20": 155.0}}
+    assert "20일선" in R.exit_reason(view, "KR", "ko") and "20-day MA" in R.exit_reason(view, "US", "en")
+    view["exit"] = "BREAKEVEN_CLOSE"
+    assert "본전" in R.exit_reason(view, "KR", "ko") and "breakeven" in R.exit_reason(view, "US", "en")
