@@ -225,6 +225,16 @@ cp trading/config/kis_devlp.yaml.example trading/config/kis_devlp.yaml
 python stock_analysis_orchestrator.py --mode morning --no-telegram
 ```
 
+El análisis del mercado de EE. UU. se ejecuta así:
+
+```bash
+# Ejecutar el análisis de EE. UU.
+python prism-us/us_stock_analysis_orchestrator.py --mode morning --no-telegram
+
+# Con informes en inglés
+python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
+```
+
 ### Opción B: Docker (recomendado para producción)
 
 ```bash
@@ -248,9 +258,10 @@ PRISM-INSIGHT es un sistema de análisis bursátil con IA **totalmente de códig
 - **Trading automático** — ejecución real mediante la API de Korea Investment & Securities
 - **Integración con Telegram** — alertas en tiempo real y difusión en varios idiomas
 - **Inteligencia macro** — detección del régimen de mercado, análisis de rotación sectorial y seguimiento de eventos de riesgo
+- **Automejora** — Bucle de retroalimentación del diario de trading: la tasa de acierto histórica de cada disparador influye automáticamente en las siguientes compras ([detalles](docs/TRADING_JOURNAL.md#performance-tracker-피드백-루프-self-improving-trading))
 
 ### Modelos de IA
-Modelos predeterminados en el código (todos se pueden cambiar en `.env`; consulta [.env.example](.env.example)):
+Modelos usados en producción (todos se pueden cambiar en `.env`; consulta [.env.example](.env.example)):
 
 | Función | Modelo predeterminado |
 |---------|----------------------|
@@ -284,33 +295,6 @@ Los agentes se agrupan por ruta de ejecución, no por un número fijo:
 </details>
 
 **Más detalles**: [Arquitectura del pipeline (coreano)](docs/PIPELINE_ARCHITECTURE_ko.md) | [Sistema de agentes de IA](docs/CLAUDE_AGENTS.md)
-
----
-
-## Funciones clave
-
-| Función | Descripción |
-|---------|-------------|
-| **Análisis con IA** | Análisis bursátil de nivel experto mediante un sistema multiagente con modelos de la familia OpenAI GPT-6 |
-| **Detección de subidas** | Lista de seguimiento automática a partir del análisis de tendencias de mañana y tarde |
-| **Telegram** | Distribución del análisis en tiempo real a los canales |
-| **Simulación de trading** | Simulación de estrategias de inversión con IA |
-| **Trading automático** | Ejecución mediante la API de Korea Investment & Securities |
-| **Panel** | Seguimiento transparente de cartera, operaciones y rendimiento |
-| **Automejora** | Bucle de retroalimentación del diario de trading: la tasa de acierto histórica de cada disparador influye automáticamente en las siguientes compras ([detalles](docs/TRADING_JOURNAL.md#performance-tracker-피드백-루프-self-improving-trading)) |
-| **Mercados de EE. UU.** | Soporte completo para el análisis de NYSE/NASDAQ |
-| **Inteligencia macro** | Detección del régimen de mercado y rotación sectorial para elegir mejor las acciones |
-| **App móvil** | App para iOS y Android con filtrado inteligente e informes PDF |
-
-<details>
-<summary>Ver capturas del panel</summary>
-<br>
-<img src="docs/images/dashboard_portfolio.png" alt="Resumen de cartera" width="700">
-<br><br>
-<img src="docs/images/dashboard_trades.png" alt="Simulador de trading" width="700">
-<br><br>
-<img src="docs/images/dashboard_performance.png" alt="Escenario de trading con IA" width="700">
-</details>
 
 ---
 
@@ -397,22 +381,6 @@ Registro completo (en coreano): [docs/RESEARCH_LESSONS_ko.md](docs/RESEARCH_LESS
 
 ---
 
-## Módulo del mercado de EE. UU.
-
-El mismo flujo con IA para los mercados de EE. UU.:
-
-```bash
-# Ejecutar el análisis de EE. UU.
-python prism-us/us_stock_analysis_orchestrator.py --mode morning --no-telegram
-
-# Con informes en inglés
-python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
-```
-
-**Fuentes de datos**: yahoo-finance-mcp, sec-edgar-mcp (documentos de la SEC, operaciones de insiders)
-
----
-
 ## Documentación
 
 | Documento | Descripción |
@@ -439,8 +407,6 @@ python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
 ### Panel
 Panel de seguimiento de cartera y rendimiento en tiempo real.
 
-**[Demo en vivo](https://analysis.stocksimulation.kr/)**
-
 ```bash
 cd examples/dashboard
 npm install
@@ -451,6 +417,16 @@ npm run dev
 **Funciones**: resumen de cartera, historial de operaciones, métricas de rendimiento, selector de mercado (KR/US), comparación de rentabilidad frente a KOSPI/KOSDAQ
 
 **Guía de configuración del panel**: [examples/dashboard/DASHBOARD_README.md](examples/dashboard/DASHBOARD_README.md)
+
+<details>
+<summary>Ver capturas del panel</summary>
+<br>
+<img src="docs/images/dashboard_portfolio.png" alt="Resumen de cartera" width="700">
+<br><br>
+<img src="docs/images/dashboard_trades.png" alt="Simulador de trading" width="700">
+<br><br>
+<img src="docs/images/dashboard_performance.png" alt="Escenario de trading con IA" width="700">
+</details>
 
 ---
 
