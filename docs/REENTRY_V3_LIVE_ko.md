@@ -314,6 +314,14 @@ CRON_TZ=America/New_York
 - 텔레그램 매수 메시지에 한 줄이 붙는다: "🔁 재진입 매수 (기준 가격 눌림 지지 매수, 1/3번째 시도) / 이전에 손절했던
   종목입니다. 첫 매수 때 돌파했던 가격대(11,950원)까지 내려왔다가 지지를 받고 버텼습니다." 재진입이 아닌 매수
   메시지는 바이트 단위로 같다.
+  - 미국 매수 메시지는 다른 미국 매매 문구처럼 영문이다(2026-10-05): "🔁 Re-entry Buy (pullback holding the
+    reference price, attempt 1/3) / We stopped out of this stock earlier. It pulled back to the level it broke out
+    of at the first buy ($11,950.00) and held there."
+  - 보유 중 포트폴리오 요약과 매도 메시지에도 "🔁 재진입 종목 (기준 가격 눌림 지지 매수, 1/3번째 시도)"이 붙는다
+    (미국 매도 메시지는 "🔁 Re-entry position (…, attempt 1/3)", 미국 포트폴리오 요약은 한국어 줄).
+  - BUY 시그널(Redis·GCP)에 `"entry_kind": "REENTRY"`와 `"reentry": {signal, attempt, max_attempts, level}`이 붙는다.
+    구독자 매수 크기는 일반 BUY처럼 `position_fraction`이다. 미국 다계좌 재진입은 한 실행 안에서 종목당 BUY 시그널을 한
+    번만 보낸다(계좌마다 새 집합을 쓰던 중복 발행 수정).
   - 출처 문장: 손절 "이전에 손절했던 종목입니다", 보류 "이전 분석에서 매수를 보류했던 종목입니다", 차단 "이전에 매수
     조건에 막혔던 종목입니다".
   - 기준 가격 설명: 손절 종목의 기준이 첫 매수 때 돌파 가격대면 "첫 매수 때 돌파했던 가격대", 보류·차단 종목이나 아래

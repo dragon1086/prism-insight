@@ -167,8 +167,9 @@ def test_execute_add_updates_row_orders_delta_and_reports(live_on, monkeypatch, 
     conn = sqlite3.connect(tmp_path / "h.sqlite")
     conn.row_factory = sqlite3.Row
     conn.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, ticker TEXT, company_name TEXT, "
-                 "account_key TEXT, scenario TEXT, buy_price REAL)")
-    conn.execute(f"INSERT INTO {table} VALUES (7, 'ABC', 'Abc', 'acc', ?, ?)", (json.dumps(scenario), price / 1.02))
+                 "account_key TEXT, scenario TEXT, buy_price REAL, stop_loss REAL)")
+    conn.execute(f"INSERT INTO {table} VALUES (7, 'ABC', 'Abc', 'acc', ?, ?, ?)",
+                 (json.dumps(scenario), price / 1.02, price * 0.93))
     conn.commit()
     agent = SimpleNamespace(conn=conn, cursor=conn.cursor(), db_path=str(tmp_path / "h.sqlite"),
                             account_configs=[{"account_key": "acc", "name": "primary"}],
@@ -212,8 +213,13 @@ def test_execute_add_updates_row_orders_delta_and_reports(live_on, monkeypatch, 
     assert order["buy_amount"] == live.scaled_cash(unit, "0.3", market)
     assert order["strict_budget"] is True and order["limit_price"] == price
     assert "50% → 80%" in agent.message_queue[0] and agent._msg_types == ["analysis"]
-    assert ("Scenario: breakout (breakout_1)" if market == "US" else "시나리오: 돌파 (breakout_1)") in \
-        agent.message_queue[0] and "prior high reclaimed" in agent.message_queue[0]
+    text = agent.message_queue[0]
+    assert ("Why: breakout condition confirmed" if market == "US" else "근거: 돌파 조건 확인") in text
+    assert "prior high reclaimed" in text and "breakout_1" not in text  # no internal scenario id
+    assert (f"Stop Loss: ${price * 0.93:,.2f} (a stop exits the whole position)" if market == "US"
+            else f"손절가: {price * 0.93:,.0f}원 (손절 시 전량 매도)") in text
+    assert ("Order: Submitted (fill not yet confirmed)" if market == "US" else "주문: 주문 접수(체결은 별도 확인)") in text
+    assert result["announced"] is True
     name, kw = emitted[0]
     assert name == "micro_split.add_executed"
     assert kw["attributes"]["allocation_before"] == 0.5 and kw["attributes"]["allocation_after"] == 0.8

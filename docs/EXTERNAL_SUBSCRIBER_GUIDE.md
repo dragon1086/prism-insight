@@ -142,9 +142,50 @@ python examples/messaging/gcp_pubsub_subscriber_example.py
 
 `position_fraction`은 이번 진입이 1슬롯 중 차지하는 비중입니다(0~1). 일반 진입은 1.0, 반등 시험매수는 0.5,
 초분할(B3) 진입은 0.30~0.80입니다. 자동매매 구독자는 `매수금액 = 본인 1슬롯 금액 × position_fraction`으로
-주문하십시오(예제 구독자는 이미 반영). 이 필드가 없는 과거 메시지는 1.0으로 취급합니다. 초분할 추가 매수는
-별도 시그널로 보내지 않습니다(기존 구독자가 추가 매수를 1슬롯 신규 매수로 오인하지 않도록). 매도는 보유 수량
+주문하십시오(예제 구독자는 이미 반영). 이 필드가 없는 과거 메시지는 1.0으로 취급합니다. 매도는 보유 수량
 전량 기준이며 `sell_denominator`를 그대로 따릅니다.
+
+재진입 매수(재진입 v3)는 일반 BUY와 같고, 구분용으로 `"entry_kind": "REENTRY"`와
+`"reentry": {"signal": "REBREAK|RETEST|SHAKEOUT_RECLAIM", "attempt": 1, "max_attempts": 3, "level": 11950}`가
+붙습니다. 비중은 똑같이 `position_fraction`으로 정합니다.
+
+### 추가 매수 시그널 (ADD, 2026-10-05~)
+
+초분할 보유 종목에 증액 시나리오가 확인되어 비중을 늘릴 때 보냅니다. **BUY가 아니라 별도 타입**이므로, 이 타입을
+모르는 기존 구독자는 로그만 남기고 주문하지 않습니다(1슬롯 신규 매수로 오인하지 않음).
+
+```json
+{
+  "type": "ADD",
+  "ticker": "005930",
+  "company_name": "삼성전자",
+  "price": 10200,
+  "source": "Micro-split add",
+  "timestamp": "2026-10-05T10:35:00",
+  "market": "KR",
+  "signal_id": "3f1c…",
+  "position_id": "legacy:KR:123",
+  "allocation_before": 0.5,
+  "allocation_after": 0.8,
+  "delta_fraction": 0.3,
+  "limit_price": 10200,
+  "stop_loss": 9300,
+  "scenario_type": "breakout",
+  "acceleration": false,
+  "trade_success": true,
+  "trade_message": ""
+}
+```
+
+- `delta_fraction`은 1슬롯 기준 증가분입니다(`position_fraction`과 같은 기준). 따라 사려면
+  `매수금액 = 본인 1슬롯 금액 × delta_fraction`.
+- 이미 보유한 종목에만 적용하십시오. 보유하지 않은 종목의 ADD로 새 포지션을 열면 안 됩니다.
+- `signal_id`는 증액마다 고유합니다. 재시작·재전달로 같은 ADD를 두 번 사지 않도록 처리 여부를 기록하십시오.
+- 예제 구독자의 규칙: 보유 중일 때만, 본인 보유 평가액이 `allocation_after × 1슬롯`과 1슬롯을 넘지 않도록 줄여서,
+  `signal_id`당 한 번(주문 전에 `runtime/subscriber_add_signals.jsonl`에 기록), 정규장에서만, 지정가·예산 엄수로
+  매수합니다. 끄려면 `.env`에 `SUBSCRIBER_FOLLOW_ADDS=false`.
+- 손절가 변경(주도주 손절가를 매수가로 옮김, AI 손절가 상향)은 시그널로 보내지 않습니다. 손절은 PRISM이 SELL
+  시그널로 알려 주므로 구독자는 SELL만 따르면 됩니다.
 
 ### 매도 시그널 (SELL)
 

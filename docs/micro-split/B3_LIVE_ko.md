@@ -34,8 +34,9 @@
      비중은 100%를 넘지 않는다.
    - 증가분 × 1슬롯 금액으로 KIS 지정가 주문을 낸다. `OrderIntent`의 `source_decision_id`는
      hash(campaign, bar_end)로 고유하다.
-   - 텔레그램 "초분할 추가 매수"(비중 a%→b%, 추가 매수가, 평균 매수가, 주문 상태)를 보내고
-     `micro_split.add_executed` 이벤트를 남긴다.
+   - 텔레그램 "📈 추가 매수(비중 확대)"(비중 a%→b%, 추가 매수가, 평균 매수가, 손절가, 근거, 가속 구간이면 그 사실,
+     주문 상태)를 보내고, Redis·GCP에 `ADD` 시그널을 발행하고, `micro_split.add_executed` 이벤트를 남긴다.
+     메시지와 시그널은 주 계좌(첫 번째 계좌) 증액에서 한 번만 나간다(2026-10-05).
    - 전략 원장은 체결과 독립적이다. 주문이 실패해도 기록은 유지되며, 기존 진입과 같은 원칙이다.
 3. **청산**: 기존 손절·추세이탈·AI 매도를 그대로 쓴다. 한 행이므로 보유 수량 전량을 매도한다. `sell_stock`은
    `BEGIN IMMEDIATE` 안에서 행을 다시 읽어 최신 구간을 반영한다. `trading_history.buy_price`에는 구간 가중
@@ -59,13 +60,13 @@
 | 표면 | 내용 |
 |---|---|
 | 매수 메시지 | "초분할 비중: N% (1슬롯 기준) — 증액 시나리오: …(조건이 확인될 때만 증액하며), 손절 시 전량 매도합니다" (US 영문). 상위 셋업 가중이면 "1슬롯 기준, 상위 셋업 가중으로 기본 M%에서 상향"을 붙임. 고정 +2%·+4% 사다리 문구는 2026-10-02 시나리오 증액으로 바뀌었습니다 |
-| 추가 매수 메시지 | 비중 a%→b%, 추가 매수가, 평균 매수가, 주문 상태 |
-| 매도 메시지 | 비중, 평균 매수가(증액 시), 슬롯 기준 손익 |
-| 포트폴리오 요약 | 종목별 비중·평균 매수가·슬롯 기준 손익, "사용 비중 x.xx/10 슬롯" |
+| 추가 매수 메시지 | "📈 추가 매수(비중 확대)": 비중 a%→b%, 추가 매수가, 평균 매수가, 손절가(손절 시 전량 매도), 근거(시나리오 종류·근거, 내부 id 없음), 가속 구간이면 "오늘 두 번째 추가 매수(최초 매수가 대비 +x%, 거래량 평소의 y배)", 주문 상태(접수 / 1주 미만이라 미주문 / 미접수, 사유 코드는 로그에만). US 영문 "📈 Position Add". 주 계좌만 |
+| 매도 메시지 | 비중, 평균 매수가(증액 시), 슬롯 기준 손익, 주도주였으면 주도주 줄, 재진입이었으면 "🔁 재진입 종목 (…, k/3번째 시도)" |
+| 포트폴리오 요약 | 종목별 비중·평균 매수가·슬롯 기준 손익, 주도주 줄, 재진입 줄, "사용 비중 x.xx/10 슬롯" |
 | 누적 수익률 | `slot_weight.slot_fraction`이 `micro_split.allocation`을 먼저 읽음 |
 | 대시보드 JSON | holdings/history의 `allocation`, `allocation_label`, `average_entry`, `add_count`, `slot_profit_rate`, summary의 `allocated_slots`, `slot_weighted_profit` |
 | 대시보드 화면 | 보유 표 매수가 아래 비중 배지·평균가, 수익률 아래 슬롯 기준 수익률, 거래이력 카드 비중, 슬롯 사용률 카드에 실제 비중 합계 |
-| 시그널 | BUY에 `position_fraction`(시험매수 0.5도 포함). 증액 시그널은 보내지 않음 |
+| 시그널 | BUY에 `position_fraction`(시험매수 0.5도 포함). 증액은 `ADD` 타입(`delta_fraction`, `allocation_before/after`, `signal_id`, `limit_price`, `stop_loss`). 재진입 BUY에 `entry_kind: REENTRY` (2026-10-05) |
 | ClickStack | entry/exit 컨텍스트 `policy_context.micro_split`·`slot_allocation`, 속성 `prism.slot_allocation`, 증액 이벤트 `micro_split.add_executed` |
 
 ## 범위 밖 (이번 묶음에서 바꾸지 않음)
@@ -74,7 +75,12 @@
 - 주간 리포트와 봇의 트리거 등급 평균은 거래별 수익률(비가중) 그대로다.
 - 매수·매도 프롬프트의 공유 지시문 "1슬롯 = 10%, 올인/올아웃" 문구는 그대로다. 매도는 여전히 전량이다.
   (2026-10-03 이후 초분할 LIVE 진입에는 종목별 부록 `buy_prompt_block`이 시스템 제약 4가 이번 매수에 적용되지 않는다고 명시한다.)
-- 외부 구독자의 증액 추종은 없다. 구독자는 최초 비중만 따른다.
+- ~~외부 구독자의 증액 추종은 없다.~~ **2026-10-05 사용자 결정으로 바뀜:** 증액은 `ADD` 시그널로 발행되고, 예제 구독자
+  (`examples/messaging/gcp_pubsub_subscriber_example.py`)가 따라 산다. 규칙: 이미 보유한 종목만, `delta_fraction × 본인
+  1슬롯 금액`, 본인 보유 평가액이 `allocation_after × 1슬롯`과 1슬롯을 넘지 않게 줄임, `signal_id`당 한 번(주문 전
+  `runtime/subscriber_add_signals.jsonl`에 기록, 재시작·재전달에도 재주문 없음), 정규장에서만, 지정가·예산 엄수, 30분
+  지난 시그널 무시(기존 가드), 건너뜀·실패는 `SUBSCRIBER_ALERT_CHAT_ID`로 알림. 끄기: 구독자 `.env`의
+  `SUBSCRIBER_FOLLOW_ADDS=false`. ADD 타입을 모르는 과거 구독자는 로그만 남기고 주문하지 않는다.
 
 ## 승인 전 점검 (주문 없이)
 

@@ -199,16 +199,81 @@ def level_phrase(meta, market):
     return f"분석 당시 기준 가격(1차 저항, {text})"
 
 
+SUPPORT_EN = {"primary_support": "first support", "secondary_support": "second support"}
+SIGNAL_EN = {"REBREAK": "re-break of the reference price", "RETEST": "pullback holding the reference price",
+             "SHAKEOUT_RECLAIM": "reclaim after a shakeout"}
+SIGNAL_WHY_EN = {
+    "REBREAK": "It moved back above {level}",
+    "RETEST": "It pulled back to {level} and held there",
+    "SHAKEOUT_RECLAIM": "It dropped sharply below {level}, then reclaimed it on rising volume",
+}
+SOURCE_SENTENCE_EN = {"STOP_EXIT": "We stopped out of this stock earlier.",
+                      "LOCATION_SKIP": "An earlier analysis held off on buying this stock.",
+                      "ENTER_BLOCKED": "An earlier buy was blocked by the entry checks."}
+
+
+def level_phrase_en(meta, market):
+    """English counterpart of level_phrase for US trade texts."""
+    level, band = meta.get("level"), meta.get("band_level")
+    if meta.get("signal") == "SHAKEOUT_RECLAIM" and isinstance(band, (int, float)) and band != level:
+        name = SUPPORT_EN.get(meta.get("band_basis"), "support")
+        return f"the {name} from the original analysis ({_money(band, market)})"
+    text = _money(level, market)
+    if meta.get("source") == "STOP_EXIT" and meta.get("level_basis") != "primary_resistance_fallback":
+        return f"the level it broke out of at the first buy ({text})"
+    return f"the reference price from the original analysis (first resistance, {text})"
+
+
+def _live_meta(scenario):
+    if isinstance(scenario, str):
+        try:
+            scenario = json.loads(scenario or "{}")
+        except ValueError:
+            return None
+    meta = scenario.get("reentry") if isinstance(scenario, dict) else None
+    return meta if isinstance(meta, dict) and meta.get("version") == LIVE_VERSION else None
+
+
 def entry_message_line(scenario, market):
-    """Plain-language re-entry line for the Telegram buy message ('' for every other entry)."""
-    meta = (scenario or {}).get("reentry") if isinstance(scenario, dict) else None
-    if not isinstance(meta, dict) or meta.get("version") != LIVE_VERSION:
+    """Plain-language re-entry line for the Telegram buy message ('' for every other entry).
+
+    KR in Korean; US in English like the other US trade texts."""
+    meta = _live_meta(scenario)
+    if meta is None:
         return ""
     signal = meta.get("signal")
+    if str(market).upper() == "US":
+        why = SIGNAL_WHY_EN.get(signal, "").format(level=level_phrase_en(meta, market))
+        source = SOURCE_SENTENCE_EN.get(meta.get("source"), "")
+        return (f"🔁 Re-entry Buy ({SIGNAL_EN.get(signal, signal)}, attempt {meta.get('attempt_label')})\n"
+                f"{source} {why}.\n")
     why = SIGNAL_WHY_KO.get(signal, "").format(level=level_phrase(meta, market))
     source = SOURCE_SENTENCE_KO.get(meta.get("source"), "")
     return (f"🔁 재진입 매수 ({SIGNAL_KO.get(signal, signal)}, {meta.get('attempt_label')}번째 시도)\n"
             f"{source} {why}.\n")
+
+
+def signal_fields(scenario):
+    """Extra BUY signal fields for a re-entry v3 entry ({} otherwise): subscribers can tell a re-entry
+    from a regular entry; sizing still comes from position_fraction like any BUY."""
+    meta = _live_meta(scenario)
+    if meta is None:
+        return {}
+    return {"entry_kind": "REENTRY",
+            "reentry": {key: meta.get(key) for key in ("signal", "attempt", "max_attempts", "level")}}
+
+
+def holding_tag(scenario, market, *, indent="", language=None):
+    """One-line re-entry tag for the portfolio summary and the sell message ('' for other holdings).
+
+    ``language`` ("ko"/"en") defaults by market (the US portfolio summary is Korean)."""
+    meta = _live_meta(scenario)
+    if meta is None:
+        return ""
+    signal = meta.get("signal")
+    if (language or ("en" if str(market).upper() == "US" else "ko")) == "en":
+        return f"{indent}🔁 Re-entry position ({SIGNAL_EN.get(signal, signal)}, attempt {meta.get('attempt_label')})\n"
+    return f"{indent}🔁 재진입 종목 ({SIGNAL_KO.get(signal, signal)}, {meta.get('attempt_label')}번째 시도)\n"
 
 
 # ---------------------------------------------------------------- journal (idempotency, daily cap)

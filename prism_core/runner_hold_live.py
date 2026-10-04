@@ -256,7 +256,13 @@ async def review_holding(agent, market, stock, *, logger=None, now=None):
         _emit(event, market=market, ticker=ticker, row_id=row_id,
               attributes={"stop_loss": after, "previous_stop_loss": before, "entry_ref": block.get("entry_ref"),
                           "current_price": R._num(stock.get("current_price"))})
-    if view["phase"] is not None and view["exit"]:
+    forced = view["phase"] is not None and bool(view["exit"])
+    if not forced and (written["detected"] or written["stop_set"] is not None):
+        try:
+            _queue_notice(agent, market, stock, block, view, written)
+        except Exception as error:  # noqa: BLE001 - a notice never blocks the sell review
+            log.warning("[RUNNER_HOLD][%s] %s notice skipped: %s", market, ticker, error)
+    if forced:
         language = "en" if market == "US" else "ko"
         reason = R.exit_reason(view, market, language)
         log.warning("[RUNNER_HOLD][%s] %s runner exit code=%s", market, ticker, view["exit"])
@@ -266,6 +272,36 @@ async def review_holding(agent, market, stock, *, logger=None, now=None):
                           **_price_facts(stock, block)})
         return reason
     return None
+
+
+def _primary_account(agent, stock):
+    """True for the primary account's row (channel notices are sent once, from the primary account)."""
+    accounts = getattr(agent, "account_configs", None) or []
+    primary = accounts[0].get("account_key") if accounts and isinstance(accounts[0], dict) else None
+    return primary is None or stock.get("account_key") in (None, primary)
+
+
+def _queue_notice(agent, market, stock, block, view, written):
+    """Queue the runner notice (detection / stop moved to the entry) on the tracker's Telegram queue.
+
+    Primary account only; a review that also forces the runner exit sends only the sell message.
+    """
+    if getattr(agent, "message_queue", None) is None or not _primary_account(agent, stock):
+        return None
+    price, entry = R._num(stock.get("current_price")), R._num(block.get("entry_ref"))
+    deferred = bool(written["detected"] and written["stop_set"] is None and entry is not None
+                    and (price is None or price <= entry)
+                    and abs((R._num(stock.get("stop_loss")) or 0.0) - entry) > entry * 1e-9)
+    text = R.notice(block, market=market, company_name=stock.get("company_name") or stock.get("ticker"),
+                    ticker=stock.get("ticker"), today=view.get("today"), detected=bool(written["detected"]),
+                    stop_change=written["stop_set"], ma50=(view.get("exit_facts") or {}).get("ma50"),
+                    deferred=deferred)
+    if callable(getattr(agent, "_queue_message", None)):
+        agent._queue_message(text, "analysis")
+    else:
+        agent.message_queue.append(text)
+        agent._msg_types.append("analysis")
+    return text
 
 
 def _protected(stock):

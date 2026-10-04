@@ -25,6 +25,12 @@ Options:
     --log-file: Specify log file path (default: logs/subscriber_YYYYMMDD.log)
     --dry-run: Run simulation only without actual trading
 
+Signals: BUY (sized by position_fraction of one slot), ADD (micro-split add: buys delta_fraction of
+one slot for a ticker already held, capped at PRISM's new allocation and one slot, once per
+signal_id; kill switch SUBSCRIBER_FOLLOW_ADDS=false, ledger SUBSCRIBER_ADD_LEDGER, default
+runtime/subscriber_add_signals.jsonl), SELL (sell_denominator), EVENT (log only). Unknown types are
+logged and acked without an order.
+
 Note:
     In demo mode, if signals arrive during off-market hours,
     market orders will be automatically executed at the next trading day's market open:
@@ -503,6 +509,197 @@ def _stale_signal_age(publish_time, now: Optional[datetime] = None) -> Optional[
     return age if age > limit else None
 
 
+# ============================================================
+# ADD signals (micro-split in-slot adds, 2026-10-05)
+# ============================================================
+# PRISM starts a micro-split position at 30-80% of one slot (BUY position_fraction) and adds up
+# to one slot when an add scenario is confirmed. Each add is published as type "ADD" with
+# delta_fraction (of one slot, same basis as position_fraction). We buy delta_fraction x our own
+# one-slot amount, only for a ticker we already hold, never above PRISM's new allocation or one
+# slot, and at most once per signal_id (claimed in a local ledger before any order).
+
+ADD_LEDGER_ENV = "SUBSCRIBER_ADD_LEDGER"
+_ALLOCATION_TOLERANCE = 0.011  # rounding slack between delta_fraction and after - before
+
+
+def _follow_adds_enabled() -> bool:
+    """Kill switch SUBSCRIBER_FOLLOW_ADDS (default on, user decision 2026-10-05)."""
+    return os.getenv("SUBSCRIBER_FOLLOW_ADDS", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _add_ledger_path() -> Path:
+    return Path(os.getenv(ADD_LEDGER_ENV) or PROJECT_ROOT / "runtime" / "subscriber_add_signals.jsonl")
+
+
+def _add_seen(signal_id: str, path: Optional[Path] = None) -> bool:
+    """True when this ADD signal id was already claimed (restart / Pub/Sub redelivery)."""
+    path = path or _add_ledger_path()
+    if not path.exists():
+        return False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("signal_id") == signal_id:
+            return True
+    return False
+
+
+def _add_record(row: Dict[str, Any], path: Optional[Path] = None) -> None:
+    """Append one ledger line durably (fsync) before the order is placed / after it returns."""
+    path = path or _add_ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _add_fields(signal: Dict[str, Any]):
+    """(fields, None) for a well-formed ADD, else (None, reason)."""
+    signal_id = str(signal.get("signal_id") or "").strip()
+    if not signal_id:
+        return None, "missing signal_id"
+    try:
+        before = float(signal.get("allocation_before"))
+        after = float(signal.get("allocation_after"))
+        delta = float(signal.get("delta_fraction"))
+        limit = float(signal.get("limit_price") or signal.get("price"))
+    except (TypeError, ValueError):
+        return None, "invalid allocation or price fields"
+    if not (0 < delta <= 1 and 0 <= before < after <= 1 + 1e-9 and limit > 0):
+        return None, f"allocation out of range (before={before}, after={after}, delta={delta}, price={limit})"
+    if abs((after - before) - delta) > _ALLOCATION_TOLERANCE:
+        return None, f"inconsistent allocation (after-before={after - before:.4f}, delta={delta:.4f})"
+    return {"signal_id": signal_id, "before": before, "after": min(after, 1.0), "delta": delta,
+            "limit_price": limit}, None
+
+
+def plan_add_amount(*, unit_amount: float, delta_fraction: float, allocation_after: float,
+                    held_quantity: int, price: float, market: str = "KR"):
+    """(order amount, None) or (0, reason) for an ADD.
+
+    amount = min(delta x slot, target - held value, slot - held value), where slot is our one-slot
+    amount, target = allocation_after x slot and the held value is valued at the add price. A holding
+    already at or above PRISM's new allocation (e.g. a legacy full-slot entry) buys nothing.
+    """
+    slot = float(unit_amount or 0)
+    if slot <= 0 or price <= 0:
+        return 0, "one-slot amount or price unavailable"
+    held_value = max(int(held_quantity or 0), 0) * price
+    room = min(min(allocation_after, 1.0) * slot, slot) - held_value
+    amount = min(delta_fraction * slot, room)
+    if room < price:
+        return 0, f"holding already at PRISM's allocation (held {held_value:,.2f} of target {allocation_after:.0%})"
+    if amount < price:
+        return 0, "add amount below one share"
+    amount = int(amount) if market != "US" else int(amount * 100) / 100
+    return amount, None
+
+
+def _held_quantity(trading, ticker: str) -> Optional[int]:
+    """Broker holding; None when the balance query is not authoritative."""
+    checked = getattr(trading, "get_holding_quantity_checked", None)
+    if callable(checked):
+        status, quantity = checked(ticker)
+        return None if status == "UNKNOWN" else int(quantity or 0)
+    return int(trading.get_holding_quantity(ticker) or 0)
+
+
+class _USTradingContext:
+    """Async context for the US trader (KR uses trading.domestic_stock_trading.AsyncTradingContext)."""
+
+    async def __aenter__(self):
+        return load_us_stock_trading_class()()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+def _open_trading(market: str):
+    if market == "US":
+        return _USTradingContext()
+    from trading.domestic_stock_trading import AsyncTradingContext
+    return AsyncTradingContext()
+
+
+def _send_alert(text: str) -> None:
+    try:
+        from tools.subscriber_healthcheck import send_alert
+        send_alert(text)
+    except Exception as alert_err:  # noqa: BLE001 - alerting never blocks signal handling
+        logging.getLogger("subscriber").error(f"[ADD] Could not send alert: {alert_err}")
+
+
+async def follow_add_signal(signal: Dict[str, Any], logger: logging.Logger, *, dry_run: bool = False,
+                            open_trading=None, alert=None, market_open=None,
+                            ledger_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Mirror one PRISM ADD signal on our account (see the section comment for the rules)."""
+    market = signal.get("market", "KR")
+    ticker, company_name = signal.get("ticker", ""), signal.get("company_name", "")
+    notify = alert or _send_alert
+
+    def skip(reason, *, send=True):
+        note = f"[ADD_SKIP] {market} {company_name}({ticker}) {reason} - no order"
+        logger.warning(note)
+        if send:
+            notify(f"⚠️ {note}")
+        return {"success": False, "skipped": True, "message": reason}
+
+    if not _follow_adds_enabled():
+        return skip("SUBSCRIBER_FOLLOW_ADDS is off", send=False)
+    fields, problem = _add_fields(signal)
+    if problem:
+        return skip(problem)
+    if _add_seen(fields["signal_id"], ledger_path):
+        logger.info(f"[ADD_DUPLICATE] {market} {company_name}({ticker}) signal {fields['signal_id']} already handled")
+        return {"success": True, "skipped": True, "message": "duplicate signal"}
+    if not (market_open or is_market_hours)(market):
+        return skip("outside regular market hours (adds are intraday only)")
+    if dry_run:
+        logger.info(f"🔸 [DRY-RUN] Add skipped: {market} {company_name}({ticker}) +{fields['delta']:.0%} of one slot "
+                    f"({fields['before']:.0%} -> {fields['after']:.0%}) @ {fields['limit_price']:,.2f}")
+        return {"success": True, "skipped": True, "message": "dry-run"}
+
+    # Claim before any broker call: a crash or redelivery after this line never orders twice.
+    _add_record({"signal_id": fields["signal_id"], "phase": "claimed", "market": market, "ticker": ticker,
+                 "delta": fields["delta"], "at": datetime.now().isoformat()}, ledger_path)
+    amount = 0
+    try:
+        async with (open_trading or _open_trading)(market) as trading:
+            held = await asyncio.to_thread(_held_quantity, trading, ticker)
+            if held is None:
+                result = skip("holding query failed (not authoritative)")
+            elif held <= 0:
+                result = skip("not held here (an ADD never opens a new position)")
+            else:
+                amount, why = plan_add_amount(unit_amount=trading.buy_amount, delta_fraction=fields["delta"],
+                                              allocation_after=fields["after"], held_quantity=held,
+                                              price=fields["limit_price"], market=market)
+                if not amount:
+                    result = skip(why)
+                elif market == "US":
+                    result = await trading.async_buy_stock(ticker=ticker, buy_amount=amount,
+                                                           limit_price=fields["limit_price"], strict_budget=True)
+                else:
+                    result = await trading.async_buy_stock(stock_code=ticker, buy_amount=amount,
+                                                           limit_price=int(fields["limit_price"]), strict_budget=True)
+                if amount and not result.get("success"):
+                    notify(f"❌ [ADD_FAILED] {market} {company_name}({ticker}) {result.get('message', '')}")
+                elif amount:
+                    logger.info(f"✅ Add order placed: {market} {company_name}({ticker}) amount {amount:,.2f} "
+                                f"(+{fields['delta']:.0%} of one slot) - {result.get('message', '')}")
+    except Exception as error:  # noqa: BLE001 - one failed add never stops the subscriber
+        logger.error(f"Error during add execution: {error}", exc_info=True)
+        notify(f"❌ [ADD_FAILED] {market} {company_name}({ticker}) {type(error).__name__}: {error}")
+        result = {"success": False, "message": str(error)}
+    _add_record({"signal_id": fields["signal_id"], "phase": "result", "success": bool(result.get("success")),
+                 "skipped": bool(result.get("skipped")), "message": str(result.get("message", ""))[:200],
+                 "at": datetime.now().isoformat()}, ledger_path)
+    return result
+
+
 async def execute_buy_trade(ticker: str, company_name: str, logger: logging.Logger, limit_price: Optional[int] = None,
                             position_fraction: float = 1.0) -> Dict[str, Any]:
     """Execute actual buy order (async)
@@ -837,7 +1034,7 @@ def main():
 
     # Statistics
     message_count = 0
-    trade_count = {"BUY": 0, "SELL": 0}
+    trade_count = {"BUY": 0, "SELL": 0, "ADD": 0}
 
     # Signal handler function
     def handle_signal(signal: dict):
@@ -853,6 +1050,7 @@ def main():
         # Emoji by signal type
         emoji = {
             "BUY": "📈",
+            "ADD": "➕",
             "SELL": "📉",
             "EVENT": "🔔"
         }.get(signal_type, "📌")
@@ -878,6 +1076,11 @@ def main():
                 details.append(f"Stop-loss: {stop_loss:,.2f} {currency}")
             if buy_score:
                 details.append(f"Buy score: {buy_score}")
+            details.append(f"Allocation: {_position_fraction(signal):.0%} of one slot")
+            if signal.get("entry_kind") == "REENTRY":
+                reentry = signal.get("reentry") or {}
+                details.append(f"Re-entry ({reentry.get('signal')}, attempt {reentry.get('attempt')}/"
+                               f"{reentry.get('max_attempts')})")
             if rationale:
                 details.append(f"Rationale: {rationale[:100]}...")
 
@@ -957,6 +1160,13 @@ def main():
 
             trade_count["SELL"] += 1
 
+        # If add signal (micro-split in-slot add): buy the delta of one slot for a held ticker
+        elif signal_type == "ADD":
+            logger.info(f"   -> Allocation: {signal.get('allocation_before')} -> {signal.get('allocation_after')} "
+                        f"of one slot (delta {signal.get('delta_fraction')}) | signal {signal.get('signal_id')}")
+            asyncio.run(follow_add_signal(signal, logger, dry_run=args.dry_run))
+            trade_count["ADD"] += 1
+
         # If event signal
         elif signal_type == "EVENT":
             event_type = signal.get("event_type", "")
@@ -1020,7 +1230,8 @@ def main():
 
         logger.info("=" * 60)
         logger.info(f"Subscription ended.")
-        logger.info(f"Total {message_count} signals received (Buy: {trade_count['BUY']}, Sell: {trade_count['SELL']})")
+        logger.info(f"Total {message_count} signals received (Buy: {trade_count['BUY']}, Add: {trade_count['ADD']}, "
+                    f"Sell: {trade_count['SELL']})")
 
 
 if __name__ == "__main__":

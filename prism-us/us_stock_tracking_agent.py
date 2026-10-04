@@ -3614,21 +3614,25 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
             # This simulator record does not confirm broker fills or realized P&L.
             arrow = "⬆️" if profit_rate > 0 else "⬇️" if profit_rate < 0 else "➖"
+            from prism_core.runner_hold import public_reason, sell_message_line
             message = f"📉 Sell: {company_name}({ticker})\n" \
                       f"Buy Price: ${buy_price:,.2f}\n" \
                       f"Sell Price: ${current_price:,.2f}\n" \
                       f"Strategy/Reference Return: {arrow} {abs(profit_rate):.2f}%\n" \
                       "Simulator prices; not broker-confirmed realized P&L\n" \
                       f"Holding Period: {holding_period_text}\n" \
-                      f"Sell Reason: {sell_reason}"
+                      f"Sell Reason: {public_reason(sell_reason)}"
             from prism_core.micro_split_live import allocation_line
             _alloc = allocation_line(scenario_json, profit_rate=profit_rate, market="US")
             if _alloc:
                 message += "\n" + _alloc.rstrip("\n")
-            from prism_core.runner_hold import sell_message_line
             _runner_line = sell_message_line(scenario_json, language="en")
             if _runner_line:
                 message += "\n" + _runner_line
+            from prism_core.reentry_v3_live import holding_tag
+            _reentry_line = holding_tag(scenario_json, "US")
+            if _reentry_line:
+                message += "\n" + _reentry_line.rstrip("\n")
 
             # Add trigger win rate
             trigger_type = stock_data.get('trigger_type', '')
@@ -4096,6 +4100,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             _used = used_slots([h.get("scenario") for h in holdings or []])
             from prism_core.runner_hold import local_today as runner_local_today
             from prism_core.runner_hold import message_line as runner_message_line
+            from prism_core.reentry_v3_live import holding_tag as reentry_holding_tag
             runner_today = runner_local_today("US", datetime.now().astimezone()).isoformat()
             if holdings and _used < len(holdings):
                 message += f"🔸 사용 비중: {_used:.2f}/{self.max_slots} 슬롯 (초분할·시험매수 반영)\n"
@@ -4159,6 +4164,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     message += allocation_line(scenario_str, profit_rate=profit_rate, current_price=current_price,
                                                market="US", language="ko", indent="  ")
                     message += runner_message_line(scenario_str, today=runner_today, indent="  ")
+                    message += reentry_holding_tag(scenario_str, "US", indent="  ", language="ko")
                     message += "\n"
 
                 # Add sector distribution
@@ -5189,7 +5195,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 current_price=current_price, scenario=scenario, analysis_result=analysis_result, is_add=False,
                 rebound_pilot=False, entry_cash_amount=None, rank_change_msg=rank_change_msg,
                 source_decision_id=source_decision_id, adjusted_score=adjusted_score, trigger_type=trigger_type,
-                trigger_info=trigger_info, scenario_slot_limit=scenario_slot_limit, signaled_tickers=set(),
+                trigger_info=trigger_info, scenario_slot_limit=scenario_slot_limit,
+                # Shared across the account fan-out of one re-entry run: one BUY signal per ticker, like the batch.
+                signaled_tickers=self.__dict__.setdefault("_reentry_signaled_tickers", set()),
                 effects=effects, source="us_reentry_v3", lock_held=True, require_micro_plan=True)
             if not bought:
                 return {"bought": False, "reason": state.get("skip_reason") or "entry_not_completed"}

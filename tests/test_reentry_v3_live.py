@@ -139,7 +139,9 @@ def test_held_off_shakeout_message_names_the_actual_support_reclaim_level(basis,
     assert f"이전 분석에서 매수를 보류했던 종목입니다. 분석 당시 {name}(11,400원) 아래로 크게 흔들린 뒤" in line
     assert "1차 저항" not in line
     us = LIVE.build_scenario(item, _record(), "US")
-    assert f"분석 당시 {name}($11,400.00)" in LIVE.entry_message_line(us, "US")
+    english = {"1차 지지선": "first support", "2차 지지선": "second support"}[name]
+    us_line = LIVE.entry_message_line(us, "US")
+    assert f"the {english} from the original analysis ($11,400.00)" in us_line and "분석 당시" not in us_line
     # a stopped name (or a held-off name that already closed above L) still reclaims the level itself
     stopped = _item(trigger="SHAKEOUT_RECLAIM")
     stopped["campaign"] = {"windows": {"L97": {"R": 11950.0, "line": 11591.5}}, "reclaim_basis": "L"}

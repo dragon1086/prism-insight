@@ -208,6 +208,28 @@ echo "❌ 60초 내 Listening 미확인 — logs/pubsub_subscriber.log 확인"; 
 loop_c/healthcheck는 cron이 매 틱마다 최신 코드를 쓰므로 별도 재시작이 필요 없다.
 subscriber 프로세스만 이 스크립트로 재기동하면 된다.
 
+### 8.1 ADD(증액) 따라 사기 — 2026-10-05 추가
+
+PRISM 초분할 보유 종목의 증액이 `ADD` 시그널로 옵니다(형식: [EXTERNAL_SUBSCRIBER_GUIDE.md](../../docs/EXTERNAL_SUBSCRIBER_GUIDE.md)
+"추가 매수 시그널"). 예제 subscriber는 기본으로 따라 삽니다.
+
+| 안전장치 | 동작 |
+|---|---|
+| 보유 확인 | 증권사 잔고에 그 종목이 있어야 함. 없거나(`FLAT`) 잔고 조회가 불확실하면(`UNKNOWN`) 주문하지 않음. ADD로 새 포지션을 열지 않음 |
+| 크기 | `delta_fraction × 본인 1슬롯 금액`. 단 본인 보유 평가액(추가 매수가 기준)이 `allocation_after × 1슬롯`과 1슬롯을 넘지 않게 줄임. 예전 1슬롯 전량 진입 종목은 사지 않음 |
+| 중복 방지 | `signal_id`를 주문 **전에** `runtime/subscriber_add_signals.jsonl`(`SUBSCRIBER_ADD_LEDGER`로 변경)에 fsync로 기록. 재시작·Pub/Sub 재전달·주문 실패 후에도 같은 ADD는 다시 사지 않음 |
+| 시간 | 정규장에서만(장외 예약 증액 없음). 30분 지난 시그널은 기존 가드가 무시 |
+| 주문 | 지정가(`limit_price`) + 예산 엄수(`strict_budget`) |
+| 알림 | 건너뜀(`[ADD_SKIP]`)·실패(`[ADD_FAILED]`)는 `SUBSCRIBER_ALERT_CHAT_ID`로 텔레그램 알림 |
+| 끄기 | `.env`에 `SUBSCRIBER_FOLLOW_ADDS=false` 후 subscriber 재시작. `--dry-run`이면 주문 없이 로그만 |
+
+**맥미니 배포 메모(사용자가 직접 실행):** 실계좌 subscriber는 tmux `prism_pubsub_live`에서 실행 전용 체크아웃
+`~/work/prism-subscriber`(main 고정)로 돕니다. LaunchAgent `~/Library/LaunchAgents/com.prism.subscriber.plist`는 로그인 뒤
+세션이 없을 때만 `~/work/restart_subscriber.sh`를 부릅니다. 이 PR이 main에 머지된 뒤 `~/work/restart_subscriber.sh`를
+한 번 실행하면 됩니다(ff-only pull → 종료 → 재시작 → `Listening` 확인). 새 의존성·`.env` 키는 필요 없습니다
+(`SUBSCRIBER_FOLLOW_ADDS` 기본 켜짐). 첫 ADD 때 `[ADD_*]` 로그와 `runtime/subscriber_add_signals.jsonl`의
+`claimed`→`result` 두 줄을 확인합니다.
+
 ---
 
 ## 9. 운영 체크리스트 & 흔한 에러

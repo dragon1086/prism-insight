@@ -3559,20 +3559,24 @@ class StockTrackingAgent:
 
             # Add sell message
             arrow = "⬆️" if profit_rate > 0 else "⬇️" if profit_rate < 0 else "➖"
+            from prism_core.runner_hold import public_reason, sell_message_line
             message = f"📉 매도: {company_name}({ticker})\n" \
                       f"매수가: {buy_price:,.0f}원\n" \
                       f"매도가: {current_price:,.0f}원\n" \
                       f"수익률: {arrow} {abs(profit_rate):.2f}%\n" \
                       f"보유기간: {holding_days}일\n" \
-                      f"매도이유: {sell_reason}"
+                      f"매도이유: {public_reason(sell_reason)}"
             from prism_core.micro_split_live import allocation_line
             _alloc = allocation_line(scenario_json, profit_rate=profit_rate, market="KR")
             if _alloc:
                 message += "\n" + _alloc.rstrip("\n")
-            from prism_core.runner_hold import sell_message_line
             _runner_line = sell_message_line(scenario_json, language="ko")
             if _runner_line:
                 message += "\n" + _runner_line
+            from prism_core.reentry_v3_live import holding_tag
+            _reentry_line = holding_tag(scenario_json, "KR")
+            if _reentry_line:
+                message += "\n" + _reentry_line.rstrip("\n")
 
             # Add trigger win rate
             trigger_type = stock_data.get('trigger_type', '')
@@ -4326,6 +4330,7 @@ class StockTrackingAgent:
             _used = used_slots([h.get("scenario") for h in holdings or []])
             from prism_core.runner_hold import local_today as runner_local_today
             from prism_core.runner_hold import message_line as runner_message_line
+            from prism_core.reentry_v3_live import holding_tag as reentry_holding_tag
             runner_today = runner_local_today("KR", datetime.now().astimezone()).isoformat()
             if holdings and _used < len(holdings):
                 message += f"🔸 사용 비중: {_used:.2f}/{self.max_slots} 슬롯 (초분할·시험매수 반영)\n"
@@ -4389,6 +4394,7 @@ class StockTrackingAgent:
                     message += allocation_line(scenario_str, profit_rate=profit_rate, current_price=current_price,
                                                market="KR", indent="  ")
                     message += runner_message_line(scenario_str, today=runner_today, indent="  ")
+                    message += reentry_holding_tag(scenario_str, "KR", indent="  ")
                     message += "\n"
 
                 # Add sector distribution
