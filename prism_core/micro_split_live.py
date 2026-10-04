@@ -439,6 +439,34 @@ def add_message(*, market, company_name, ticker, before, after, price, average, 
             f"평균 매수가: {money(average)}\n{stop}{why}주문: {order_status}\n")
 
 
+def add_signal_fields(*, market, campaign, meta, before, after, price, stop_loss, result, signal_id):
+    """Payload of the ADD trading signal (Redis/GCP). ``delta_fraction`` is of one slot, the same basis as a
+    BUY's ``position_fraction``; ``signal_id`` is unique per add (the order intent's decision id)."""
+    return {"market": str(market).upper(), "signal_id": signal_id, "position_id": campaign["position_id"],
+            "allocation_before": round(float(before), 4), "allocation_after": round(float(after), 4),
+            "delta_fraction": round(float(after) - float(before), 4), "limit_price": price,
+            "stop_loss": float(stop_loss) if stop_loss else None, "scenario_type": meta.get("scenario_type"),
+            "acceleration": meta.get("rail") == "ACCELERATION", "trade_success": bool(result.get("success")),
+            "trade_message": str(result.get("message") or "")[:200]}
+
+
+async def publish_add_signal(*, ticker, company_name, price, fields):
+    """Publish the ADD on Redis Streams and GCP Pub/Sub; best effort, never raises.
+
+    Each publisher no-ops when unconfigured and refuses when PRISM_DISABLE_SIGNAL_PUBLISH is set
+    (messaging/publish_guard.py)."""
+    import importlib
+    import logging
+
+    for name in ("messaging.redis_signal_publisher", "messaging.gcp_pubsub_signal_publisher"):
+        try:
+            module = importlib.import_module(name)
+            await module.publish_add_signal(ticker=ticker, company_name=company_name, price=price, fields=fields)
+        except Exception as error:  # noqa: BLE001 - a signal failure never affects the recorded add
+            logging.getLogger(__name__).warning("[MICRO_SPLIT] add signal via %s failed (non-critical): %s",
+                                                name, error)
+
+
 def primary_account_key(agent):
     """Account key of the primary (first configured) account, or None."""
     accounts = getattr(agent, "account_configs", None) or []
@@ -529,6 +557,19 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
         agent._msg_types.append("analysis")
         if chat_id:
             await agent.send_telegram_message(chat_id, await_broadcast=True)
+        # Subscribers mirror the strategy ledger (sim = broadcast), so the ADD is published once the
+        # leg is recorded, whatever the broker did (trade_success says what our own order did).
+        try:
+            fields = add_signal_fields(market=market, campaign=campaign, meta=meta, before=before, after=after,
+                                       price=price, stop_loss=row.get("stop_loss"), result=result,
+                                       signal_id=intent.source_decision_id)
+        except (KeyError, TypeError, ValueError) as error:
+            import logging
+            logging.getLogger(__name__).warning("[MICRO_SPLIT][%s] add signal skipped: %s", market, error)
+            fields = None
+        if fields:
+            await publish_add_signal(ticker=campaign["symbol"], price=price, fields=fields,
+                                     company_name=row.get("company_name") or campaign["symbol"])
     emit_event("micro_split.add_executed", service=f"prism-{market.lower()}-micro-split", market=market,
                ticker=campaign["symbol"], position_id=campaign["position_id"],
                attributes={"campaign_id": campaign["campaign_id"], "slot_allocation": after,

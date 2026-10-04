@@ -344,7 +344,7 @@ def exit_reason(view, market, language):
     why = {"BREAKEVEN_CLOSE": f"최초 매수가 {_money(block.get('entry_ref'), market)}(본전) 아래",
            "MA20_CLOSE": f"보유 기한 이후 20일선 {_money(facts.get('ma20'), market)} 아래",
            }.get(code, f"50일선 {_money(facts.get('ma50'), market)} 아래")
-    return (f"RUNNER_MA50: 주도주 보유 규칙 매도 — {facts.get('date')} 확정 종가 {_money(facts.get('close'), market)}가 "
+    return (f"RUNNER_MA50: 주도주 보유 규칙 매도 — {facts.get('date')} 확정 종가 {_money(facts.get('close'), market)}, "
             f"{why}로 마감했습니다.")
 
 

@@ -5195,7 +5195,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 current_price=current_price, scenario=scenario, analysis_result=analysis_result, is_add=False,
                 rebound_pilot=False, entry_cash_amount=None, rank_change_msg=rank_change_msg,
                 source_decision_id=source_decision_id, adjusted_score=adjusted_score, trigger_type=trigger_type,
-                trigger_info=trigger_info, scenario_slot_limit=scenario_slot_limit, signaled_tickers=set(),
+                trigger_info=trigger_info, scenario_slot_limit=scenario_slot_limit,
+                # Shared across the account fan-out of one re-entry run: one BUY signal per ticker, like the batch.
+                signaled_tickers=self.__dict__.setdefault("_reentry_signaled_tickers", set()),
                 effects=effects, source="us_reentry_v3", lock_held=True, require_micro_plan=True)
             if not bought:
                 return {"bought": False, "reason": state.get("skip_reason") or "entry_not_completed"}

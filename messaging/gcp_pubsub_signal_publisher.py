@@ -209,6 +209,9 @@ class SignalPublisher:
                 # "KR" and mis-routed US buys (APH/MU/UNH) to the domestic KIS API
                 # → "Current price: 0 KRW" → division by zero → buy never executed.
                 signal_data["market"] = scenario.get("market", "KR")
+                # Re-entry v3 BUYs are labelled (entry_kind/reentry); other BUYs are unchanged.
+                from prism_core.reentry_v3_live import signal_fields as reentry_signal_fields
+                signal_data.update(reentry_signal_fields(scenario))
 
             # Merge additional data (SELL carries market here; it overrides if set)
             if extra_data:
@@ -446,4 +449,29 @@ async def publish_sell_signal(
         price=price,
         source="AI Analysis",
         extra_data=extra_data
+    )
+
+
+async def publish_add_signal(
+    ticker: str,
+    company_name: str,
+    price: float,
+    fields: Dict[str, Any],
+    source: str = "Micro-split add",
+) -> Optional[str]:
+    """Publish an in-slot ADD (micro-split add) via the global publisher (convenience function).
+
+    ``fields`` comes from prism_core.micro_split_live.add_signal_fields: market, signal_id,
+    position_id, allocation_before/after, delta_fraction (of one slot), limit_price, stop_loss,
+    scenario_type, acceleration, trade_success, trade_message. Subscribers that do not know
+    the ADD type log and ignore it; the kill switch is enforced inside publish_signal.
+    """
+    publisher = await get_signal_publisher()
+    return await publisher.publish_signal(
+        signal_type="ADD",
+        ticker=ticker,
+        company_name=company_name,
+        price=price,
+        source=source,
+        extra_data=dict(fields),
     )

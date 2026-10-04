@@ -253,6 +253,16 @@ def entry_message_line(scenario, market):
             f"{source} {why}.\n")
 
 
+def signal_fields(scenario):
+    """Extra BUY signal fields for a re-entry v3 entry ({} otherwise): subscribers can tell a re-entry
+    from a regular entry; sizing still comes from position_fraction like any BUY."""
+    meta = _live_meta(scenario)
+    if meta is None:
+        return {}
+    return {"entry_kind": "REENTRY",
+            "reentry": {key: meta.get(key) for key in ("signal", "attempt", "max_attempts", "level")}}
+
+
 def holding_tag(scenario, market, *, indent="", language=None):
     """One-line re-entry tag for the portfolio summary and the sell message ('' for other holdings).
 
