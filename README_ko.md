@@ -225,6 +225,16 @@ cp trading/config/kis_devlp.yaml.example trading/config/kis_devlp.yaml
 python stock_analysis_orchestrator.py --mode morning --no-telegram
 ```
 
+미국 시장 분석은 다음처럼 실행합니다:
+
+```bash
+# 미국 주식 분석 실행
+python prism-us/us_stock_analysis_orchestrator.py --mode morning --no-telegram
+
+# 영어 리포트로 실행
+python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
+```
+
 ### 옵션 B: Docker (프로덕션 권장)
 
 ```bash
@@ -248,9 +258,10 @@ PRISM-INSIGHT는 **한국 (코스피/코스닥)** 및 **미국 (NYSE/NASDAQ)** �
 - **자동매매** — 한국투자증권 API를 통한 실제 매매 실행
 - **텔레그램 통합** — 실시간 알림 및 다국어 브로드캐스팅
 - **거시경제 인텔리전스** — 시장 국면 판단, 섹터 로테이션 분석, 리스크 이벤트 모니터링
+- **자기개선 매매** — 매매일지 피드백 루프 — 과거 트리거 승률이 이후 매수 판단에 자동 반영 ([상세](docs/TRADING_JOURNAL.md#performance-tracker-피드백-루프-self-improving-trading))
 
 ### AI 모델
-코드에 정해진 기본 모델입니다. 모두 `.env`에서 바꿀 수 있습니다([.env.example](.env.example) 참고).
+운영에서 쓰는 모델입니다. 모두 `.env`에서 바꿀 수 있습니다([.env.example](.env.example) 참고).
 
 | 역할 | 기본 모델 |
 |------|----------|
@@ -284,33 +295,6 @@ PRISM-INSIGHT는 **한국 (코스피/코스닥)** 및 **미국 (NYSE/NASDAQ)** �
 </details>
 
 **상세 문서**: [파이프라인 아키텍처](docs/PIPELINE_ARCHITECTURE_ko.md) | [AI 에이전트 시스템](docs/CLAUDE_AGENTS_ko.md)
-
----
-
-## 주요 기능
-
-| 기능 | 설명 |
-|-----|------|
-| **AI 분석** | OpenAI GPT-6 계열 모델 기반 다중 에이전트 시스템을 통한 전문가급 주식 분석 |
-| **급등주 포착** | 오전/오후 시장 트렌드 분석을 통한 자동 관심종목 선별 |
-| **텔레그램** | 채널로 실시간 분석 배포 |
-| **매매 시뮬레이션** | AI 기반 투자 전략 시뮬레이션 |
-| **자동매매** | 한국투자증권 API를 통한 실행 |
-| **대시보드** | 투명한 포트폴리오, 거래내역, 성과 추적 |
-| **자기개선 매매** | 매매일지 피드백 루프 — 과거 트리거 승률이 이후 매수 판단에 자동 반영 ([상세](docs/TRADING_JOURNAL.md#performance-tracker-피드백-루프-self-improving-trading)) |
-| **미국 시장** | NYSE/NASDAQ 분석 완벽 지원 |
-| **거시경제 인텔리전스** | 시장 국면 판단 및 섹터 로테이션으로 더 스마트한 종목 선정 |
-| **모바일 앱** | iOS & Android 앱, 스마트 필터링 및 PDF 리포트 |
-
-<details>
-<summary>대시보드 스크린샷 보기</summary>
-<br>
-<img src="docs/images/dashboard_portfolio.png" alt="포트폴리오 개요" width="700">
-<br><br>
-<img src="docs/images/dashboard_trades.png" alt="매매 시뮬레이터" width="700">
-<br><br>
-<img src="docs/images/dashboard_performance.png" alt="AI 매매 시나리오" width="700">
-</details>
 
 ---
 
@@ -398,22 +382,6 @@ PRISM은 규칙을 바꾸기 전에 자신의 과거 후보와 거래로 그 규
 
 ---
 
-## 미국 주식 모듈
-
-미국 시장을 위한 동일한 AI 기반 워크플로우입니다:
-
-```bash
-# 미국 주식 분석 실행
-python prism-us/us_stock_analysis_orchestrator.py --mode morning --no-telegram
-
-# 영어 리포트로 실행
-python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
-```
-
-**데이터 소스**: yahoo-finance-mcp, sec-edgar-mcp (SEC 공시, 내부자 거래)
-
----
-
 ## 문서
 
 | 문서 | 설명 |
@@ -440,8 +408,6 @@ python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
 ### 대시보드
 실시간 포트폴리오 추적 및 성과 대시보드입니다.
 
-**[라이브 데모](https://analysis.stocksimulation.kr/)**
-
 ```bash
 cd examples/dashboard
 npm install
@@ -452,6 +418,16 @@ npm run dev
 **기능**: 포트폴리오 개요, 매매 내역, 성과 지표, 마켓 선택기 (한국/미국), KOSPI/KOSDAQ 대비 수익률 비교
 
 **대시보드 설정 가이드**: [examples/dashboard/DASHBOARD_README.md](examples/dashboard/DASHBOARD_README.md)
+
+<details>
+<summary>대시보드 스크린샷 보기</summary>
+<br>
+<img src="docs/images/dashboard_portfolio.png" alt="포트폴리오 개요" width="700">
+<br><br>
+<img src="docs/images/dashboard_trades.png" alt="매매 시뮬레이터" width="700">
+<br><br>
+<img src="docs/images/dashboard_performance.png" alt="AI 매매 시나리오" width="700">
+</details>
 
 ---
 

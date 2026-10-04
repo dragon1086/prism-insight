@@ -225,6 +225,16 @@ cp trading/config/kis_devlp.yaml.example trading/config/kis_devlp.yaml
 python stock_analysis_orchestrator.py --mode morning --no-telegram
 ```
 
+US market analysis runs the same way:
+
+```bash
+# Run US analysis
+python prism-us/us_stock_analysis_orchestrator.py --mode morning --no-telegram
+
+# With English reports
+python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
+```
+
 ### Option B: Docker (Recommended for Production)
 
 ```bash
@@ -248,9 +258,10 @@ PRISM-INSIGHT is a **completely open-source, free** AI-powered stock analysis sy
 - **Automated Trading** — Real execution via Korea Investment & Securities API
 - **Telegram Integration** — Real-time alerts and multi-language broadcasting
 - **Macro Intelligence** — Market regime detection, sector rotation analysis, risk event monitoring
+- **Self-Improving** — Trading journal feedback loop — past trigger win rates automatically inform future buy decisions ([details](docs/TRADING_JOURNAL.md#performance-tracker-피드백-루프-self-improving-trading))
 
 ### AI Models
-Default models in the code (each can be changed in `.env`; see [.env.example](.env.example)):
+Models used in production (each can be changed in `.env`; see [.env.example](.env.example)):
 
 | Role | Default model |
 |------|---------------|
@@ -284,33 +295,6 @@ Agents are grouped by execution path rather than by a fixed count:
 </details>
 
 **Details**: [Pipeline architecture (KO)](docs/PIPELINE_ARCHITECTURE_ko.md) | [AI agent system](docs/CLAUDE_AGENTS.md)
-
----
-
-## Key Features
-
-| Feature | Description |
-|---------|-------------|
-| **AI Analysis** | Expert-level stock analysis through a multi-agent system on OpenAI GPT-6 family models |
-| **Surge Detection** | Automatic watchlist via morning/afternoon market trend analysis |
-| **Telegram** | Real-time analysis distribution to channels |
-| **Trading Sim** | AI-driven investment strategy simulation |
-| **Auto Trading** | Execution via Korea Investment & Securities API |
-| **Dashboard** | Transparent portfolio, trades, and performance tracking |
-| **Self-Improving** | Trading journal feedback loop — past trigger win rates automatically inform future buy decisions ([details](docs/TRADING_JOURNAL.md#performance-tracker-피드백-루프-self-improving-trading)) |
-| **US Markets** | Full support for NYSE/NASDAQ analysis |
-| **Macro Intelligence** | Market regime detection and sector rotation for smarter stock selection |
-| **Mobile App** | iOS & Android app with smart filtering and PDF reports |
-
-<details>
-<summary>View Dashboard Screenshots</summary>
-<br>
-<img src="docs/images/dashboard_portfolio.png" alt="Portfolio Overview" width="700">
-<br><br>
-<img src="docs/images/dashboard_trades.png" alt="Trading Simulator" width="700">
-<br><br>
-<img src="docs/images/dashboard_performance.png" alt="AI Trading Scenario" width="700">
-</details>
 
 ---
 
@@ -397,22 +381,6 @@ Full ledger (Korean): [docs/RESEARCH_LESSONS_ko.md](docs/RESEARCH_LESSONS_ko.md)
 
 ---
 
-## US Stock Market Module
-
-Same AI-powered workflow for US markets:
-
-```bash
-# Run US analysis
-python prism-us/us_stock_analysis_orchestrator.py --mode morning --no-telegram
-
-# With English reports
-python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
-```
-
-**Data Sources**: yahoo-finance-mcp, sec-edgar-mcp (SEC filings, insider trading)
-
----
-
 ## Documentation
 
 | Document | Description |
@@ -439,8 +407,6 @@ python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
 ### Dashboard
 Real-time portfolio tracking and performance dashboard.
 
-**[Live Demo](https://analysis.stocksimulation.kr/)**
-
 ```bash
 cd examples/dashboard
 npm install
@@ -451,6 +417,16 @@ npm run dev
 **Features**: Portfolio overview, trading history, performance metrics, market selector (KR/US), return comparison vs KOSPI/KOSDAQ
 
 **Dashboard Setup Guide**: [examples/dashboard/DASHBOARD_README.md](examples/dashboard/DASHBOARD_README.md)
+
+<details>
+<summary>View Dashboard Screenshots</summary>
+<br>
+<img src="docs/images/dashboard_portfolio.png" alt="Portfolio Overview" width="700">
+<br><br>
+<img src="docs/images/dashboard_trades.png" alt="Trading Simulator" width="700">
+<br><br>
+<img src="docs/images/dashboard_performance.png" alt="AI Trading Scenario" width="700">
+</details>
 
 ---
 

@@ -225,6 +225,16 @@ cp trading/config/kis_devlp.yaml.example trading/config/kis_devlp.yaml
 python stock_analysis_orchestrator.py --mode morning --no-telegram
 ```
 
+美股分析的运行方式如下：
+
+```bash
+# 运行美股分析
+python prism-us/us_stock_analysis_orchestrator.py --mode morning --no-telegram
+
+# 生成英文报告
+python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
+```
+
 ### 方案 B：Docker（生产环境推荐）
 
 ```bash
@@ -248,9 +258,10 @@ PRISM-INSIGHT 是一个面向 **韩国（KOSPI/KOSDAQ）** 和 **美国（NYSE/N
 - **自动交易** — 通过韩国投资证券 API 实盘执行
 - **Telegram 集成** — 实时提醒与多语言推送
 - **宏观情报** — 市场状态判断、板块轮动分析、风险事件监控
+- **自我改进** — 交易日志反馈循环 — 过去各触发器的胜率会自动影响之后的买入决策（[详情](docs/TRADING_JOURNAL.md#performance-tracker-피드백-루프-self-improving-trading)）
 
 ### AI 模型
-以下是代码中的默认模型，均可在 `.env` 中修改（参见 [.env.example](.env.example)）。
+以下是实际运行中使用的模型，均可在 `.env` 中修改（参见 [.env.example](.env.example)）。
 
 | 角色 | 默认模型 |
 |------|---------|
@@ -284,33 +295,6 @@ PRISM-INSIGHT 是一个面向 **韩国（KOSPI/KOSDAQ）** 和 **美国（NYSE/N
 </details>
 
 **详细文档**：[流水线架构（韩文）](docs/PIPELINE_ARCHITECTURE_ko.md) | [AI 代理系统](docs/CLAUDE_AGENTS.md)
-
----
-
-## 主要功能
-
-| 功能 | 说明 |
-|------|------|
-| **AI 分析** | 基于 OpenAI GPT-6 系列模型的多代理系统，提供专家级个股分析 |
-| **异动发现** | 通过早盘和午盘的市场趋势分析自动生成观察名单 |
-| **Telegram** | 向频道实时推送分析 |
-| **交易模拟** | AI 驱动的投资策略模拟 |
-| **自动交易** | 通过韩国投资证券 API 执行 |
-| **仪表盘** | 透明地追踪组合、交易和业绩 |
-| **自我改进** | 交易日志反馈循环 — 过去各触发器的胜率会自动影响之后的买入决策（[详情](docs/TRADING_JOURNAL.md#performance-tracker-피드백-루프-self-improving-trading)） |
-| **美国市场** | 全面支持 NYSE/NASDAQ 分析 |
-| **宏观情报** | 通过市场状态判断和板块轮动更聪明地选股 |
-| **移动应用** | 支持智能筛选和 PDF 报告的 iOS 与 Android 应用 |
-
-<details>
-<summary>查看仪表盘截图</summary>
-<br>
-<img src="docs/images/dashboard_portfolio.png" alt="组合概览" width="700">
-<br><br>
-<img src="docs/images/dashboard_trades.png" alt="交易模拟器" width="700">
-<br><br>
-<img src="docs/images/dashboard_performance.png" alt="AI 交易情景" width="700">
-</details>
 
 ---
 
@@ -395,22 +379,6 @@ PRISM 在修改规则之前，会先用自己过去的候选股和交易重放�
 
 ---
 
-## 美股模块
-
-同样的 AI 工作流程也适用于美国市场：
-
-```bash
-# 运行美股分析
-python prism-us/us_stock_analysis_orchestrator.py --mode morning --no-telegram
-
-# 生成英文报告
-python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
-```
-
-**数据来源**：yahoo-finance-mcp、sec-edgar-mcp（SEC 文件、内部人交易）
-
----
-
 ## 文档
 
 | 文档 | 说明 |
@@ -437,8 +405,6 @@ python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
 ### 仪表盘
 实时组合追踪与业绩仪表盘。
 
-**[在线演示](https://analysis.stocksimulation.kr/)**
-
 ```bash
 cd examples/dashboard
 npm install
@@ -449,6 +415,16 @@ npm run dev
 **功能**：组合概览、交易历史、业绩指标、市场切换（KR/US）、与 KOSPI/KOSDAQ 的收益对比
 
 **仪表盘配置指南**：[examples/dashboard/DASHBOARD_README.md](examples/dashboard/DASHBOARD_README.md)
+
+<details>
+<summary>查看仪表盘截图</summary>
+<br>
+<img src="docs/images/dashboard_portfolio.png" alt="组合概览" width="700">
+<br><br>
+<img src="docs/images/dashboard_trades.png" alt="交易模拟器" width="700">
+<br><br>
+<img src="docs/images/dashboard_performance.png" alt="AI 交易情景" width="700">
+</details>
 
 ---
 
