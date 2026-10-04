@@ -3,27 +3,27 @@
  "release": "v2.24.0",
  "previous_tag": "v2.23.0",
  "previous_tag_commit": "69a7eb3fd7c60fb885a9651945803d162dfddb06",
- "source_cutoff": "3988a9850055cee301bb8194c610caf3ff8e70cc",
- "source_range": "v2.23.0..3988a9850055cee301bb8194c610caf3ff8e70cc",
+ "source_cutoff": "2303103bd108c0225c1f825ecf9af04a9bf4896d",
+ "source_range": "v2.23.0..2303103bd108c0225c1f825ecf9af04a9bf4896d",
  "release_preparation_commits_excluded": true,
  "method": "Every reachable source commit reviewed once, weight=1; one primary category per nonmerge commit, merges counted separately. Dates, churn, author and recency do not alter weight. PR association uses merge-first-parent..merge-second-parent reachability (earliest merged PR wins), not title guessing.",
  "counts": {
-  "all": 276,
-  "nonmerge": 159,
-  "merge": 117,
-  "pr_merges": 91,
+  "all": 278,
+  "nonmerge": 160,
+  "merge": 118,
+  "pr_merges": 92,
   "other_merges": 26,
   "direct_nonmerge": 3
  },
  "diff": {
-  "files": 516,
-  "insertions": 41878,
-  "deletions": 12044
+  "files": 527,
+  "insertions": 42862,
+  "deletions": 12662
  },
  "categories": {
   "ops_security": 13,
   "screening_data": 13,
-  "merge": 117,
+  "merge": 118,
   "reentry": 9,
   "reports_messages": 7,
   "research_governance": 17,
@@ -32,7 +32,8 @@
   "models_oauth": 15,
   "btc": 38,
   "observability": 3,
-  "runner_hold": 3
+  "runner_hold": 3,
+  "readme": 1
  },
  "periods": [
   {
@@ -66,9 +67,9 @@
   {
    "start": "2026-10-04",
    "end": "2026-10-05",
-   "total": 72,
-   "nonmerge": 39,
-   "merge": 33
+   "total": 74,
+   "nonmerge": 40,
+   "merge": 34
   }
  ],
  "commits": [
@@ -3770,6 +3771,33 @@
    ],
    "category": "merge",
    "weight": 1
+  },
+  {
+   "sha": "a4d235f8b77e0a118fce5894f9a034fe768e4850",
+   "date": "2026-10-05T01:11:30+09:00",
+   "parents": [
+    "3988a9850055cee301bb8194c610caf3ff8e70cc"
+   ],
+   "subject": "docs: revamp READMEs with Season 2 results and how PRISM trades now",
+   "prs": [
+    916
+   ],
+   "category": "readme",
+   "weight": 1
+  },
+  {
+   "sha": "2303103bd108c0225c1f825ecf9af04a9bf4896d",
+   "date": "2026-10-05T01:18:51+09:00",
+   "parents": [
+    "3988a9850055cee301bb8194c610caf3ff8e70cc",
+    "a4d235f8b77e0a118fce5894f9a034fe768e4850"
+   ],
+   "subject": "Merge pull request #916 from dragon1086/docs/readme-revamp",
+   "prs": [
+    916
+   ],
+   "category": "merge",
+   "weight": 1
   }
  ],
  "prs": [
@@ -4955,6 +4983,19 @@
    "number": 914,
    "state": "MERGED",
    "title": "fix(runner-hold): harden first-session edges from the final review"
+  },
+  {
+   "additions": 984,
+   "baseRefName": "main",
+   "changedFiles": 11,
+   "deletions": 618,
+   "mergeCommit": {
+    "oid": "2303103bd108c0225c1f825ecf9af04a9bf4896d"
+   },
+   "mergedAt": "2026-10-04T16:18:51Z",
+   "number": 916,
+   "state": "MERGED",
+   "title": "docs: revamp READMEs with Season 2 results and how PRISM trades now"
   }
  ]
 }

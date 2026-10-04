@@ -1,15 +1,13 @@
 # PRISM-INSIGHT v2.24.0 — 초분할 실전 매수 · 주도주 보유 규칙 · 재진입 실전
 
-<!-- RANGE_END: 3988a985 (origin/main, PR #914). README 개편 PR 병합 후 아래 범위·커밋/PR 수·규모와
-     개발자용 집계, docs/release_audits/v2.24.0.json을 같은 기준으로 갱신합니다. -->
 > **발행일**: 2026-10-05
-> **범위**: `v2.23.0` (`69a7eb3f`) → `3988a985` (PR #914까지) · 제품 변경 커밋 **276개** / 병합 PR **91개**
-> **규모**: 파일 **516개**, **+41,878 / −12,044줄** · 2026-09-28–2026-10-05 (병합 기준)
+> **범위**: `v2.23.0` (`69a7eb3f`) → `2303103b` (PR #916까지) · 제품 변경 커밋 **278개** / 병합 PR **92개**
+> **규모**: 파일 **527개**, **+42,862 / −12,662줄** · 2026-09-28–2026-10-05 (병합 기준)
 > **집계 기준**: 릴리즈 문서·감사 자료 작성 커밋은 위 제품 변경 통계에서 제외합니다. 새 태그에는 이 릴리즈 문서도 포함됩니다.
 
 ## 한눈에 보기
 
-이전 정식 릴리즈는 **v2.23.0, 2026-09-28(KST)**입니다. 이번 버전은 지난 8일의 변경 276개를
+이전 정식 릴리즈는 **v2.23.0, 2026-09-28(KST)**입니다. 이번 버전은 지난 8일의 변경 278개를
 오래된 순서부터 한 번씩 검토해 작업 단위로 묶었습니다. 지난 버전이 "보고서"였다면 이번 버전은 **매매 방식**입니다.
 PRISM이 지향하는 오닐식 추세추종, 즉 "손실은 작게 자르고 크게 가는 소수 종목에 올라타 계단식으로 자산을 키운다"는
 방향에 맞춰 **사는 방식(나눠 사기), 들고 가는 방식(주도주 보유), 다시 타는 방식(재진입)**을 실제 계좌에 적용했습니다.
@@ -39,6 +37,8 @@ PRISM이 지향하는 오닐식 추세추종, 즉 "손실은 작게 자르고 �
   실패하던 문제를 고쳤습니다.
 - **운영·보안**: 로그에 남던 텔레그램 봇 토큰을 가리고 봇 토큰 3개를 교체했습니다. 실계좌 구독자는 30분 넘은 신호를 주문하지
   않습니다. 투자 방향(North star)과 연구 교훈 장부를 검토 절차에 넣고, 주간 주도주 리포트와 2주 점검 도구를 추가했습니다.
+- **README 개편**: 시즌2 실적을 두 기준(거래별 수익률 합계, 10슬롯 계좌 수익률)과 지수 비교로 보여 주고, 지금의 매매 방식과
+  기여자·후원자를 정리했습니다(5개 언어).
 - **BTC 데모**: 데모 메인 계좌의 신규 진입을 5분 주기 LLM 시나리오 방식으로 바꾸고, 매매 공지를 읽기 쉽게 다시 썼으며,
   정산·공지 결함을 고쳤습니다. 실자금 변경은 없습니다.
 - **2주 점검 약속**: 10/2~10/4에 여러 매매 변경이 한꺼번에 실전이 되었으므로, **10/18 점검 전까지는 매매 로직을 더 바꾸지
@@ -109,6 +109,7 @@ PRISM이 지향하는 오닐식 추세추종, 즉 "손실은 작게 자르고 �
 | 10-04 | BTC 공지 보완 | 간결 공지에서 현재 TP가 빠지고, 청산 뒤 계좌 순자산이 없음 | 현재 TP와 청산 뒤 확인된 순자산 표시 (#910, #911) |
 | 10-04 | 2주 점검 기록 | 매도를 막은 순간의 가격, 자리를 잃은 후보, 막힌 증액이 기록되지 않음 | 변경별 근거 이벤트 보강과 점검 도구 `tools/two_week_review.py` (#912) |
 | 10-04 | 토큰 재노출 | 교체한 봇 토큰이 BTC 리포터·주간 수집 로그에 다시 남음 | 해당 진입점에도 가림 적용 (#913) |
+| 10-04 | README | 이전 실적·소개 중심 | README 개편: 시즌2 실적 두 기준+지수 비교, 지금의 매매 방식, 기여자·후원자(5개 언어) (#916) |
 
 ## 투자자께: 매수부터 매도·재진입까지 무엇이 달라졌나
 
@@ -349,34 +350,42 @@ PRISM이 지향하는 오닐식 추세추종, 즉 "손실은 작게 자르고 �
   CLA 확인 허용 목록에 넣었습니다. (#819, #821)
 - **저장소**: 오래된 릴리즈 노트(v2.10~v2.20), 임시 문서, 쓰지 않는 이미지를 정리했고, `CLAUDE.md`의 오래된 사실(미국 시가총액
   기준, 손절 설명, 버전)을 바로잡았습니다. (#837, 직접 커밋 `11fbca80`)
-- **README 개편**(시즌2 실적·매매 방식·기여자)도 이번 버전에 포함됩니다.
+- **README 개편**: 시즌2 실적을 거래별 수익률 합계와 10슬롯 계좌 수익률 두 기준으로 보여 주고 같은 기간 코스피·코스닥,
+  S&P 500·나스닥과 비교합니다. 계좌 수익률이 코스피에 뒤졌다는 점과 그 원인(주도주를 일찍 판 것)도 그대로 적었습니다.
+  지금의 매매 방식(초분할·주도주 보유·재진입)과 기여자·후원자를 정리했고, 5개 언어 README를 함께 고쳤습니다. (#916)
+- **CI 참고**: 10/4 16:18 UTC 무렵 README 개편 PR의 CI에서 `tests/test_oneil_dispatcher.py::test_unknown_submission_is_never_retried`가
+  한 번 실패했고 재실행에서 통과했습니다. 이 테스트는 고정된 시각 문자열 하나로 주문 처리를 두 번 연달아 돌리는데, 실행 때마다
+  그 시각부터 경과 시간을 다시 세므로 두 번째 판단 시각이 첫 번째 기록보다 앞설 수 있어 "시간 순서 충돌"로 실패합니다.
+  로컬에서도 같은 이유로 간헐적으로 재현됩니다. 운영 경로는 실제 시계를 넘기므로 이 문제가 생기지 않고, 실패한 커밋은 README만
+  바꿨습니다. 제품 동작과 무관한 테스트 쪽 시간 의존성이며, 테스트 수정은 별도로 다룹니다.
 
 ## 개발자용 상세 — 동일 가중치 커밋 집계
 
-`v2.23.0..3988a985`의 **276개 커밋을 모두 오래된 순서부터 확인**했습니다. 이 범위에는 릴리즈 문서 작성 커밋이 없어 제외한
+`v2.23.0..2303103b`의 **278개 커밋을 모두 오래된 순서부터 확인**했습니다. 이 범위에는 릴리즈 문서 작성 커밋이 없어 제외한
 커밋은 없습니다. 각 커밋은 1표이며 날짜·최근성·변경 줄 수·작성자·PR 크기에 추가 가중치를 주지 않았습니다.
 비병합 커밋은 주된 목적 하나에만 배정하고, 병합 커밋은 별도로 집계했습니다. PR이 없는 직접 커밋 **3개**도 포함했습니다.
 #880에 함께 들어온 초분할 테스트 시각 고정 커밋(`2e6ba489`)은 초분할로 분류했습니다. 커밋 수가 중요도·완성도·수익성
 점수라는 뜻은 아닙니다.
 
 <details>
-<summary>276개 커밋의 주제별 집계 펼치기</summary>
+<summary>278개 커밋의 주제별 집계 펼치기</summary>
 
 | 작업 묶음 | 커밋 | 비율 |
 |---|---:|---:|
 | 초분할 실전·증액 시나리오·B3 관측 (`micro_split`) | 26 | 9.4% |
-| 재진입 v2 보강·v3 실전 (`reentry`) | 9 | 3.3% |
+| 재진입 v2 보강·v3 실전 (`reentry`) | 9 | 3.2% |
 | 주도주 보유 규칙 (`runner_hold`) | 3 | 1.1% |
 | 매수·매도 판단 규칙(채점표·F2/F4·분산일·거래량·저항·장중 손절) (`trading_rules`) | 15 | 5.4% |
 | 스크리닝·시장 데이터(트리거 품질·미국 선별 수집) (`screening_data`) | 13 | 4.7% |
 | 보고서·메시지·수익률 표시 (`reports_messages`) | 7 | 2.5% |
 | 모델·로그인·Codex 실행 (`models_oauth`) | 15 | 5.4% |
-| 사전등록 연구·교훈 장부·투자 방향 (`research_governance`) | 17 | 6.2% |
+| 사전등록 연구·교훈 장부·투자 방향 (`research_governance`) | 17 | 6.1% |
 | 주간 주도주 리포트·2주 점검 (`observability`) | 3 | 1.1% |
 | 보안·구독자·기여자·저장소 정리 (`ops_security`) | 13 | 4.7% |
-| BTC 데모 LLM 시나리오·공지·정산·재생 도구 (`btc`) | 38 | 13.8% |
-| 병합 커밋 (`merge`) — PR 병합 91개 + 동기화 병합 26개 | 117 | 42.4% |
-| **합계** | **276** | 100% |
+| README 개편 (`readme`) | 1 | 0.4% |
+| BTC 데모 LLM 시나리오·공지·정산·재생 도구 (`btc`) | 38 | 13.7% |
+| 병합 커밋 (`merge`) — PR 병합 92개 + 동기화 병합 26개 | 118 | 42.4% |
+| **합계** | **278** | 100% |
 
 </details>
 
@@ -389,8 +398,8 @@ PRISM이 지향하는 오닐식 추세추종, 즉 "손실은 작게 자르고 �
 | 2026-09-29 – 2026-09-30 | 35 | 23 | 58 |
 | 2026-10-01 – 2026-10-02 | 32 | 31 | 63 |
 | 2026-10-03 | 26 | 17 | 43 |
-| 2026-10-04 – 2026-10-05 | 39 | 33 | 72 |
-| **합계** | **159** | **117** | **276** |
+| 2026-10-04 – 2026-10-05 | 40 | 34 | 74 |
+| **합계** | **160** | **118** | **278** |
 
 첫 구간의 9월 16일 작성 커밋 7개는 외부 기여자의 커밋으로, 9월 28일(KST) #819로 병합됐습니다.
 
@@ -403,7 +412,7 @@ PR 연결은 제목 추측이 아니라 GitHub가 기록한 병합 커밋과 병
 ## 개발자용 상세 — PR별 변경 규모
 
 <details>
-<summary>병합 PR 91개 펼치기</summary>
+<summary>병합 PR 92개 펼치기</summary>
 
 | PR | 제목 | 규모 |
 |---|---|---|
@@ -498,13 +507,14 @@ PR 연결은 제목 추측이 아니라 GitHub가 기록한 병합 커밋과 병
 | [#912](https://github.com/dragon1086/prism-insight/pull/912) | feat(observability): 2주 점검(10/18) 근거 기록 보강 + tools/two_week_review.py | 20 files, +1,813/−31 |
 | [#913](https://github.com/dragon1086/prism-insight/pull/913) | fix(logging): keep Telegram bot tokens out of BTC reporter and weekly firecrawl logs | 4 files, +15/−0 |
 | [#914](https://github.com/dragon1086/prism-insight/pull/914) | fix(runner-hold): harden first-session edges from the final review | 7 files, +45/−21 |
+| [#916](https://github.com/dragon1086/prism-insight/pull/916) | docs: revamp READMEs with Season 2 results and how PRISM trades now | 11 files, +984/−618 |
 
 </details>
 
 ## 검증
 
-- 커밋 집합을 `git rev-list v2.23.0..3988a985`와 대조해 276개 전부가 한 번씩, 하나의 분류로만 들어갔는지 확인했습니다.
-  병합 PR 91개의 병합 커밋 SHA를 GitHub 기록과 대조했고, 이 문서 본문이 91개 PR과 직접 커밋 3개를 모두 언급하는지 스크립트로
+- 커밋 집합을 `git rev-list v2.23.0..2303103b`와 대조해 278개 전부가 한 번씩, 하나의 분류로만 들어갔는지 확인했습니다.
+  병합 PR 92개의 병합 커밋 SHA를 GitHub 기록과 대조했고, 이 문서 본문이 92개 PR과 직접 커밋 3개를 모두 언급하는지 스크립트로
   확인했습니다.
 - `v2.23.0` 태그는 원격 기준 `69a7eb3f`(v2.23.0 노트에 #800–#818을 반영한 커밋)를 가리킵니다. 이번 범위는 그 다음부터입니다.
 - 실전 전환(초분할 #867·#875·#908, 주도주 #909, 재진입 #900, 트리거 품질 #907 등)은 각 PR의 CI 통과 뒤 병합해 운영 서버에
@@ -569,7 +579,7 @@ git show --no-patch --oneline v2.24.0
 ```text
 🚀 PRISM-INSIGHT v2.24.0 — 초분할 실전 매수 · 주도주 보유 · 재진입 실전
 
-9월 28일 이후 276개 커밋과 91개 PR을 날짜순으로 빠짐없이 묶었습니다. 이번 버전의 중심은 매매 방식입니다. 손실은 작게 자르고, 크게 가는 소수 종목에 올라타 계단식으로 키운다는 방향에 맞춰 사는 방식·들고 가는 방식·다시 타는 방식을 실제 계좌에 적용했습니다.
+9월 28일 이후 278개 커밋과 92개 PR을 날짜순으로 빠짐없이 묶었습니다. 이번 버전의 중심은 매매 방식입니다. 손실은 작게 자르고, 크게 가는 소수 종목에 올라타 계단식으로 키운다는 방향에 맞춰 사는 방식·들고 가는 방식·다시 타는 방식을 실제 계좌에 적용했습니다.
 
 🧩 나눠 사기(초분할)
 · 새 종목은 1슬롯을 한 번에 사지 않고, 종목의 평소 변동 폭에 따라 약 35~80%만 먼저 삽니다
@@ -599,6 +609,7 @@ git show --no-patch --oneline v2.24.0
 · 로그에 남던 텔레그램 봇 토큰을 가리고 토큰을 교체했습니다
 · 실계좌 구독자는 30분 넘은 지난 신호로 주문하지 않습니다
 · 모델을 gpt-6-luna·gpt-6.1-sol로 정리했습니다
+· README를 시즌2 실적(지수 비교 포함)과 지금의 매매 방식 중심으로 새로 썼습니다
 
 ₿ BTC 데모
 · 데모 계좌 신규 진입을 5분 주기 AI 시나리오 방식으로 바꾸고, 매매 공지를 읽기 쉽게 다시 썼습니다
@@ -616,7 +627,7 @@ https://github.com/dragon1086/prism-insight/releases/tag/v2.24.0
 ```text
 🚀 PRISM-INSIGHT v2.24.0 — Split entries live · Leader holding · Re-entry live
 
-This release groups all 276 commits and 91 PRs since September 28. The focus is how PRISM trades: cut losses small, ride the few big winners and grow in steps. That idea now drives how positions are bought, held and re-entered on the live accounts.
+This release groups all 278 commits and 92 PRs since September 28. The focus is how PRISM trades: cut losses small, ride the few big winners and grow in steps. That idea now drives how positions are bought, held and re-entered on the live accounts.
 
 🧩 Buying in parts (micro-split)
 · A new position no longer buys the full slot at once; it starts with about 35–80% of a slot, sized by the stock's usual volatility
@@ -646,6 +657,7 @@ This release groups all 276 commits and 91 PRs since September 28. The focus is 
 · Telegram bot tokens are masked in logs, and the tokens were rotated
 · The live-account subscriber no longer trades signals older than 30 minutes
 · Models were consolidated on gpt-6-luna and gpt-6.1-sol
+· The README now leads with Season 2 results (with index comparison) and how PRISM trades today
 
 ₿ BTC demo
 · Demo-account entries now come from 5-minute AI scenarios, with clearer trade notices
