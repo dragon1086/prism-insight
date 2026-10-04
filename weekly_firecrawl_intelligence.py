@@ -24,6 +24,9 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+from prism_core.log_redaction import install as _install_log_redaction  # noqa: E402
+_install_log_redaction()
+
 _DISCLAIMER = "\n\n⚠️ 본 내용은 투자 참고용이며, 투자 판단의 책임은 본인에게 있습니다."
 
 

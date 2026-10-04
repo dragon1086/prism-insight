@@ -475,6 +475,10 @@ def main() -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # httpx INFO includes the full Telegram request URL (and therefore the bot
+    # token).  Trading logs must never persist credentials.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     conn = tracking.get_connection(args.root_db)
     try:
