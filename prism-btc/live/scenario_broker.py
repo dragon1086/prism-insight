@@ -16,6 +16,8 @@ import json
 import math
 import time
 
+from core.scenario_limit_prices import POLICY_VERSION, observed_quotes
+
 from live.exchange_snapshot import read_complete
 from live.liquidation_guard import capture as capture_liquidation
 from live.shared_entry_coordinator import database_path, mutation_lock
@@ -432,6 +434,8 @@ class ScenarioDemoBroker(ScenarioExecution):
                 remaining_quantity=c["evidence"]["order"].get("leavesQty") if c["evidence"] else None)
                 for c in children if c["kind"] in {"tp","partial_sl"}],
             accounting_status="confirmed" if financial_ok else "pending",
+            execution_price_policy={"version": POLICY_VERSION},
+            limit_price_quotes=observed_quotes(observed["ticker"], observed["captured_at"]),
             price_tick=float(instrument["tick"]),quantity_step=float(instrument["step"]),
             minimum_quantity=float(instrument["minimum"]),minimum_notional=float(instrument["notional"]),
             protection_ok=protection,new_risk_blocked=not self._new_risk_enabled() or not financial_ok or not daily.get("new_risk_allowed",False),

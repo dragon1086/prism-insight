@@ -19,7 +19,8 @@ import time
 import uuid
 from contextlib import ExitStack, contextmanager
 
-from core.llm_scenario import validate_scenario, update_circuit_breaker
+from core.llm_scenario import update_circuit_breaker
+from core.scenario_limit_prices import validate_execution_prices
 from live.shared_entry_coordinator import database_path, mutation_lock
 from live.entry_reservations import LockBusy
 from live.scenario_llm import ScenarioModelError
@@ -360,7 +361,7 @@ class ScenarioRuntime:
                 fresh.update(now=self.clock(), input_id=input_id, input_captured_at=captured,
                              max_input_age_seconds=120)
                 stage = "validation"
-                validated = validate_scenario(payload, fresh)
+                validated = validate_execution_prices(payload, fresh)
                 if validated["action"] == "WAIT" and not validated.get("cancel_entry_ids"):
                     return {"status": "wait"}
                 stage = "execution"
