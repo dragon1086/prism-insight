@@ -3569,6 +3569,10 @@ class StockTrackingAgent:
             _alloc = allocation_line(scenario_json, profit_rate=profit_rate, market="KR")
             if _alloc:
                 message += "\n" + _alloc.rstrip("\n")
+            from prism_core.runner_hold import sell_message_line
+            _runner_line = sell_message_line(scenario_json, language="ko")
+            if _runner_line:
+                message += "\n" + _runner_line
 
             # Add trigger win rate
             trigger_type = stock_data.get('trigger_type', '')
@@ -4055,8 +4059,21 @@ class StockTrackingAgent:
                 # Current time
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                # Analyze sell decision
-                should_sell, sell_reason = await self._analyze_sell_decision(stock)
+                # Runner hold rule (docs/RUNNER_HOLD_RULE_ko.md): detect/persist the runner and its
+                # breakeven stop first; a verified runner exit sells deterministically, and any other
+                # sell of a protected runner is turned into a hold after the decision.
+                from prism_core import runner_hold_live
+                runner_exit = None
+                if effects is None:
+                    runner_exit = await runner_hold_live.review_holding(self, "KR", stock, logger=logger)
+                if runner_exit:
+                    should_sell, sell_reason = True, runner_exit
+                else:
+                    # Analyze sell decision
+                    should_sell, sell_reason = await self._analyze_sell_decision(stock)
+                    if effects is None:
+                        should_sell, sell_reason = runner_hold_live.guard_result(
+                            self, "KR", stock, should_sell, sell_reason, logger=logger)
 
                 if should_sell:
                     if effects is not None:
@@ -4307,6 +4324,9 @@ class StockTrackingAgent:
             message += f"🔸 현재 보유: {len(holdings) if holdings else 0}/{self.max_slots}개\n"
             from prism_core.micro_split_live import allocation_line, used_slots
             _used = used_slots([h.get("scenario") for h in holdings or []])
+            from prism_core.runner_hold import local_today as runner_local_today
+            from prism_core.runner_hold import message_line as runner_message_line
+            runner_today = runner_local_today("KR", datetime.now().astimezone()).isoformat()
             if holdings and _used < len(holdings):
                 message += f"🔸 사용 비중: {_used:.2f}/{self.max_slots} 슬롯 (초분할·시험매수 반영)\n"
 
@@ -4368,6 +4388,7 @@ class StockTrackingAgent:
                     message += f"  수익률: {arrow} {profit_rate:.2f}% / 보유기간: {days_passed}일\n"
                     message += allocation_line(scenario_str, profit_rate=profit_rate, current_price=current_price,
                                                market="KR", indent="  ")
+                    message += runner_message_line(scenario_str, today=runner_today, indent="  ")
                     message += "\n"
 
                 # Add sector distribution

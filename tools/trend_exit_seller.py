@@ -507,8 +507,9 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
     """
     summary = {"market": market, "checked": 0, "signaled": 0, "acted": 0,
                "sold": 0, "shadow": 0, "skipped": 0, "pyramided_skipped": 0,
-               "gated": 0}
+               "gated": 0, "runner_held": 0}
     from cores.oneil_fallback import SellInputs, evaluate_oneil_sell
+    from prism_core import runner_hold, runner_hold_live
     from prism_core.loop_row_split import (
         group_rows_by_account,
         new_split_state,
@@ -518,6 +519,17 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
     agent = {"ref": None}  # lazily created on first LIVE sell
     ma50_cache: Dict[str, float] = {}  # one fetch per ticker per cycle
     regime: Dict[str, Any] = {"value": None, "computed": False}
+    # Runner hold rule (docs/RUNNER_HOLD_RULE_ko.md), read-only here: the batch persists
+    # the runner block and raises the stop; this loop only skips TIER1.5/2/3 for a
+    # protected runner and acts on its close-confirmed 50-day-MA / breakeven exit.
+    runner_on = runner_hold_live.enabled(market)
+    runner_bars: Dict[str, List[Dict[str, Any]]] = {}
+
+    def _runner_bars(symbol):
+        if symbol not in runner_bars:
+            runner_bars[symbol] = runner_hold_live.fetch_bars_safe(market, symbol)
+        return runner_bars[symbol]
+
     try:
         _ensure_schema(conn)
         by_ticker = load_holdings_by_ticker(conn, market)
@@ -564,10 +576,14 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                         ma50_cache[ticker] = await asyncio.to_thread(_fetch_ma50, market, ticker)
                     ma_50 = ma50_cache[ticker]
 
-                    signals = []  # (all rows of the position, row, reason)
+                    signals = []  # (all rows of the position, row, reason, close-confirmed runner exit)
                     for rows, valid in positions:
                         for h in valid:
                             summary["checked"] += 1
+                            view = None
+                            if runner_on:
+                                view = await asyncio.to_thread(
+                                    runner_hold_live.view_for_row, market, h, cur_price, _runner_bars)
                             inp = SellInputs(
                                 buy_price=float(h.get("buy_price", 0) or 0),
                                 current_price=cur_price,
@@ -579,8 +595,16 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                                 ma_50=ma_50,
                             )
                             should_sell, reason = evaluate_oneil_sell(inp)
+                            if view is not None and view.get("phase"):
+                                if view.get("exit"):
+                                    signals.append((rows, h, runner_hold.exit_reason(
+                                        view, market, "en" if market == "US" else "ko"), True))
+                                elif bool(should_sell) and _is_trend_exit_signal(reason):
+                                    summary["runner_held"] += 1
+                                    _log_runner_hold(market, ticker, h, reason)
+                                continue
                             if bool(should_sell) and _is_trend_exit_signal(reason):
-                                signals.append((rows, h, reason))
+                                signals.append((rows, h, reason, False))
 
                     # Update the daily breach streak (increment once/day or reset).
                     streak = update_breach_streak(conn, ticker, market, bool(signals))
@@ -589,7 +613,7 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                     summary["signaled"] += 1
 
                     splits = {}
-                    for rows, h, reason in signals:
+                    for rows, h, reason, confirmed in signals:
                         # Close-confirmation / consecutive-breach gate.
                         # The close-window fast-path is DAMAGE CONTROL: "a breach still
                         # standing at the closing bell is confirmed by the close — don't
@@ -600,7 +624,8 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                         # EVERY session) made CONFIRM_CHECKS dead for target take-profits
                         # and liquidated winners same-day (2026-07-29 INCY, streak=0).
                         is_target_take = reason.startswith("TIER3_TARGET")
-                        gate_open = (streak >= TREND_EXIT_CONFIRM_CHECKS) or (
+                        # A runner exit is already confirmed by a completed daily close.
+                        gate_open = confirmed or (streak >= TREND_EXIT_CONFIRM_CHECKS) or (
                             TREND_EXIT_CLOSE_WINDOW and not is_target_take)
                         if not gate_open:
                             summary["gated"] += 1
@@ -642,6 +667,18 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
             except Exception:
                 pass
     return summary
+
+
+def _log_runner_hold(market: str, ticker: str, holding: Dict[str, Any], reason: str) -> None:
+    """Stable reason code for a trend-exit tier skipped on a protected runner."""
+    from prism_core.runner_hold import classify_reason
+    code = classify_reason(reason)
+    logger.info("[RUNNER_HOLD] blocked sell reason=%s source=trend_exit market=%s ticker=%s detail=%s",
+                code, market, ticker, reason)
+    from observability.events import emit_event
+    emit_event("runner.sell_blocked", service=f"prism-{market.lower()}-runner-hold", market=market,
+               ticker=ticker, position_id=f"legacy:{market}:{holding.get('id')}",
+               attributes={"code": code, "source": "trend_exit", "sell_reason": str(reason)[:300]})
 
 
 def _holding_age_min(buy_date) -> Optional[float]:

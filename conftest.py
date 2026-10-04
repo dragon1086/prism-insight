@@ -36,6 +36,9 @@ os.environ[DISABLE_ENV_VAR] = "1"
 # tests that exercise either opt in explicitly.
 os.environ.setdefault("US_ELIGIBILITY_CACHE_PATH", "")
 os.environ.setdefault("US_SCREENING_KIS_SHORTLIST", "false")
+# The runner hold rule fetches daily bars (KIS/yfinance) in the sell loops; tests that
+# exercise it opt in explicitly (tests/test_runner_hold*.py).
+os.environ.setdefault("RUNNER_HOLD_ENABLED", "false")
 
 
 # ---------------------------------------------------------------------------

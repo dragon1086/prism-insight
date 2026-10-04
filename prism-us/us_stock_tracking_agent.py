@@ -2579,6 +2579,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             # Micro-split holdings: next-session add plan request; '' unless micro-split LIVE is on.
             from prism_core.micro_split_live import review_prompt_block
             prompt_message += review_prompt_block(scenario_str, market="US", language="en", stop_loss=stop_loss)
+            # Protected runner: per-holding hold-rule appendix (after the micro-split block it
+            # supersedes); '' for every other holding, so their prompts stay byte-identical.
+            from prism_core.runner_hold_live import prompt_block as runner_prompt_block
+            prompt_message += runner_prompt_block(stock_data, market="US", language="en")
 
             response = None
             codex_sell_enabled = os.environ.get(
@@ -2693,6 +2697,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 json_str_clean = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', json_str)
                 decision_json = json.loads(json_str_clean)
 
+            # Runner hold guard before any side effect: a blocked sell takes the hold branch
+            # (add plan kept, portfolio adjustment) and a trailing new_stop_loss is dropped.
+            from prism_core.runner_hold_live import guard_decision
+            decision_json = guard_decision(self, "US", stock_data, decision_json, logger=logger)
             should_sell = decision_json.get("should_sell", False)
             sell_reason = decision_json.get("sell_reason", "AI analysis result")
             confidence = decision_json.get("confidence", 5)
@@ -3613,6 +3621,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             _alloc = allocation_line(scenario_json, profit_rate=profit_rate, market="US")
             if _alloc:
                 message += "\n" + _alloc.rstrip("\n")
+            from prism_core.runner_hold import sell_message_line
+            _runner_line = sell_message_line(scenario_json, language="en")
+            if _runner_line:
+                message += "\n" + _runner_line
 
             # Add trigger win rate
             trigger_type = stock_data.get('trigger_type', '')
@@ -3721,8 +3733,21 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 stock['current_price'] = current_price
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                # Analyze sell decision
-                should_sell, sell_reason = await self._analyze_sell_decision(stock)
+                # Runner hold rule (docs/RUNNER_HOLD_RULE_ko.md): detect/persist the runner and its
+                # breakeven stop first; a verified runner exit sells deterministically, and any other
+                # sell of a protected runner is turned into a hold after the decision.
+                from prism_core import runner_hold_live
+                runner_exit = None
+                if effects is None:
+                    runner_exit = await runner_hold_live.review_holding(self, "US", stock, logger=logger)
+                if runner_exit:
+                    should_sell, sell_reason = True, runner_exit
+                else:
+                    # Analyze sell decision
+                    should_sell, sell_reason = await self._analyze_sell_decision(stock)
+                    if effects is None:
+                        should_sell, sell_reason = runner_hold_live.guard_result(
+                            self, "US", stock, should_sell, sell_reason, logger=logger)
 
                 if should_sell:
                     acct_key = stock.get("account_key")
@@ -4065,6 +4090,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             message += f"🔸 Current Holdings: {len(holdings) if holdings else 0}/{self.max_slots}\n"
             from prism_core.micro_split_live import allocation_line, used_slots
             _used = used_slots([h.get("scenario") for h in holdings or []])
+            from prism_core.runner_hold import local_today as runner_local_today
+            from prism_core.runner_hold import message_line as runner_message_line
+            runner_today = runner_local_today("US", datetime.now().astimezone()).isoformat()
             if holdings and _used < len(holdings):
                 message += f"🔸 사용 비중: {_used:.2f}/{self.max_slots} 슬롯 (초분할·시험매수 반영)\n"
 
@@ -4126,6 +4154,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     message += f"  수익률: {arrow} {profit_rate:.2f}% / 보유기간: {days_passed}일\n"
                     message += allocation_line(scenario_str, profit_rate=profit_rate, current_price=current_price,
                                                market="US", language="ko", indent="  ")
+                    message += runner_message_line(scenario_str, today=runner_today, indent="  ")
                     message += "\n"
 
                 # Add sector distribution
