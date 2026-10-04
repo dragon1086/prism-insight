@@ -265,8 +265,10 @@ def hard_stop_hit(current_price, stop_loss, buy_price):
 
 
 def is_corporate_event(reason):
-    text = str(reason or "").strip()
-    return any(text.startswith(prefix) for prefix in CORPORATE_PREFIXES)
+    """Official corporate-event sell: a known prefix within the first 40 characters,
+    ignoring markdown emphasis the LLM may add (``**[법인이벤트]**``, ``핵심-0: [법인이벤트]``)."""
+    head = str(reason or "").replace("*", "").replace("`", "").strip()[:40]
+    return any(prefix in head for prefix in CORPORATE_PREFIXES)
 
 
 def classify_reason(reason):
@@ -295,7 +297,7 @@ def stop_target(block, current_stop, current_price):
 
     Raises a lower stop and also resets a higher AI trailing stop down to the entry:
     the runner rule replaces the trailing stop (explicit ratchet exception). A runner
-    found while the price is at or below the entry keeps its stop until the price is
+    found while the price is unknown or at/below the entry keeps its stop until the price is
     back above it, so setting the floor never sells by itself; the breakeven-close exit
     still protects it.
     """
@@ -304,7 +306,7 @@ def stop_target(block, current_stop, current_price):
         return None
     stop = _num(current_stop) or 0.0
     price = _num(current_price)
-    if abs(stop - target) <= target * 1e-9 or (price is not None and price <= target):
+    if price is None or abs(stop - target) <= target * 1e-9 or price <= target:
         return None
     return target
 

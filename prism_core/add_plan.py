@@ -410,8 +410,9 @@ def risk_clip(*, legs, target, price, initial_entry, initial_stop, current_stop,
     """Largest target (5%p grid, <= ``target``) whose loss at the current effective stop stays
     within the initial-entry risk of one slot: (entry - initial stop) / entry.
 
-    The effective stop is max(initial stop, the holding's current stop_loss); stops only move
-    up (review ratchet, runner/trailing floor at entry), so a runner whose stop was raised can
+    The effective stop is max(initial stop, the holding's current stop_loss). The review
+    ratchet only raises the row stop; the runner rule may reset a higher trailing stop down to
+    the entry, which max() keeps at or above the initial stop, so a runner whose stop was raised can
     reach one slot while the total risk stays within the initial one-slot budget (user decision,
     2026-10-04).
 

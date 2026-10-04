@@ -91,12 +91,12 @@ def fetch_bars_safe(market, ticker):
         return []
 
 
-def needs_bars(market, row, *, now=None, window="batch"):
+def needs_bars(market, row, *, now=None):
     """Whether the row can be or is a protected runner, so its daily bars are worth fetching.
 
-    batch: a stored runner, or no record yet and still inside the 40-session
-    window (retroactive detection after a deploy). trend_exit (read-only): a stored
-    protected runner, or no record and at most one session past the detection window.
+    A stored runner, or no record yet and still inside the 40-session window. The
+    trend-exit loop (read-only) uses the same window as the batch so a runner found
+    retroactively is protected before the batch has stored its record.
     """
     now = now or _now()
     block = R.record(row.get("scenario"))
@@ -107,8 +107,7 @@ def needs_bars(market, row, *, now=None, window="batch"):
         start = R.entry_session(market, row.get("buy_date"))
     except (TypeError, ValueError):
         return False
-    horizon = R.HOLD_SESSIONS if window == "batch" else R.DETECT_SESSIONS + 1
-    return today <= R.session_after(market, start, horizon)
+    return today <= R.session_after(market, start, R.HOLD_SESSIONS)
 
 
 def evaluate(market, row, bars, *, current_price, now=None):
@@ -149,10 +148,10 @@ def evaluate(market, row, bars, *, current_price, now=None):
     return view
 
 
-def view_for_row(market, row, current_price, fetch, *, window="trend_exit", now=None):
+def view_for_row(market, row, current_price, fetch, *, now=None):
     """evaluate() with bars from ``fetch(ticker)`` only when the row needs them (trend-exit, read-only)."""
     now = now or _now()
-    if not needs_bars(market, row, now=now, window=window):
+    if not needs_bars(market, row, now=now):
         return None
     return evaluate(market, row, fetch(row.get("ticker")), current_price=current_price, now=now)
 
@@ -221,7 +220,7 @@ async def review_holding(agent, market, stock, *, logger=None, now=None):
     ticker, row_id = stock.get("ticker"), stock.get("id")
     try:
         now = now or _now()
-        if not needs_bars(market, stock, now=now, window="batch"):
+        if not needs_bars(market, stock, now=now):
             return None
         bars = await asyncio.to_thread(fetch_bars_safe, market, ticker)
         view = evaluate(market, stock, bars, current_price=stock.get("current_price"), now=now)
@@ -276,7 +275,8 @@ def _protected(stock):
         if block is None or block.get("status") != R.RUNNER:
             return None
         # Stored runner without a fresh review (bars unavailable): still protected.
-        view = {"record": block, "phase": R.HOLD, "exit": None}
+        today = R.local_today(block.get("market") or "KR", _now())
+        view = {"record": block, "phase": R.phase(block, today), "exit": None}
     return view if view.get("phase") else None
 
 
