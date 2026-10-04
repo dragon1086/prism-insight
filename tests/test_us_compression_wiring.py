@@ -14,6 +14,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 import compress_trading_memory as ctm
+from tracking.db_schema import TABLE_TRADING_INTUITIONS
 
 
 def _create_minimal_schema(db_path: str) -> None:
@@ -39,23 +40,9 @@ def _create_minimal_schema(db_path: str) -> None:
         )
         """
     )
-    cur.execute(
-        """
-        CREATE TABLE trading_intuitions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            category TEXT,
-            condition TEXT,
-            insight TEXT,
-            confidence REAL,
-            success_rate REAL,
-            supporting_count INTEGER,
-            created_at TEXT,
-            last_validated_at TEXT,
-            is_active INTEGER DEFAULT 1,
-            market TEXT DEFAULT 'KR'
-        )
-        """
-    )
+    # Production schema, so a column-name drift in the US SQL fails here (no such column).
+    cur.executescript(TABLE_TRADING_INTUITIONS)
+    cur.execute("ALTER TABLE trading_intuitions ADD COLUMN market TEXT DEFAULT 'KR'")
     cur.execute(
         """
         CREATE TABLE trading_principles (

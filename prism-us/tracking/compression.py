@@ -295,7 +295,7 @@ class USCompressionManager:
 
             # Check for existing similar intuition
             self.cursor.execute("""
-                SELECT id, supporting_count
+                SELECT id, supporting_trades
                 FROM trading_intuitions
                 WHERE category = ? AND condition = ? AND is_active = 1 AND market = ?
             """, (category, condition, self.MARKET))
@@ -308,7 +308,7 @@ class USCompressionManager:
                     UPDATE trading_intuitions
                     SET confidence = ?,
                         success_rate = ?,
-                        supporting_count = supporting_count + ?,
+                        supporting_trades = supporting_trades + ?,
                         last_validated_at = ?
                     WHERE id = ?
                 """, (confidence, success_rate, supporting_count, now, existing[0]))
@@ -317,7 +317,7 @@ class USCompressionManager:
                 self.cursor.execute("""
                     INSERT INTO trading_intuitions
                     (category, condition, insight, confidence, success_rate,
-                     supporting_count, created_at, is_active, market)
+                     supporting_trades, created_at, is_active, market)
                     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
                 """, (category, condition, insight, confidence, success_rate,
                       supporting_count, now, self.MARKET))
@@ -476,7 +476,7 @@ class USCompressionManager:
                         WHERE id IN (
                             SELECT id FROM trading_intuitions
                             WHERE is_active = 1 AND market = ?
-                            ORDER BY confidence ASC, supporting_count ASC
+                            ORDER BY confidence ASC, supporting_trades ASC
                             LIMIT ?
                         )
                     """, (self.MARKET, excess))
