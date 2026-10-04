@@ -20,6 +20,25 @@ code/test/deployment/forward-validation states and identify the next task.
 Memory stores the pointer and principles, not a competing copy of roadmap status.
 This checkpoint adds no runtime process, network query, or LLM call to trading.
 
+## North star: PRISM의 투자 방향 (사용자 정의, 2026-10-04)
+
+모든 매매 변경·검증·보고는 이 방향에 맞는지부터 따진다.
+
+- **오닐식 추세추종.** 평상시에는 손익비를 관리하고, 자산은 **크게 가는 소수 종목**에 의존해 **계단식으로** 성장한다.
+- **초분할과 재진입의 목적:** 손실과 낙폭을 관리하면서 **가는 종목을 놓치지 않고 등에 올라타 크게 먹는 것.**
+  그래서 프롬프트 프레이밍을 예전보다 적극적으로 쓸 수 있다.
+- **거래 빈도의 양면:** 거래가 많아지면 잘 가는 종목을 찾을 확률이 높아지지만, 손익비를 관리해도 손절만 반복되면 계좌가 녹는다.
+- **그래서 핵심은 스크리닝과 좋은 종목을 사는 눈의 정확도다.**
+
+검증·보고 때 반드시 볼 지표:
+1. 큰 수익 종목 포착률과 그 종목에서 비중을 충분히 키웠는지(증액·재진입 포함), 자산 곡선의 계단 모양
+2. 손실·최대 낙폭·회복 기간
+3. 거래 빈도와 손절 비용(연속 손절, 손절 누적이 수익을 갉아먹는 정도)
+4. 스크리닝·매수 판단의 정확도(후보 대비 진입, 진입 대비 큰 수익 종목 비율)
+
+운영 방식: 사업 동반자처럼 정기적으로 실제 로그(진입·보류·손절·증액·재진입)를 함께 읽고, 이 방향에서 벗어난 부분을
+찾아 고친다. 하네스에 빠진 점검이 보이면 이 문서를 보충한다.
+
 ## Research lessons ledger
 
 새 전략·트리거·프롬프트 검토 전에 [`RESEARCH_LESSONS_ko.md`](RESEARCH_LESSONS_ko.md)를 읽는다. 이미 결론이 난 질문을
