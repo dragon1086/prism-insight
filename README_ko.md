@@ -9,7 +9,7 @@
   <br><br>
   <img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python">
-  <img src="https://img.shields.io/badge/OpenAI-GPT--6_%7C_GPT--5.6-green.svg" alt="OpenAI GPT-6 및 GPT-5.6">
+  <img src="https://img.shields.io/badge/OpenAI-GPT--6-green.svg" alt="OpenAI GPT-6">
   <img src="https://img.shields.io/badge/Anthropic-Claude_Sonnet_5.5_(optional)-green.svg" alt="Anthropic Claude Sonnet 5.5 (선택)">
   <img src="https://img.shields.io/badge/ChatGPT_Plus-Codex_OAuth-ff6b35.svg" alt="ChatGPT Plus">
 </div>
@@ -255,7 +255,7 @@ PRISM-INSIGHT는 **한국 (코스피/코스닥)** 및 **미국 (NYSE/NASDAQ)** �
 | 역할 | 기본 모델 |
 |------|----------|
 | 리포트 섹션·투자전략·요약·거시경제 분석 | OpenAI **GPT-6 Luna** (`REPORT_MODEL`) |
-| 매수·매도 판단 | OpenAI **GPT-5.6 Sol**, GPT-6.1 Sol 또는 GPT-6 Astra로 변경 가능 (`PRISM_BUY_CODEX_MODEL`, `PRISM_SELL_CODEX_MODEL`) |
+| 매수·매도 판단 | OpenAI **GPT-6.1 Sol** (`PRISM_BUY_CODEX_MODEL`, `PRISM_SELL_CODEX_MODEL`) |
 | 텔레그램 질의응답 | OpenAI **GPT-6.1 Sol** (`TELEGRAM_ANALYSIS_MODEL`) |
 | 번역(영어·일본어·중국어·스페인어)·매매일지 | OpenAI **GPT-6 Luna** |
 | 선택 기능: 온디맨드 인사이트 에이전트 | Anthropic **Claude Sonnet 5.5** (`INSIGHT_MODEL`) |
@@ -291,7 +291,7 @@ PRISM-INSIGHT는 **한국 (코스피/코스닥)** 및 **미국 (NYSE/NASDAQ)** �
 
 | 기능 | 설명 |
 |-----|------|
-| **AI 분석** | OpenAI GPT-6 / GPT-5.6 모델 기반 다중 에이전트 시스템을 통한 전문가급 주식 분석 |
+| **AI 분석** | OpenAI GPT-6 계열 모델 기반 다중 에이전트 시스템을 통한 전문가급 주식 분석 |
 | **급등주 포착** | 오전/오후 시장 트렌드 분석을 통한 자동 관심종목 선별 |
 | **텔레그램** | 채널로 실시간 분석 배포 |
 | **매매 시뮬레이션** | AI 기반 투자 전략 시뮬레이션 |

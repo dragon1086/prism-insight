@@ -9,7 +9,7 @@
   <br><br>
   <img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python">
-  <img src="https://img.shields.io/badge/OpenAI-GPT--6_%7C_GPT--5.6-green.svg" alt="OpenAI GPT-6 and GPT-5.6">
+  <img src="https://img.shields.io/badge/OpenAI-GPT--6-green.svg" alt="OpenAI GPT-6">
   <img src="https://img.shields.io/badge/Anthropic-Claude_Sonnet_5.5_(optional)-green.svg" alt="Anthropic Claude Sonnet 5.5 (optional)">
   <img src="https://img.shields.io/badge/ChatGPT_Plus-Codex_OAuth-ff6b35.svg" alt="ChatGPT Plus">
 </div>
@@ -255,7 +255,7 @@ Default models in the code (each can be changed in `.env`; see [.env.example](.e
 | Role | Default model |
 |------|---------------|
 | Report sections, strategy, summary, macro intelligence | OpenAI **GPT-6 Luna** (`REPORT_MODEL`) |
-| Buy/sell decisions | OpenAI **GPT-5.6 Sol**; can be switched to GPT-6.1 Sol or GPT-6 Astra (`PRISM_BUY_CODEX_MODEL`, `PRISM_SELL_CODEX_MODEL`) |
+| Buy/sell decisions | OpenAI **GPT-6.1 Sol** (`PRISM_BUY_CODEX_MODEL`, `PRISM_SELL_CODEX_MODEL`) |
 | Telegram Q&A | OpenAI **GPT-6.1 Sol** (`TELEGRAM_ANALYSIS_MODEL`) |
 | Translation (EN, JA, ZH, ES), trading journal | OpenAI **GPT-6 Luna** |
 | Optional on-demand insight agent | Anthropic **Claude Sonnet 5.5** (`INSIGHT_MODEL`) |
@@ -291,7 +291,7 @@ Agents are grouped by execution path rather than by a fixed count:
 
 | Feature | Description |
 |---------|-------------|
-| **AI Analysis** | Expert-level stock analysis through a multi-agent system on OpenAI GPT-6 / GPT-5.6 models |
+| **AI Analysis** | Expert-level stock analysis through a multi-agent system on OpenAI GPT-6 family models |
 | **Surge Detection** | Automatic watchlist via morning/afternoon market trend analysis |
 | **Telegram** | Real-time analysis distribution to channels |
 | **Trading Sim** | AI-driven investment strategy simulation |

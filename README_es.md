@@ -9,7 +9,7 @@
   <br><br>
   <img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python">
-  <img src="https://img.shields.io/badge/OpenAI-GPT--6_%7C_GPT--5.6-green.svg" alt="OpenAI GPT-6 y GPT-5.6">
+  <img src="https://img.shields.io/badge/OpenAI-GPT--6-green.svg" alt="OpenAI GPT-6">
   <img src="https://img.shields.io/badge/Anthropic-Claude_Sonnet_5.5_(optional)-green.svg" alt="Anthropic Claude Sonnet 5.5 (opcional)">
   <img src="https://img.shields.io/badge/ChatGPT_Plus-Codex_OAuth-ff6b35.svg" alt="ChatGPT Plus">
 </div>
@@ -255,7 +255,7 @@ Modelos predeterminados en el código (todos se pueden cambiar en `.env`; consul
 | Función | Modelo predeterminado |
 |---------|----------------------|
 | Secciones del informe, estrategia, resumen e inteligencia macro | OpenAI **GPT-6 Luna** (`REPORT_MODEL`) |
-| Decisiones de compra y venta | OpenAI **GPT-5.6 Sol**; se puede cambiar a GPT-6.1 Sol o GPT-6 Astra (`PRISM_BUY_CODEX_MODEL`, `PRISM_SELL_CODEX_MODEL`) |
+| Decisiones de compra y venta | OpenAI **GPT-6.1 Sol** (`PRISM_BUY_CODEX_MODEL`, `PRISM_SELL_CODEX_MODEL`) |
 | Preguntas y respuestas en Telegram | OpenAI **GPT-6.1 Sol** (`TELEGRAM_ANALYSIS_MODEL`) |
 | Traducción (EN, JA, ZH, ES) y diario de trading | OpenAI **GPT-6 Luna** |
 | Opcional: agente de insights bajo demanda | Anthropic **Claude Sonnet 5.5** (`INSIGHT_MODEL`) |
@@ -291,7 +291,7 @@ Los agentes se agrupan por ruta de ejecución, no por un número fijo:
 
 | Función | Descripción |
 |---------|-------------|
-| **Análisis con IA** | Análisis bursátil de nivel experto mediante un sistema multiagente con modelos OpenAI GPT-6 / GPT-5.6 |
+| **Análisis con IA** | Análisis bursátil de nivel experto mediante un sistema multiagente con modelos de la familia OpenAI GPT-6 |
 | **Detección de subidas** | Lista de seguimiento automática a partir del análisis de tendencias de mañana y tarde |
 | **Telegram** | Distribución del análisis en tiempo real a los canales |
 | **Simulación de trading** | Simulación de estrategias de inversión con IA |

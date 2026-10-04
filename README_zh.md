@@ -9,7 +9,7 @@
   <br><br>
   <img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python">
-  <img src="https://img.shields.io/badge/OpenAI-GPT--6_%7C_GPT--5.6-green.svg" alt="OpenAI GPT-6 / GPT-5.6">
+  <img src="https://img.shields.io/badge/OpenAI-GPT--6-green.svg" alt="OpenAI GPT-6">
   <img src="https://img.shields.io/badge/Anthropic-Claude_Sonnet_5.5_(optional)-green.svg" alt="Anthropic Claude Sonnet 5.5（可选）">
   <img src="https://img.shields.io/badge/ChatGPT_Plus-Codex_OAuth-ff6b35.svg" alt="ChatGPT Plus">
 </div>
@@ -255,7 +255,7 @@ PRISM-INSIGHT 是一个面向 **韩国（KOSPI/KOSDAQ）** 和 **美国（NYSE/N
 | 角色 | 默认模型 |
 |------|---------|
 | 报告各部分、投资策略、摘要、宏观分析 | OpenAI **GPT-6 Luna**（`REPORT_MODEL`） |
-| 买卖决策 | OpenAI **GPT-5.6 Sol**，可切换为 GPT-6.1 Sol 或 GPT-6 Astra（`PRISM_BUY_CODEX_MODEL`、`PRISM_SELL_CODEX_MODEL`） |
+| 买卖决策 | OpenAI **GPT-6.1 Sol**（`PRISM_BUY_CODEX_MODEL`、`PRISM_SELL_CODEX_MODEL`） |
 | Telegram 问答 | OpenAI **GPT-6.1 Sol**（`TELEGRAM_ANALYSIS_MODEL`） |
 | 翻译（英、日、中、西）、交易日志 | OpenAI **GPT-6 Luna** |
 | 可选：按需洞察代理 | Anthropic **Claude Sonnet 5.5**（`INSIGHT_MODEL`） |
@@ -291,7 +291,7 @@ PRISM-INSIGHT 是一个面向 **韩国（KOSPI/KOSDAQ）** 和 **美国（NYSE/N
 
 | 功能 | 说明 |
 |------|------|
-| **AI 分析** | 基于 OpenAI GPT-6 / GPT-5.6 模型的多代理系统，提供专家级个股分析 |
+| **AI 分析** | 基于 OpenAI GPT-6 系列模型的多代理系统，提供专家级个股分析 |
 | **异动发现** | 通过早盘和午盘的市场趋势分析自动生成观察名单 |
 | **Telegram** | 向频道实时推送分析 |
 | **交易模拟** | AI 驱动的投资策略模拟 |
