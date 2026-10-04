@@ -44,6 +44,20 @@ def test_prompt_has_one_authority_and_incremental_order_semantics():
     assert "Skip below-minimum reductions; never round quantity up" in SYSTEM_PROMPT
 
 
+def test_price_buffer_is_host_owned_not_a_new_model_wire_field():
+    text = ' '.join(SYSTEM_PROMPT.split())
+    assert 'execution_price_policy.version is round-limit-v1' in text
+    assert 'Do not pre-apply that buffer' in text
+    assert 'Preserve existing target prices when maintaining them' in text
+    assert 'does not change SLs or signal rules' in text
+    ctx = context()
+    p = wire(ctx, 'OPEN')
+    p['entries'] = [dict(id='entry', price=60000, quantity=.001)]
+    p['execution_pricing'] = dict(applied=True)
+    with pytest.raises(ValueError, match='response_unknown_fields'):
+        validate_wire_proposal(p, ctx)
+
+
 def test_contract_risk_uses_stop_slippage_and_dynamic_quantity_step():
     rules = " ".join(response_contract(context())["rules"])
     assert "hard_stop*slippage_bps/10000" in rules

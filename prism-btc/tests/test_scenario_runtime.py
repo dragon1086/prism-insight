@@ -189,7 +189,7 @@ def test_generic_failure_records_fixed_stage_without_exception_data(setup, monke
             return proposal(s, c)
         r.propose = model
     elif stage == "validation":
-        monkeypatch.setattr(module, "validate_scenario", fail)
+        monkeypatch.setattr(module, "validate_execution_prices", fail)
     else:
         original = r._save
         def save(state):
