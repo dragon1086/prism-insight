@@ -1,0 +1,34 @@
+{
+  "assets": {
+    "season2-performance-en.png": "8ebfa7579b591ba678d989f7219ec96ee623cb481106b0068e82a222f0540cce",
+    "season2-performance-ko.png": "84ec6b8592c7294652c9939baf6ce34bf192380975b6c2036cd7f62c95865df0"
+  },
+  "dimensions": [1920, 1080],
+  "renderer": "matplotlib 3.10.8 (data-driven; no image model)",
+  "rendered_at": "2026-10-05",
+  "sources": [
+    {
+      "url": "https://analysis.stocksimulation.kr/dashboard_data.json",
+      "generated_at": "2026-10-02T17:10:04.532893",
+      "sha256": "a1563e0f3124e8d6d18293f190413da91266881e96577b297241b62b706ce1b9",
+      "fields": ["prism_performance[].prism_simulator_return", "market_condition[].kospi_index", "market_condition[].kosdaq_index", "trading_history[]", "summary.trading"]
+    },
+    {
+      "url": "https://analysis.stocksimulation.kr/us_dashboard_data.json",
+      "generated_at": "2026-10-03T08:00:05.558318",
+      "sha256": "44b5ae276590a528024f491d6265abb5c3f2fb6bcc3cac0dda0815629198dc38",
+      "fields": ["prism_performance[].prism_simulator_return", "market_condition[].spx_index", "market_condition[].nasdaq_index", "trading_history[]", "summary.trading"]
+    }
+  ],
+  "definitions": {
+    "account_return": "prism_simulator_return = slot-weighted sum of closed-trade profit_rate / 10 (examples/generate_dashboard_json.py, calculate_cumulative_realized_profit); realized only, not compounded, open positions excluded",
+    "sum_of_trade_returns": "sum of trading_history[].profit_rate; not compounded, not position-weighted",
+    "index_change": "index / first market_condition value - 1 (KR first point 2025-09-29, US 2026-01-29)",
+    "max_drop": "largest peak-to-trough fall of prism_simulator_return, in percentage points"
+  },
+  "figures": {
+    "KR": {"period": "2025-09-30~2026-10-02", "closed_trades": 211, "wins": 85, "win_rate_pct": 40.3, "avg_trade_pct": 1.68, "sum_trade_pct": 355.3, "account_return_pct": 35.2, "account_max_drop_pp": -9.3, "kospi": [3431.21, 6981.8], "kospi_pct": 103.5, "kosdaq": [846.71, 891.66], "kosdaq_pct": 5.3},
+    "US": {"period": "2026-01-28~2026-10-02", "closed_trades": 127, "wins": 42, "win_rate_pct": 33.1, "avg_trade_pct": 0.65, "sum_trade_pct": 82.8, "account_return_pct": 8.3, "account_max_drop_pp": -13.7, "sp500": [6969.01, 7722.72], "sp500_pct": 10.8, "nasdaq": [23685.12, 27190.86], "nasdaq_pct": 14.8}
+  },
+  "caveat": "Simulated trading results. Not investment advice."
+}
