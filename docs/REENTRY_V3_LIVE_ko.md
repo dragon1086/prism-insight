@@ -318,6 +318,9 @@ CRON_TZ=America/New_York
     조건에 막혔던 종목입니다".
   - 기준 가격 설명: 손절 종목의 기준이 첫 매수 때 돌파 가격대면 "첫 매수 때 돌파했던 가격대", 보류·차단 종목이나 아래
     지지가 없어 1차 저항을 쓴 경우는 "분석 당시 기준 가격(1차 저항)".
+  - 흔들기 후 회복 매수는 실제 회복 기준 가격(`band_level`)을 보여 준다. 아직 기준 가격 위로 마감한 적 없는 보류·차단
+    종목은 회복 기준이 지지선이므로 "분석 당시 1차 지지선(…)"(1차 지지가 없으면 "2차 지지선")으로 쓴다. 근거는 동결
+    입력의 `campaign.reclaim_basis`(L / primary_support / secondary_support)이고 시나리오 `reentry.band_basis`에 남는다.
 - 업종: 재점검 시나리오 값 → 원래 판단 행(손절은 `trading_history`, 보류·차단은 `watchlist_history`)의 업종 → `Unknown`.
 - 손절 상한의 국면: 원장은 판단 시각 국면(KOSPI/SPY, 분산일 반영)으로 상한을 적용하고, 주문 직전 트래커 국면
   (`_deterministic_market_regime`, 최종 게이트가 쓰는 값)으로 한 번 더 상한을 적용한다. 두 국면이 다르면 더 좁은 손절이
@@ -334,7 +337,7 @@ CRON_TZ=America/New_York
 | 시간 | 한국 09:05~15:15, 미국 09:35~15:45(현지, 평일)만. 동시호가·장 시작 전·마감 단일가 시간 제외. 계획 시점과 주문 직전 두 번 확인 |
 | 주문 마감 | 한국 14:40 KST, 미국 14:25 ET 이후에는 주문하지 않음(`SKIPPED_DEADLINE`, 계획 시점과 주문 직전 확인). 판단 실행이 늦어져 오후 배치(14:46/14:30)와 겹치는 것을 막음 |
 | 가격 범위 | 주문 직전 새 시세로 신호 범위 재확인(11.1), 벗어나면 `SKIPPED_BAND` |
-| 진입 락 | 배치 진입과 같은 시장 락(`runtime/entry_lock_{kr,us}.lock`). 재진입은 30초 안에 못 잡으면 매수 안 함(`SKIPPED_LOCK`) |
+| 진입 락 | 배치 진입과 같은 시장 락(`runtime/entry_lock_{kr,us}.lock`). 재진입은 30초 안에 못 잡으면 매수 안 함(`SKIPPED_LOCK`). 가상 계좌 SHADOW 실행(`effects` 경로)은 실제 락을 쓰지 않음. 테스트는 루트 `conftest.py`가 `PRISM_ENTRY_LOCK_DIR`을 임시 폴더로 바꿔 `runtime/`에 파일을 만들지 않음 |
 | 보유·슬롯·업종 | 이미 보유면 건너뜀, 최대 10 보유, 업종 한도 — 정상 진입과 동일. 보유 행 조회 실패 시 매수 안 함 |
 | 초분할 | 초분할 LIVE가 꺼져 있거나 계획을 못 만들면 매수 안 함(`SKIPPED_NO_MICRO_PLAN`), 1슬롯 전체 매수 없음 |
 | 오류 | 예외는 로그·이벤트(`reentry_v3.live_entry` status=ERROR)로 남기고 러너는 계속, 같은 날 재시도 없음. 오류·시간 초과 뒤 보유 행(`reentry.watch_id`·신호일 일치)이 있으면 `BOUGHT_RECONCILED`로 원장에 연결 |

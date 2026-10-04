@@ -150,6 +150,7 @@ def build_scenario(item, record, market):
         "decision_time": item["decision_time"], "event_id": item["event_id"], "rule": PRIMARY_RULE,
         "stop_rule": item.get("stop_rule"), "target_rule": item.get("target_rule"),
         "band_level": window.get("R") or item["level"]["L"],
+        "band_basis": (item.get("campaign") or {}).get("reclaim_basis") if window.get("R") else "L",
     }
     scenario["stop_loss"] = item["stop"]
     if item.get("target"):
@@ -178,9 +179,21 @@ def apply_stop_cap(scenario, price, regime):
     return _price_fields(scenario, price)
 
 
+SUPPORT_KO = {"primary_support": "1차 지지선", "secondary_support": "2차 지지선"}
+
+
+def _money(value, market):
+    return (f"{value:,.0f}원" if market == "KR" else f"${value:,.2f}") if isinstance(value, (int, float)) else "-"
+
+
 def level_phrase(meta, market):
-    level = meta.get("level")
-    text = (f"{level:,.0f}원" if market == "KR" else f"${level:,.2f}") if isinstance(level, (int, float)) else "-"
+    """The price the message refers to: the shakeout reclaim level (band_level) for SHAKEOUT_RECLAIM,
+    which is a support for held-off/blocked names that never closed above the level, else the level."""
+    level, band = meta.get("level"), meta.get("band_level")
+    if meta.get("signal") == "SHAKEOUT_RECLAIM" and isinstance(band, (int, float)) and band != level:
+        name = SUPPORT_KO.get(meta.get("band_basis"), "지지선")
+        return f"분석 당시 {name}({_money(band, market)})"
+    text = _money(level, market)
     if meta.get("source") == "STOP_EXIT" and meta.get("level_basis") != "primary_resistance_fallback":
         return f"첫 매수 때 돌파했던 가격대({text})"
     return f"분석 당시 기준 가격(1차 저항, {text})"
@@ -348,7 +361,38 @@ def account_ref(account_key):
 
 def _ro(db_path):
     import sqlite3
-    return sqlite3.connect("file:" + str(db_path) + "?mode=ro", uri=True, timeout=10)
+    return sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True, timeout=10)
+
+
+# Fixed, literal queries per market / table (no SQL is built from strings at run time).
+_HOLDINGS_ROWS_SQL = {
+    "KR": "SELECT id, account_key, buy_price, scenario FROM stock_holdings WHERE ticker = ?",
+    "US": "SELECT id, account_key, buy_price, scenario FROM us_stock_holdings WHERE ticker = ?",
+}
+_HELD_COUNT_SQL = {
+    "stock_holdings": "SELECT COUNT(*) FROM stock_holdings WHERE ticker = ? AND account_key = ?",
+    "us_stock_holdings": "SELECT COUNT(*) FROM us_stock_holdings WHERE ticker = ? AND account_key = ?",
+}
+_SLOT_COUNT_SQL = {
+    "stock_holdings": "SELECT COUNT(*) FROM stock_holdings WHERE account_key = ?",
+    "us_stock_holdings": "SELECT COUNT(*) FROM us_stock_holdings WHERE account_key = ?",
+}
+_EXIT_SECTOR_SQL = {
+    "KR": ("SELECT sector FROM trading_history WHERE ticker = ? AND substr(sell_date, 1, 10) <= ? "
+           "ORDER BY sell_date DESC LIMIT 1"),
+    "US": ("SELECT sector FROM us_trading_history WHERE ticker = ? AND substr(sell_date, 1, 10) <= ? "
+           "ORDER BY sell_date DESC LIMIT 1"),
+}
+_DECISION_SECTOR_SQL = {
+    "KR": "SELECT sector FROM watchlist_history WHERE id = ?",
+    "US": "SELECT sector FROM us_watchlist_history WHERE id = ?",
+}
+_REAL_EXIT_SQL = {
+    "KR": ("SELECT account_key, sell_date, sell_price, profit_rate, exit_kind, scenario FROM trading_history "
+           "WHERE ticker = ? AND substr(buy_date, 1, 10) >= ?"),
+    "US": ("SELECT account_key, sell_date, sell_price, profit_rate, exit_kind, scenario FROM us_trading_history "
+           "WHERE ticker = ? AND substr(buy_date, 1, 10) >= ?"),
+}
 
 
 def _meta(raw):
@@ -360,11 +404,9 @@ def _meta(raw):
 
 def reconcile_holdings(db_path, market, entry):
     """The holdings row(s) this re-entry created (scenario reentry.watch_id and trigger_date), else None."""
-    table = "stock_holdings" if market == "KR" else "us_stock_holdings"
     try:
         with _ro(db_path) as conn:
-            rows = conn.execute(f"SELECT id, account_key, buy_price, scenario FROM {table} WHERE ticker = ?",  # nosec B608 - fixed table names
-                                (entry["ticker"],)).fetchall()
+            rows = conn.execute(_HOLDINGS_ROWS_SQL[market], (entry["ticker"],)).fetchall()
     except Exception:  # noqa: BLE001 - unknown stays ERROR
         return None
     found = [(r[0], r[1], r[2]) for r in rows
@@ -376,28 +418,22 @@ def reconcile_holdings(db_path, market, entry):
 
 
 def strict_position_counts(cursor, table, ticker, account_key):
-    """(held, slots) for one account; raises on any DB error (the re-entry path fails closed)."""
-    held = cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE ticker = ? AND account_key = ?",  # nosec B608 - fixed table names
-                          (ticker, account_key)).fetchone()[0]
-    slots = cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE account_key = ?",  # nosec B608 - fixed table names
-                           (account_key,)).fetchone()[0]
+    """(held, slots) for one account; raises on any DB error or unknown table (the re-entry path fails closed)."""
+    held = cursor.execute(_HELD_COUNT_SQL[table], (ticker, account_key)).fetchone()[0]
+    slots = cursor.execute(_SLOT_COUNT_SQL[table], (account_key,)).fetchone()[0]
     return int(held) > 0, int(slots)
 
 
 def original_sector(db_path, market, row):
     """Sector of the original decision (trading_history / watchlist_history row), else None."""
-    kr = market == "KR"
+    market = "KR" if market == "KR" else "US"
     try:
         with _ro(db_path) as conn:
             if row.get("source") == "STOP_EXIT":
-                table = "trading_history" if kr else "us_trading_history"
-                found = conn.execute(f"SELECT sector FROM {table} WHERE ticker = ? AND substr(sell_date, 1, 10) <= ? "  # nosec B608 - fixed table names
-                                     "ORDER BY sell_date DESC LIMIT 1",
+                found = conn.execute(_EXIT_SECTOR_SQL[market],
                                      (row["ticker"], (row.get("exit_date") or "9999")[:10] + "~")).fetchone()
             else:
-                table = "watchlist_history" if kr else "us_watchlist_history"
-                found = conn.execute(f"SELECT sector FROM {table} WHERE id = ?",  # nosec B608 - fixed table names
-                                     (row.get("analysis_id"),)).fetchone()
+                found = conn.execute(_DECISION_SECTOR_SQL[market], (row.get("analysis_id"),)).fetchone()
     except Exception:  # noqa: BLE001 - no sector -> caller falls back
         return None
     value = (found or [None])[0]
@@ -407,13 +443,11 @@ def original_sector(db_path, market, row):
 def find_real_exit(db_path, market, live, watch_id, day):
     """The sold re-entry position from trading_history (read-only): {date, price, profit_rate, exit_kind, stop}."""
     from observability.reentry_shadow import session_date
-    table = "trading_history" if market == "KR" else "us_trading_history"
+    query = _REAL_EXIT_SQL["KR" if market == "KR" else "US"]
     refs = set(live.get("account_refs") or [])
     try:
         with _ro(db_path) as conn:
-            rows = conn.execute(f"SELECT account_key, sell_date, sell_price, profit_rate, exit_kind, scenario "  # nosec B608 - fixed table names
-                                f"FROM {table} WHERE ticker = ? AND substr(buy_date, 1, 10) >= ?",
-                                (live["ticker"], (day or "")[:10])).fetchall()
+            rows = conn.execute(query, (live["ticker"], (day or "")[:10])).fetchall()
     except Exception:  # noqa: BLE001 - missing table/DB keeps the position open in the ledger
         return None
     for account_key, sell_date, sell_price, profit_rate, exit_kind, scenario in rows:

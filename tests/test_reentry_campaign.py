@@ -633,6 +633,7 @@ def test_runtime_shakeout_recovery_is_decided_per_rule(tmp_path, monkeypatch):
     item = json.loads((root / "reentry_v3_recheck_inputs_kr.jsonl").read_text())
     assert item["trigger"] == "SHAKEOUT_RECLAIM" and item["shakeout"]["shakeout_low"] == 11300
     assert item["stop_rule"] == "SHAKEOUT_LOW" and set(item["attempts"]) == {"L97", "SS"}
+    assert item["campaign"]["reclaim_basis"] == "L"                      # a stopped name reclaims its level
     user = calls[0][1]
     assert "흔들기 후 회복 매수" in user and "흔들기 저점 11,300.00" in user and "20일 평균의" in user
 

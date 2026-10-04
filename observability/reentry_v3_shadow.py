@@ -309,6 +309,11 @@ def freeze_inputs(market, watch, decision, frames, completed, reports_root, arch
         attempts[rule] = {"attempt": number, "max": C.POLICY["max_attempts"], "prior": prior}
     broke = ledger["flags"]["above"]
     reclaim = C.reclaim_level(setup, broke)
+    primary_window = (decision["windows"] or {}).get(C.POLICY["primary_rule"]) or {}
+    reclaim_ref = primary_window.get("R") or reclaim
+    reclaim_basis = ("L" if reclaim_ref == setup["L"]
+                     else next((k for k in ("primary_support", "secondary_support")
+                                if setup["levels"].get(k) == reclaim_ref), None))
     end_levels = {rule: C.CAMPAIGN_RULES[rule](setup, broke) for rule in C.POLICY["campaign_rules"]}
     item = {
         "contract": INPUT_CONTRACT, "policy_version": C.POLICY_VERSION, "market": market,
@@ -334,7 +339,7 @@ def freeze_inputs(market, watch, decision, frames, completed, reports_root, arch
                      "fired_rules": sorted(attempts), "anchor_date": setup["anchor_date"],
                      "elapsed": ledger["elapsed"], "horizon": C.POLICY["horizon"],
                      "end_levels": {k: (round(v, 4) if v else None) for k, v in end_levels.items()},
-                     "reclaim_level": reclaim,
+                     "reclaim_level": reclaim, "reclaim_basis": reclaim_basis,
                      "deep_level": round(reclaim * C.SHAKEOUT_DEEP, 4) if reclaim else None,
                      "shakeout_window_sessions": C.SHAKEOUT_WINDOW, "windows": decision["windows"]},
         "rule_ids": ledger["rule_ids"], "allocation": alloc, "atr14": round(atr, 6) if atr else None,

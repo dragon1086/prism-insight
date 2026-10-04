@@ -874,9 +874,10 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
         Factored out of process_reports without behaviour change so the re-entry v3 LIVE path
         (enter_reentry_candidate) reuses the exact batch entry pipeline. Runs under the market entry
         lock shared with re-entry v3 (prism_core/entry_lock.py; the batch waits up to 120s, then goes on
-        as before). require_micro_plan (re-entry only) never falls back to a full slot.
+        as before). Virtual-account runs (effects is not None) never touch the real lock.
+        require_micro_plan (re-entry only) never falls back to a full slot.
         """
-        if not lock_held:
+        if not lock_held and effects is None:
             from prism_core.entry_lock import entry_lock
             async with entry_lock("KR", timeout=120):
                 return await self._enter_eligible_candidate(
@@ -1347,8 +1348,9 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                           "ORDER BY id DESC LIMIT 1", (ticker, account_key)).fetchone()
                 if row:
                     holding_ids, entry_price = [int(row[0])], row[1]
-            except Exception:  # noqa: BLE001 - the link is bookkeeping only (reconciled later)
-                pass
+            except Exception as link_error:  # noqa: BLE001 - the link is bookkeeping only (reconciled later)
+                logger.warning("[REENTRY_V3][KR] %s holding link lookup failed (%s); ledger reconciles later",
+                               ticker, type(link_error).__name__)
             return {"bought": True, "reason": "bought", "holding_ids": holding_ids, "entry_price": entry_price,
                     "account_refs": [live.account_ref(account_key)]}
 

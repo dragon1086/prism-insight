@@ -128,6 +128,25 @@ def test_scenario_carries_reentry_metadata_capped_stop_and_buy_rule_target():
     assert LIVE.build_scenario(shake, _record(), "KR")["reentry"]["band_level"] == 11800.0
 
 
+@pytest.mark.parametrize("basis,name", [("primary_support", "1차 지지선"), ("secondary_support", "2차 지지선")])
+def test_held_off_shakeout_message_names_the_actual_support_reclaim_level(basis, name):
+    """A held-off/blocked name that never closed above L reclaims a support, not the 1st resistance."""
+    item = _item(trigger="SHAKEOUT_RECLAIM", source="LOCATION_SKIP", basis="primary_resistance")
+    item["campaign"] = {"windows": {"L97": {"R": 11400.0, "line": 11058.0}}, "reclaim_basis": basis}
+    scenario = LIVE.build_scenario(item, _record(), "KR")
+    assert (scenario["reentry"]["band_level"], scenario["reentry"]["band_basis"]) == (11400.0, basis)
+    line = LIVE.entry_message_line(scenario, "KR")
+    assert f"이전 분석에서 매수를 보류했던 종목입니다. 분석 당시 {name}(11,400원) 아래로 크게 흔들린 뒤" in line
+    assert "1차 저항" not in line
+    us = LIVE.build_scenario(item, _record(), "US")
+    assert f"분석 당시 {name}($11,400.00)" in LIVE.entry_message_line(us, "US")
+    # a stopped name (or a held-off name that already closed above L) still reclaims the level itself
+    stopped = _item(trigger="SHAKEOUT_RECLAIM")
+    stopped["campaign"] = {"windows": {"L97": {"R": 11950.0, "line": 11591.5}}, "reclaim_basis": "L"}
+    assert "첫 매수 때 돌파했던 가격대(11,950원) 아래로" in \
+        LIVE.entry_message_line(LIVE.build_scenario(stopped, _record(), "KR"), "KR")
+
+
 def test_stop_cap_follows_the_tighter_tracker_regime():
     scenario = LIVE.build_scenario(_item(), _record(), "KR")
     scenario["stop_loss"] = 11000.0
@@ -535,6 +554,63 @@ def test_real_agent_method_respects_the_reentry_cooldown_score_and_the_entry_loc
     assert asyncio.run(enter(**_kwargs(market)))["reason"] == "reentry_cooldown" and agent.calls == []
 
 
+class _LockProbe:
+    """Records entry_lock calls; the first step after the lock raises so the long entry body is not run."""
+
+    class Reached(EffectsFailure):                                 # re-raised by the entry body
+        pass
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, market, *, timeout=60.0, poll=0.2):
+        import contextlib
+        self.calls.append((market, timeout))
+
+        @contextlib.asynccontextmanager
+        async def held():
+            yield True
+        return held()
+
+
+@pytest.mark.parametrize("market", ["KR", "US"])
+def test_virtual_account_runs_never_take_the_real_entry_lock(market, monkeypatch):
+    import prism_core.entry_lock as module
+    probe = _LockProbe()
+    monkeypatch.setattr(module, "entry_lock", probe)
+    path, cls = (("stock_tracking_enhanced_agent.py", "EnhancedStockTrackingAgent") if market == "KR"
+                 else ("prism-us/us_stock_tracking_agent.py", "USStockTrackingAgent"))
+    method = _load_method(ROOT / path, cls, "_enter_eligible_candidate", _base_ns())
+
+    class Agent:
+        async def _refresh_buy_boundary(self, *a, **k):            # KR: first step after the lock
+            raise _LockProbe.Reached
+
+        async def _is_ticker_in_holdings(self, ticker):            # US: first step with effects
+            raise _LockProbe.Reached
+
+    agent = Agent()
+    agent._enter_eligible_candidate = lambda **kw: method(agent, **kw)
+    common = {"ticker": "000001", "company_name": "x", "current_price": 1.0, "scenario": {}, "analysis_result": {},
+              "is_add": False, "rebound_pilot": False, "entry_cash_amount": None, "rank_change_msg": "",
+              "source_decision_id": None}
+    extra = ({"buy_score": 7, "min_score": 5, "sector": "x", "buy_gate": None} if market == "KR" else
+             {"account": None, "state": {}, "adjusted_score": 7, "trigger_type": "x", "trigger_info": {},
+              "scenario_slot_limit": 10, "signaled_tickers": set()})
+    with pytest.raises(_LockProbe.Reached):
+        asyncio.run(method(agent, effects=object(), **common, **extra))       # virtual account (SHADOW)
+    assert probe.calls == []
+    if market == "KR":                                             # the real batch still takes the lock
+        with pytest.raises(_LockProbe.Reached):
+            asyncio.run(method(agent, effects=None, **common, **extra))
+        assert probe.calls == [("KR", 120)]
+
+
+def test_test_runs_keep_the_entry_lock_out_of_runtime():
+    from prism_core.entry_lock import lock_path
+    assert ROOT / "runtime" not in lock_path("KR").parents
+
+
 def test_buy_message_builders_add_the_reentry_line_only_for_reentries():
     namespace = {"Dict": dict, "Any": Any}
     tree = ast.parse((ROOT / "stock_tracking_agent.py").read_text(encoding="utf-8"))
@@ -751,3 +827,12 @@ def test_recheck_prompt_marks_real_and_virtual_prior_attempts_and_the_actual_sha
     lines = RC3._trigger_lines(item)
     assert "흔들기 확인 시작선 11,446.00" in lines and "회복 기준 11,800.00" in lines and "97%" not in lines
     assert "97%" not in RC3.RECHECK_V3_KO and "실제 매수(실계좌)와 시스템의 가상 기록" in RC3.RECHECK_V3_KO
+
+
+def test_position_counts_use_fixed_queries_and_fail_closed_on_an_unknown_table():
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE us_stock_holdings (ticker TEXT, account_key TEXT)")
+    conn.executemany("INSERT INTO us_stock_holdings VALUES (?, ?)", [("AAPL", "a"), ("MSFT", "a"), ("AAPL", "b")])
+    assert LIVE.strict_position_counts(conn.cursor(), "us_stock_holdings", "AAPL", "a") == (True, 2)
+    with pytest.raises(KeyError):
+        LIVE.strict_position_counts(conn.cursor(), "us_stock_holdings; DROP TABLE x", "AAPL", "a")
