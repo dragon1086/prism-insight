@@ -1,4 +1,8 @@
-"""Re-entry v3 SHADOW: campaign re-entry decided before the close. No orders, no DB writes, no Telegram.
+"""Re-entry v3: campaign re-entry decided before the close (ledger, recheck and the LIVE hand-off).
+
+This module writes no DB and sends no Telegram. With REENTRY_V3_LIVE_ENABLED on, approved rechecks of the
+decision run are handed to prism_core/reentry_v3_live, which places the real buy in an isolated
+subprocess through the tracker's normal entry path (kill switch, daily cap, idempotency, hours).
 
 Enrolment is the v2 one (observability.reentry_shadow.candidates with include_blocked=True:
 STOP_EXIT / LOCATION_SKIP / ENTER_BLOCKED, 70-day window, point-in-time dedupe). Each watch
@@ -17,7 +21,7 @@ the live decisions.
   Days without a live decision (before enrolment, missed runs) are evaluated on the close
   (BACKFILL, no LLM).
 
-Design and evidence: docs/REENTRY_V3_CAMPAIGN_SHADOW_ko.md.
+Design and evidence: docs/REENTRY_V3_LIVE_ko.md.
 """
 from __future__ import annotations
 
@@ -36,6 +40,7 @@ from observability.events import emit_event
 from observability.reentry_recheck_inputs import trend_fact_lines
 from observability.reentry_shadow import _atomic, candidates
 from prism_core import reentry_campaign as C
+from prism_core import reentry_v3_live as LIVE
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = ROOT / "trading/config/reentry_v3_shadow.json"
@@ -82,7 +87,8 @@ def paths(market, root=STATE_DIR):
     return {"state": stem.with_suffix(".json"), "lock": stem.with_suffix(".lock"),
             "archive": Path(f"{stem}_archive.jsonl"),
             "inputs": Path(root) / f"reentry_v3_recheck_inputs_{market.lower()}.jsonl",
-            "results": Path(root) / f"reentry_v3_recheck_results_{market.lower()}.jsonl"}
+            "results": Path(root) / f"reentry_v3_recheck_results_{market.lower()}.jsonl",
+            "live": Path(root) / f"reentry_v3_live_{market.lower()}.jsonl"}
 
 
 def _new_state(market):
@@ -193,7 +199,8 @@ def _refresh(watch, frames, completed, market, ctx):
     primary = camps[C.POLICY["primary_rule"]]
     if primary["status"] == "ENDED":
         watch["watch_ended"] = primary["end_date"]       # point-in-time dedupe (V2._blocked) follows L97
-    if all(c["status"] == "ENDED" for c in camps.values()):
+    real_open = any(att.get("real") and att["status"] == "OPEN" for c in camps.values() for att in c["attempts"])
+    if all(c["status"] == "ENDED" for c in camps.values()) and not real_open:
         watch["status"] = "CLOSED"
     return True
 
@@ -436,8 +443,48 @@ def _tally(values):
     return out
 
 
+def _sync_live_exits(state, market, db_path):
+    """Link sold LIVE re-entry positions (trading_history, read-only) to their decision for the replay."""
+    for watch in state["watches"]:
+        for day, live in (watch.get("live") or {}).items():
+            if live.get("status") == "BOUGHT" and not live.get("exit"):
+                found = LIVE.find_real_exit(db_path, market, live, watch["watch_id"], day)
+                if found:
+                    live["exit"] = found
+            decision = (watch.get("decisions") or {}).get(day)
+            if decision is not None:
+                decision["live"] = dict(live)
+
+
+def _items_for(p, records):
+    wanted = {r.get("event_id") for r in records}
+    items = {}
+    if p["inputs"].exists():
+        with p["inputs"].open(encoding="utf-8") as handle:
+            for line in handle:
+                item = json.loads(line)
+                if item.get("event_id") in wanted:
+                    items[item["event_id"]] = item
+    return items
+
+
+def _entry_context(entry, state, frames, completed, reports_root, market):
+    """Everything the tracker entry needs beyond the scenario: name, sector, decision bars, report path."""
+    from observability.reentry_recheck_inputs import REPORT_DIRS
+    watch = next((w for w in state["watches"] if w["watch_id"] == entry["watch_id"]), None)
+    if watch is None:
+        return None
+    bars, _ = _frames_for(watch, frames, completed)
+    ref = entry["item"].get("report_ref") or {}
+    report_path = str(Path(reports_root) / REPORT_DIRS[market] / ref["name"]) if ref.get("kind") == "file" else None
+    return {"company_name": watch["row"].get("company_name") or watch["ticker"],
+            "sector": (entry["record"].get("scenario") or {}).get("sector") or "Unknown",
+            "bars": bars[-80:], "report_path": report_path}
+
+
 def run(market, completed, *, collector, phase="close", decision_day=None, quote_fn=None, db_path=DB_PATH,
-        root=STATE_DIR, reports_root=ROOT, archive_db=ARCHIVE_DB, dry_run=False, llm_recheck=None, llm=None):
+        root=STATE_DIR, reports_root=ROOT, archive_db=ARCHIVE_DB, dry_run=False, llm_recheck=None, llm=None,
+        live_executor=None, now_fn=None):
     p = paths(market, root)
     p["state"].parent.mkdir(parents=True, exist_ok=True)
     with p["lock"].open("a") as lock:
@@ -446,6 +493,7 @@ def run(market, completed, *, collector, phase="close", decision_day=None, quote
         except BlockingIOError:
             return {"mode": "SHADOW", "trading_impact": "none", "skipped": "lock_held", "market": market}
         state = _load(p["state"], market)
+        _sync_live_exits(state, market, db_path)
         rows = candidates(db_path, market, completed, lookback_days=LOOKBACK_DAYS, include_blocked=True)
         tickers = list(dict.fromkeys([w["ticker"] for w in state["watches"] if w["status"] not in FINAL]
                                      + [r["ticker"] for r in rows]))
@@ -494,6 +542,21 @@ def run(market, completed, *, collector, phase="close", decision_day=None, quote
         rechecked = []
         if not dry_run and (llm_recheck if llm_recheck is not None else llm_recheck_enabled()):
             rechecked = _run_rechecks(state, market, completed, p, reports_root, archive_db, llm)
+        live_enabled = LIVE.live_enabled(market)
+        live_results = []
+        if phase == "intraday" and not dry_run and live_enabled and rechecked:
+            def _emit_live(name, watch, key, attrs):
+                emit_event(name, service=_service(market), event_id=_hash(watch["watch_id"], key), market=market,
+                           ticker=watch["ticker"], attributes={"mode": "LIVE", "trading_impact": "order",
+                                                               "policy_version": C.POLICY_VERSION,
+                                                               "watch_ref": watch["watch_id"],
+                                                               "source": watch["source"], **attrs},
+                           event_time=datetime.now(timezone.utc))
+            live_results = LIVE.process(
+                state, market, decision_day, rechecked, _items_for(p, rechecked), p["live"],
+                live_executor or LIVE.subprocess_executor,
+                entry_context=lambda e: _entry_context(e, state, frames, completed, reports_root, market),
+                now=now_fn() if now_fn else None, emit=_emit_live, save_state=lambda: _atomic(p["state"], state))
         status = {}
         attempts = {"open": 0, "closed": 0}
         for watch in state["watches"]:
@@ -501,7 +564,9 @@ def run(market, completed, *, collector, phase="close", decision_day=None, quote
             for camp in ((watch.get("ledger") or {}).get("campaigns") or {}).values():
                 for att in camp["attempts"]:
                     attempts["open" if att["status"] == "OPEN" else "closed"] += 1
-        summary = {"mode": "SHADOW", "trading_impact": "none", "phase": phase, "policy_version": C.POLICY_VERSION,
+        summary = {"mode": "LIVE" if live_enabled else "SHADOW",
+                   "trading_impact": "orders" if live_enabled else "none", "phase": phase,
+                   "policy_version": C.POLICY_VERSION, "live_results": _tally(r["status"] for r in live_results),
                    "completed_market_day": completed, "decision_day": decision_day, "enrol_rows": len(rows),
                    "newly_enrolled": enrolled, "symbols": len(tickers),
                    "collected": len([t for t in tickers if frames.get(t)]), "status_counts": status,

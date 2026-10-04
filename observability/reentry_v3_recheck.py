@@ -8,8 +8,10 @@ by hash, one retry after a failure. v3 differs only in the recheck section, the 
 prior attempts) and the micro-split BUY appendix, frozen at the trigger exactly as the
 production BUY would have received it.
 
-The verdict is recorded beside the deterministic virtual position; it never opens, blocks or
-sizes anything. No orders and no DB writes. Design: docs/REENTRY_V3_CAMPAIGN_SHADOW_ko.md.
+The verdict is recorded beside the deterministic virtual position. With re-entry LIVE on
+(REENTRY_V3_LIVE_ENABLED), an approved verdict (진입) lets prism_core/reentry_v3_live place the real
+buy through the tracker's normal entry path; this module itself places no order and writes no DB.
+Design: docs/REENTRY_V3_LIVE_ko.md.
 Prompt wording uses plain investor terms (user decision 2026-10-04); code ids stay English.
 """
 from __future__ import annotations
@@ -22,7 +24,7 @@ MAX_ATTEMPTS = RC.MAX_ATTEMPTS
 FINAL = RC.FINAL
 
 # Reviewed with the harness's prompt framing & logical-consistency review; the user decided the
-# direction-splitting points on 2026-10-04 (docs/REENTRY_V3_CAMPAIGN_SHADOW_ko.md section 6).
+# direction-splitting points on 2026-10-04 (docs/REENTRY_V3_LIVE_ko.md section 6).
 RECHECK_V3_KO = """
 
 ## 재진입 재점검 모드 — 재진입 감시 기간 (이번 요청에만 적용)

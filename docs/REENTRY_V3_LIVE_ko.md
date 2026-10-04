@@ -1,8 +1,8 @@
-# 재진입 v3 — 재진입 감시 기간 장중 SHADOW (2026-10-04)
+# 재진입 v3 — 재진입 감시 기간, 장 마감 전 판단, 실계좌 LIVE (2026-10-04)
 
-상태: **SHADOW 구현(미배포).** 주문·DB 쓰기·텔레그램 없음. 사용자 승인 설계(2026-10-04)에 같은 날 사용자 결정
-(6절)을 반영했다. v2(`docs/REENTRY_V2_DESIGN_20260927_ko.md`) 코드는 그대로 두고 cron만 v3로 교체한다
-(7절, crontab 수정은 사용자가 직접).
+상태: **LIVE 구현(미배포, 기본 꺼짐).** 사용자 결정(2026-10-04): 모의운영(SHADOW) 없이 실거래 계좌에서 바로 LIVE로
+가고, 운영하면서 유지보수한다(10절). 켜는 스위치는 `REENTRY_V3_LIVE_ENABLED=true`이고 기본값은 꺼짐이다.
+v2(`docs/REENTRY_V2_DESIGN_20260927_ko.md`) 코드는 그대로 두고 cron만 v3로 교체한다(7절, crontab 수정은 사용자가 직접).
 
 용어(사용자 요청에 따라 쉬운 말로 씀, 코드 식별자는 영어 그대로):
 
@@ -19,7 +19,8 @@
 
 엄격히 검증된 종목이 한 번 손절되거나(STOP_EXIT) 자리 때문에 보류·차단됐다면(LOCATION_SKIP / ENTER_BLOCKED),
 **기준 가격이 무너지기 전까지 최대 60거래일 동안, 최대 3번** 다시 산다. 작은 손절 여러 번을 감수하고 큰 추세 한 번을
-노린다. 판단은 **장 마감 전(한국 14:00, 미국 13:50) 현재가를 종가 대용**으로 하고, LLM 재점검은 기록만 한다.
+노린다. 판단은 **장 마감 전(한국 14:00, 미국 13:50) 현재가를 종가 대용**으로 한다. LLM 재점검이 진입을 승인하고
+모든 결정론 점검을 통과하면 **정상 신규 진입과 같은 경로로 실제 매수**한다(11절). 매수 뒤에는 기존 매도 로직이 관리한다.
 
 ## 2. 규칙 (순수 로직 `prism_core/reentry_campaign.py`, 한국·미국 공통)
 
@@ -139,6 +140,10 @@
 | `tools/run_reentry_v3_shadow.py` | 러너 `--phase intraday|close`, `--dry-run`, `--no-llm` |
 | `trading/config/reentry_v3_shadow.json` | 정책(mode SHADOW, enabled, llm_recheck) |
 | `tests/test_reentry_campaign.py` | 규칙·예시(와이씨형 눌림 지지·와이씨형 흔들기 회복·심텍형)·런타임 테스트 |
+| `prism_core/reentry_v3_live.py` | LIVE: 스위치·정규장 시간·하루 상한·중복 방지 저널·시나리오·매수 메시지 문구·매도 결과 연결 |
+| `tools/run_reentry_v3_entry.py` | LIVE 주문 격리 프로세스(트래커 정상 진입 경로 호출, 매수 메시지 발송) |
+| `stock_tracking_enhanced_agent.py`, `prism-us/us_stock_tracking_agent.py` | `_enter_eligible_candidate`(배치 진입 단계 분리, 동작 동일), `enter_reentry_candidate`(재진입 점검 + 진입) |
+| `tests/test_reentry_v3_live.py` | 가짜 브로커·가짜 에이전트 LIVE 테스트(KR·US) |
 
 - 등록: v2와 같은 `candidates(..., include_blocked=True)`, 70일 창, point-in-time 중복 제거(`V2._blocked`, 주 기준 L97 종료일
   기준). 등록 조건: 기준일 가격이 그날 [저가×0.97, 고가×1.03] 안, 기준일 앞 60거래일 이상, 기준 가격 존재.
@@ -151,7 +156,7 @@
   누적 거래량), 미국은 yfinance 정규장 시세(B3 미국과 같은 하위 프로세스 방식, 120초 신선도).
 - `--dry-run`: 시세는 읽지만 LLM 호출·파일·이벤트 쓰기 없음.
 
-## 5. LLM 재점검 (신호 시점, 기록 전용)
+## 5. LLM 재점검 (신호 시점, LIVE 매수의 승인 단계)
 
 - v2 장치 재사용: 운영 BUY 지시문 + 재점검 절, **BUY Codex 설정**(`resolve_buy_codex_settings`, 현재 gpt-6.1-sol, effort는
   활성 OAuth 계정 따라 munsangrok=xhigh·fast, dragon1086=medium), **MCP 도구 없음**, 보고서는 신호 전날까지의 최신본을
@@ -160,10 +165,11 @@
   출처, 목표(규칙·저항·증액 조건·2a 여부)·손절(규칙·최대 손절폭)·손익비·floor, 기준별 시도 번호와 이전 시도, 시작선·
   회복 기준·종료선·확인 기간, 국면(분산일 반영 전후)·Pulse, B3 비중, G1/G2, 보고서 참조, 사실 블록, 원래 판단,
   초분할 부록 원문과 해시.
-- 판정은 가상 포지션을 열거나 막거나 크기를 바꾸지 않는다.
+- 원장의 가상 포지션은 판정과 무관하게 결정론으로 기록한다. LIVE가 켜져 있으면 승인(decision=진입) 건만 실제 매수
+  단계로 넘어간다(11절). 재점검이 꺼져 있으면(`REENTRY_V3_LLM_RECHECK` 미설정) 승인이 없으므로 실제 매수도 없다.
 - **초분할 부록:** 운영 BUY와 똑같이 per-report 메시지 끝에 붙인다(`buy_prompt_block(market, "ko")` + add_plan 블록,
   한국 "ko"·미국 "en"). 프레이밍은 그대로 두고 감시 전용 프레임은 넣지 않았다(사용자 결정 5). `MICRO_SPLIT_LIVE_ENABLED`가
-  꺼져 있으면 붙지 않는다. add_plan 블록은 예상 최초 비중으로 같은 ATR14의 B3 비중을 넘기고, 출력은 기록만 한다.
+  꺼져 있으면 붙지 않는다. add_plan 블록은 예상 최초 비중으로 같은 ATR14의 B3 비중을 넘긴다. LIVE 매수 때 재점검이 쓴 add_plan은 초분할 `prepare_entry`가 정상 진입과 똑같이 검증해 보유 행에 붙이고, 이후 기존 증액 경로가 집행한다.
 
 ## 6. 프롬프트 프레이밍·논리 일관성 검토
 
@@ -203,9 +209,10 @@
 
 ## 7. 운영 (opt-in)
 
-- 켜기: 정책 `trading/config/reentry_v3_shadow.json`(mode SHADOW, enabled true, llm_recheck true) +
+- 원장·재점검 켜기: 정책 `trading/config/reentry_v3_shadow.json`(enabled true, llm_recheck true) +
   `REENTRY_V3_LLM_RECHECK=true`(.env 또는 환경, **기본 off**라 오픈소스 사용자는 LLM을 쓰지 않음).
   끄기: `REENTRY_V3_SHADOW_ENABLED=false`, 정책 `enabled:false`/`llm_recheck:false`, CLI `--no-llm`.
+- 실매수(LIVE) 켜기·끄기는 11절.
 - db-server crontab에 추가할 줄(직접 수정하지 않았다. v2 두 줄은 주석 처리하고, v2 줄에 붙어 있던 BUY Codex 환경 변수는
   v3 줄에 그대로 옮긴다. 레포 경로는 실제 경로로 바꾼다):
 
@@ -240,12 +247,98 @@ CRON_TZ=America/New_York
 
 ## 9. 최소 검토 기록 (하네스 6항목)
 
-1. 변경 유형: 경제적 의사결정 변경의 **SHADOW 관측**(주문 경로 무변경). 기준선: v2 `pivot_reentry_v2` SHADOW, 운영 BUY.
+1. 변경 유형: 경제적 의사결정 변경, **실계좌 LIVE**(사용자 직접 승인, 10절). 주문은 기존 신규 진입 경로를 그대로 쓴다.
+   기준선: v2 `pivot_reentry_v2` SHADOW, 운영 BUY.
 2. 가설: 검증된 종목은 기준 가격이 유지되는 동안 재시도하면 작은 손절을 감수하고 큰 추세를 잡는다. 흔들기 뒤 거래량을
    동반한 회복은 지지 확인 신호다. 반증 조건: 전진 관측에서 감시 손익이 단일 진입·무작위 통제와 같거나 나쁜 것.
 3. 기존 전략과의 관계: BUY 재점검과 같은 instruction·목표·손절 규칙을 쓰고, 1.6단계만 감시 기간 안에서 대신한다(사용자
-   결정 4). 판정은 기록 전용이며 스크리닝·주문·청산 코드에는 연결하지 않았다.
+   결정 4). 실제 매수는 트래커의 정상 진입 단계(`_enter_eligible_candidate`)를 그대로 거치고, 매수 뒤 관리는 기존 매도
+   로직이 맡는다. 스크리닝·매도 코드는 바꾸지 않았다.
 4. 비교: 같은 감시의 피벗 통제군, G1/G2 반사실, E1 vs E2, 판단가 vs 종가. 연구는 단일 표본 기간(holdout 없음).
 5. 부진 원인 구분: 신호별(재돌파/눌림 지지/흔들기 회복)·기준별(L97/SS)·모드별(INTRADAY/BACKFILL)·국면·Pulse·거래량
    비중 출처로 나눠 본다. 관측 기간과 LIVE 검토 조건은 사용자 승인으로 정한다.
-6. 현재 결론: SHADOW 구현 완료, 배포·cron 등록은 사용자 검토 후.
+6. 현재 결론: LIVE 구현 완료(기본 꺼짐). 사용자가 SHADOW 없이 LIVE를 직접 승인했다(10절). 배포·.env·cron은 사용자 검토 후.
+
+## 10. 하네스 기록: 사용자의 LIVE 직접 승인 (2026-10-04)
+
+- 사용자 원문: "모의운영은 하지마 걍 실거래계좌로 하고 바로 live가자. 라이브하면서 유지보수 하자"
+- 하네스는 보통 SHADOW 관측 뒤 LIVE를 검토한다. 이번에는 사용자가 그 단계를 건너뛰고 실계좌 LIVE를 명시적으로 승인했다.
+  연구 판정은 FAIL(3절)이었다는 점, 표본이 한 기간뿐이라는 점을 알고 내린 결정으로 기록한다.
+- 위험을 줄이는 장치: 기본 꺼짐, 시장별 스위치, 시장당 하루 최대 2건, 감시·세션당 1회(같은 날 재시도 없음), 정규장
+  연속매매 시간만, 정상 진입과 같은 모든 결정론 점검, 초분할 최초 비중(1슬롯의 30~80%), 매트릭스 최대 손절폭 상한,
+  기존 매도 로직(장중 하드 손절 포함)이 매수 직후부터 관리.
+
+## 11. LIVE 운영
+
+### 11.1 흐름 (KR·US 같은 동작)
+1. 판단 실행(한국 14:00, 미국 13:50)에서 매수 신호가 나면 입력을 동결하고 LLM 재점검을 부른다.
+2. 재점검이 `decision=진입`이면 `prism_core/reentry_v3_live.process`가 안전 점검(스위치, 정규장 시간, 감시·세션 키, 하루 상한)을
+   하고, 통과한 건마다 키를 저널(`runtime/reentry_v3_live_{kr,us}.jsonl`, fsync)과 상태 파일에 먼저 남긴 뒤 주문 단계로 넘긴다.
+3. 주문 단계는 별도 프로세스 `tools/run_reentry_v3_entry.py`(초분할 LIVE 증액과 같은 격리 방식)에서 트래커를 띄워
+   `enter_reentry_candidate`를 부른다. 한국은 운영 배치와 같이 기본(첫) 계좌, 미국은 운영 배치와 같이 설정된 계좌마다 실행한다.
+4. `enter_reentry_candidate`는 정상 신규 진입과 같은 순서로 점검한다: 이미 보유 중이면 건너뜀, 보유 슬롯(최대 10, 배치와 같은
+   보유 행 수 기준), 같은 업종 한도, 국면 최소 점수(설정 시), 초분할 최소 점수, 매수 점수 ≥ 최소 점수, 최종 매수 게이트
+   (`evaluate_production_buy_gate`), 재매수 쿨다운(`reentry_cooldown`, 배치와 동일). 미국은 추가로 새 시세·시나리오 계약,
+   적응형 소유 종목 라우팅, 매매일지 점수 보정을 배치와 같이 적용한다.
+5. 통과하면 배치에서 떼어 낸 `_enter_eligible_candidate`가 그대로 실행된다: 새 시세 재검증, 초분할 `prepare_entry`
+   (B3 최초 비중·add_plan 부착), 보유 행·시나리오 저장, 주문(대기/일반 경로, 다계좌는 기존 방식 그대로), 매매일지,
+   텔레그램 매수 메시지, Redis/GCP 신호(position_fraction 포함). 배치 동작은 바뀌지 않았다(코드 이동만, 테스트 확인).
+
+### 11.2 시나리오와 메시지
+- 시나리오 = 재점검 JSON + `reentry: {version: "reentry_v3", signal: REBREAK | RETEST | SHAKEOUT_RECLAIM, attempt k/3,
+  level(기준 가격), watch_id, source, trigger_date, decision_price, ...}`.
+- `stop_loss` = 상한 적용된 재진입 손절, `target_price` = BUY 규칙 목표(목표 근거가 없으면 재점검 값), 그에 맞춰
+  `entry_price`·`expected_return_pct`·`expected_loss_pct`·`risk_reward_ratio`를 다시 계산(최종 게이트의 산술 점검과 일치).
+- `trigger_type`: 한국 "재진입(기준 가격 재돌파 매수 / 기준 가격 눌림 지지 매수 / 흔들기 후 회복 매수)",
+  미국 "Re-entry (REBREAK / RETEST / SHAKEOUT_RECLAIM)". 보유 행·메시지·대시보드·트리거별 승률이 일반 진입과 구분된다.
+- 텔레그램 매수 메시지에 한 줄이 붙는다: "🔁 재진입 매수 (기준 가격 눌림 지지 매수, 1/3번째 시도) / 이 종목은 이전에
+  손절했던 종목입니다. 첫 매수 때 돌파했던 가격대(11,950원)까지 내려왔다가 지지를 받고 버텼습니다." 재진입이 아닌 매수
+  메시지는 바이트 단위로 같다.
+
+### 11.3 안전장치
+| 장치 | 동작 |
+|---|---|
+| 전체 스위치 | `REENTRY_V3_LIVE_ENABLED` 기본 false. false면 주문 단계 자체를 부르지 않음(원장·재점검은 그대로) |
+| 시장 스위치 | `REENTRY_V3_LIVE_MARKETS` 기본 `KR,US` |
+| 하루 상한 | 시장당 세션당 최대 2건(주문 시도 기준, 실패·오류도 셈) |
+| 중복 방지 | 감시 ID + 세션 키를 주문 전에 저널에 기록. 같은 키는 어떤 결과였든 같은 날 다시 주문하지 않음 |
+| 시간 | 한국 09:05~15:15, 미국 09:35~15:45(현지, 평일)만. 동시호가·장 시작 전·마감 단일가 시간 제외. 계획 시점과 주문 직전 두 번 확인 |
+| 보유·슬롯·업종 | 이미 보유면 건너뜀, 최대 10 보유, 업종 한도 — 정상 진입과 동일 |
+| 오류 | 예외는 로그·이벤트(`reentry_v3.live_entry` status=ERROR)로 남기고 러너는 계속, 같은 날 재시도 없음 |
+| dry-run | `--dry-run`은 LLM·주문·파일 쓰기 없음 |
+| 기존 차단 | 신호 발행 차단(`PRISM_DISABLE_SIGNAL_PUBLISH`)과 무주문 효과(`_no_order_effects`) 경로를 그대로 따름 |
+
+### 11.4 매수 뒤 관리와 원장 연결
+- 매수된 포지션은 다른 보유 종목과 똑같이 기존 로직이 관리한다: 트래커 매도 판단, 장중 하드 손절(stop_loss×0.995),
+  초분할 증액·add_plan 보유 점검, 기존 추세 이탈 청산.
+- 원장: 그날 판단에 `live`(상태, 보유 행 ID, 체결 기준가)가 붙고, 그 시도는 `real: true`가 된다. 실제 포지션이 있는 동안
+  가상 청산(E1)은 계산하지 않고 새 시도도 열지 않는다. 감시 기간이 끝나도 실제 포지션은 그대로 둔다.
+- 매도되면 마감 실행이 `trading_history`/`us_trading_history`(읽기 전용)에서 같은 watch_id·신호일의 매도를 찾아 시도를
+  닫는다. 손절(`exit_kind='stop'`, 또는 기록이 없고 -3% 이하)이면 손절로 세어 다음 거래일 쉼과 G1 손절일에 반영된다.
+  최대 3회에는 매수 시점에 이미 포함된다. 다계좌(미국)는 첫 계좌의 매도를 원장 기준으로 쓴다.
+- 미국 배치와 같이, 브로커 주문이 실패해도 전략 보유 행은 남는다(기존 배치 동작). 원장도 BOUGHT로 기록하고 그 행을 따른다.
+
+### 11.5 .env (운영 서버)
+```dotenv
+REENTRY_V3_LLM_RECHECK=true        # LIVE 승인에 필요(재점검이 없으면 매수도 없음)
+REENTRY_V3_LIVE_ENABLED=true       # 실계좌 매수 켜기(기본 false)
+REENTRY_V3_LIVE_MARKETS=KR,US      # 한 시장만 켜려면 KR 또는 US
+# 선택: REENTRY_V3_SHADOW_ENABLED=true(기본), MICRO_SPLIT_LIVE_ENABLED는 기존 값 유지(초분할 최초 비중·add_plan)
+```
+
+### 11.6 끄기·되돌리기
+- 즉시 중단: `.env`에서 `REENTRY_V3_LIVE_ENABLED=false`(다음 실행부터 주문 없음, 원장·재점검은 계속).
+  한 시장만: `REENTRY_V3_LIVE_MARKETS=US`처럼 남길 시장만 적기.
+- 전체 중단: cron 네 줄 주석 처리 또는 정책 `enabled:false`.
+- 이미 산 포지션은 끈 뒤에도 기존 매도 로직이 계속 관리한다(별도 정리 불필요). 수동 청산은 평소 절차대로.
+- 코드 되돌리기: 이 PR revert. `_enter_eligible_candidate` 분리는 동작 변화가 없으므로 같이 되돌려도 배치에 영향 없음.
+
+### 11.7 첫 실거래일 점검표
+1. 14:00(한국)/13:50(미국) 실행 로그: 시세 수신 수, 신호 수, 재점검 결과(OK/승인 수), `live_results`.
+2. 매수 건: 저널 `submit`→`result` 한 쌍, 텔레그램 메시지의 재진입 문구, 보유 행 `trigger_type`이 "재진입(...)"인지.
+3. 보유 행 시나리오의 `reentry` 메타데이터, `stop_loss`(상한 적용), `target_price`, 초분할 최초 비중(`micro_split`)·add_plan.
+4. 브로커 체결과 보유 행 일치(다계좌 포함), 하루 상한(시장당 2건) 초과 없음, 같은 종목 중복 매수 없음.
+5. 당일 장중 하드 손절 루프가 새 보유를 인식하는지(stop_loss×0.995), 다음 날 매도 판단·add_plan 점검에 들어오는지.
+6. 마감 실행(16:40/17:20) 뒤 상태 파일: 그날 판단 `live.status=BOUGHT`, 원장 시도 `real: true`.
+7. 첫 매도 뒤: 원장 시도가 실제 매도가로 닫히는지, 손절이면 다음 거래일 쉼이 걸리는지.
+8. 이상 시: `REENTRY_V3_LIVE_ENABLED=false`로 즉시 중단 후 저널·이벤트(`reentry_v3.live_entry`, `reentry_v3.live_skipped`)로 원인 확인.

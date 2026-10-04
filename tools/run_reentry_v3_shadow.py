@@ -1,15 +1,16 @@
-"""Re-entry v3 SHADOW runner (campaign re-entry). No orders, no Telegram; one BUY recheck per live
-trigger only when REENTRY_V3_LLM_RECHECK=true (.env or environment; default off), never with
---no-llm or a dry run.
+"""Re-entry v3 runner (campaign re-entry). One BUY recheck per live trigger when
+REENTRY_V3_LLM_RECHECK=true (.env or environment; default off), never with --no-llm or a dry run.
+Real buys only when REENTRY_V3_LIVE_ENABLED=true (default off) for a market in
+REENTRY_V3_LIVE_MARKETS, at most 2 per market and session (prism_core/reentry_v3_live.py).
 
     python tools/run_reentry_v3_shadow.py --market KR --phase intraday   # 14:00 KST decision
     python tools/run_reentry_v3_shadow.py --market KR --phase close      # 16:40 KST after the close
     python tools/run_reentry_v3_shadow.py --market US --phase intraday   # 13:50 New York decision
     python tools/run_reentry_v3_shadow.py --market US --phase close      # 17:20 New York
+    python tools/run_reentry_v3_shadow.py --market KR --phase intraday --dry-run   # no LLM, no order, no write
 
 The decision run sits before the afternoon batches (KR 14:46, US 14:30 ET) and before the KR
 closing auction (15:20), where KIS current-price and order behaviour differ.
-    python tools/run_reentry_v3_shadow.py --market KR --phase intraday --dry-run   # writes nothing
 """
 from __future__ import annotations
 

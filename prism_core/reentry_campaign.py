@@ -1,4 +1,4 @@
-"""Campaign re-entry v3 (KR/US): pure rules, no I/O. Design: docs/REENTRY_V3_CAMPAIGN_SHADOW_ko.md.
+"""Campaign re-entry v3 (KR/US): pure rules, no I/O. Design: docs/REENTRY_V3_LIVE_ko.md.
 
 A stock that was stopped out (STOP_EXIT) or analysed and held off (LOCATION_SKIP /
 ENTER_BLOCKED) is re-tried around one key level L (the "reference price") for up to 60
@@ -448,8 +448,23 @@ def _close_all(campaign, bars, j, reason):
         for shadow in att["shadow_exits"].values():
             if shadow["status"] == "OPEN":
                 _close(shadow, bars, j, bars[j]["close"], reason, campaign["rule"])
-    if campaign["_pos"] is not None:
+    if campaign["_pos"] is not None and not campaign["attempts"][campaign["_pos"]].get("real"):
         _close_attempt(campaign, bars, j, bars[j]["close"], reason, campaign["rule"])
+
+
+def _close_real(campaign, exit_info, j=None):
+    """Close the LIVE position's attempt with the real sale from trading_history (the sell logic decided)."""
+    pos = campaign["attempts"][campaign["_pos"]]
+    price = float(exit_info["price"])
+    ret = price / pos["entry"] - 1
+    reason = "stop" if exit_info.get("stop") else "real_exit"
+    pos.update(status="CLOSED", exit_date=exit_info["date"], exit_price=round(price, 6), exit_reason=reason,
+               exit_rule="REAL", real_exit_kind=exit_info.get("exit_kind"), ret=round(ret, 6),
+               slot=round(pos["alloc"] * ret, 6))
+    campaign["pnl_slot"] += pos["slot"]
+    campaign["_pos"], campaign["_last_exit"], campaign["_last_stop"] = None, j, reason == "stop"
+    if reason == "stop" and ret < 0:
+        campaign["virtual_stop_dates"].append(exit_info["date"])
 
 
 def _step(campaign, bars, j):
@@ -461,7 +476,11 @@ def _step(campaign, bars, j):
                     _close(shadow, bars, j, hit[0], hit[1], rule)
     if campaign["_pos"] is not None:
         pos = campaign["attempts"][campaign["_pos"]]
-        if j >= pos["_start"]:
+        if pos.get("real"):                    # a real position: only its recorded sale closes it
+            exit_info = (pos.get("live") or {}).get("exit")
+            if exit_info and bars[j]["date"] >= exit_info["date"]:
+                _close_real(campaign, exit_info, j)
+        elif j >= pos["_start"]:
             hit = EXIT_RULES[pos["exit_rule"]](bars, j, pos)
             if hit:
                 _close_attempt(campaign, bars, j, hit[0], hit[1], pos["exit_rule"])
@@ -494,6 +513,11 @@ def _open(campaign, setup, bars, i, trigger, *, mode, decision, regime, pulse, s
     if decision:
         record.update(decision_price=decision.get("decision_price"), decision_time=decision.get("decision_time"),
                       decision_low=decision.get("day_low"))
+        live = decision.get("live") or {}
+        if live.get("status") == "BOUGHT":   # LIVE order: the existing sell logic manages it from here
+            record["real"] = True
+            record["live"] = {k: live.get(k) for k in ("key", "holding_ids", "entry_price", "exit")}
+            record["exit_rule"] = "REAL"
     campaign["attempts"].append(record)
     campaign["_pos"] = len(campaign["attempts"]) - 1
     bar = bars[i]
@@ -502,7 +526,7 @@ def _open(campaign, setup, bars, i, trigger, *, mode, decision, regime, pulse, s
     # An entry at the decision time still lives through the rest of the session: a new low after
     # the decision that reaches the stop exits on the entry day (the low so far was above the stop).
     low_so_far = record.get("decision_low")
-    if mode == "INTRADAY" and low_so_far and bar["low"] < low_so_far:
+    if mode == "INTRADAY" and low_so_far and bar["low"] < low_so_far and not record.get("real"):
         for shadow_rule, shadow in record["shadow_exits"].items():
             if bar["low"] <= shadow["stop"]:
                 shadow["_start"] = i
@@ -643,6 +667,11 @@ def replay(setup, bars, anchor, *, decisions=None, regime_at=None, pulse_at=None
                 equity = camp["pnl_slot"] + camp["mark_slot"]
                 camp["_peak"] = max(camp["_peak"], equity)
                 camp["mdd_slot"] = round(min(camp["mdd_slot"], equity - camp["_peak"]), 6)
+    for camp in camps.values():      # a real sale after the last processed bar (or after the watch ended)
+        if camp["_pos"] is not None and camp["attempts"][camp["_pos"]].get("real"):
+            exit_info = (camp["attempts"][camp["_pos"]].get("live") or {}).get("exit")
+            if exit_info:
+                _close_real(camp, exit_info)
     complete = a + policy["horizon"] <= n - 1
     upcoming = {}
     if last == n - 1 and not complete:
