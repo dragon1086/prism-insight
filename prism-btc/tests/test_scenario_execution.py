@@ -18,6 +18,70 @@ def notice_fixture():
     return active,children,observed
 
 
+def flat_notice_fixture(broker, *, leverage="10", known_entry=True):
+    active, _, observed = notice_fixture()
+    observed.update(exchange_flat=True)
+    observed["position"].update(size="0", avgPrice="", stopLoss="", leverage=leverage, side="")
+    children = [dict(kind=kind, status="TERMINAL", evidence=dict(order={}, executions=[dict(
+        execId=eid, execQty="1", execPrice=price, execTime=when)]))
+        for kind, eid, price, when in (("entry", "old-entry", "100", "1799999000000"),
+                                      ("exit", "final-exit", "99", "1799999999000"))]
+    if known_entry:
+        event = dict(event_id="scenario-fill-old-entry", kind="FILLED")
+        broker.conn.execute("INSERT INTO llm_scenario_broker_notices VALUES(?,?,?)",
+                            (event["event_id"], active["scenario_id"], json.dumps(event)))
+        broker.conn.execute("CREATE TABLE llm_scenario_outbox(event_id TEXT PRIMARY KEY)")
+        broker.conn.execute("INSERT INTO llm_scenario_outbox VALUES(?)", (event["event_id"],))
+    settlement = dict(execution_ids=["old-entry", "final-exit"], net_pnl=-1.1, fees=.1, funding_net=0)
+    return active, children, observed, settlement
+
+
+@pytest.mark.parametrize("leverage", ["10", ""])
+def test_flat_blank_optional_fields_close_once_without_duplicate_partial(live, leverage):
+    broker, exchange = live
+    active, children, observed, settlement = flat_notice_fixture(broker, leverage=leverage)
+    events = broker._notices(active, children, observed, True, settlement)
+    assert [event["kind"] for event in events] == ["CLOSED"]
+    assert events[0]["net_pnl"] == -1.1
+    assert not broker.conn.execute("SELECT 1 FROM llm_scenario_broker_notices WHERE event_id='scenario-fill-final-exit'").fetchone()
+    broker.conn.execute("INSERT INTO llm_scenario_outbox VALUES(?)", (events[0]["event_id"],))
+    broker.conn.commit()
+    restarted = ScenarioDemoBroker(broker.conn, session=exchange, expected_main_uid="123")
+    assert restarted._notices(active, children, observed, True, settlement) == []
+    assert exchange.writes == []
+
+
+def test_flat_known_historical_fill_skipped_before_optional_enrichment(live):
+    broker, _ = live
+    active, children, observed, _ = flat_notice_fixture(broker, leverage="")
+    assert broker._notices(active, children[:1], observed, True, None) == []
+
+
+def test_flat_unsettled_exit_keeps_generic_notice_without_old_stop(live):
+    broker, _ = live
+    active, children, observed, _ = flat_notice_fixture(broker, leverage="")
+    events = broker._notices(active, children, observed, True, None, pending=True)
+    exit_event = next(event for event in events if event["kind"] == "PARTIAL")
+    assert exit_event["hard_stop"] is None
+    assert exit_event["exchange_leverage"] is None
+    assert exit_event["settlement_confirmed"] is False
+    assert any(event["kind"] == "PENDING" for event in events)
+
+
+def test_prior_partial_notice_preserved_when_final_settlement_arrives(live):
+    broker, _ = live
+    active, children, observed, settlement = flat_notice_fixture(broker)
+    before = broker._notices(active, children, observed, True, None, pending=True)
+    partial = next(event for event in before if event["kind"] == "PARTIAL")
+    for event in before:
+        broker.conn.execute("INSERT INTO llm_scenario_outbox VALUES(?)", (event["event_id"],))
+    after = broker._notices(active, children, observed, True, settlement)
+    assert [event["kind"] for event in after if event["kind"] != "RESOLVED"] == ["CLOSED"]
+    stored = json.loads(broker.conn.execute("SELECT body FROM llm_scenario_broker_notices WHERE event_id=?",
+                                           (partial["event_id"],)).fetchone()[0])
+    assert stored == partial
+
+
 def test_notice_economic_changes_durable_and_no_exchange_writes(live):
     b,e=live
     active,children,observed=notice_fixture()
@@ -866,6 +930,13 @@ def test_runtime_broker_partial_adjust_exit_settlement_pipeline(live):
     assert exited["status"]=="intent_pending",exited
     exit_child=next(c for c in b.children() if c["kind"]=="exit")
     e.fill(exit_child["link_id"],float(exit_child["request"]["qty"]))
+    # Real Bybit flat rows clear optional position prices, not numeric zeroes.
+    original_positions=e.get_positions
+    def flat_positions(**kwargs):
+        response=original_positions(**kwargs)
+        response["result"]["list"][0].update(stopLoss="",avgPrice="")
+        return response
+    e.get_positions=flat_positions
     e.now+=301
     action[0]="WAIT"
     final=rt.tick()
@@ -873,6 +944,8 @@ def test_runtime_broker_partial_adjust_exit_settlement_pipeline(live):
     assert rt.state()["breaker"]["consecutive_losses"]==1
     notice_bodies=[json.loads(r[0]) for r in b.conn.execute("SELECT body FROM llm_scenario_broker_notices")]
     assert {"FILLED","PARTIAL","PROTECTION","CLOSED"} <= {n["kind"] for n in notice_bodies}
+    assert len([n for n in notice_bodies if n["kind"]=="CLOSED"])==1
+    assert not any(n["event_id"]=="scenario-fill-"+e.fills[-1]["execId"] for n in notice_bodies)
 
 
 def test_runtime_aborted_adjust_settles_no_fills_then_requests_fresh_model(live):

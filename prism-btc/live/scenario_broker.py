@@ -613,7 +613,7 @@ class ScenarioDemoBroker(ScenarioExecution):
     def _notices(self,active,children,observed,protected,settlement,pending=False,accounting=None):
         """Immutable first-observation events; poll time never changes event IDs."""
         from live.scenario_notice import render_notice
-        from live.scenario_notice_evidence import position_snapshot, economic_fingerprint
+        from live.scenario_notice_evidence import position_snapshot, economic_fingerprint, number
         snapshot=position_snapshot(active,children,observed,protected,pending,accounting)
         previous=self.conn.execute("SELECT revision,body FROM llm_scenario_notice_positions WHERE scenario_id=?",(active["scenario_id"],)).fetchone()
         before=json.loads(previous[1]) if previous else None
@@ -638,11 +638,18 @@ class ScenarioDemoBroker(ScenarioExecution):
                 resolution_confirmed=True,resolution="FILLED_PROTECTED" if not observed["exchange_flat"] else
                     ("FLAT_SETTLED" if settlement.get("execution_ids") else "CANCELLED_UNFILLED")))
         for child,fill in fills:
-            event=dict(event_id="scenario-fill-"+fill["execId"],kind="FILLED" if child["kind"]=="entry" else "PARTIAL",
+            event_id="scenario-fill-"+fill["execId"]
+            if self.conn.execute("SELECT 1 FROM llm_scenario_broker_notices WHERE event_id=?",(event_id,)).fetchone():
+                continue  # Immutable old events do not need current-position enrichment.
+            if child["kind"]!="entry" and settlement and settlement.get("execution_ids"):
+                continue  # One CLOSED summary covers newly observed final exits.
+            fresh_position=not observed["exchange_flat"] and 0<=observed["captured_at"]-float(fill["execTime"])/1000<=120
+            event=dict(event_id=event_id,kind="FILLED" if child["kind"]=="entry" else "PARTIAL",
                 timestamp=float(fill["execTime"])/1000,side=active["side"],fill_confirmed=True,
                 price=float(fill["execPrice"]),quantity=float(fill["execQty"]),entry_price=avg,entry_timestamp=entry_at,
-                hard_stop=float(observed["position"].get("stopLoss",0)) or active["hard_stop"],
-                protection_confirmed=protected,exchange_leverage=float(observed["position"]["leverage"]),
+                hard_stop=number(observed["position"].get("stopLoss"),positive=True) if fresh_position else None,
+                protection_confirmed=protected and fresh_position,
+                exchange_leverage=number(observed["position"].get("leverage"),positive=True) if fresh_position else None,
                 scenario_budget=active["initial_equity"]*.02,settlement_confirmed=False)
             if child["kind"]=="entry" and not pending:
                 # More fills belong to this same scenario, not a fresh cycle.
