@@ -13,12 +13,96 @@ def position(**updates):
     return value
 
 
+@pytest.mark.parametrize('invalid', ['missing', 'nonflat', 'wrong_account', 'wrong_event', 'unverified', 'stale', 'prefill', 'negative', 'nan', 'infinity', 'boolean'])
+def test_closed_equity_requires_same_event_verified_post_exit_flat_snapshot(invalid):
+    snapshot = position(quantity=0, timestamp=1063)
+    snapshot['account_snapshot'].update(timestamp=1063, equity=10046.15)
+    if invalid == 'missing':
+        snapshot = None
+    elif invalid == 'nonflat':
+        snapshot['quantity'] = .1
+    elif invalid == 'unverified':
+        snapshot['verified'] = False
+    elif invalid in ('stale', 'prefill'):
+        snapshot['timestamp'] = 1121 if invalid == 'stale' else 999
+        snapshot['account_snapshot']['timestamp'] = snapshot['timestamp']
+    else:
+        account = snapshot['account_snapshot']
+        if invalid in ('wrong_account', 'wrong_event'):
+            account['same_account' if invalid == 'wrong_account' else 'same_event'] = False
+        else:
+            account['equity'] = {'negative': -1, 'nan': float('nan'), 'infinity': float('inf'), 'boolean': True}[invalid]
+    event = dict(kind='CLOSED', timestamp=1000, position_after=snapshot,
+                 settlement_confirmed=True, flat_confirmed=True, orders_terminal=True,
+                 net_pnl=46.15, fees=1., funding=0., scenario_initial_equity=10000)
+    out = render_notice(event)
+    assert '💰 종료 후 순자산: 미확인' in out
+    assert '10,046.15 USDT' not in out
+
+
+@pytest.mark.parametrize('account_time', [999, 1000, 1064, 1121])
+def test_closed_equity_account_and_flat_observation_must_be_identical(account_time):
+    snapshot = position(quantity=0, timestamp=1063)
+    snapshot['account_snapshot'].update(timestamp=account_time, equity=10046.15)
+    event = dict(kind='CLOSED', timestamp=1000, position_after=snapshot,
+                 settlement_confirmed=True, flat_confirmed=True, orders_terminal=True,
+                 net_pnl=46.15, fees=1., funding=0., scenario_initial_equity=10000)
+    assert '종료 후 순자산: 미확인' in render_notice(event)
+
+
 def filled(after=None, **updates):
     value = dict(kind="FILLED", timestamp=1000, side="LONG", fill_confirmed=True,
         protection_confirmed=True, price=84750, quantity=.1,
         position_after=position() if after is None else after)
     value.update(updates)
     return value
+
+
+def test_protection_always_shows_unchanged_holdings_and_tp():
+    out = render_notice(dict(kind="PROTECTION", timestamp=1000, protection_confirmed=True,
+        position_before=position(timestamp=900), position_after=position(hard_stop=84600)))
+    for text in ("0.1 BTC", "평단 84,750.00", "🎯 익절 TP 85,200.00", "+27.00 USDT", "60%(0.06 BTC)"):
+        assert text in out
+
+
+def test_protection_empty_tp_explicit_runner_and_compact_accounting():
+    after = position(quantity=.072, average_entry_price=84780, hard_stop=85140,
+                     take_profits=[], scenario_realized_net_pnl=24.10042936,
+                     scenario_accounting_confirmed=True, scenario_risk=30,
+                     scenario_risk_includes_pending=True)
+    after['account_snapshot'].update(equity=9662.79822, position_margin=617.1513192)
+    before = dict(after, timestamp=900, hard_stop=85000)
+    out = render_notice(dict(kind="PROTECTION", timestamp=1000, entry_timestamp=500,
+                             protection_confirmed=True, position_before=before, position_after=after))
+    for text in ("고정 TP 없음", "남은 전량 추세 추종", "0.072 BTC", "평단 84,780.00",
+                 "85,000.00 → 85,140.00", "+25.92 USDT", "+50.02 USDT", "계좌 +0.52%"):
+        assert text in out
+    assert "첫 진입" not in out
+    assert out.count("01/01 09:16:40 KST") == 1
+    assert len(out) <= 550 and len(out.splitlines()) <= 23
+
+
+def test_protection_missing_tp_is_not_reported_as_no_tp():
+    out = render_notice(dict(kind="PROTECTION", timestamp=1000, protection_confirmed=True,
+        position_before=position(timestamp=900), position_after=position(take_profits=None)))
+    assert "익절 TP" in out and "미확인" in out
+    assert "고정 TP 없음" not in out
+
+
+def test_current_targets_keep_distinct_account_observation_time():
+    after = position()
+    after['account_snapshot']['timestamp'] = 990
+    out = render_notice(dict(kind="PROTECTION", timestamp=1000, protection_confirmed=True,
+        position_before=position(timestamp=900), position_after=after))
+    assert "계좌 01/01 09:16:30 KST" in out
+    assert out.count("01/01 09:16:40 KST") == 1
+
+
+def test_empty_tp_does_not_assert_unconfirmed_sl_protection():
+    out = render_notice(filled(position(take_profits=[], hard_stop=None), protection_confirmed=False))
+    assert "고정 TP 없음" in out
+    assert "남은 전량 추세 추종 · SL 보호 미확인" in out
+    assert "⚠ 보호주문 적용 미확인" in out
 
 
 def test_compact_initial_status_is_not_a_new_entry():
@@ -30,11 +114,12 @@ def test_compact_initial_status_is_not_a_new_entry():
     assert len(out) <= 750 and len(out.splitlines()) <= 28
 
 
-def test_compact_change_only_compares_changed_fields():
+def test_compact_change_compares_price_and_keeps_current_targets():
     out = render_notice(dict(kind="PROTECTION", timestamp=1000, protection_confirmed=True,
         position_before=position(timestamp=900), position_after=position(hard_stop=84600)))
     assert "84,500.00 → 84,600.00" in out
-    assert "-25.00 → -15.00 USDT" in out
+    assert "예상 손익: -15.00 USDT" in out
+    assert "SL 손익 -25.00 →" not in out
     assert "변경 없음" not in out and "익절 목표" not in out
     assert len(out) <= 650 and len(out.splitlines()) <= 24
 
@@ -123,7 +208,8 @@ def test_verified_before_after_includes_target_only_change_and_timestamps():
     after = position(take_profits=[dict(price=85300, quantity=.06)])
     out = render_notice(dict(kind="PROTECTION", timestamp=1000, side="LONG",
         protection_confirmed=True, change_type="updated", position_before=before, position_after=after))
-    assert "조회" in out and "변경 없음" not in out
+    assert out.count("01/01 09:16:40 KST") == 1 and "변경 없음" not in out
+    assert "🛡 손절 SL 84,500.00 USDT" in out
     assert "85,200.00" in out and "85,300.00" in out and "→" in out
 
 
@@ -248,7 +334,7 @@ def test_twenty_targets_are_valid_and_message_is_bounded_without_wrong_runner(ma
     after = position(**{**before, "hard_stop":84600*magnitude})
     out = render_notice(dict(kind="PROTECTION", timestamp=1000, side="LONG", protection_confirmed=True,
         position_before=before, position_after=after))
-    assert "총 20개" not in out  # unchanged targets are omitted
+    assert "익절 TP 총 20개" in out  # current TP remains visible even unchanged
     assert len(out.encode("utf-16-le")) // 2 < 4096
     assert "실제 손실은 목표 초과 가능" in out
     changed_targets = [dict(price=item['price'] + 100*magnitude, quantity=item['quantity'])
@@ -265,18 +351,18 @@ def test_twenty_targets_are_valid_and_message_is_bounded_without_wrong_runner(ma
         assert "실제 손실은 목표 초과 가능" in out
 
 
-def test_stop_before_after_impact_uses_each_snapshot_own_equity_and_size():
+def test_current_stop_impact_uses_current_equity_and_size_not_prior_account():
     before = position(timestamp=700)
     before["account_snapshot"].update(timestamp=700, equity=5000)
     after = position(hard_stop=84600, quantity=.2)
     out = render_notice(dict(kind="PROTECTION", timestamp=1000, side="LONG",
         protection_confirmed=True, position_before=before, position_after=after))
-    assert "SL 손익 -25.00 → -30.00 USDT" in out
-    assert "계좌 -0.50% → -0.31%" in out
+    assert "예상 손익: -30.00 USDT · 계좌 -0.31%" in out
+    assert "-0.50%" not in out
     before["account_snapshot"]["same_account"] = False
     out = render_notice(dict(kind="PROTECTION", timestamp=1000, side="LONG",
         protection_confirmed=True, position_before=before, position_after=after))
-    assert "계좌 미확인 → -0.31%" in out
+    assert "예상 손익: -30.00 USDT · 계좌 -0.31%" in out
 
 
 def test_profitable_short_stop_before_after_preserves_signed_gain():
@@ -288,8 +374,8 @@ def test_profitable_short_stop_before_after_preserves_signed_gain():
     after["account_snapshot"].update(equity=200)
     out = render_notice(dict(kind="PROTECTION", timestamp=1000, side="SHORT",
         protection_confirmed=True, position_before=before, position_after=after))
-    assert "SL 손익 +0.10 → +0.50 USDT" in out
-    assert "계좌 +0.10% → +0.25%" in out
+    assert "99.00 → 95.00 USDT" in out
+    assert "예상 손익: +0.50 USDT · 계좌 +0.25%" in out
 
 
 def test_plan_is_not_fill_and_no_raw_payload():
@@ -434,7 +520,7 @@ def test_confirmed_cumulative_net_and_remaining_stop_are_not_double_counted():
             scenario_realized_net_pnl=23, scenario_accounting_confirmed=True)))
     assert "누적 실현손익(기록된 비용 포함): +23.00 USDT" in out
     assert "SL 시 매매 전체 예상: +13.00 USDT · 계좌 +0.14%" in out
-    assert "향후 수수료·슬리피지·펀딩 제외" in out
+    assert "TP/SL은 비용 전, 전체 예상은 향후 비용 전(수수료·슬리피지·펀딩)" in out
     assert "정산 미확정" in out  # aggregate accounting does not settle this fill
 
 
@@ -473,4 +559,4 @@ def test_partial_result_precedes_remaining_risk_and_is_not_repeated():
     assert out.index("정산 미확정") < out.index("📦 전체 포지션")
     assert out.count("정산 미확정") == 1
     assert "💵 청산 결과" not in out
-    assert "TP/SL 물량 손익은" in out
+    assert "TP/SL은 비용 전, 전체 예상은 향후 비용 전(수수료·슬리피지·펀딩)" in out

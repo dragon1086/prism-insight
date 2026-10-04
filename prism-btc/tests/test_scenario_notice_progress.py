@@ -53,6 +53,89 @@ def test_closed_notice_uses_original_equity_not_current_account(live):
     assert exchange.writes == []
 
 
+@pytest.mark.parametrize('equity', [9998.9, 0.])
+def test_closed_notice_preserves_verified_flat_equity_and_time(live, equity):
+    from live.scenario_notice import render_notice
+    broker, exchange = live
+    active, children, observed, settlement = flat_notice_fixture(broker)
+    observed['equity'] = equity
+    events = broker._notices(active, children, observed, True, settlement)
+    event = events[0]
+    assert event['position_after']['quantity'] == 0
+    assert event['position_after']['account_snapshot']['equity'] == equity
+    rendered = render_notice(event)
+    assert f'💰 종료 후 순자산: {equity:,.2f} USDT' in rendered
+    assert '조회' in rendered
+    observed['equity'] = 12345.
+    assert broker._notices(active, children, observed, True, settlement)[0] == event
+    assert exchange.writes == []
+
+
+@pytest.mark.parametrize('offset', [-1, 121])
+def test_closed_notice_does_not_attach_pre_exit_or_stale_equity(live, offset):
+    from live.scenario_notice import render_notice
+    broker, _ = live
+    active, children, observed, settlement = flat_notice_fixture(broker)
+    observed['captured_at'] = 1799999999 + offset
+    event = broker._notices(active, children, observed, True, settlement)[0]
+    assert 'position_after' not in event
+    assert '종료 후 순자산: 미확인' in render_notice(event)
+
+
+@pytest.mark.parametrize('offset', [0, 120])
+def test_closed_capture_time_inclusive_boundaries(live, offset):
+    broker, _ = live
+    active, children, observed, settlement = flat_notice_fixture(broker)
+    observed['captured_at'] = 1799999999 + offset
+    event = broker._notices(active, children, observed, True, settlement)[0]
+    assert event['position_after']['timestamp'] == observed['captured_at']
+
+
+@pytest.mark.parametrize('equity', [None, -1., float('nan'), float('inf'), True])
+def test_closed_invalid_optional_equity_never_blocks_valid_settlement(live, equity):
+    from live.scenario_notice import render_notice
+    broker, exchange = live
+    active, children, observed, settlement = flat_notice_fixture(broker)
+    observed['equity'] = equity
+    event = broker._notices(active, children, observed, True, settlement)[0]
+    assert 'position_after' not in event
+    assert '확정 순손익: -1.10 USDT' in render_notice(event)
+    assert '종료 후 순자산: 미확인' in render_notice(event)
+    assert exchange.writes == []
+
+
+@pytest.mark.parametrize('invalid', ['wrong_account', 'wrong_event', 'unverified', 'missing', 'nonflat'])
+def test_closed_producer_refuses_ineligible_optional_snapshot(live, monkeypatch, invalid):
+    from live import scenario_notice_evidence as evidence
+    from live.scenario_notice import render_notice
+    broker, _ = live
+    active, children, observed, settlement = flat_notice_fixture(broker)
+    candidate = evidence.position_snapshot(active, children, observed, True, False, None)
+    if invalid == 'missing':
+        candidate = None
+    elif invalid == 'unverified':
+        candidate['verified'] = False
+    elif invalid == 'nonflat':
+        candidate.update(quantity=.1, average_entry_price=100., hard_stop=99.)
+    else:
+        candidate['account_snapshot']['same_account' if invalid == 'wrong_account' else 'same_event'] = False
+    monkeypatch.setattr(evidence, 'position_snapshot', lambda *args: candidate)
+    event = broker._notices(active, children, observed, True, settlement)[0]
+    assert 'position_after' not in event
+    assert '종료 후 순자산: 미확인' in render_notice(event)
+
+
+def test_missing_equity_on_first_close_is_never_backfilled_on_retry(live):
+    broker, _ = live
+    active, children, observed, settlement = flat_notice_fixture(broker)
+    observed['equity'] = None
+    first = broker._notices(active, children, observed, True, settlement)[0]
+    observed['equity'] = 12345.
+    second = broker._notices(active, children, observed, True, settlement)[0]
+    assert second == first
+    assert 'position_after' not in second
+
+
 def test_multiple_fills_share_observation_total_without_per_fill_before(live):
     broker, exchange = live
     active, children, observed = notice_fixture()

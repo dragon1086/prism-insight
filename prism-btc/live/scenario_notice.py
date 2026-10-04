@@ -9,7 +9,7 @@ TITLES = {
     "PLAN": "📝 BTC 데모 매매 계획 · 주문 전",
     "SUBMITTED": "📨 BTC 데모 주문 접수 · 체결 미확정",
     "FILLED": "📌 BTC 데모 진입 체결",
-    "PROTECTION": "🛡 BTC 데모 보호주문 변경 확인",
+    "PROTECTION": "🛡 BTC 데모 보호 변경 확인",
     "PARTIAL": "✂️ BTC 데모 부분 청산 체결",
     "CLOSED": "🏁 BTC 데모 시나리오 종료 · 정산 확인",
     "PENDING": "⚠️ BTC 데모 상태 미확정 · 신규 주문 보류",
@@ -82,6 +82,25 @@ def _account(value, at):
     if equity is None or equity <= 0 or timestamp is None or abs(timestamp-at) > 120:
         return None
     return value
+
+
+def closed_account_snapshot(snapshot, closed_at):
+    """Only a verified post-exit flat observation; never initial equity + PnL.
+
+    Zero equity is valid for display, not a percentage denominator. Both the
+    position and account must be observed after the last exit, within 120s.
+    """
+    position = _position(snapshot, closed_at)
+    if position is None or position['quantity'] != 0 or position['timestamp'] < closed_at:
+        return None
+    account = position.get('account_snapshot')
+    if not isinstance(account, dict) or account.get('same_event') is not True or account.get('same_account') is not True:
+        return None
+    equity, timestamp = (_number(account.get(k)) for k in ('equity', 'timestamp'))
+    if (equity is None or equity < 0 or timestamp is None or timestamp != position['timestamp']
+            or not 0 <= timestamp-closed_at <= 120 or _time(timestamp) == '미확인'):
+        return None
+    return account
 
 
 def _targets(position, field):
@@ -167,17 +186,18 @@ def _position_lines(event, after):
             lines.extend(_partial_result_lines(event, after))
             if event.get("settlement_confirmed") is not True:
                 lines.append("손익·비용 정산 미확정: 확정 수익으로 집계하지 않음")
-    entry_at = _number(event.get("entry_timestamp"))
-    if event["kind"] == "PROTECTION" and entry_at is not None and _time(entry_at) != "미확인" and entry_at <= event["timestamp"]:
-        lines.append(f"첫 진입 {_time(entry_at)} · 같은 매매 추적")
-    if not changed or any(before.get(k) != after.get(k) for k in ("quantity", "average_entry_price", "side")):
+    if not changed:
         lines.extend(["", "📦 전체 포지션"])
     if changed:
+        holdings = []
         for field, label, fmt in (("quantity", "보유량", lambda v: f"{v:g} BTC"),
                                  ("average_entry_price", "평단", _money)):
             old, new = before.get(field), after.get(field)
-            if old != new:
-                lines.append(f"{label}: {fmt(old) if old is not None else '미확인'} → {fmt(new) if new is not None else '미확인'}")
+            value = fmt(new) if new is not None else '미확인'
+            if old != new and old is not None:
+                value = fmt(old) + " → " + value
+            holdings.append(f"{label} {value}")
+        lines.extend(["", "📦 " + " · ".join(holdings)])
         if before.get("side") != after.get("side"):
             names = {"LONG":"롱", "SHORT":"숏"}
             lines.append(f"방향: {names.get(before.get('side'), '보유 없음')} → {names.get(after.get('side'), '보유 없음')}")
@@ -204,50 +224,40 @@ def _position_lines(event, after):
     lines.extend(["", f"💰 계좌 순자산: {_money(equity)}", f"• 총 {capital} · {leverage_text} · {mode}"])
     # The short timestamp preserves the independent observation time without
     # repeating an entire date on every account field.
-    stamp = _time(after["timestamp"])
+    stamps = []
+    if after["timestamp"] != event["timestamp"]:
+        stamps.append("포지션 " + _time(after["timestamp"]))
     if account and account["timestamp"] != after["timestamp"]:
-        stamp += " / 계좌 " + _time(account["timestamp"])
-    if changed:
-        stamp = _time(before['timestamp']) + " → " + stamp
-    lines.append("• 조회 " + stamp)
+        stamps.append("계좌 " + _time(account["timestamp"]))
+    if stamps:
+        lines.append("• 조회 " + " / ".join(stamps))
     stop = _number(after.get("hard_stop"))
     missing = []
-    stop_changed = changed and before.get("hard_stop") != after.get("hard_stop")
     exposure_changed = changed and any(before.get(k) != after.get(k) for k in ("quantity", "average_entry_price", "side"))
-    if not changed or stop_changed or exposure_changed or stop is None or stop <= 0:
-        if stop is not None and stop > 0:
-            protected_gain = (stop-after["average_entry_price"]) * (1 if after["side"] == "LONG" else -1) >= 0
-            label = "수익 보호 SL" if protected_gain else "손절 SL"
-            prior = _number(before.get("hard_stop")) if changed else None
-            price = f"{_decimal(prior)} → {_decimal(stop)} USDT" if prior is not None else _money(stop)
-            lines.extend(["", f"🛡 {label} {price} · 남은 전량",
-                          "• 예상 손익: " + _target_text(after, stop, qty, equity)])
-            realized = _number(after.get("scenario_realized_net_pnl"))
-            if after.get("scenario_accounting_confirmed") is True and realized is not None:
-                remaining_pnl, _ = _stop_impact(after)
-                combined = realized + remaining_pnl if remaining_pnl is not None else None
-                lines.append(f"• 누적 실현손익(기록된 비용 포함): {_decimal(realized, True)} USDT")
-                if combined is not None and math.isfinite(combined):
-                    impact = f" · 계좌 {_percent(combined/equity*100, True)}" if equity is not None and math.isfinite(combined/equity*100) else ""
-                    lines.append(f"• SL 시 매매 전체 예상: {_decimal(combined, True)} USDT{impact}")
-                    lines.append("  누적 실현+잔여 SL 손익 · 향후 수수료·슬리피지·펀딩 제외")
-            if changed:
-                old_pnl, old_impact = _stop_impact(before)
-                new_pnl, new_impact = _stop_impact(after)
-                def money(v):
-                    return _decimal(v, True) if v is not None else "미확인"
-                def pct(v):
-                    return _percent(v, True) if v is not None else "미확인"
-                lines.append(f"SL 손익 {money(old_pnl)} → {money(new_pnl)} USDT · 계좌 {pct(old_impact)} → {pct(new_impact)}")
-        else:
-            missing.append("손절 SL")
+    if stop is not None and stop > 0:
+        protected_gain = (stop-after["average_entry_price"]) * (1 if after["side"] == "LONG" else -1) >= 0
+        label = "수익 보호 SL" if protected_gain else "손절 SL"
+        prior = _number(before.get("hard_stop")) if changed and before.get("hard_stop") != stop else None
+        price = f"{_decimal(prior)} → {_decimal(stop)} USDT" if prior is not None else _money(stop)
+        lines.extend(["", f"🛡 {label} {price} · 남은 전량",
+                      "• 예상 손익: " + _target_text(after, stop, qty, equity)])
+        realized = _number(after.get("scenario_realized_net_pnl"))
+        if after.get("scenario_accounting_confirmed") is True and realized is not None:
+            remaining_pnl, _ = _stop_impact(after)
+            combined = realized + remaining_pnl if remaining_pnl is not None else None
+            lines.append(f"• 누적 실현손익(기록된 비용 포함): {_decimal(realized, True)} USDT")
+            if combined is not None and math.isfinite(combined):
+                impact = f" · 계좌 {_percent(combined/equity*100, True)}" if equity is not None and math.isfinite(combined/equity*100) else ""
+                lines.append(f"• SL 시 매매 전체 예상: {_decimal(combined, True)} USDT{impact}")
+    else:
+        missing.append("손절 SL")
     for field, label in (("take_profits", "익절 TP"), ("partial_stops", "부분 손절")):
         targets = _targets(after, field)
         old = _targets(before, field) if changed else None
         if targets is None:
             missing.append(label)
             continue
-        if changed and targets == old and not exposure_changed:
+        if field != "take_profits" and changed and targets == old and not exposure_changed:
             continue
         if changed and targets != old:
             previous = " / ".join(f"{_decimal(t['price'])}({t['quantity']:g} BTC)" for t in old[:2]) if old else ("없음" if old == [] else "미확인")
@@ -259,25 +269,29 @@ def _position_lines(event, after):
         if len(targets) > 2:
             lines.append(f"{label} 총 {len(targets)}개 · 나머지 {len(targets)-2}개 상세 생략")
         if field == "take_profits":
+            if not targets:
+                lines.extend(["", "🎯 고정 TP 없음"])
             total = sum(t["quantity"] for t in targets)
             remaining = 0 if math.isclose(qty, total, rel_tol=1e-12, abs_tol=0) else max(0, qty-total)
             if remaining > 1e-12:
-                lines.append(f"익절 후 {remaining/qty*100:g}% 추세 추종 · SL 보호" if targets else "남은 전량 추세 추종 · SL 보호")
+                protection = "SL 보호" if event.get("protection_confirmed") is True and stop is not None and stop > 0 else "SL 보호 미확인"
+                lines.append((f"익절 후 {remaining/qty*100:g}% 추세 추종" if targets else "남은 전량 추세 추종") + " · " + protection)
     if missing:
         lines.append("⚠ 미확인: " + "·".join(missing))
     budget, initial = (_number(after.get(k)) for k in ("scenario_budget", "scenario_initial_equity"))
     risk = _number(after.get("scenario_risk"))
     if budget is not None and budget >= 0:
         basis = _percent(budget/initial*100) if initial is not None and initial > 0 and math.isfinite(budget/initial*100) else "비율 미확인"
-        text = f"매매 전체 손실 목표 {basis}({_money(budget)}, 시작 계좌 기준)"
+        text = f"전체 매매 손실 목표 {basis}({_money(budget)}, 시작 계좌 기준)"
+        lines.extend(["", "📌 " + text])
         if risk is not None and risk >= 0:
             risk_pct = _percent(risk/initial*100) if initial is not None and initial > 0 and math.isfinite(risk/initial*100) else "비율 미확인"
-            text += f" · 누적손실+잔여위험 {risk_pct}({_money(risk)})"
+            text = f"• 누적손실+잔여위험 {risk_pct}({_money(risk)})"
             text += " · 비용·미체결 포함" if after.get("scenario_risk_includes_pending") is True else " · 미체결 포함 미확인"
-        lines.extend(["", "📌 " + text])
+            lines.append(text)
     else:
         lines.append("매매 전체 손실 목표 미확인")
-    lines.extend(["※ TP/SL 물량 손익은 수수료·슬리피지·펀딩 전. 배율은 단순환산.",
+    lines.extend(["※ TP/SL은 비용 전, 전체 예상은 향후 비용 전(수수료·슬리피지·펀딩). 배율 단순환산.",
                   "증거금≠손실한도, 실제 손실은 목표 초과 가능."])
     return lines
 def render_notice(event: dict) -> str:
@@ -429,6 +443,11 @@ def render_notice(event: dict) -> str:
             if kind == "CLOSED":
                 raise ValueError("complete_cost_evidence_required")
             lines.append("손익·비용 정산 미확정: 확정 수익으로 집계하지 않음")
+        if kind == "CLOSED":
+            closed_account = closed_account_snapshot(event.get('position_after'), at)
+            lines.append("💰 종료 후 순자산: " + (
+                f"{_money(closed_account['equity'])} · 조회 {_time(closed_account['timestamp'])}"
+                if closed_account else "미확인"))
     if kind in {"FILLED", "PARTIAL", "PROTECTION"} and after is None:
         remaining = _number(event.get("remaining_quantity"))
         if remaining is not None and remaining >= 0:

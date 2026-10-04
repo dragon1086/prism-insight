@@ -5,6 +5,72 @@ import pytest
 from live.scenario_outbox import enqueue, flush
 
 
+@pytest.mark.parametrize('equity,expected', [
+    (None, '💰 종료 후 순자산: 미확인'),
+    (0., '💰 종료 후 순자산: 0.00 USDT'),
+    (10030.42, '💰 종료 후 순자산: 10,030.42 USDT'),
+])
+def test_closed_account_equity_reaches_sender_without_estimation_or_repeat(tmp_path, equity, expected):
+    from tests.test_scenario_notice import position
+    event = dict(kind='CLOSED', timestamp=1000, settlement_confirmed=True,
+                 flat_confirmed=True, orders_terminal=True, net_pnl=46.15,
+                 fees=1., funding=0., scenario_initial_equity=10000)
+    if equity is not None:
+        snapshot = position(quantity=0, timestamp=1063)
+        snapshot['account_snapshot'].update(equity=equity, timestamp=1063)
+        event['position_after'] = snapshot
+    conn = sqlite3.connect(tmp_path/'closed-equity.db')
+    try:
+        enqueue(conn, 'closed-equity', event)
+        conn.commit()
+        sent = []
+        def sender(body, kind):
+            assert kind == 'CLOSED' and expected in body
+            assert '10,046.15 USDT' not in body  # Initial + net is not account evidence.
+            assert '시작 계좌 10,000.00 USDT 대비 +0.46%' in body
+            assert '전체 포지션' not in body and '🎯' not in body
+            sent.append(body)
+            return 456
+        assert flush(conn, sender=sender) == dict(sent=1, unknown=0)
+        assert flush(conn, sender=lambda *args: pytest.fail('duplicate close')) == dict(sent=0, unknown=0)
+        assert len(sent) == 1
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize('targets,expected', [
+    ([], '🎯 고정 TP 없음'),
+    ([dict(price=85200, quantity=.06)], '🎯 익절 TP 85,200.00 USDT'),
+])
+def test_protection_current_targets_reach_plain_text_sender_once(tmp_path, targets, expected):
+    from copy import deepcopy
+    from tests.test_scenario_notice import position
+    event = dict(kind='PROTECTION', timestamp=1000, protection_confirmed=True,
+                 position_before=position(timestamp=900, take_profits=targets),
+                 position_after=position(hard_stop=84600, take_profits=targets))
+    original = deepcopy(event)
+    conn = sqlite3.connect(tmp_path/'targets.db')
+    delivered = []
+    try:
+        enqueue(conn, 'protection-targets', event)
+        conn.commit()
+        def sender(body, kind):
+            assert kind == 'PROTECTION'
+            assert expected in body and '\n\n🎯' in body
+            assert '84,500.00 → 84,600.00' in body
+            assert '0.1 BTC' in body and '평단 84,750.00' in body
+            assert len(body.encode('utf-16-le'))//2 < 4096
+            delivered.append(body)
+            return 123
+        assert flush(conn, sender=sender) == dict(sent=1, unknown=0)
+        assert flush(conn, sender=lambda *args: pytest.fail('duplicate notice')) == dict(sent=0, unknown=0)
+        assert len(delivered) == 1
+        assert conn.execute('SELECT body,status FROM llm_scenario_outbox').fetchone() == (delivered[0], 'SENT')
+        assert event == original
+    finally:
+        conn.close()
+
+
 def setup(tmp_path):
     conn=sqlite3.connect(tmp_path/'outbox.db')
     enqueue(conn,'e1',dict(kind='HALTED',timestamp=1000,reason_code='THREE_LOSSES'))
