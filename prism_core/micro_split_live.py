@@ -455,12 +455,15 @@ async def publish_add_signal(*, ticker, company_name, price, fields):
 
     Each publisher no-ops when unconfigured and refuses when PRISM_DISABLE_SIGNAL_PUBLISH is set
     (messaging/publish_guard.py)."""
-    import importlib
     import logging
 
-    for name in ("messaging.redis_signal_publisher", "messaging.gcp_pubsub_signal_publisher"):
+    for name in ("redis", "gcp_pubsub"):
         try:
-            module = importlib.import_module(name)
+            # Static imports (no dynamic module names); an unavailable publisher only skips itself.
+            if name == "redis":
+                from messaging import redis_signal_publisher as module
+            else:
+                from messaging import gcp_pubsub_signal_publisher as module
             await module.publish_add_signal(ticker=ticker, company_name=company_name, price=price, fields=fields)
         except Exception as error:  # noqa: BLE001 - a signal failure never affects the recorded add
             logging.getLogger(__name__).warning("[MICRO_SPLIT] add signal via %s failed (non-critical): %s",
