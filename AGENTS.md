@@ -99,6 +99,11 @@ Avoid broad production-like runs unless the task requires them.
 
 ### Trading and data safety
 
+- PRISM's north star (user-defined): O'Neil-style trend following with staircase equity growth from a few big
+  winners; micro-split and re-entry control losses and drawdowns while riding runners; screening and buy-decision
+  precision is the core. Judge and report every trading change by this — see the North star section of
+  `docs/TRADING_CHANGE_REVIEW_HARNESS.md`.
+
 - Default trading behavior should remain safe (`demo` unless explicitly required otherwise).
 - Preserve portfolio constraints and stop-loss logic unless the task explicitly changes trading rules.
 - When parsing KIS API numeric fields, prefer existing safe conversion helpers over direct casts.
