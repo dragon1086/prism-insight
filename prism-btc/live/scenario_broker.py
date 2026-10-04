@@ -612,9 +612,11 @@ class ScenarioDemoBroker(ScenarioExecution):
 
     def _notices(self,active,children,observed,protected,settlement,pending=False,accounting=None):
         """Immutable first-observation events; poll time never changes event IDs."""
-        from live.scenario_notice import render_notice
+        from live.scenario_notice import render_notice, closed_account_snapshot
         from live.scenario_notice_evidence import position_snapshot, economic_fingerprint, number
         snapshot=position_snapshot(active,children,observed,protected,pending,accounting)
+        if snapshot and snapshot["quantity"] == 0 and closed_account_snapshot(snapshot, observed["captured_at"]) is None:
+            snapshot=None  # Invalid optional flat account data must not block settlement notices.
         previous=self.conn.execute("SELECT revision,body FROM llm_scenario_notice_positions WHERE scenario_id=?",(active["scenario_id"],)).fetchone()
         before=json.loads(previous[1]) if previous else None
         fresh_rich_comparison=False
@@ -701,6 +703,8 @@ class ScenarioDemoBroker(ScenarioExecution):
                 settlement_confirmed=True,flat_confirmed=True,orders_terminal=True,net_pnl=settlement["net_pnl"],
                 scenario_initial_equity=active["initial_equity"],
                 fees=settlement["fees"],funding=settlement["funding_net"]))
+            if observed["exchange_flat"] and closed_account_snapshot(snapshot,candidates[-1]["timestamp"]) is not None:
+                candidates[-1]["position_after"]=snapshot
         elif settlement and settlement.get("no_fills_confirmed"):
             candidates.append(dict(event_id="scenario-unfilled-"+active["scenario_id"],kind="RESOLVED",
                 timestamp=observed["captured_at"],resolution_confirmed=True,resolution="CANCELLED_UNFILLED"))

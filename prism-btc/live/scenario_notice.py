@@ -84,6 +84,25 @@ def _account(value, at):
     return value
 
 
+def closed_account_snapshot(snapshot, closed_at):
+    """Only a verified post-exit flat observation; never initial equity + PnL.
+
+    Zero equity is valid for display, not a percentage denominator. Both the
+    position and account must be observed after the last exit, within 120s.
+    """
+    position = _position(snapshot, closed_at)
+    if position is None or position['quantity'] != 0 or position['timestamp'] < closed_at:
+        return None
+    account = position.get('account_snapshot')
+    if not isinstance(account, dict) or account.get('same_event') is not True or account.get('same_account') is not True:
+        return None
+    equity, timestamp = (_number(account.get(k)) for k in ('equity', 'timestamp'))
+    if (equity is None or equity < 0 or timestamp is None or timestamp != position['timestamp']
+            or not 0 <= timestamp-closed_at <= 120 or _time(timestamp) == '미확인'):
+        return None
+    return account
+
+
 def _targets(position, field):
     targets = position.get(field)
     if not isinstance(targets, list) or len(targets) > 20:
@@ -424,6 +443,11 @@ def render_notice(event: dict) -> str:
             if kind == "CLOSED":
                 raise ValueError("complete_cost_evidence_required")
             lines.append("손익·비용 정산 미확정: 확정 수익으로 집계하지 않음")
+        if kind == "CLOSED":
+            closed_account = closed_account_snapshot(event.get('position_after'), at)
+            lines.append("💰 종료 후 순자산: " + (
+                f"{_money(closed_account['equity'])} · 조회 {_time(closed_account['timestamp'])}"
+                if closed_account else "미확인"))
     if kind in {"FILLED", "PARTIAL", "PROTECTION"} and after is None:
         remaining = _number(event.get("remaining_quantity"))
         if remaining is not None and remaining >= 0:
