@@ -474,3 +474,17 @@ def test_trend_exit_runner_block_records_price_and_phase(trend_db, monkeypatch):
     assert blocked and blocked[0]["source"] == "trend_exit" and blocked[0]["current_price"] == 130.0
     assert blocked[0]["entry_ref"] == 100.0 and blocked[0]["phase"] == R.HOLD
     assert blocked[0]["gain_now_pct"] == 30.0
+
+
+def test_corporate_event_prefix_tolerates_markdown_and_lead_in():
+    assert R.is_corporate_event("**[법인이벤트]** 공개매수 확정")
+    assert R.is_corporate_event("핵심-0: [법인이벤트] 상장폐지 결정")
+    assert R.is_corporate_event("TIER0_EVENT: delisting")
+    assert not R.is_corporate_event("목표가 도달로 익절합니다. 과열 신호가 겹쳐 이익을 확정하는 편이 낫다고 판단합니다. [법인이벤트] 언급만")
+
+
+def test_stop_is_never_reset_when_the_price_is_unknown():
+    block = {"entry_ref": 100.0}
+    assert R.stop_target(block, 112.0, None) is None
+    assert R.stop_target(block, 112.0, 0) is None
+    assert R.stop_target(block, 112.0, 118.0) == 100.0

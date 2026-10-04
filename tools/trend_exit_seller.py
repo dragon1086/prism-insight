@@ -582,8 +582,15 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                             summary["checked"] += 1
                             view = None
                             if runner_on:
-                                view = await asyncio.to_thread(
-                                    runner_hold_live.view_for_row, market, h, cur_price, _runner_bars)
+                                try:
+                                    view = await asyncio.to_thread(
+                                        runner_hold_live.view_for_row, market, h, cur_price, _runner_bars)
+                                except Exception as runner_err:  # noqa: BLE001 — keep the pass going
+                                    logger.warning("[RUNNER_HOLD] view failed market=%s ticker=%s: %s",
+                                                   market, ticker, runner_err)
+                                    block = runner_hold.record(h.get("scenario"))
+                                    if block and block.get("status") == runner_hold.RUNNER:
+                                        view = {"record": block, "phase": runner_hold.HOLD, "exit": None}
                             inp = SellInputs(
                                 buy_price=float(h.get("buy_price", 0) or 0),
                                 current_price=cur_price,
