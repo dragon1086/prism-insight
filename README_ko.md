@@ -9,8 +9,8 @@
   <br><br>
   <img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python">
-  <img src="https://img.shields.io/badge/OpenAI-GPT--5-green.svg" alt="OpenAI">
-  <img src="https://img.shields.io/badge/Anthropic-Claude--Sonnet--5-green.svg" alt="Anthropic Claude Sonnet 5">
+  <img src="https://img.shields.io/badge/OpenAI-GPT--6_%7C_GPT--5.6-green.svg" alt="OpenAI GPT-6 및 GPT-5.6">
+  <img src="https://img.shields.io/badge/Anthropic-Claude_Sonnet_5.5_(optional)-green.svg" alt="Anthropic Claude Sonnet 5.5 (선택)">
   <img src="https://img.shields.io/badge/ChatGPT_Plus-Codex_OAuth-ff6b35.svg" alt="ChatGPT Plus">
 </div>
 
@@ -24,7 +24,7 @@
 
 > **AI 기반 주식시장 분석 및 매매 시스템**
 >
-> 역할별 AI 에이전트와 결정론적 안전 게이트가 협업하여 후보 종목을 찾고, 분석 보고서를 생성하며, 설정에 따라 매매까지 실행합니다.
+> 13개 이상의 전문 AI 에이전트가 협업하여 급등주를 포착하고, 애널리스트 수준의 리포트를 만들고, 매매까지 자동으로 실행합니다.
 
 <p align="center">
   <a href="README.md">English</a> |
@@ -55,20 +55,17 @@
   <img src="docs/images/stance-ecosystem-ko.png" alt="한국과 미국 시스템 트레이딩 전략의 수익, 최대 하락, 평균 투자비중, 기록률을 비교하는 Stance 리더보드" width="100%">
 </p>
 
-**과거 실적? 안 받습니다.** Stance는 등록한 순간부터 새 기록을 시작합니다. 과거 수익률 업로드도, 소급 입력도 없습니다. 이후의 판단과 성과가 하나로 이어져 쌓이므로, 잘된 구간만 골라낸 홍보가 아니라 **전략의 실제 실력과 위험**을 볼 수 있습니다.
-
-수익률 1등만 보면 답이 반쪽입니다. 한국과 미국 순위를 나누고, 수익 옆에 최대 하락·평균 투자비중·기록률을 함께 보여줍니다. 지금 잘나가는 전략이 무엇인지, 얼마나 위험을 감수했고 실제로 얼마나 투자했는지 한눈에 비교할 수 있습니다.
+**과거 실적? 안 받습니다.** Stance는 등록한 순간부터 새 기록을 시작합니다. 과거 수익률 업로드도, 소급 입력도 없습니다. 이후의 판단과 성과가 하나로 이어져 쌓이므로, 잘된 구간만 골라낸 홍보가 아니라 **전략의 실제 실력과 위험**을 볼 수 있습니다. 한국과 미국 순위를 나누고, 수익 옆에 최대 하락·평균 투자비중·기록률을 함께 보여줍니다.
 
 - **요즘 잘나가는 전략 찾기** — 모든 전략을 같은 기준으로 비교
 - **수익률 너머까지 보기** — 하락폭·실제 투자비중·빠진 기록까지 확인
-- **과거 실적 끼워 넣기 불가** — 등록한 날부터 결과가 나오기 전 판단만 공개 기록
 - **기록을 믿을 근거** — 서버가 판단 시각과 당시 가격을 확인하고 이후 성과를 자동 계산
 - **내 전략도 참가** — 코딩 에이전트가 전략 찾기부터 등록·연동·테스트까지
 
 **[실시간 순위 보기](https://analysis.stocksimulation.kr/?tab=stance)** · **[내 전략 참가하기](https://analysis.stocksimulation.kr/?tab=stance)** · **[빠른 시작](stance/QUICKSTART_ko.md)**
 
 <details>
-<summary><strong>내 전략은 어떻게 참가하나?</strong></summary>
+<summary><strong>내 전략은 어떻게 참가하나요?</strong></summary>
 
 <p align="center">
   <img src="docs/images/stance-integration-ko.png" alt="전략 프로젝트를 열고 코딩 에이전트에 지시문을 붙여넣은 뒤, 찾은 전략과 소개를 확인하고 승인하면 등록과 연동을 자동으로 마치는 과정" width="100%">
@@ -76,7 +73,7 @@
 
 전략 프로젝트를 **Codex CLI·Cursor·Claude Code 같은 코딩 에이전트**로 연 뒤, Stance 대시보드에서 복사한 지시문을 채팅에 붙여넣으면 됩니다. 에이전트가 독립 전략과 한국·미국 포트폴리오를 찾아내고, 공개할 이름·소개·링크 중 필요한 것만 묻습니다. 등록 계획을 먼저 보여주며, 사용자가 승인한 뒤에만 키 보관·코드 수정·테스트까지 진행합니다.
 
-등록 직후부터 **‘기록 쌓는 중’**에 나오고 첫 판단부터 성과가 공개됩니다. 주식 공식 순위는 **63거래일 동안 기록하고, 자산의 1% 이상을 넣었던 거래를 20번 마친 뒤** 시작됩니다. 연결한 날부터 새 기록이 쌓이며 과거 성과는 끼워 넣을 수 없습니다. 실계좌·잔고·증권사 키는 필요 없습니다.
+등록 직후부터 <strong>‘기록 쌓는 중’</strong>에 나오고 첫 판단부터 성과가 공개됩니다. 주식 공식 순위는 **63거래일 동안 기록하고, 자산의 1% 이상을 넣었던 거래를 20번 마친 뒤** 시작됩니다. 연결한 날부터 새 기록이 쌓이며 과거 성과는 끼워 넣을 수 없습니다. 실계좌·잔고·증권사 키는 필요 없습니다.
 </details>
 
 ---
@@ -119,7 +116,6 @@ API 요금 0원. 동일한 강력한 분석. 기존 구독으로 충분합니다
 
 - **스마트 필터링** — 원하는 텔레그램 알림만 선별해서 받기
 - **PDF 리포트** — 모바일 최적화 AI 분석 리포트
-- **출시 프로모션 (2026년 4월 23일까지)** — 지금 설치하면 **20 크레딧 무료 제공** (기본 10크레딧)
 
 ---
 
@@ -137,8 +133,8 @@ AI 매매 성과를 실시간으로 확인하세요:
 
 ### 2. 텔레그램 채널
 매일 급등주 알림과 AI 분석 리포트를 받아보세요:
-- **[한국 채널](https://t.me/stock_ai_agent)**
 - **[영어 채널](https://t.me/prism_insight_global_en)**
+- **[한국어 채널](https://t.me/stock_ai_agent)**
 - **[일본어 채널](https://t.me/prism_insight_ja)**
 - **[중국어 채널](https://t.me/prism_insight_zh)**
 - **[스페인어 채널](https://t.me/prism_insight_es)**
@@ -171,6 +167,8 @@ python3 demo.py TSLA --language ko  # Tesla (한국어 리포트)
 > **OpenAI API 키 발급**: [OpenAI Platform](https://platform.openai.com/api-keys)
 >
 > **선택사항**: 뉴스 분석을 위해 [Perplexity API 키](https://www.perplexity.ai/)를 `mcp_agent.config.yaml`에 추가하세요
+>
+> **선택사항**: `ADANOS_API_KEY`를 추가하면 미국 주식 뉴스 분석에 구조화된 소셜 심리 정보가 더해집니다
 
 AI가 생성한 PDF 리포트는 `prism-us/pdf_reports/`에 저장됩니다.
 
@@ -213,15 +211,15 @@ pip install -r requirements.txt
 # 2. Playwright 설치 (PDF 생성용)
 python3 -m playwright install chromium
 
-# 3. MCP 서버는 설정에 따라 npx/uvx가 실행
-# Firecrawl: firecrawl-mcp@3.17.0
-# Perplexity: @perplexity-ai/mcp-server
+# 3. MCP 서버(Firecrawl, Perplexity 등)는 mcp_agent.config.yaml에 적힌 대로
+#    npx/uv가 필요할 때 실행 — 따로 설치할 필요 없음
 
 # 4. 설정
 cp mcp_agent.config.yaml.example mcp_agent.config.yaml
 cp mcp_agent.secrets.yaml.example mcp_agent.secrets.yaml
+cp trading/config/kis_devlp.yaml.example trading/config/kis_devlp.yaml
 # mcp_agent.secrets.yaml에 OpenAI API 키 입력
-# mcp_agent.config.yaml에 KRX 직접 로그인 정보 입력
+# trading/config/kis_devlp.yaml에 한국투자증권(KIS) API 키 입력 (한국 시장 데이터)
 
 # 5. 분석 실행 (텔레그램 설정 불필요!)
 python stock_analysis_orchestrator.py --mode morning --no-telegram
@@ -230,17 +228,8 @@ python stock_analysis_orchestrator.py --mode morning --no-telegram
 ### 옵션 B: Docker (프로덕션 권장)
 
 ```bash
-# 1. 클론 & 설정
-git clone https://github.com/dragon1086/prism-insight.git
-cd prism-insight
-cp mcp_agent.config.yaml.example mcp_agent.config.yaml
-cp mcp_agent.secrets.yaml.example mcp_agent.secrets.yaml
-# 설정 파일에 API 키 입력
-
-# 2. 빌드 & 실행
+# 위 4단계의 설정 파일을 준비한 뒤:
 docker compose up -d
-
-# 3. 수동 분석 실행 (선택)
 docker exec prism-insight-container python3 stock_analysis_orchestrator.py --mode morning --no-telegram
 ```
 
@@ -254,18 +243,24 @@ PRISM-INSIGHT는 **한국 (코스피/코스닥)** 및 **미국 (NYSE/NASDAQ)** �
 
 ### 핵심 기능
 - **급등주 포착** — 비정상적인 거래량/가격 움직임을 보이는 종목 자동 탐지
-- **AI 분석 리포트** — 13개 전문 AI 에이전트가 생성하는 전문가급 리포트
+- **AI 분석 리포트** — 전문 AI 에이전트가 생성하는 애널리스트급 리포트
 - **매매 시뮬레이션** — 포트폴리오 관리와 함께 AI 기반 매수/매도 결정
 - **자동매매** — 한국투자증권 API를 통한 실제 매매 실행
 - **텔레그램 통합** — 실시간 알림 및 다국어 브로드캐스팅
 - **거시경제 인텔리전스** — 시장 국면 판단, 섹터 로테이션 분석, 리스크 이벤트 모니터링
 
-### AI 실행 계층
-- **보고서·상담·매매**: OpenAI Agents 백엔드 (API 또는 ChatGPT Plus/Pro OAuth)
-- **역할별 모델**: 보고서, 매매, 거시경제, 번역, 저널이 서로 다른 기본 모델·추론 강도를 사용
-- **호환 경로**: 일부 레거시/선택 워크플로우는 mcp-agent 및 Anthropic Claude Sonnet 5 설정을 유지
+### AI 모델
+코드에 정해진 기본 모델입니다. 모두 `.env`에서 바꿀 수 있습니다([.env.example](.env.example) 참고).
 
-정확한 기본 모델과 호출 경로는 [AI 에이전트 시스템 문서](docs/CLAUDE_AGENTS_ko.md#4-기본-모델-매트릭스)를 참조하세요.
+| 역할 | 기본 모델 |
+|------|----------|
+| 리포트 섹션·투자전략·요약·거시경제 분석 | OpenAI **GPT-6 Luna** (`REPORT_MODEL`) |
+| 매수·매도 판단 | OpenAI **GPT-5.6 Sol**, GPT-6.1 Sol 또는 GPT-6 Astra로 변경 가능 (`PRISM_BUY_CODEX_MODEL`, `PRISM_SELL_CODEX_MODEL`) |
+| 텔레그램 질의응답 | OpenAI **GPT-6.1 Sol** (`TELEGRAM_ANALYSIS_MODEL`) |
+| 번역(영어·일본어·중국어·스페인어)·매매일지 | OpenAI **GPT-6 Luna** |
+| 선택 기능: 온디맨드 인사이트 에이전트 | Anthropic **Claude Sonnet 5.5** (`INSIGHT_MODEL`) |
+
+모든 기능은 OpenAI API 키 또는 ChatGPT Plus/Pro 구독(Codex OAuth)으로 실행됩니다.
 
 ---
 
@@ -275,12 +270,12 @@ PRISM-INSIGHT는 **한국 (코스피/코스닥)** 및 **미국 (NYSE/NASDAQ)** �
 
 | 팀 | 에이전트 | 역할 |
 |---|---------|------|
-| **거시경제** | KR/US | 결정론적 시장 체제를 보강하는 주도 업종·리스크·이벤트 조사 |
-| **종목 분석** | 시장별 6개 기본 섹션 | 기술·수급/기관·기업·뉴스·시장 분석 |
+| **거시경제** | KR / US | 규칙 기반 시장 국면 위에 주도 업종·리스크·이벤트 조사를 더함 |
+| **종목 분석** | 시장별 6개 기본 섹션 | 기술적·수급·기업·산업·뉴스·시장 분석 |
 | **전략·요약** | 실행 중 동적 생성 | 기본 섹션을 투자전략과 핵심 요약으로 통합 |
-| **매매** | KR/US 매수·매도 | LLM 시나리오와 점수·포트폴리오·재진입 게이트 결합 |
-| **저널·메모리** | 회고·압축·원칙 | 청산 결과를 다음 의사결정의 근거로 제공 |
-| **커뮤니케이션·상담** | 평가·최적화·번역·후속 질문 | 텔레그램 요약과 사용자 상호작용 |
+| **매매** | KR / US 매수·매도 | AI 시나리오와 점수·포트폴리오·재진입 관문을 결합 |
+| **저널·메모리** | 회고·압축·원칙 | 청산 결과를 다음 판단의 근거로 제공 |
+| **커뮤니케이션·상담** | 평가·최적화·번역·후속 질문 | 텔레그램 요약과 사용자 대화 |
 
 <details>
 <summary>에이전트 워크플로우 다이어그램 보기</summary>
@@ -288,7 +283,7 @@ PRISM-INSIGHT는 **한국 (코스피/코스닥)** 및 **미국 (NYSE/NASDAQ)** �
 <img src="docs/images/aiagent/agent_workflow2.png" alt="에이전트 워크플로우" width="700">
 </details>
 
-**상세 문서**: [4단계 파이프라인 아키텍처](docs/PIPELINE_ARCHITECTURE_ko.md) | [AI 에이전트 시스템](docs/CLAUDE_AGENTS_ko.md)
+**상세 문서**: [파이프라인 아키텍처](docs/PIPELINE_ARCHITECTURE_ko.md) | [AI 에이전트 시스템](docs/CLAUDE_AGENTS_ko.md)
 
 ---
 
@@ -296,13 +291,13 @@ PRISM-INSIGHT는 **한국 (코스피/코스닥)** 및 **미국 (NYSE/NASDAQ)** �
 
 | 기능 | 설명 |
 |-----|------|
-| **AI 분석** | GPT-5 다중 에이전트 시스템을 통한 전문가급 주식 분석 |
+| **AI 분석** | OpenAI GPT-6 / GPT-5.6 모델 기반 다중 에이전트 시스템을 통한 전문가급 주식 분석 |
 | **급등주 포착** | 오전/오후 시장 트렌드 분석을 통한 자동 관심종목 선별 |
 | **텔레그램** | 채널로 실시간 분석 배포 |
 | **매매 시뮬레이션** | AI 기반 투자 전략 시뮬레이션 |
 | **자동매매** | 한국투자증권 API를 통한 실행 |
 | **대시보드** | 투명한 포트폴리오, 거래내역, 성과 추적 |
-| **자기개선 매매** | 매매 일지 피드백 루프 — 과거 트리거 성과·원칙·재진입 경고를 미래 판단에 반영 ([상세](docs/TRADING_JOURNAL.md#performance-tracker-피드백-루프-self-improving-trading)) |
+| **자기개선 매매** | 매매일지 피드백 루프 — 과거 트리거 승률이 이후 매수 판단에 자동 반영 ([상세](docs/TRADING_JOURNAL.md#performance-tracker-피드백-루프-self-improving-trading)) |
 | **미국 시장** | NYSE/NASDAQ 분석 완벽 지원 |
 | **거시경제 인텔리전스** | 시장 국면 판단 및 섹터 로테이션으로 더 스마트한 종목 선정 |
 | **모바일 앱** | iOS & Android 앱, 스마트 필터링 및 PDF 리포트 |
@@ -314,33 +309,58 @@ PRISM-INSIGHT는 **한국 (코스피/코스닥)** 및 **미국 (NYSE/NASDAQ)** �
 <br><br>
 <img src="docs/images/dashboard_trades.png" alt="매매 시뮬레이터" width="700">
 <br><br>
-<img src="docs/images/dashboard_performance.png" alt="AI 매매 성과" width="700">
+<img src="docs/images/dashboard_performance.png" alt="AI 매매 시나리오" width="700">
 </details>
 
 ---
 
-## 매매 실적
+## 매매 실적 — 시즌 2
 
-### 한국 시장 — 시즌 2
+![PRISM-INSIGHT 시즌 2: 10슬롯 계좌 실현 수익률과 코스피·코스닥, S&P 500·나스닥 비교](docs/images/season2-performance-ko.png)
 
-| 지표 | 값 |
-|-----|---|
-| 기간 | 2025.09.30 ~ 2026.03.24 |
-| 총 거래 | 86건 |
-| 승률 | 45.35% |
-| 거래당 평균 수익률 | +2.84% |
-| **누적 수익률** | **+244.63%** |
-| 현재 보유 종목 | 5종목 |
+같은 청산 거래를 두 가지 방식으로 보여드립니다.
 
-### 미국 시장 (베타)
+- **거래별 수익률 합계** — 청산한 거래 하나하나의 수익률을 단순히 더한 값입니다. 복리가 아니고 투자 비중도 반영하지 않습니다.
+- **10슬롯 계좌 수익률** — 계좌를 10개의 같은 슬롯으로 나눈 모의 계좌의 실현 수익률입니다(1슬롯보다 적게 산 거래는 그 비중만큼 반영). 청산한 거래만 포함하며 복리가 아닙니다.
 
-| 지표 | 값 |
-|-----|---|
-| 기간 | 2026.01.28 ~ 2026.03.21 |
-| 총 거래 | 13건 |
-| 현재 보유 종목 | 6종목 |
+| | 한국 (시즌 2) | 미국 |
+|---|---|---|
+| 기간 | 2025-09-30 ~ 2026-10-02 | 2026-01-28 ~ 2026-10-02 |
+| 청산 거래 | 211건 | 127건 |
+| 승률 | 40.3% (85승) | 33.1% (42승) |
+| 거래당 평균 수익률 | +1.68% | +0.65% |
+| 거래별 수익률 합계 | +355.3% | +82.8% |
+| **10슬롯 계좌 수익률** | **+35.2%** | **+8.3%** |
+| 계좌 곡선의 최대 하락폭 | −9.3%p | −13.7%p |
+| 같은 기간 지수 | 코스피 +103.5% (3,431 → 6,982)<br>코스닥 +5.3% (847 → 892) | S&P 500 +10.8% (6,969 → 7,723)<br>나스닥 +14.8% (23,685 → 27,191) |
+| 최고 수익 청산 거래 | 삼성전기 +86.8%<br>SK하이닉스 +73.8%<br>SK스퀘어 +57.6% | 마이크론 +105.7%, 마이크론 +52.8%<br>IBM +27.0% |
+
+**이 기간 계좌 수익률은 코스피에 뒤졌습니다. 이 점을 숨기지 않고 말씀드립니다.** 코스피는 두 배 가까이 올랐지만 코스닥은 약 5% 오르는 데 그쳤습니다. 대형 반도체주가 이끈 상승장이었습니다. PRISM이 2026년 10월 직접 청산 기록을 되짚어 본 결과, 가장 큰 원인은 이것이었습니다. 진입 후 60거래일 안에 30% 이상 오른 한국 종목에서 실현 수익의 중앙값은 +2%였지만, 최고 상승폭의 중앙값은 +60%였습니다. 주도주를 너무 일찍 팔고 있었던 것입니다. 다음 절의 변경은 바로 이 문제를 겨냥하며, 효과를 확인하실 수 있도록 두 지표를 계속 공개하겠습니다.
+
+> 출처: 라이브 대시보드 데이터([한국](https://analysis.stocksimulation.kr/dashboard_data.json), [미국](https://analysis.stocksimulation.kr/us_dashboard_data.json)), 2026-10-02(한국)·2026-10-03 KST(미국) 생성. 지수 등락률은 대시보드 곡선의 첫 지점(한국 2025-09-29, 미국 2026-01-29) 기준입니다. 보유 중인 종목은 제외했습니다. 모의 매매 결과이며 투자 권유가 아닙니다.
 
 **[라이브 대시보드](https://analysis.stocksimulation.kr/)**
+
+---
+
+## PRISM은 지금 이렇게 매매합니다 (2026년 10월)
+
+![PRISM 매매 흐름: 스크리닝, AI 분석, 매수 판단, 작은 첫 매수, 시나리오 증액, 주도주 보유, 재진입, 주간 점검](docs/images/how-prism-trades-ko.png)
+
+**투자 방향.** PRISM은 오닐식 추세추종을 따릅니다. 대부분의 거래는 작게 하고 빨리 정리하며, 계좌는 크게 가는 소수 종목으로 계단식으로 키우는 것을 목표로 합니다. 거래를 많이 할수록 그런 종목을 찾을 확률은 높아지지만, 손절이 반복되면 계좌가 녹습니다. 그래서 핵심은 **좋은 종목을 고르고 사는 눈의 정확도**입니다.
+
+| 단계 | 내용 |
+|------|------|
+| **1. 스크리닝** | 오전·오후 트리거가 가격과 거래량이 크게 움직이는 종목을 고릅니다. 트리거마다 PRISM의 최근 180일 기록(후보가 +20%에 도달한 비율, 실현 손익 평균)으로 품질 가중치(0.7~1.3)를 매기며, 약한 트리거는 최종 선발 자리를 더 이상 보장받지 못합니다. |
+| **2. AI 분석** | 전문 에이전트들이 기술적 분석·수급·재무·산업·뉴스·시장 리포트를 쓰고, 이어서 투자전략을 정리합니다. |
+| **3. 매수 판단** | 매수 에이전트가 정해진 채점표에 따라 1~10점을 매깁니다. 펀더멘털(수익성·재무 건전성·성장성·사업 명확성), 모멘텀 신호, 추세 점검을 봅니다. 진입하려면 현재 시장 국면의 최소 점수, 손익비 기준을 넘고, 손절폭이 국면별 한도(−5%~−7%)보다 넓지 않아야 합니다. |
+| **4. 작은 첫 매수** | 계좌를 10개의 같은 슬롯으로 나눕니다. 새 종목은 변동성에 따라 1슬롯의 30~80%로 시작하며, 가장 강한 트리거에서 나온 고득점 셋업은 한 단계 크게 시작합니다. |
+| **5. 시나리오 증액** | 매수할 때 AI가 증액 시나리오 2~4개(예: 돌파, 눌림 후 회복)를 쓰고 매일 갱신합니다. 코드는 조건이 맞을 때만, 평균 매수가보다 위일 때만, 직전 매수분을 넘지 않게, 처음 정한 위험 한도 안에서, 최대 1슬롯까지 더 삽니다. 확인된 강세(그날 첫 증액 뒤 최초 진입가 대비 +8% 이상, 거래량 평소의 1.5배 이상)라면 같은 세션에 한 번 더 증액할 수 있습니다. |
+| **6. 주도주 보유** | 매수 후 4~15거래일 안에 종가가 최초 매수가보다 20% 이상 오르고, 50일 평균선에서 지나치게 멀어지지 않은 종목을 주도주로 봅니다. 최대 40거래일 동안 50일선 아래로 마감하거나 최초 매수가 아래로 내려갈 때만 팝니다. 1~3거래일 만에 20% 급등한 종목은 기존 수익 보호선을 그대로 씁니다. |
+| **7. 재진입** | 손절했거나 가격 위치 때문에 매수를 보류한 종목을 최대 60거래일 동안 지켜봅니다. 장 마감 직전(한국 14:00, 미국 13:50) 기준 가격을 되찾으면 AI 재점검이 승인해야 매수합니다. 감시 기간마다 최대 3번, 시장당 하루 최대 2건입니다. |
+| **8. 점검 루프** | 주간 주도주 리포트가 큰 수익 종목 포착, 놓친 대박, 손절 비용, 트리거별 성적을 추적합니다. 2주 점검(2026년 10월 18일)에서 10월 변경 하나하나를 같은 기준으로 평가합니다. |
+
+이 변경 대부분은 2026년 10월 2일~4일에 실제 운영에 들어갔고, 10월 6일이 모든 변경이 적용되는 첫 거래일입니다. 그래서 위의 시즌 2 수치는 대부분 이 변경 이전의 결과입니다. 설계 문서: [투자 방향](docs/TRADING_CHANGE_REVIEW_HARNESS.md) · [트리거 우선순위](docs/TRIGGER_QUALITY_PRIORITY_ko.md) · [작은 첫 매수](docs/micro-split/B3_LIVE_ko.md) · [시나리오 증액](docs/micro-split/ADD_SCENARIOS_DESIGN_ko.md) · [주도주 보유](docs/RUNNER_HOLD_RULE_ko.md) · [재진입](docs/REENTRY_V3_LIVE_ko.md) · [주간 리포트](docs/WEEKLY_RUNNER_REPORT_ko.md) · [2주 점검](docs/TWO_WEEK_REVIEW_ko.md)
 
 ---
 
@@ -349,7 +369,7 @@ PRISM-INSIGHT는 **한국 (코스피/코스닥)** 및 **미국 (NYSE/NASDAQ)** �
 한국 시장의 매매 기록에는 서로 반대되는 두 문제가 나타났습니다. 처음에는
 진입을 지나치게 피했고, 이후에는 시장과 주문 상태를 충분히 통제하지 못한
 채 위험을 감수했습니다. v1.16.7부터 v2.18까지의 개선은 단순한 프롬프트
-교정을 넘어 레짐·청산 상태·재진입을 결정론적으로 통제하는 방향으로
+교정을 넘어 시장 국면·청산 상태·재진입을 결정론적으로 통제하는 방향으로
 진화했습니다.
 
 ![관망 편향에서 상태 기반 리스크 통제로 발전한 PRISM-INSIGHT 매매 시스템](docs/images/trading-evolution-ko.png)
@@ -358,11 +378,29 @@ PRISM-INSIGHT는 **한국 (코스피/코스닥)** 및 **미국 (NYSE/NASDAQ)** �
 > 합계이며, 미진입 후보의 성과는 사후 관찰값입니다. 시간가중 포트폴리오
 > 수익률이나 실제로 실현 가능한 백테스트 수익률을 뜻하지 않습니다.
 
+### 2026년 10월: 검증하고, 채택하고, 버린 것
+
+PRISM은 규칙을 바꾸기 전에 자신의 과거 후보와 거래로 그 규칙을 다시 돌려 보고, 결론을 교훈 장부에 남깁니다. 같은 질문을 두 번 검증하지 않기 위해서입니다.
+
+**버린 것** (현행 규칙보다 낫지 않았습니다):
+- **포켓피봇·거래량 확인 트리거** (2018~2026): 두 시장 모두 거래량 조건이 아무 효과가 없었습니다.
+- **하락한 종목이 50일선과 200일선을 동시에 회복할 때 매수**: 우위가 없었고, 한국에서는 오히려 나빴습니다.
+- **오닐 8주 규칙을 그대로 적용해 50일선까지 보유**: 결과가 나빠졌습니다(거래별 수익률 합계 기준 한국 −43%p, 미국 약 −40%p). 1~3거래일 만에 20% 급등한 종목은 멀리 있는 50일선을 기다리다 이익을 거의 다 반납했습니다.
+- **손절 점검을 60분 단위로, 변동성(ATR) 기준 손절, 올린 손절선을 종가에만 집행**: 모두 현행 손절보다 나빴습니다.
+
+**채택한 것**:
+- **주도주 보유**는 4~15거래일 안에 +20%에 도달하고 50일선에서 지나치게 멀어지지 않은 종목에만 적용합니다(한국에서 바뀐 7건 기준 +57%p. 표본이 작고 같은 데이터로 고른 결과이므로 주간 리포트로 계속 추적합니다).
+- 고정 +2%·+4% 사다리 대신 **작은 첫 매수와 AI가 쓰는 증액 시나리오**를 쓰고, 확인된 강세에는 더 빠르게 증액합니다.
+- **재진입은 감시 기간마다 최대 3번**까지 시도합니다. 예전의 1회 제한은 수익이 났던 재진입을 잘라냈습니다(한국 7건 중 4건, 미국 43건 중 13건).
+- **PRISM 자체 기록에 따른 트리거 우선순위**를 쓰고, 거래량 급증 트리거는 주가가 오르는 경우에만 잡도록 고쳤습니다.
+
+전체 교훈 장부: [docs/RESEARCH_LESSONS_ko.md](docs/RESEARCH_LESSONS_ko.md)
+
 ---
 
 ## 미국 주식 모듈
 
-미국 시장을 위한 동일한 AI 기반 워크플로우:
+미국 시장을 위한 동일한 AI 기반 워크플로우입니다:
 
 ```bash
 # 미국 주식 분석 실행
@@ -381,10 +419,19 @@ python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
 | 문서 | 설명 |
 |-----|------|
 | [docs/SETUP_ko.md](docs/SETUP_ko.md) | 완전한 설치 가이드 |
+| [docs/CLAUDE_AGENTS_ko.md](docs/CLAUDE_AGENTS_ko.md) | AI 에이전트 시스템 상세 |
 | [docs/PIPELINE_ARCHITECTURE_ko.md](docs/PIPELINE_ARCHITECTURE_ko.md) | 스크리닝 → 분석 → 매매 → 피드백 설계 |
-| [docs/CLAUDE_AGENTS_ko.md](docs/CLAUDE_AGENTS_ko.md) | AI 에이전트와 실행 계층 상세 |
-| [docs/TRIGGER_BATCH_ALGORITHMS.md](docs/TRIGGER_BATCH_ALGORITHMS.md) | 후보 선별·시장 체제·배치·진입/청산 알고리즘 |
-| [docs/TRADING_JOURNAL.md](docs/TRADING_JOURNAL.md) | 매매일지·메모리·재진입 피드백 |
+| [docs/TRIGGER_BATCH_ALGORITHMS.md](docs/TRIGGER_BATCH_ALGORITHMS.md) | 급등주 포착 알고리즘 |
+| [docs/TRADING_JOURNAL.md](docs/TRADING_JOURNAL.md) | 매매 메모리 시스템 |
+| [docs/TRADING_CHANGE_REVIEW_HARNESS.md](docs/TRADING_CHANGE_REVIEW_HARNESS.md) | 투자 방향과 매매 변경 검토 절차 |
+| [docs/RESEARCH_LESSONS_ko.md](docs/RESEARCH_LESSONS_ko.md) | 연구 교훈 장부: 검증하고, 채택하고, 버린 것 |
+| [docs/TRIGGER_QUALITY_PRIORITY_ko.md](docs/TRIGGER_QUALITY_PRIORITY_ko.md) | PRISM 자체 기록에 따른 트리거 우선순위 |
+| [docs/micro-split/B3_LIVE_ko.md](docs/micro-split/B3_LIVE_ko.md) | 작은 첫 매수와 실제 비중 늘리기 |
+| [docs/micro-split/ADD_SCENARIOS_DESIGN_ko.md](docs/micro-split/ADD_SCENARIOS_DESIGN_ko.md) | AI 증액 시나리오와 빠른 증액 |
+| [docs/RUNNER_HOLD_RULE_ko.md](docs/RUNNER_HOLD_RULE_ko.md) | 주도주 보유 규칙 |
+| [docs/REENTRY_V3_LIVE_ko.md](docs/REENTRY_V3_LIVE_ko.md) | 재진입 규칙 |
+| [docs/WEEKLY_RUNNER_REPORT_ko.md](docs/WEEKLY_RUNNER_REPORT_ko.md) | 주간 주도주 리포트 |
+| [docs/TWO_WEEK_REVIEW_ko.md](docs/TWO_WEEK_REVIEW_ko.md) | 10월 변경의 2주 점검 |
 
 ---
 
@@ -411,7 +458,7 @@ npm run dev
 ## MCP 서버
 
 ### 한국 시장
-- **[kospi_kosdaq](https://github.com/dragon1086/kospi-kosdaq-stock-server)** — KRX 주식 데이터
+- **kospi_kosdaq** — 한국투자증권(KIS) API 기반 내장 한국 시장 데이터 서버 (`cores/market_data`)
 - **[firecrawl](https://github.com/mendableai/firecrawl-mcp-server)** — 웹 크롤링
 - **[perplexity](https://github.com/perplexityai/modelcontextprotocol)** — 웹 검색
 - **[sqlite](https://github.com/modelcontextprotocol/servers-archived)** — 매매 시뮬레이션 DB
@@ -425,10 +472,20 @@ npm run dev
 ## 기여하기
 
 1. 프로젝트를 포크합니다
-2. 기능 브랜치를 생성합니다 (`git checkout -b feature/멋진기능`)
-3. 변경사항을 커밋합니다 (`git commit -m '멋진 기능 추가'`)
-4. 브랜치에 푸시합니다 (`git push origin feature/멋진기능`)
+2. 기능 브랜치를 생성합니다 (`git checkout -b feature/amazing-feature`)
+3. 변경사항을 커밋합니다 (`git commit -m 'Add amazing feature'`)
+4. 브랜치에 푸시합니다 (`git push origin feature/amazing-feature`)
 5. Pull Request를 생성합니다
+
+### 기여자와 후원자
+
+**코드 기여자** — PRISM-INSIGHT를 함께 만들어 주신 모든 분께 감사드립니다.
+
+[@dragon1086](https://github.com/dragon1086) · [@rocky-mun](https://github.com/rocky-mun) · [@tkgo11](https://github.com/tkgo11) · [@alexander-schneider](https://github.com/alexander-schneider) · [@bonggu-kang](https://github.com/bonggu-kang) · [@willagio](https://github.com/willagio) · [@lifrary](https://github.com/lifrary) · [@cjinzy](https://github.com/cjinzy) · [@don9x2E](https://github.com/don9x2E) · [@jk5745](https://github.com/jk5745) · [@sungwoowi](https://github.com/sungwoowi)
+
+**Gold Supporter** — [@tkgo11](https://github.com/tkgo11)
+
+프로젝트를 후원해 주셔서 감사합니다.
 
 ---
 
@@ -463,11 +520,11 @@ SaaS 기업은 별도의 상업 라이선스가 필요합니다.
 
 ### 프로젝트 지원
 
-월간 운영 비용 (~$310/월):
-- OpenAI API: ~$235/월
-- Anthropic API: ~$11/월
-- Firecrawl + Perplexity: ~$35/월
-- 서버 인프라: ~$30/월
+월간 운영 비용 (2026년 1월 기준, 약 $313/월):
+- OpenAI API: 약 $234/월
+- Anthropic API: 약 $11/월
+- Firecrawl + Perplexity: 약 $36/월
+- 서버 인프라: 약 $32/월
 
 현재 450명 이상이 무료로 사용하고 있습니다.
 
