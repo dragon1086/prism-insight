@@ -620,6 +620,8 @@ class ScenarioDemoBroker(ScenarioExecution):
         fresh_rich_comparison=False
         fills=[(c,e) for c in children if c["evidence"] for e in c["evidence"]["executions"]]
         fills.sort(key=lambda item:(float(item[1]["execTime"]),item[1]["execId"]))
+        fills_since_baseline=[e for _,e in fills if before is not None
+            and before["timestamp"]<=float(e["execTime"])/1000<=observed["captured_at"]]
         entry_fills=[e for c,e in fills if c["kind"]=="entry"]
         entry_qty=sum(float(e["execQty"]) for e in entry_fills)
         avg=sum(float(e["execQty"])*float(e["execPrice"]) for e in entry_fills)/entry_qty if entry_qty else None
@@ -646,11 +648,21 @@ class ScenarioDemoBroker(ScenarioExecution):
             fresh_position=not observed["exchange_flat"] and 0<=observed["captured_at"]-float(fill["execTime"])/1000<=120
             event=dict(event_id=event_id,kind="FILLED" if child["kind"]=="entry" else "PARTIAL",
                 timestamp=float(fill["execTime"])/1000,side=active["side"],fill_confirmed=True,
-                price=float(fill["execPrice"]),quantity=float(fill["execQty"]),entry_price=avg,entry_timestamp=entry_at,
+                price=float(fill["execPrice"]),quantity=float(fill["execQty"]),
+                entry_price=avg if child["kind"]=="entry" else None,entry_timestamp=entry_at,
                 hard_stop=number(observed["position"].get("stopLoss"),positive=True) if fresh_position else None,
                 protection_confirmed=protected and fresh_position,
                 exchange_leverage=number(observed["position"].get("leverage"),positive=True) if fresh_position else None,
                 scenario_budget=active["initial_equity"]*.02,settlement_confirmed=False)
+            if (child["kind"]!="entry" and accounting and accounting.get("status")=="confirmed"
+                    and accounting.get("accounting_complete") is True):
+                # Exact validated transaction cash flow, not average-entry math
+                # or a claim of cost-inclusive per-fill settlement.
+                gross_by_execution=accounting.get("execution_gross_pnl")
+                value=gross_by_execution.get(fill["execId"]) if isinstance(gross_by_execution,dict) else None
+                if isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value):
+                    event["fill_gross_pnl"]=value
+                    event["fill_gross_pnl_confirmed"]=True
             if child["kind"]=="entry" and not pending:
                 # More fills belong to this same scenario, not a fresh cycle.
                 # Unknown earlier evidence cannot establish the first entry.
@@ -661,7 +673,7 @@ class ScenarioDemoBroker(ScenarioExecution):
                 # A reconciliation-wide baseline is not a per-fill position.
                 # Never present a later observation as preceding an older fill.
                 valid_before=before is not None and before["timestamp"]<=event["timestamp"]
-                if valid_before:
+                if valid_before and len(fills_since_baseline)==1:
                     event["position_before"]=before
                 if (before is None or valid_before) and not self.conn.execute(
                     "SELECT 1 FROM llm_scenario_broker_notices WHERE event_id=?",(event["event_id"],)).fetchone():
@@ -687,6 +699,7 @@ class ScenarioDemoBroker(ScenarioExecution):
                 timestamp=max(float(e["execTime"])/1000 for e in exit_fills),quantity=exit_qty,
                 entry_price=avg,entry_timestamp=entry_at,price=sum(float(e["execQty"])*float(e["execPrice"]) for e in exit_fills)/exit_qty,
                 settlement_confirmed=True,flat_confirmed=True,orders_terminal=True,net_pnl=settlement["net_pnl"],
+                scenario_initial_equity=active["initial_equity"],
                 fees=settlement["fees"],funding=settlement["funding_net"]))
         elif settlement and settlement.get("no_fills_confirmed"):
             candidates.append(dict(event_id="scenario-unfilled-"+active["scenario_id"],kind="RESOLVED",

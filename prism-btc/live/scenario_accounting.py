@@ -163,6 +163,9 @@ def _reconcile(scenario_id, evidence, owned_orders, snapshot, schedule):
                   realized_loss=float(losses), fees_paid=float(fee_debits), funding_paid=float(funding_paid),
                   gross_pnl=float(gross), fees=float(fees), funding_net=float(funding_net),
                   net_pnl=float(gross-fees+funding_net), settlement=None)
+    # Optional notice metadata: reuse exact checked cashFlow, not a second PnL
+    # calculation or an allocation of scenario fees/funding to individual fills.
+    result["execution_gross_pnl"] = {eid: float(pnl) for _, eid, _, _, _, pnl in trades}
     if position == 0 and all(order["terminal"] for order in orders.values()) and snapshot.get("open_orders") == []:
         result["settlement"] = dict(scenario_id=scenario_id, flat_confirmed=True, orders_terminal=True,
             executions_complete=True, fees_complete=True, funding_complete=True, execution_ids=sorted(seen),

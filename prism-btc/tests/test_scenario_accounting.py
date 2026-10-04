@@ -47,6 +47,29 @@ def test_profits_do_not_recycle_gross_loss_or_fees():
     assert result["settlement"]["execution_ids"] == ["a", "b", "c"]
 
 
+def test_notice_fill_gross_uses_verified_transaction_not_all_entry_average():
+    parts = fixture()
+    parts[0]["trades"] = [trade("a", "entry", "Buy", "2", "100", "0", 10),
+        trade("b", "loss", "Sell", "1", "90", "-10", 20),
+        trade("d", "entry2", "Buy", "1", "120", "0", 30),
+        trade("c", "win", "Sell", "1", "130", "20", 40)]
+    parts[1].append(dict(order_id="entry2", role="entry", side="Buy", cumulative_qty=1, terminal=True))
+    parts[2]["position"].update(size="1", side="Buy")
+    result = run(parts)
+    assert result["status"] == "confirmed"
+    assert result["execution_gross_pnl"] == {"a": 0, "b": -10, "d": 0, "c": 20}
+    assert result["net_pnl"] == 9.6
+    assert result["settlement"] is None
+
+
+def test_pending_accounting_never_exports_partial_fill_profit():
+    parts = fixture()
+    parts[0]["trades"][1]["raw_transaction"]["cashFlow"] = "1000"
+    result = run(parts)
+    assert result["status"] == "pending"
+    assert "execution_gross_pnl" not in result
+
+
 @pytest.mark.parametrize("mutation", [
     lambda e,o,s,f: e["trades"][0]["raw_transaction"].pop("cashFlow"),
     lambda e,o,s,f: e["trades"][0]["raw_transaction"].pop("funding"),
