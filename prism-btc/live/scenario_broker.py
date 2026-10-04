@@ -36,6 +36,28 @@ def _number(value, *, minimum=None):
     return result
 
 
+def _verify_funding_execution(row, transaction, start_ms, end_ms):
+    """One Funding execution is corroboration, never a second economic flow.
+
+    Bybit transaction-log documents funding's opposite sign to execFee.
+    Missing/ambiguous pairs remain fenced; downstream schedule coverage is
+    still responsible for proving that all funding settlements are present.
+    """
+    if (transaction.get("type") != "SETTLEMENT" or transaction.get("symbol") != "BTCUSDT"
+            or transaction.get("currency") != "USDT"
+            or transaction.get("tradeId") != row["execId"]
+            or row.get("side") not in {"Buy", "Sell"} or transaction.get("side") != row["side"]
+            or not isinstance(row.get("orderId"), str) or not row["orderId"]
+            or transaction.get("orderId") != row["orderId"]):
+        raise BrokerNotReady("funding_execution_identity_mismatch")
+    when, quantity = decimal(row.get("execTime")), decimal(row.get("execQty"))
+    if (not start_ms <= when <= end_ms or when != decimal(transaction.get("transactionTime"))
+            or quantity <= 0 or quantity != decimal(transaction.get("qty"))
+            or decimal(transaction.get("fee")) != 0 or decimal(transaction.get("cashFlow")) != 0
+            or decimal(row.get("execFee")) != -decimal(transaction.get("funding"))):
+        raise BrokerNotReady("funding_execution_value_mismatch")
+
+
 def read_evidence_pages(call, method, *, max_pages=100, **params):
     """Exhaust a bounded query, rejecting cursor cycles and contradictory IDs.
 
@@ -230,7 +252,7 @@ class ScenarioDemoBroker(ScenarioExecution):
                 symbol="BTCUSDT", startTime=start_ms, endTime=end_ms, limit=100)
             transactions = read_evidence_pages(self._call, "get_transaction_log", accountType="UNIFIED",
                 category="linear", currency="USDT", startTime=start_ms, endTime=end_ms, limit=50)
-            trade_rows, funding, unknown = {}, [], []
+            trade_rows, funding_rows, funding, unknown = {}, {}, [], []
             for row in transactions:
                 if row.get("symbol") != "BTCUSDT":
                     continue
@@ -245,12 +267,26 @@ class ScenarioDemoBroker(ScenarioExecution):
                         raise BrokerNotReady("trade_transaction_identity_ambiguous")
                     trade_rows[ident] = row
                 elif row.get("type") == "SETTLEMENT":
+                    ident = row.get("tradeId")
+                    if ident not in (None, ""):
+                        if not isinstance(ident, str) or ident in funding_rows:
+                            raise BrokerNotReady("funding_transaction_identity_ambiguous")
+                        funding_rows[ident] = row
                     funding.append(dict(transaction_id=row["id"], timestamp=when,
                         funding_net=_number(row.get("funding")), raw=row))
                 else:
                     unknown.append(row["id"])
             trades = []
+            if set(trade_rows) & set(funding_rows):
+                raise BrokerNotReady("financial_transaction_identity_collision")
             for row in executions:
+                if row.get("symbol") == "BTCUSDT" and row.get("execType") == "Funding":
+                    txn = funding_rows.pop(row["execId"], None)
+                    if txn is None:
+                        unknown.append(row["execId"])
+                    else:
+                        _verify_funding_execution(row, txn, start_ms, end_ms)
+                    continue
                 if row.get("symbol") != "BTCUSDT" or row.get("execType") != "Trade":
                     unknown.append(row["execId"])
                     continue

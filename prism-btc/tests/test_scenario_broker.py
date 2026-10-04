@@ -140,3 +140,171 @@ def test_funding_sign_and_execution_cashflow_join(setup):
     assert result["trades"][0]["gross_pnl"] == 5
     assert result["funding"][0]["funding_net"] == -2
     assert result["funding_complete"] is False
+
+
+def funding_capture_fixture(session):
+    executions, transactions = [], []
+    for eid, oid, side, when, price, pnl in (
+            ("entry-fill", "entry-order", "Buy", "10", "100", "0"),
+            ("exit-fill", "exit-order", "Sell", "30", "110", "10")):
+        executions.append(dict(execId=eid, orderId=oid, symbol="BTCUSDT", side=side,
+            execType="Trade", execQty="1", execPrice=price, execFee=".05", execTime=when))
+        transactions.append(dict(id="txn-"+eid, tradeId=eid, orderId=oid, type="TRADE",
+            symbol="BTCUSDT", currency="USDT", side=side, qty="1", fee=".05",
+            cashFlow=pnl, funding="0", transactionTime=when))
+    executions.append(dict(execId="funding-exec", orderId="funding-order", symbol="BTCUSDT",
+        side="Buy", execType="Funding", execQty="1", execPrice="105", execFee=".2", execTime="20"))
+    transactions.append(dict(id="funding-txn", tradeId="funding-exec", orderId="funding-order",
+        symbol="BTCUSDT", currency="USDT", type="SETTLEMENT", side="Buy", qty="1",
+        funding="-.2", fee="0", cashFlow="0", transactionTime="20"))
+    session.get_executions = lambda **kw: reply(executions)
+    session.get_transaction_log = lambda **kw: reply(transactions)
+    return executions, transactions
+
+
+def funding_accounting(evidence, **schedule_changes):
+    from live.scenario_accounting import reconcile_scenario
+    orders = [dict(order_id=oid, role=role, side=side, cumulative_qty="1", terminal=True)
+              for oid, role, side in (("entry-order", "entry", "Buy"), ("exit-order", "exit", "Sell"))]
+    snapshot = dict(position=dict(symbol="BTCUSDT", positionIdx=0, size="0", side=""), open_orders=[])
+    schedule = dict(start_ms=0, end_ms=100, complete=True, events=[dict(timestamp=20, rate=".001")])
+    schedule.update(schedule_changes)
+    return reconcile_scenario("s", evidence, orders, snapshot, funding_schedule=schedule)
+
+
+def test_funding_execution_exact_pair_not_unmatched_or_double_counted(setup):
+    broker, session = setup
+    funding_capture_fixture(session)
+    evidence = broker.capture_financial_evidence(0, 100)
+    assert evidence["unmatched_ids"] == []
+    assert len(evidence["trades"]) == 2
+    assert len(evidence["funding"]) == 1
+    assert evidence["funding_complete"] is False  # Capture alone never proves finality.
+    assert evidence["settlement_ready"] is False
+    result = funding_accounting(evidence)
+    assert result["accounting_complete"] is True
+    assert result["net_pnl"] == 9.7  # 10 - two .05 fees - one .2 funding.
+    assert result["fees"] == .1
+    assert result["funding_net"] == -.2
+    assert result["settlement"]["execution_ids"] == ["entry-fill", "exit-fill"]
+    assert result["settlement"]["flat_confirmed"] is True
+
+
+@pytest.mark.parametrize("field,value", [
+    ("tradeId", "wrong"), ("orderId", "wrong"), ("transactionTime", "21"),
+    ("qty", "2"), ("funding", ".2"), ("funding", "-.3"),
+    ("currency", "BTC"), ("fee", ".1"), ("cashFlow", "1"),
+    ("symbol", "ETHUSDT"), ("qty", None), ("funding", "NaN"),
+])
+def test_funding_execution_pair_mismatch_never_settles(setup, field, value):
+    broker, session = setup
+    _, transactions = funding_capture_fixture(session)
+    transactions[-1][field] = value
+    try:
+        evidence = broker.capture_financial_evidence(0, 100)
+    except BrokerNotReady:
+        return
+    assert evidence["unmatched_ids"]
+    assert funding_accounting(evidence)["settlement"] is None
+
+
+@pytest.mark.parametrize("case", ["missing_settlement", "collision", "unknown_type", "missing_schedule", "bad_schedule"])
+def test_funding_pair_still_requires_all_accounting_gates(setup, case):
+    broker, session = setup
+    executions, transactions = funding_capture_fixture(session)
+    if case == "missing_settlement":
+        transactions.pop()
+    elif case == "collision":
+        transactions.append(dict(transactions[-1], id="other-funding-txn"))
+    elif case == "unknown_type":
+        executions[-1]["execType"] = "BustTrade"
+    try:
+        evidence = broker.capture_financial_evidence(0, 100)
+    except BrokerNotReady:
+        assert case == "collision"
+        return
+    changes = {"complete": False} if case == "missing_schedule" else {"events": []} if case == "bad_schedule" else {}
+    result = funding_accounting(evidence, **changes)
+    assert result["settlement"] is None
+
+
+def test_settlement_without_funding_execution_retains_existing_proof_path(setup):
+    broker, session = setup
+    executions, _ = funding_capture_fixture(session)
+    executions.pop()
+    evidence = broker.capture_financial_evidence(0, 100)
+    assert evidence["unmatched_ids"] == []
+    assert funding_accounting(evidence)["net_pnl"] == 9.7
+
+
+@pytest.mark.parametrize("field,value", [
+    ("execId", "missing-pair"), ("orderId", ""), ("execTime", "101"),
+    ("execQty", "0"), ("execFee", None), ("execFee", "Infinity"),
+    ("execFee", "0.20000000001"), ("execQty", "1.00000000001"),
+])
+def test_funding_execution_missing_or_inexact_fields_remain_fenced(setup, field, value):
+    broker, session = setup
+    executions, _ = funding_capture_fixture(session)
+    executions[-1][field] = value
+    try:
+        evidence = broker.capture_financial_evidence(0, 100)
+    except BrokerNotReady:
+        return
+    assert evidence["unmatched_ids"]
+    assert funding_accounting(evidence)["settlement"] is None
+
+
+def test_funding_and_trade_transaction_identity_collision_fenced(setup):
+    broker, session = setup
+    _, transactions = funding_capture_fixture(session)
+    transactions[-1]["tradeId"] = "entry-fill"
+    with pytest.raises(BrokerNotReady, match="identity_collision"):
+        broker.capture_financial_evidence(0, 100)
+
+
+def test_receiving_funding_uses_opposite_execution_fee_once(setup):
+    broker, session = setup
+    executions, transactions = funding_capture_fixture(session)
+    executions[-1]["execFee"] = "-.2"
+    transactions[-1]["funding"] = ".2"
+    evidence = broker.capture_financial_evidence(0, 100)
+    result = funding_accounting(evidence, events=[dict(timestamp=20, rate="-.001")])
+    assert result["net_pnl"] == 10.1
+    assert result["fees"] == .1
+    assert result["funding_net"] == .2
+    assert result["settlement"]["flat_confirmed"] is True
+
+
+@pytest.mark.parametrize("execution_side,transaction_side", [
+    ("Buy", "Sell"), (None, "Buy"), ("Buy", None), ("None", "None"),
+])
+def test_funding_pair_missing_or_conflicting_side_fenced(setup, execution_side, transaction_side):
+    broker, session = setup
+    executions, transactions = funding_capture_fixture(session)
+    executions[-1]["side"] = execution_side
+    transactions[-1]["side"] = transaction_side
+    with pytest.raises(BrokerNotReady, match="funding_execution_identity_mismatch"):
+        broker.capture_financial_evidence(0, 100)
+
+
+@pytest.mark.parametrize("funding,rate,net", [("-.2", "-.001", 9.7), (".2", ".001", 10.1)])
+def test_short_paid_and_received_funding_once(setup, funding, rate, net):
+    from live.scenario_accounting import reconcile_scenario
+    broker, session = setup
+    executions, transactions = funding_capture_fixture(session)
+    executions[0].update(side="Sell", execPrice="110")
+    executions[1].update(side="Buy", execPrice="100")
+    executions[2].update(side="Sell", execFee=str(-float(funding)))
+    transactions[0]["side"] = "Sell"
+    transactions[1]["side"] = "Buy"
+    transactions[2].update(side="Sell", funding=funding)
+    evidence = broker.capture_financial_evidence(0, 100)
+    orders = [dict(order_id=oid, role=role, side=side, cumulative_qty="1", terminal=True)
+              for oid, role, side in (("entry-order", "entry", "Sell"), ("exit-order", "exit", "Buy"))]
+    snapshot = dict(position=dict(symbol="BTCUSDT", positionIdx=0, size="0", side=""), open_orders=[])
+    schedule = dict(start_ms=0, end_ms=100, complete=True, events=[dict(timestamp=20, rate=rate)])
+    result = reconcile_scenario("s", evidence, orders, snapshot, funding_schedule=schedule)
+    assert evidence["unmatched_ids"] == []
+    assert result["net_pnl"] == net
+    assert result["fees"] == .1
+    assert result["settlement"]["flat_confirmed"] is True
