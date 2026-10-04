@@ -1,0 +1,25 @@
+{
+  "assets": {
+    "how-prism-trades-en.png": "f7a8cb9951cab5a592e3eeaf53fb888964c094a5f216b1e75aab9084e9294368",
+    "how-prism-trades-ko.png": "9fb2c85f5114b48ee01f65b2ea11ba2666401a0a4a18700eda854bbd23326767"
+  },
+  "dimensions": [1920, 1080],
+  "generated_at": "2026-10-05",
+  "generator": "Codex CLI 0.157.1 (codex exec, agent model gpt-5.6-sol) using its built-in image_gen tool. gpt-image-2.5 was requested, but the tool exposes no model selector and Codex reported only the built-in default image model. Native output 1672x941, resized to 1920x1080 (Lanczos).",
+  "post_processing": {
+    "en": "One Codex image-edit pass to route the return arrow from card 8 back to card 1.",
+    "ko": "Four misspelled Hangul lines in cards 4 and 5 were repainted with the exact brief text (Apple SD Gothic Neo Medium, PIL); all other pixels are model output."
+  },
+  "content_sources": [
+    "docs/TRADING_CHANGE_REVIEW_HARNESS.md (North star)",
+    "docs/TRIGGER_QUALITY_PRIORITY_ko.md",
+    "cores/agents/trading_agents.py (buy_score rubric)",
+    "docs/micro-split/B3_LIVE_ko.md",
+    "docs/micro-split/ADD_SCENARIOS_DESIGN_ko.md",
+    "docs/RUNNER_HOLD_RULE_ko.md",
+    "docs/REENTRY_V3_LIVE_ko.md",
+    "docs/WEEKLY_RUNNER_REPORT_ko.md",
+    "docs/TWO_WEEK_REVIEW_ko.md"
+  ],
+  "caveat": "Rules as of October 2026. Not investment advice."
+}
