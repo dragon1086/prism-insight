@@ -34,8 +34,14 @@ _RULES = {
         "- max_chase_pct: 트리거 가격 대비 추격 한도(%), 기본이자 최대 2.0. 그보다 위로 달아나면 사지 않습니다.\n"
         "- invalidation: close_below(이 가격 아래 종가면 모든 증액 취소), stall_sessions(진입 후 종가 고점이 이 세션 수 "
         "동안 갱신되지 않으면 취소, 2~20), note.\n"
-        "- 코드 안전장치(시나리오가 넘을 수 없음): 평균 매수가보다 위일 때만 증액, 세션당 1회(acceleration만 1회 추가), "
-        "최초 진입가 기준 손절 위험 한도로 증액분을 자름, 매도·손절 신호가 나온 날은 증액 없음, 계획은 지정 세션 하루만 유효.\n"),
+        "- 코드 안전장치(시나리오가 넘을 수 없음): 평균 매수가보다 위일 때만 증액, 현재 유효 손절선(최초 손절가와 보유 "
+        "손절가 중 높은 값)까지 밀려도 총손실이 최초 1슬롯 손절 위험 이내가 되도록 증액분을 자름, 매도·손절 신호가 "
+        "나온 날은 증액 없음, 계획은 지정 세션 하루만 유효, 누적 비중은 1.00 이하.\n"
+        "- 세션당 증액 횟수: 기본 1회입니다. 다만 가격이 최초 진입가보다 8% 이상 높고 거래량 속도(같은 경과 시각 20일 "
+        "평균 대비 누적 거래량, 종가 확인이면 일 거래량)가 1.5배 이상이면 코드가 가속 구간으로 판정해 같은 세션에 "
+        "2회까지 증액합니다. 두 번째 증액은 다른 시나리오가 충족되면 그 시나리오로, 없으면 그날 집행된 시나리오를 같은 "
+        "트리거 가격·추격 한도로 한 단계 더(0.25 이하, 직전 매수분 이하) 집행합니다. 가속 판정은 시나리오 type"
+        "(acceleration 포함)과 관계없이 가격과 거래량으로만 정하므로, 두 번째 증액만을 위한 시나리오는 쓰지 않아도 됩니다.\n"),
     "en": (
         "- Write 2 to 4 scenarios. Tag each with at least one review lens (explanation only, never a score): "
         "oneil (pyramid only while profitable; pocket pivot, first pullback to the 50-day line, base-on-base "
@@ -60,9 +66,17 @@ _RULES = {
         "- max_chase_pct: chase limit versus the trigger price in %, default and maximum 2.0; above it, no buy.\n"
         "- invalidation: close_below (a close below this price cancels every add), stall_sessions (cancel when the "
         "closing high since entry has not improved for this many sessions, 2-20), note.\n"
-        "- Code safety rails no scenario can exceed: adds only above the average entry, one add per session (an "
-        "acceleration scenario may add once more), the add is clipped to the initial-entry stop risk, no add on a "
-        "sell or stop signal day, and a plan is valid for its one session only.\n"),
+        "- Code safety rails no scenario can exceed: adds only above the average entry, the add is clipped so that a "
+        "fall to the current effective stop (the higher of the initial stop and the holding's stop) loses no more "
+        "than the initial one-slot stop risk, no add on a sell or stop signal day, a plan is valid for its one session only, and "
+        "the cumulative allocation stays at or below 1.00.\n"
+        "- Adds per session: one by default. When the price is at least 8% above the initial entry and the volume "
+        "pace (cumulative volume versus the 20-session average at the same elapsed time; the daily volume for a "
+        "close confirmation) is at least 1.5x, code marks an acceleration session and allows two adds in that "
+        "session. The second add is another scenario that qualifies or, if none does, one more step of the scenario "
+        "executed that day at the same trigger price and chase limit (at most 0.25 and no larger than the previous "
+        "buy). Acceleration is decided from price and volume only, whatever the scenario type (acceleration "
+        "included), so do not write a scenario just for the second add.\n"),
 }
 
 _EXAMPLE = {
@@ -94,7 +108,11 @@ def _money(value, market, language):
 
 
 def buy_block(market, language="ko", expected_initial=None):
-    """BUY appendix asking for ``add_plan``; the caller appends it only while micro-split LIVE is on."""
+    """BUY appendix asking for ``add_plan``; the caller appends it only while micro-split LIVE is on.
+
+    The conviction tilt is deliberately never stated here (no score-inflation incentive);
+    its add_plan targets are rebased in code (``add_plan.rebase_targets``).
+    """
     lang, market = _lang(language), str(market).upper()
     initial = (f"{round(expected_initial * 100)}%" if expected_initial else None)
     if lang == "ko":
@@ -148,7 +166,8 @@ def review_block(block, *, market, language, valid_for, stop_loss=None):
                 "세운 계획이 없는 한 증액하지 않습니다.\n"
                 "- 오늘·최근 일봉과 거래량, 기존 계획과 집행 결과, 시장 국면·Pulse·분배일, 업종 강도와 뉴스를 반영하십시오. "
                 "시장 조건만으로 증액을 일괄 금지하지 말고, 약한 시장에서는 상대강도 증거를 더 요구하고 폭을 줄이십시오.\n"
-                "- 계획보다 강하면(갭 상승 유지, 거래량 급증 등) acceleration 시나리오를 넣거나 트리거를 앞당기십시오.\n"
+                "- 계획보다 강하면(갭 상승 유지, 거래량 급증 등) acceleration 시나리오를 넣거나 트리거를 앞당기십시오. "
+                "같은 세션의 두 번째 증액은 아래 가속 구간 규칙에 따라 코드가 정합니다.\n"
                 "- 사업 논리가 훼손됐거나 며칠 힘없이 횡보하면 {\"cancel\": true, \"reason\": \"...\"}로 모든 증액을 "
                 "취소하십시오. 작은 비중 그대로 기존 손절·청산 규칙을 따릅니다.\n"
                 + _RULES["ko"] + "형식 예시:\n\"next_session_add_plan\": " + _EXAMPLE[market] + "\n")
@@ -165,7 +184,8 @@ def review_block(block, *, market, language, valid_for, stop_loss=None):
             "Pulse and distribution days, sector strength and news. Never ban adds on market conditions alone; in a "
             "weak market require more relative-strength evidence and smaller adds.\n"
             "- If the stock is stronger than planned (gap held, volume surge), add an acceleration scenario or bring "
-            "triggers forward.\n"
+            "triggers forward. A second add in the same session is decided by code under the acceleration rule "
+            "below.\n"
             "- If the business thesis is impaired or the stock has stalled weakly for days, cancel every add with "
             "{\"cancel\": true, \"reason\": \"...\"}; the small position then follows the existing stop/exit rules.\n"
             + _RULES["en"] + "Format example:\n\"next_session_add_plan\": " + _EXAMPLE[market] + "\n")

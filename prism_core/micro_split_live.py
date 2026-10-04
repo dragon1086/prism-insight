@@ -52,13 +52,66 @@ def scaled_cash(unit_amount, allocation, market):
     return int(value) if quantum == 1 else float(value)
 
 
-def entry_record(*, plan, unit_amount, market, entered_at):
-    """The micro_split block stored on the new holding's scenario."""
-    initial = plan["initial_nominal"]
-    return {"contract": CONTRACT, "policy_version": plan["policy_version"], "plan_hash": plan["plan_hash"],
-            "market": str(market).upper(), "unit_amount": str(_dec(unit_amount)), "allocation": str(_dec(initial)),
-            "legs": [{"kind": "INITIAL", "allocation": str(_dec(initial)), "price": str(_dec(plan["entry_reference"])),
-                      "at": entered_at}]}
+# Conviction tilt (2026-10-04, user-approved design 2): top setups start one step bigger.
+# The B3 plan (and its plan_hash, the B3 virtual ledger) keeps the volatility-based initial;
+# the tilt is stored explicitly on the holding's micro_split block, which every LIVE consumer
+# reads (order cash, slots, messages, dashboard, journal, signals, add rails).
+CONVICTION_TRIGGERS = {"KR": frozenset({"일중 상승률 상위주", "갭 상승 모멘텀 상위주"}),
+                       "US": frozenset({"Intraday Rise Top", "Gap Up Momentum Top"})}
+CONVICTION_MIN_SCORE = Decimal(8)
+CONVICTION_STEP = Decimal("0.20")
+CONVICTION_CAP = Decimal("0.80")
+CONVICTION_REASON = "CONVICTION_TOP_SETUP"
+
+
+def conviction_tilt_enabled():
+    """Kill switch MICRO_SPLIT_CONVICTION_TILT (default on)."""
+    return os.getenv("MICRO_SPLIT_CONVICTION_TILT", "true").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def conviction_trigger(market, trigger_type):
+    """True when the trigger is in the market's strong set (score not checked)."""
+    return str(trigger_type or "").strip() in CONVICTION_TRIGGERS.get(str(market).upper(), frozenset())
+
+
+def conviction_tilt(base, *, market, buy_score, trigger_type):
+    """{"base", "tilted", "reason", ...} for a top setup, else None.
+
+    Top setup: buy_score >= 8 AND a strong trigger. Tilted = min(0.80, base + 0.20); a base
+    already at the cap gets no record (nothing changes).
+    """
+    if not conviction_tilt_enabled() or not conviction_trigger(market, trigger_type):
+        return None
+    if isinstance(buy_score, bool):
+        return None
+    try:
+        score = Decimal(str(buy_score))
+    except ArithmeticError:
+        return None
+    if not score.is_finite() or score < CONVICTION_MIN_SCORE:
+        return None
+    base = _dec(base)
+    tilted = min(CONVICTION_CAP, base + CONVICTION_STEP)
+    if tilted <= base:
+        return None
+    return {"base": str(base), "tilted": str(tilted), "reason": CONVICTION_REASON,
+            "buy_score": float(score), "trigger_type": str(trigger_type).strip()}
+
+
+def entry_record(*, plan, unit_amount, market, entered_at, tilt=None):
+    """The micro_split block stored on the new holding's scenario.
+
+    With a conviction ``tilt`` the first leg and the allocation are the tilted value and the
+    tilt is recorded next to the B3 plan hash (which still describes the base initial).
+    """
+    initial = tilt["tilted"] if tilt else plan["initial_nominal"]
+    block = {"contract": CONTRACT, "policy_version": plan["policy_version"], "plan_hash": plan["plan_hash"],
+             "market": str(market).upper(), "unit_amount": str(_dec(unit_amount)), "allocation": str(_dec(initial)),
+             "legs": [{"kind": "INITIAL", "allocation": str(_dec(initial)),
+                       "price": str(_dec(plan["entry_reference"])), "at": entered_at}]}
+    if tilt:
+        block["conviction_tilt"] = dict(tilt)
+    return block
 
 
 def record(scenario):
@@ -115,12 +168,15 @@ def display(scenario):
     return f"비중 {current}%" if current == first else f"비중 {current}% ({first}%→{current}%)"
 
 
-def prepare_entry(agent, *, market, ticker, current_price, scenario, decision_ref, account, logger=None):
+def prepare_entry(agent, *, market, ticker, current_price, scenario, decision_ref, account, logger=None,
+                  trigger_type=None):
     """Size a LIVE first entry: (plan, cash_amount, scenario_with_record) or (None, None, scenario).
 
     Called with the refreshed execution price, before the strategy row and the
     broker order. When LIVE is off or the plan cannot be built (no ATR/stop),
-    the legacy full-slot entry is unchanged and the reason is logged.
+    the legacy full-slot entry is unchanged and the reason is logged. A top setup
+    (scenario buy_score >= 8 and a strong ``trigger_type``) starts with the conviction
+    tilt; callers pass no trigger type for entries outside the regular batch (re-entry).
     """
     if not live_enabled(market):
         return None, None, scenario
@@ -129,13 +185,17 @@ def prepare_entry(agent, *, market, ticker, current_price, scenario, decision_re
         unit = (account or {}).get("buy_amount_krw" if str(market).upper() == "KR" else "buy_amount_usd")
         plan = build_plan(agent, market=str(market).upper(), ticker=ticker, entry_price=current_price,
                           stop_loss=scenario.get("stop_loss"), decision_ref=decision_ref)
-        cash = scaled_cash(unit, plan["initial_nominal"], market)
+        tilt = conviction_tilt(plan["initial_nominal"], market=market, buy_score=scenario.get("buy_score"),
+                               trigger_type=trigger_type)
+        initial = tilt["tilted"] if tilt else plan["initial_nominal"]
+        cash = scaled_cash(unit, initial, market)
         updated = dict(scenario)
         updated[SCENARIO_KEY] = entry_record(plan=plan, unit_amount=unit, market=market,
-                                             entered_at=plan["created_at"])
+                                             entered_at=plan["created_at"], tilt=tilt)
         attach_buy_add_plan(updated, market=market, ticker=ticker, raw=updated.pop("add_plan", None), logger=logger)
         if logger:
-            logger.warning("[MICRO_SPLIT][%s] %s initial=%s cash=%s", market, ticker, plan["initial_nominal"], cash)
+            logger.warning("[MICRO_SPLIT][%s] %s initial=%s b3_initial=%s tilt=%s cash=%s", market, ticker, initial,
+                           plan["initial_nominal"], (tilt or {}).get("reason"), cash)
         return plan, cash, updated
     except Exception as error:  # noqa: BLE001 - legacy full slot when B3 cannot size the entry
         if logger:
@@ -147,18 +207,22 @@ def attach_buy_add_plan(scenario, *, market, ticker, raw, logger=None):
     """Validate the BUY agent's ``add_plan`` and store it on the new micro_split block (in place).
 
     An invalid or missing plan leaves the position without adds until the next
-    holdings review provides one.
+    holdings review provides one. With a conviction tilt the targets (written for the
+    volatility initial, since the prompt never mentions the tilt) are rebased by
+    (tilted - base) before the usual validation.
     """
     from prism_core import add_plan
 
     block = scenario[SCENARIO_KEY]
     created = block["legs"][0]["at"]
+    tilt = block.get("conviction_tilt") or {}
+    rebase = _dec(tilt["tilted"]) - _dec(tilt["base"]) if tilt.get("tilted") else None
     if raw is None:
         plan, issues = None, [{"id": None, "reason": "PLAN_MISSING"}]
     else:
         plan, issues = add_plan.validate_plan(
             raw, market=market, source="BUY", created_at=created, valid_for=add_plan.buy_valid_for(market, created),
-            allocation=block["allocation"], last_step=block["allocation"])
+            allocation=block["allocation"], last_step=block["allocation"], rebase=rebase)
     add_plan.store(block, plan, issues, raw=raw, source="BUY", created_at=created)
     _emit_planned(market=market, ticker=ticker, position_id=None, block=block, plan=plan, issues=issues)
     if logger:
@@ -194,6 +258,8 @@ def entry_message_line(scenario, market):
         return ""
     us = str(market).upper() == "US"
     pct = round(float(block["allocation"]) * 100)
+    tilt = block.get("conviction_tilt") or {}
+    base = round(float(tilt["base"]) * 100) if tilt.get("base") else None
     plan = block.get("add_plan") or {}
     labels = [add_plan.scenario_label(s, market, "en" if us else "ko") for s in plan.get("scenarios") or []]
     if not plan_adds_enabled(market):
@@ -205,9 +271,11 @@ def entry_message_line(scenario, market):
         adds = ("no add scenario yet; the next holdings review sets one" if us
                 else "증액 시나리오는 다음 보유 점검에서 세우며")
     if us:
-        return (f"Micro-split allocation: {pct}% of one slot — {adds}; a stop exits the whole position. "
+        tilted = f" (top-setup tilt from {base}%)" if base is not None else ""
+        return (f"Micro-split allocation: {pct}% of one slot{tilted} — {adds}; a stop exits the whole position. "
                 "Whole shares are rounded down.\n")
-    return (f"초분할 비중: {pct}% (1슬롯 기준) — {adds}, 손절 시 전량 매도합니다. "
+    tilted = f", 상위 셋업 가중으로 기본 {base}%에서 상향" if base is not None else ""
+    return (f"초분할 비중: {pct}% (1슬롯 기준{tilted}) — {adds}, 손절 시 전량 매도합니다. "
             "정수 수량 내림으로 실제 체결 비중은 조금 낮을 수 있습니다.\n")
 
 
@@ -333,6 +401,13 @@ def add_message(*, market, company_name, ticker, before, after, price, average, 
         rationale = (scenario.get("rationale") or "")[:80]
         why = (f"Scenario: {name} ({scenario.get('scenario_id')})" if us else
                f"시나리오: {name} ({scenario.get('scenario_id')})") + (f" — {rationale}" if rationale else "") + "\n"
+        if scenario.get("rail") == "ACCELERATION":
+            accel = scenario.get("acceleration") or {}
+            gain, pace = accel.get("gain_pct"), accel.get("volume_pace")
+            facts = ((f" (+{gain:.1f}% vs entry, volume {pace:.1f}x)" if us else
+                      f" (최초 진입가 대비 +{gain:.1f}%, 거래량 {pace:.1f}배)") if gain is not None and pace else "")
+            why += (f"Acceleration: second add this session{facts}\n" if us else
+                    f"가속 구간: 이번 세션 두 번째 증액{facts}\n")
     if us:
         return (f"📈 Micro-split Add: {company_name}({ticker})\n"
                 f"Allocation: {old}% → {new}% of one slot\nAdd Price: ${price:,.2f}\n"
@@ -347,7 +422,8 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
 
     Only scenario-based decisions (``decision["add_plan"]``) are executed, and only
     while the row still carries the same plan; the key (plan session + scenario id)
-    is the leg's ``bar_end``, so a scenario adds at most once per session.
+    is the leg's ``bar_end``, so a scenario adds at most once per session (plus one
+    ``:acceleration`` continuation in an ACCELERATION session, recorded as ``rail``).
     The holding row's scenario is updated first and independently of the broker
     fill, like the legacy entry. ``buy_price`` stays the initial entry (positions
     mirror, -7% stop basis and SHADOW parity); the cost-weighted entry is recorded
@@ -389,6 +465,8 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
         extra = {k: meta.get(k) for k in ("scenario_id", "scenario_type", "lens", "plan_hash", "session",
                                           "trigger_price")}
         extra["source"] = "add_plan"
+        if meta.get("rail"):  # second add of an ACCELERATION session (reason code on the leg)
+            extra.update(rail=meta["rail"], acceleration=meta.get("acceleration"))
         updated, average = apply_add(scenario, delta=delta, price=price, at=now, bar_end=decision["bar_end"],
                                      extra=extra)
         agent.cursor.execute(_UPDATE_SQL[market], (json.dumps(updated, ensure_ascii=False), row_id))
@@ -427,6 +505,7 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
                attributes={"campaign_id": campaign["campaign_id"], "slot_allocation": after,
                            "scenario_id": meta["scenario_id"], "scenario_type": meta.get("scenario_type"),
                            "lens": meta.get("lens"), "plan_hash": meta["plan_hash"],
+                           "rail": meta.get("rail"), "acceleration": meta.get("acceleration"),
                            "allocation_before": before,
                            "allocation_after": after, "add_price": price, "average_entry": average,
                            "order_cash": cash, "intent_id": intent.id, "broker_success": bool(result.get("success")),
@@ -618,13 +697,14 @@ def buy_prompt_block(market, language="ko"):
             "- 점수는 산정 기준대로 매기십시오. 입력에 기준을 충족하는 근거가 있는데 '애매하다'는 이유로 한 단계 낮추지 "
             "마십시오. 근거가 없으면 만들어내지 마십시오.\n"
             "- 바뀌지 않는 것: 1단계 펀더멘털·1.5단계 추세·1.6단계 상습 손절 게이트, 미진입 단독·복합 사유(아래 사유 1 예외 "
-            "제외), 손익비 floor, 최대 손절폭, 손절 규칙. 강세 국면의 목표 산정만 아래 규칙을 따릅니다. 이 프레임은 기준 안의 "
-            "재량 판단에만 적용됩니다.\n"
+            "제외), 손익비 floor, 최대 손절폭, 손절 규칙. 보유 종목이 7개 이상이면 '6점 이상만 진입' 규칙은 그대로 "
+            "적용됩니다. 강세 국면의 목표 산정만 아래 규칙을 따릅니다. 이 프레임은 기준 안의 재량 판단에만 적용됩니다.\n"
             "- 시스템 제약 4(분할매매 불가·올인/올아웃)는 이번 매수에 적용되지 않습니다. 매수는 초분할(최초 비중 + 증액 "
             "시나리오), 매도는 기존대로 전량입니다. 제약 2·3은 진입/미진입 결정 문장에만 적용되며 add_plan의 조건부 "
             "시나리오를 막지 않습니다. 최초 비중은 결정론적으로 정해지므로 parabolic의 '사이징 축소 금지'와 충돌하지 않습니다.\n"
             f"\n### 초분할 진입 기준 (결정론적)\n"
-            f"진입 최소 점수는 시장 국면과 관계없이 {value}점입니다(매트릭스의 min_score 열과 JSON 예시값 대신). min_score "
+            f"진입 최소 점수는 시장 국면과 관계없이 {value}점입니다(매트릭스의 min_score 열과 JSON 예시값 대신, 보유 종목 "
+            f"7개 이상일 때의 6점 규칙은 예외로 유지). min_score "
             f"필드에 {value}점을 쓰십시오. 결정 규칙: effective_score ≥ {value} AND 1·1.5·1.6단계 게이트 통과 AND 미진입 "
             "단독·복합 사유 없음 AND 손익비 ≥ 현재 국면 floor AND |손절폭| ≤ 최대 손절폭 AND 모멘텀 신호·추가 확인 개수 "
             "충족 → 진입. min_score 외의 매트릭스 값, 점수 산정 기준, 스키마는 바뀌지 않습니다.\n"
@@ -651,15 +731,16 @@ def buy_prompt_block(market, language="ko"):
         "being 'borderline'. Never invent evidence that is not there.\n"
         "- Unchanged: the Step 1 fundamental, Step 1.5 trend and Step 1.6 repeat stop-out gates, standalone and "
         "compound no-entry reasons (except reason 1 below), the R/R floor, the maximum stop width and the stop "
-        "rules; only the bull-regime target follows the rule below. This frame only applies to discretionary "
-        "judgment inside those criteria.\n"
+        "rules. With 7 or more holdings, the 'only buy_score >= 6' rule still applies. Only the bull-regime target "
+        "follows the rule below. This frame only applies to discretionary judgment inside those criteria.\n"
         "- System constraint 4 (no split trading, all-in/all-out) does not apply to this buy: buying is a "
         "micro-split (initial allocation plus add scenarios) and selling stays a full exit. Constraints 2 and 3 "
         "apply to the enter/no-entry decision only and do not forbid conditional add_plan scenarios. The initial "
         "allocation is deterministic, so it does not conflict with the parabolic 'no size reduction' rule.\n"
         "\n### Micro-split entry threshold (deterministic)\n"
         f"The minimum entry score is {value} in every market regime (instead of the matrix min_score column and the "
-        f"JSON example values). Write {value} in min_score. Decision rule: effective_score >= {value} AND Steps 1, "
+        f"JSON example values; the 6-point rule for 7 or more holdings stays as an exception). Write {value} in "
+        f"min_score. Decision rule: effective_score >= {value} AND Steps 1, "
         "1.5 and 1.6 pass AND no standalone or compound no-entry reason AND R/R >= the current regime floor AND "
         "|stop| <= the maximum stop AND the momentum-signal and extra-confirmation counts are met -> Enter. Every "
         "other matrix value, the scoring rubric and the schema are unchanged.\n"
@@ -695,7 +776,9 @@ def journal_position_line(scenario, profit_rate=None):
         legs = block.get("legs") or []
         first = float(legs[0]["allocation"]) if legs else fraction
         adds = max(len(legs) - 1, 0)
-        parts.append(f"initial {first:.0%}, {adds} add(s)")
+        tilt = block.get("conviction_tilt") or {}
+        tilted = f" (top-setup tilt from {float(tilt['base']):.0%})" if tilt.get("base") else ""
+        parts.append(f"initial {first:.0%}{tilted}, {adds} add(s)")
         if adds:
             parts.append(f"cost-weighted entry {float(weighted_entry(legs)):,.2f}")
     if profit_rate is not None:

@@ -940,10 +940,13 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
         if effects is None and not is_add and not rebound_pilot:
             # Micro-split LIVE: B3 first allocation sizes the real order (legacy full slot if OFF/unavailable).
             from prism_core import micro_split_live
+            # Conviction tilt only for regular batch entries; re-entry v3 (require_micro_plan) passes none.
             micro_plan, micro_cash, scenario = micro_split_live.prepare_entry(
                 self, market="KR", ticker=ticker, current_price=current_price, scenario=scenario,
                 decision_ref=scenario.get("_decision_id") or source_decision_id,
-                account=getattr(self, "active_account", None), logger=logger)
+                account=getattr(self, "active_account", None), logger=logger,
+                trigger_type=None if require_micro_plan else (
+                    (getattr(self, "trigger_info_map", None) or {}).get(ticker) or {}).get("trigger_type"))
             if micro_plan is not None:
                 entry_cash_amount = micro_cash
                 analysis_result["scenario"] = scenario
