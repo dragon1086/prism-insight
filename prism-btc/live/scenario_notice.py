@@ -266,6 +266,8 @@ def render_notice(event: dict) -> str:
         raise ValueError("event_timestamp_required")
     after = _position(event.get("position_after"), at)
     title = TITLES[kind]
+    if kind == "CLOSED" and event.get("recovery_confirmation") is True:
+        title = "🏁 BTC 데모 이전 매매 정산 확인 · 지연 안내"
     if kind == "FILLED":
         title = {"initial":"📌 BTC 데모 첫 진입 체결", "additional":"➕ BTC 데모 추가 체결 · 기존 매매"}.get(event.get("entry_stage"), "📌 BTC 데모 진입 체결 확인")
     if kind == "PARTIAL" and after is None:
@@ -275,6 +277,8 @@ def render_notice(event: dict) -> str:
     if kind == "PROTECTION" and event.get("change_type") == "initial_protection":
         title = "🛡 BTC 데모 기존 포지션 확인"
     lines = [title + " · " + _time(at)]
+    if kind == "CLOSED" and event.get("recovery_confirmation") is True:
+        lines.append("과거에 종료된 매매의 누락된 정산 안내입니다. 새 진입·추가 주문이 아닙니다.")
     if event.get("reason_code") in REASONS:
         lines.append("사유: " + REASONS[event["reason_code"]])
     if kind == "PROTECTION" and _position(event.get("position_before")) is None and event.get("change_type") != "initial_protection":

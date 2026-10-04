@@ -306,6 +306,19 @@ def test_unverified_claim_rejected(kind):
         render_notice(dict(kind=kind,timestamp=1000,side="LONG"))
 
 
+def test_recovered_closed_notice_is_old_trade_and_keeps_evidence_guard():
+    event = dict(kind="CLOSED", timestamp=1000, entry_timestamp=900, recovery_confirmation=True,
+                 flat_confirmed=True, orders_terminal=True, settlement_confirmed=True,
+                 quantity=.1, entry_price=100, price=101, net_pnl=.08, fees=.02, funding=0)
+    text = render_notice(event)
+    assert "이전 매매 정산 확인 · 지연 안내" in text
+    assert "BTC 데모" in text
+    assert "새 진입·추가 주문이 아닙니다" in text
+    event["flat_confirmed"] = False
+    with pytest.raises(ValueError, match="closure_evidence_required"):
+        render_notice(event)
+
+
 def test_closed_cost_missing_never_zero():
     event=dict(kind="CLOSED",timestamp=1000,flat_confirmed=True,orders_terminal=True,
                settlement_confirmed=True,net_pnl=1,fees=0.1)
