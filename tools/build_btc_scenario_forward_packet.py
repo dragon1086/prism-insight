@@ -15,11 +15,15 @@ from pathlib import Path
 import sqlite3
 
 
-TABLES = (
-    "llm_scenario_control", "llm_scenario_decisions", "llm_scenario_intents",
-    "llm_scenario_children", "llm_scenario_settlements",
-    "llm_scenario_broker_evidence", "llm_scenario_outbox",
-)
+QUERIES = {
+    "llm_scenario_control": "SELECT * FROM llm_scenario_control",
+    "llm_scenario_decisions": "SELECT * FROM llm_scenario_decisions",
+    "llm_scenario_intents": "SELECT * FROM llm_scenario_intents",
+    "llm_scenario_children": "SELECT * FROM llm_scenario_children",
+    "llm_scenario_settlements": "SELECT * FROM llm_scenario_settlements",
+    "llm_scenario_broker_evidence": "SELECT * FROM llm_scenario_broker_evidence",
+    "llm_scenario_outbox": "SELECT * FROM llm_scenario_outbox",
+}
 KINDS = {"entry", "tp", "partial_sl", "native_sl", "exit"}
 OUTCOMES = {"wait", "submitted", "pending", "reconciled", "halted", "blocked",
             "lock_busy", "stale_proposal", "reused_scenario", "duplicate", "error",
@@ -72,9 +76,9 @@ def _read(db):
         conn.execute("PRAGMA query_only=ON")
         conn.execute("BEGIN")  # All source tables share one SQLite snapshot.
         names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        require(set(TABLES) | {"btc_meta"} <= names)
-        data = {name: sorted((dict(r) for r in conn.execute('SELECT * FROM "' + name + '"')),
-                             key=canonical) for name in TABLES}
+        require(set(QUERIES) | {"btc_meta"} <= names)
+        data = {name: sorted((dict(r) for r in conn.execute(query)), key=canonical)
+                for name, query in QUERIES.items()}
         data["binding"] = [dict(r) for r in conn.execute(
             "SELECT value FROM btc_meta WHERE mode='demo' AND key='shared_entry_policy_v1'")]
         conn.rollback()
