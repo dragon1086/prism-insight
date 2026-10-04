@@ -1,0 +1,4960 @@
+{
+ "schema_version": 1,
+ "release": "v2.24.0",
+ "previous_tag": "v2.23.0",
+ "previous_tag_commit": "69a7eb3fd7c60fb885a9651945803d162dfddb06",
+ "source_cutoff": "3988a9850055cee301bb8194c610caf3ff8e70cc",
+ "source_range": "v2.23.0..3988a9850055cee301bb8194c610caf3ff8e70cc",
+ "release_preparation_commits_excluded": true,
+ "method": "Every reachable source commit reviewed once, weight=1; one primary category per nonmerge commit, merges counted separately. Dates, churn, author and recency do not alter weight. PR association uses merge-first-parent..merge-second-parent reachability (earliest merged PR wins), not title guessing.",
+ "counts": {
+  "all": 276,
+  "nonmerge": 159,
+  "merge": 117,
+  "pr_merges": 91,
+  "other_merges": 26,
+  "direct_nonmerge": 3
+ },
+ "diff": {
+  "files": 516,
+  "insertions": 41878,
+  "deletions": 12044
+ },
+ "categories": {
+  "ops_security": 13,
+  "screening_data": 13,
+  "merge": 117,
+  "reentry": 9,
+  "reports_messages": 7,
+  "research_governance": 17,
+  "trading_rules": 15,
+  "micro_split": 26,
+  "models_oauth": 15,
+  "btc": 38,
+  "observability": 3,
+  "runner_hold": 3
+ },
+ "periods": [
+  {
+   "start": "2026-09-16",
+   "end": "2026-09-28",
+   "total": 40,
+   "nonmerge": 27,
+   "merge": 13
+  },
+  {
+   "start": "2026-09-29",
+   "end": "2026-09-30",
+   "total": 58,
+   "nonmerge": 35,
+   "merge": 23
+  },
+  {
+   "start": "2026-10-01",
+   "end": "2026-10-02",
+   "total": 63,
+   "nonmerge": 32,
+   "merge": 31
+  },
+  {
+   "start": "2026-10-03",
+   "end": "2026-10-03",
+   "total": 43,
+   "nonmerge": 26,
+   "merge": 17
+  },
+  {
+   "start": "2026-10-04",
+   "end": "2026-10-05",
+   "total": 72,
+   "nonmerge": 39,
+   "merge": 33
+  }
+ ],
+ "commits": [
+  {
+   "sha": "a94ac4379ea36ca38d82e8549571451a6c5d9f5d",
+   "date": "2026-09-16T01:22:12+09:00",
+   "parents": [
+    "cd9ce668bc52a31f8a0fe1e87911466d31acb37e"
+   ],
+   "subject": "test: restore clean pytest tests/ collection and coverage",
+   "prs": [
+    819
+   ],
+   "category": "ops_security",
+   "weight": 1
+  },
+  {
+   "sha": "3afe530be2e606a7495e786d4ca462901dd1d6b0",
+   "date": "2026-09-16T01:22:38+09:00",
+   "parents": [
+    "a94ac4379ea36ca38d82e8549571451a6c5d9f5d"
+   ],
+   "subject": "chore: remove dead artifacts and unused dependencies",
+   "prs": [
+    819
+   ],
+   "category": "ops_security",
+   "weight": 1
+  },
+  {
+   "sha": "6f1dfd33d29860008e9f0130b8a85d75c8d778ec",
+   "date": "2026-09-16T02:05:51+09:00",
+   "parents": [
+    "3afe530be2e606a7495e786d4ca462901dd1d6b0"
+   ],
+   "subject": "fix: close publish-guard egress bypass and repair scheduler PYTHON_BIN ordering",
+   "prs": [
+    819
+   ],
+   "category": "ops_security",
+   "weight": 1
+  },
+  {
+   "sha": "9ec772993027da29726b55afb9c1a0ce8d1e9820",
+   "date": "2026-09-16T05:00:43+09:00",
+   "parents": [
+    "6f1dfd33d29860008e9f0130b8a85d75c8d778ec"
+   ],
+   "subject": "docs: refresh stale docs and config after KIS-only migration",
+   "prs": [
+    819
+   ],
+   "category": "ops_security",
+   "weight": 1
+  },
+  {
+   "sha": "21f0fbf4963738f328212de4b63bf64de5197730",
+   "date": "2026-09-16T05:01:34+09:00",
+   "parents": [
+    "9ec772993027da29726b55afb9c1a0ce8d1e9820"
+   ],
+   "subject": "test: reconcile stale tests with current APIs and stop cross-file pollution",
+   "prs": [
+    819
+   ],
+   "category": "ops_security",
+   "weight": 1
+  },
+  {
+   "sha": "24b20d0ff95fc327940efaf27afccaf66b1491fc",
+   "date": "2026-09-16T05:11:03+09:00",
+   "parents": [
+    "21f0fbf4963738f328212de4b63bf64de5197730"
+   ],
+   "subject": "chore: asyncio modernization + CI coverage for stance/llm test suites",
+   "prs": [
+    819
+   ],
+   "category": "ops_security",
+   "weight": 1
+  },
+  {
+   "sha": "6318ffd976a5b3a3533046a6e7d86663865f20a8",
+   "date": "2026-09-16T05:14:22+09:00",
+   "parents": [
+    "24b20d0ff95fc327940efaf27afccaf66b1491fc"
+   ],
+   "subject": "chore: declare pydantic and httpx as direct dependencies",
+   "prs": [
+    819
+   ],
+   "category": "ops_security",
+   "weight": 1
+  },
+  {
+   "sha": "6206e61e2ca81628e5db7187cd60b5a05366b33f",
+   "date": "2026-09-28T01:17:32+09:00",
+   "parents": [
+    "69a7eb3fd7c60fb885a9651945803d162dfddb06"
+   ],
+   "subject": "fix: screen US index members first in the expanded universe",
+   "prs": [
+    820
+   ],
+   "category": "screening_data",
+   "weight": 1
+  },
+  {
+   "sha": "f878b62c30f84cf908b82b8254965c811a5fc3ba",
+   "date": "2026-09-28T01:28:00+09:00",
+   "parents": [
+    "6206e61e2ca81628e5db7187cd60b5a05366b33f"
+   ],
+   "subject": "fix: collect the full expanded US universe with a 30-minute budget and a refusal stop",
+   "prs": [
+    820
+   ],
+   "category": "screening_data",
+   "weight": 1
+  },
+  {
+   "sha": "1f7690de09ce9ed5d6b9b17f38a28cc4ac372c07",
+   "date": "2026-09-28T01:40:42+09:00",
+   "parents": [
+    "69a7eb3fd7c60fb885a9651945803d162dfddb06"
+   ],
+   "subject": "ci: allowlist contributors who gave retroactive CLA consent in #603",
+   "prs": [
+    821
+   ],
+   "category": "ops_security",
+   "weight": 1
+  },
+  {
+   "sha": "c43fd741dc3391aed796a1a830ab8d1d5820edcd",
+   "date": "2026-09-28T01:43:03+09:00",
+   "parents": [
+    "69a7eb3fd7c60fb885a9651945803d162dfddb06",
+    "f878b62c30f84cf908b82b8254965c811a5fc3ba"
+   ],
+   "subject": "Merge pull request #820 from dragon1086/fix/us-universe-priority-order-20260928",
+   "prs": [
+    820
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "1a9eec55de8a8dd3120267495084c471f420c266",
+   "date": "2026-09-28T01:49:02+09:00",
+   "parents": [
+    "1f7690de09ce9ed5d6b9b17f38a28cc4ac372c07",
+    "c43fd741dc3391aed796a1a830ab8d1d5820edcd"
+   ],
+   "subject": "Merge branch 'main' into fix/cla-allowlist-issue-603-consent",
+   "prs": [
+    821
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "2e4d67111562ccf94d7af33b0825e9787531e8dd",
+   "date": "2026-09-28T01:59:01+09:00",
+   "parents": [
+    "c43fd741dc3391aed796a1a830ab8d1d5820edcd",
+    "1a9eec55de8a8dd3120267495084c471f420c266"
+   ],
+   "subject": "Merge pull request #821 from dragon1086/fix/cla-allowlist-issue-603-consent",
+   "prs": [
+    821
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "99f4770b63b09ccf8f288b9e09e2e4f874b715d0",
+   "date": "2026-09-28T02:01:04+09:00",
+   "parents": [
+    "6318ffd976a5b3a3533046a6e7d86663865f20a8",
+    "2e4d67111562ccf94d7af33b0825e9787531e8dd"
+   ],
+   "subject": "Merge branch 'main' into chore/pr742-tkgo11-test-hygiene",
+   "prs": [
+    819
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "2a8cf7f4e66479b82e65822269aa19d8f2b09a91",
+   "date": "2026-09-28T02:11:51+09:00",
+   "parents": [
+    "2e4d67111562ccf94d7af33b0825e9787531e8dd",
+    "99f4770b63b09ccf8f288b9e09e2e4f874b715d0"
+   ],
+   "subject": "Merge pull request #819 from dragon1086/chore/pr742-tkgo11-test-hygiene",
+   "prs": [
+    819
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "90e8e2ed1f7ca1aac88dcfa983e6c74b420654d6",
+   "date": "2026-09-28T10:15:28+09:00",
+   "parents": [
+    "2a8cf7f4e66479b82e65822269aa19d8f2b09a91"
+   ],
+   "subject": "feat: re-entry v2 keeps watching after a declined recheck (pullback bounce / re-breakout)",
+   "prs": [
+    823
+   ],
+   "category": "reentry",
+   "weight": 1
+  },
+  {
+   "sha": "d173b6380d4753694585568b31c659a733195383",
+   "date": "2026-09-28T10:26:18+09:00",
+   "parents": [
+    "2a8cf7f4e66479b82e65822269aa19d8f2b09a91",
+    "90e8e2ed1f7ca1aac88dcfa983e6c74b420654d6"
+   ],
+   "subject": "Merge pull request #823 from dragon1086/feat/reentry-v2-second-chance-20260928",
+   "prs": [
+    823
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "767f4c9e68f7803a9b7270f010b789de24bd11b7",
+   "date": "2026-09-28T10:27:09+09:00",
+   "parents": [
+    "d173b6380d4753694585568b31c659a733195383"
+   ],
+   "subject": "docs: re-entry v2 second chance after a declined recheck (section 17)",
+   "prs": [],
+   "category": "reentry",
+   "weight": 1
+  },
+  {
+   "sha": "183bcf9ea01338d2dfc3aceed4437a677b1db44e",
+   "date": "2026-09-28T10:33:22+09:00",
+   "parents": [
+    "767f4c9e68f7803a9b7270f010b789de24bd11b7"
+   ],
+   "subject": "fix: re-entry recheck drops base64 chart images from the report text",
+   "prs": [
+    824
+   ],
+   "category": "reentry",
+   "weight": 1
+  },
+  {
+   "sha": "250e6e575ae4444f10c039612b7e8e860ba4504b",
+   "date": "2026-09-28T10:43:27+09:00",
+   "parents": [
+    "767f4c9e68f7803a9b7270f010b789de24bd11b7",
+    "183bcf9ea01338d2dfc3aceed4437a677b1db44e"
+   ],
+   "subject": "Merge pull request #824 from dragon1086/fix/reentry-recheck-strip-report-images-20260928",
+   "prs": [
+    824
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "201a1a22af56addbdc14483190ed8f393ce1ca8f",
+   "date": "2026-09-28T10:44:09+09:00",
+   "parents": [
+    "250e6e575ae4444f10c039612b7e8e860ba4504b"
+   ],
+   "subject": "docs: re-entry recheck cost, frequency and the report-image fix (section 18)",
+   "prs": [],
+   "category": "reentry",
+   "weight": 1
+  },
+  {
+   "sha": "e434182b98c392915daf8dc8a25e02d0b64f5787",
+   "date": "2026-09-28T18:57:46+09:00",
+   "parents": [
+    "201a1a22af56addbdc14483190ed8f393ce1ca8f"
+   ],
+   "subject": "fix: keep data-vendor names out of published reports and trading messages",
+   "prs": [
+    825
+   ],
+   "category": "reports_messages",
+   "weight": 1
+  },
+  {
+   "sha": "5749d30e5a3e1bf50c53cb87bf1c6bc14f16321e",
+   "date": "2026-09-28T19:29:27+09:00",
+   "parents": [
+    "201a1a22af56addbdc14483190ed8f393ce1ca8f",
+    "e434182b98c392915daf8dc8a25e02d0b64f5787"
+   ],
+   "subject": "Merge pull request #825 from dragon1086/fix/hide-data-vendor-names-20260928",
+   "prs": [
+    825
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "fa44d82585a5ad8165634adc29236a1ca7fcc816",
+   "date": "2026-09-28T19:37:23+09:00",
+   "parents": [
+    "5749d30e5a3e1bf50c53cb87bf1c6bc14f16321e"
+   ],
+   "subject": "feat: unify the US trading-value floor at $50M across all triggers (#822)",
+   "prs": [
+    826
+   ],
+   "category": "screening_data",
+   "weight": 1
+  },
+  {
+   "sha": "5947da774ea3ed548642ea42f8de93e0ffefcdbc",
+   "date": "2026-09-28T19:39:26+09:00",
+   "parents": [
+    "fa44d82585a5ad8165634adc29236a1ca7fcc816"
+   ],
+   "subject": "ci: run the KR/US liquidity-floor regression tests",
+   "prs": [
+    826
+   ],
+   "category": "screening_data",
+   "weight": 1
+  },
+  {
+   "sha": "1d60ce95d6f1b9c92ed6e3fe04c719ba3919748a",
+   "date": "2026-09-28T19:59:02+09:00",
+   "parents": [
+    "5749d30e5a3e1bf50c53cb87bf1c6bc14f16321e",
+    "5947da774ea3ed548642ea42f8de93e0ffefcdbc"
+   ],
+   "subject": "Merge pull request #826 from dragon1086/feat/us-liquidity-floor-50m-20260928",
+   "prs": [
+    826
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "dcd67460b5377876fb53f6ae5edea7cbc73b2254",
+   "date": "2026-09-28T21:09:17+09:00",
+   "parents": [
+    "1d60ce95d6f1b9c92ed6e3fe04c719ba3919748a"
+   ],
+   "subject": "docs: #822 step 3 not adopted after pre-registered validation",
+   "prs": [
+    829
+   ],
+   "category": "research_governance",
+   "weight": 1
+  },
+  {
+   "sha": "3fe76ea156230bdf34f8bf60f69a9a60eee2ea88",
+   "date": "2026-09-28T21:17:15+09:00",
+   "parents": [
+    "1d60ce95d6f1b9c92ed6e3fe04c719ba3919748a"
+   ],
+   "subject": "fix: give the KR AI sell decision the system's live market regime",
+   "prs": [
+    830
+   ],
+   "category": "trading_rules",
+   "weight": 1
+  },
+  {
+   "sha": "47d7793a4f8eddeed5060918f13417fd29bca398",
+   "date": "2026-09-28T21:26:18+09:00",
+   "parents": [
+    "1d60ce95d6f1b9c92ed6e3fe04c719ba3919748a"
+   ],
+   "subject": "fix: stop internal terms leaking into KR trading messages and fix particles",
+   "prs": [
+    831
+   ],
+   "category": "reports_messages",
+   "weight": 1
+  },
+  {
+   "sha": "5a22210b4d424f454e7c067b6a7a1c7709b57387",
+   "date": "2026-09-28T21:29:53+09:00",
+   "parents": [
+    "dcd67460b5377876fb53f6ae5edea7cbc73b2254"
+   ],
+   "subject": "docs: #822 relative-volume breakout discovery lane rejected after validation",
+   "prs": [
+    829
+   ],
+   "category": "research_governance",
+   "weight": 1
+  },
+  {
+   "sha": "b9e423f33089c64182a3aba4c396422099dd8f0f",
+   "date": "2026-09-28T21:34:14+09:00",
+   "parents": [
+    "1d60ce95d6f1b9c92ed6e3fe04c719ba3919748a",
+    "3fe76ea156230bdf34f8bf60f69a9a60eee2ea88"
+   ],
+   "subject": "Merge pull request #830 from dragon1086/fix/kr-sell-live-regime-20260928",
+   "prs": [
+    830
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "60aef9352b5ec3b4659080f1780abe3a53f74961",
+   "date": "2026-09-28T21:34:18+09:00",
+   "parents": [
+    "b9e423f33089c64182a3aba4c396422099dd8f0f",
+    "47d7793a4f8eddeed5060918f13417fd29bca398"
+   ],
+   "subject": "Merge pull request #831 from dragon1086/fix/kr-message-jargon-particles-20260928",
+   "prs": [
+    831
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "c336c4d7b0673f5d7667c0fa0a7249ee0940fc99",
+   "date": "2026-09-28T21:59:52+09:00",
+   "parents": [
+    "60aef9352b5ec3b4659080f1780abe3a53f74961",
+    "5a22210b4d424f454e7c067b6a7a1c7709b57387"
+   ],
+   "subject": "Merge pull request #829 from dragon1086/docs/us-822-step3-conclusion",
+   "prs": [
+    829
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "bba73d89a7e01a3c2f5c0786cf96320afc6b5878",
+   "date": "2026-09-28T19:53:03+09:00",
+   "parents": [
+    "c336c4d7b0673f5d7667c0fa0a7249ee0940fc99"
+   ],
+   "subject": "feat: shortlist the US universe with the KIS condition search before pricing (#822)",
+   "prs": [
+    827
+   ],
+   "category": "screening_data",
+   "weight": 1
+  },
+  {
+   "sha": "d9ae2e7ca379cfff9221e5813334efaf2583c339",
+   "date": "2026-09-28T19:56:07+09:00",
+   "parents": [
+    "bba73d89a7e01a3c2f5c0786cf96320afc6b5878"
+   ],
+   "subject": "ci: run the KIS market-screen tests",
+   "prs": [
+    827
+   ],
+   "category": "screening_data",
+   "weight": 1
+  },
+  {
+   "sha": "f064d81faa4883a970b3978b4965e848474e612b",
+   "date": "2026-09-28T22:54:59+09:00",
+   "parents": [
+    "d9ae2e7ca379cfff9221e5813334efaf2583c339"
+   ],
+   "subject": "fix: bind the KIS screen import at module load and widen the shortlist margin",
+   "prs": [
+    827
+   ],
+   "category": "screening_data",
+   "weight": 1
+  },
+  {
+   "sha": "c956eda47d2535b1e9f0306393785adbd1be7ba2",
+   "date": "2026-09-28T23:08:24+09:00",
+   "parents": [
+    "c336c4d7b0673f5d7667c0fa0a7249ee0940fc99",
+    "f064d81faa4883a970b3978b4965e848474e612b"
+   ],
+   "subject": "Merge pull request #827 from dragon1086/feat/us-kis-market-screen-20260928",
+   "prs": [
+    827
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "5b15b2ef256f600812d65f1463956882dea8d2a7",
+   "date": "2026-09-28T23:33:42+09:00",
+   "parents": [
+    "c956eda47d2535b1e9f0306393785adbd1be7ba2"
+   ],
+   "subject": "feat: add oneil-adaptive-v2 (B3) SHADOW policy with ATR sizing and MA20 add trend",
+   "prs": [
+    832
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "da862f7705bac4a8500e09964df179518bfa72c3",
+   "date": "2026-09-28T23:52:47+09:00",
+   "parents": [
+    "5b15b2ef256f600812d65f1463956882dea8d2a7"
+   ],
+   "subject": "fix: address oneil-adaptive-v2 review (config protection, best-effort volume, v1 tests)",
+   "prs": [
+    832
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "5daa48167c3c53564150fd1ce4ff7333f98622f4",
+   "date": "2026-09-28T23:54:29+09:00",
+   "parents": [
+    "da862f7705bac4a8500e09964df179518bfa72c3"
+   ],
+   "subject": "docs: state the production US batch windows for the v2 deploy note",
+   "prs": [
+    832
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "7c76b75f23b27d5988ef29303d29d0945c579b04",
+   "date": "2026-09-29T00:05:52+09:00",
+   "parents": [
+    "c956eda47d2535b1e9f0306393785adbd1be7ba2",
+    "5daa48167c3c53564150fd1ce4ff7333f98622f4"
+   ],
+   "subject": "Merge pull request #832 from dragon1086/feat/oneil-adaptive-v2-sizing-20260928",
+   "prs": [
+    832
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "2da0cd96fb29d0cc5283741cdc534036b41d8d28",
+   "date": "2026-09-29T00:49:44+09:00",
+   "parents": [
+    "7c76b75f23b27d5988ef29303d29d0945c579b04"
+   ],
+   "subject": "feat: US Market Pulse reads the S&P 500 and the NASDAQ Composite together",
+   "prs": [
+    833
+   ],
+   "category": "trading_rules",
+   "weight": 1
+  },
+  {
+   "sha": "e51e6862b3c728940a045f12dd9705196923c655",
+   "date": "2026-09-29T00:58:46+09:00",
+   "parents": [
+    "7c76b75f23b27d5988ef29303d29d0945c579b04",
+    "2da0cd96fb29d0cc5283741cdc534036b41d8d28"
+   ],
+   "subject": "Merge pull request #833 from dragon1086/feat/us-market-pulse-dual-index-20260929",
+   "prs": [
+    833
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "802f46c64cd48610577f1050055d7a64909e007a",
+   "date": "2026-09-29T09:27:22+09:00",
+   "parents": [
+    "e51e6862b3c728940a045f12dd9705196923c655"
+   ],
+   "subject": "fix: let BUY count today's volume surge as a lower bound (KR/US)",
+   "prs": [
+    835
+   ],
+   "category": "trading_rules",
+   "weight": 1
+  },
+  {
+   "sha": "9277093645a8a753106134b544528a6bb08fa8a4",
+   "date": "2026-09-29T09:38:30+09:00",
+   "parents": [
+    "e51e6862b3c728940a045f12dd9705196923c655",
+    "802f46c64cd48610577f1050055d7a64909e007a"
+   ],
+   "subject": "Merge pull request #835 from dragon1086/fix/intraday-volume-surge-lower-bound-20260929",
+   "prs": [
+    835
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "07d0de0368c940cfad842a5409eb812ae379fba5",
+   "date": "2026-09-29T09:54:04+09:00",
+   "parents": [
+    "9277093645a8a753106134b544528a6bb08fa8a4"
+   ],
+   "subject": "docs: record volume lower-bound deploy and first KR batch",
+   "prs": [
+    836
+   ],
+   "category": "trading_rules",
+   "weight": 1
+  },
+  {
+   "sha": "3c6ea86d0409cb56a6cd3dce1c7a064a064ddf05",
+   "date": "2026-09-29T10:04:52+09:00",
+   "parents": [
+    "9277093645a8a753106134b544528a6bb08fa8a4",
+    "07d0de0368c940cfad842a5409eb812ae379fba5"
+   ],
+   "subject": "Merge pull request #836 from dragon1086/docs/volume-surge-deploy-evidence",
+   "prs": [
+    836
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "4db8e54211fe6ad9d6227a9b131a743dfed004b2",
+   "date": "2026-09-29T03:46:32+09:00",
+   "parents": [
+    "3c6ea86d0409cb56a6cd3dce1c7a064a064ddf05"
+   ],
+   "subject": "fix: finish US eligibility metadata within budget (liquidity order, cache, KIS cap)",
+   "prs": [
+    834
+   ],
+   "category": "screening_data",
+   "weight": 1
+  },
+  {
+   "sha": "d7a8f3ca143384fcfd6665fc604bbb7fe47ae954",
+   "date": "2026-09-29T10:09:07+09:00",
+   "parents": [
+    "4db8e54211fe6ad9d6227a9b131a743dfed004b2"
+   ],
+   "subject": "fix: log unavailable eligibility profiles instead of a bare continue",
+   "prs": [
+    834
+   ],
+   "category": "screening_data",
+   "weight": 1
+  },
+  {
+   "sha": "e1fb38cab385167d4e8b5b39b3d24f99febd0c88",
+   "date": "2026-09-29T10:29:55+09:00",
+   "parents": [
+    "3c6ea86d0409cb56a6cd3dce1c7a064a064ddf05",
+    "d7a8f3ca143384fcfd6665fc604bbb7fe47ae954"
+   ],
+   "subject": "Merge pull request #834 from dragon1086/fix/us-eligibility-metadata-budget-20260929",
+   "prs": [
+    834
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "3ab7c486b45925b1984ede5fe2062ef98f64ffb1",
+   "date": "2026-09-29T10:33:10+09:00",
+   "parents": [
+    "e1fb38cab385167d4e8b5b39b3d24f99febd0c88"
+   ],
+   "subject": "docs: prune temporary notes, old release notes and unused images",
+   "prs": [
+    837
+   ],
+   "category": "ops_security",
+   "weight": 1
+  },
+  {
+   "sha": "34f7ae6f05ace6db46c32ef4faf7a02dcd7227b1",
+   "date": "2026-09-29T10:44:06+09:00",
+   "parents": [
+    "e1fb38cab385167d4e8b5b39b3d24f99febd0c88",
+    "3ab7c486b45925b1984ede5fe2062ef98f64ffb1"
+   ],
+   "subject": "Merge pull request #837 from dragon1086/docs/prune-temporary-notes-20260929",
+   "prs": [
+    837
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "77315495d9f2e7b654fbf4f04fca44a84ae2f768",
+   "date": "2026-09-29T15:06:31+09:00",
+   "parents": [
+    "34f7ae6f05ace6db46c32ef4faf7a02dcd7227b1"
+   ],
+   "subject": "fix: retry KIS intraday snapshot chunks on transport errors",
+   "prs": [
+    838
+   ],
+   "category": "screening_data",
+   "weight": 1
+  },
+  {
+   "sha": "c06ea05fac0a20ebceabf820251244663179e887",
+   "date": "2026-09-29T15:17:21+09:00",
+   "parents": [
+    "34f7ae6f05ace6db46c32ef4faf7a02dcd7227b1",
+    "77315495d9f2e7b654fbf4f04fca44a84ae2f768"
+   ],
+   "subject": "Merge pull request #838 from dragon1086/fix/kis-snapshot-retry-transport-errors-20260929",
+   "prs": [
+    838
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "0b5da66127efdb387c22f67e9e6ac9c92ff43223",
+   "date": "2026-09-29T18:12:07+09:00",
+   "parents": [
+    "c06ea05fac0a20ebceabf820251244663179e887"
+   ],
+   "subject": "docs: preregister confirmed-resistance target replay v1",
+   "prs": [
+    839
+   ],
+   "category": "research_governance",
+   "weight": 1
+  },
+  {
+   "sha": "cf45e5140666f01c222731dd2db47194fa74788e",
+   "date": "2026-09-29T18:14:40+09:00",
+   "parents": [
+    "0b5da66127efdb387c22f67e9e6ac9c92ff43223"
+   ],
+   "subject": "research: confirmed-resistance replay tool; amend candidate rule before any run",
+   "prs": [
+    839
+   ],
+   "category": "research_governance",
+   "weight": 1
+  },
+  {
+   "sha": "58ab71b14428a295ce19393d0e62beb668d9c8f0",
+   "date": "2026-09-29T18:18:19+09:00",
+   "parents": [
+    "cf45e5140666f01c222731dd2db47194fa74788e"
+   ],
+   "subject": "research: record confirmed-resistance replay v1 result (RETIRE)",
+   "prs": [
+    839
+   ],
+   "category": "research_governance",
+   "weight": 1
+  },
+  {
+   "sha": "8d6635b4f937f5b669c0e220a49ad53fd3f469a1",
+   "date": "2026-09-29T19:00:21+09:00",
+   "parents": [
+    "c06ea05fac0a20ebceabf820251244663179e887"
+   ],
+   "subject": "fix: stop treating today's open-bar high as resistance; add 52-week-high facts for 2a",
+   "prs": [
+    840
+   ],
+   "category": "trading_rules",
+   "weight": 1
+  },
+  {
+   "sha": "ee1bb219a2289a61ef1ed941583a9a25ce2adec3",
+   "date": "2026-09-29T19:06:19+09:00",
+   "parents": [
+    "58ab71b14428a295ce19393d0e62beb668d9c8f0"
+   ],
+   "subject": "research: use fixed read-only SQL per table in replay extract",
+   "prs": [
+    839
+   ],
+   "category": "research_governance",
+   "weight": 1
+  },
+  {
+   "sha": "80f5f27cb2e2a362943248698d42d3b8c4e84476",
+   "date": "2026-09-29T19:10:51+09:00",
+   "parents": [
+    "c06ea05fac0a20ebceabf820251244663179e887",
+    "8d6635b4f937f5b669c0e220a49ad53fd3f469a1"
+   ],
+   "subject": "Merge pull request #840 from dragon1086/fix/confirmed-resistance-and-2a-facts-20260929",
+   "prs": [
+    840
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "b00a16853253d913cd370a796162dcf964b9ed31",
+   "date": "2026-09-29T19:16:49+09:00",
+   "parents": [
+    "ee1bb219a2289a61ef1ed941583a9a25ce2adec3",
+    "80f5f27cb2e2a362943248698d42d3b8c4e84476"
+   ],
+   "subject": "Merge branch 'main' into research/confirmed-resistance-target-replay-20260929",
+   "prs": [
+    839
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "b371b05c9e18ef1348bf2c3a87eee7b3025763ae",
+   "date": "2026-09-29T19:26:01+09:00",
+   "parents": [
+    "80f5f27cb2e2a362943248698d42d3b8c4e84476",
+    "b00a16853253d913cd370a796162dcf964b9ed31"
+   ],
+   "subject": "Merge pull request #839 from dragon1086/research/confirmed-resistance-target-replay-20260929",
+   "prs": [
+    839
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "8eddb6679764006a6e677583ebd6113fcf828c84",
+   "date": "2026-09-29T19:56:34+09:00",
+   "parents": [
+    "b371b05c9e18ef1348bf2c3a87eee7b3025763ae"
+   ],
+   "subject": "feat: route the BUY/SELL Codex CLI through the OAuth proxy (one login)",
+   "prs": [
+    841
+   ],
+   "category": "models_oauth",
+   "weight": 1
+  },
+  {
+   "sha": "35ac0a6f22bd8cecad1f3d105561b777980fbe83",
+   "date": "2026-09-29T20:03:16+09:00",
+   "parents": [
+    "8eddb6679764006a6e677583ebd6113fcf828c84"
+   ],
+   "subject": "fix: reword passthrough auth log; quiet mid-stream client disconnects",
+   "prs": [
+    841
+   ],
+   "category": "models_oauth",
+   "weight": 1
+  },
+  {
+   "sha": "37a2e4a95c9fbe3c9f9d08b24aca66b91c3a2674",
+   "date": "2026-09-29T20:13:53+09:00",
+   "parents": [
+    "b371b05c9e18ef1348bf2c3a87eee7b3025763ae",
+    "35ac0a6f22bd8cecad1f3d105561b777980fbe83"
+   ],
+   "subject": "Merge pull request #841 from dragon1086/feat/codex-via-oauth-proxy-20260929",
+   "prs": [
+    841
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "d627417d1760e37c6729adeda220a641087ea264",
+   "date": "2026-09-29T20:17:27+09:00",
+   "parents": [
+    "37a2e4a95c9fbe3c9f9d08b24aca66b91c3a2674"
+   ],
+   "subject": "fix: refresh the shared OAuth token ahead of the healthcheck cron gap",
+   "prs": [
+    842
+   ],
+   "category": "models_oauth",
+   "weight": 1
+  },
+  {
+   "sha": "74ad38043c64c1c362cf3cc7d1690f4fe68c9f04",
+   "date": "2026-09-29T20:28:03+09:00",
+   "parents": [
+    "37a2e4a95c9fbe3c9f9d08b24aca66b91c3a2674",
+    "d627417d1760e37c6729adeda220a641087ea264"
+   ],
+   "subject": "Merge pull request #842 from dragon1086/fix/oauth-proactive-refresh-20260929",
+   "prs": [
+    842
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "106fb5c0a69e0d11a06f191270988e6dffa1c974",
+   "date": "2026-09-29T23:56:56+09:00",
+   "parents": [
+    "74ad38043c64c1c362cf3cc7d1690f4fe68c9f04"
+   ],
+   "subject": "fix: start US report translations after the BUY/SELL tracking step",
+   "prs": [
+    844
+   ],
+   "category": "models_oauth",
+   "weight": 1
+  },
+  {
+   "sha": "fbb7a9c0909242da49154cbae0ac60fcfb08e7a3",
+   "date": "2026-09-30T00:07:56+09:00",
+   "parents": [
+    "74ad38043c64c1c362cf3cc7d1690f4fe68c9f04",
+    "106fb5c0a69e0d11a06f191270988e6dffa1c974"
+   ],
+   "subject": "Merge pull request #844 from dragon1086/fix/us-translations-after-trading-20260929",
+   "prs": [
+    844
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "28f01ae00103caf91ade15948bc6754e39f6e4b6",
+   "date": "2026-09-30T01:16:49+09:00",
+   "parents": [
+    "fbb7a9c0909242da49154cbae0ac60fcfb08e7a3"
+   ],
+   "subject": "docs: preregister US UDVR institutional-proxy replay v1",
+   "prs": [
+    845
+   ],
+   "category": "research_governance",
+   "weight": 1
+  },
+  {
+   "sha": "cfe5715dade1c382df00422f75897b94438dc76f",
+   "date": "2026-09-30T01:17:47+09:00",
+   "parents": [
+    "28f01ae00103caf91ade15948bc6754e39f6e4b6"
+   ],
+   "subject": "research: US UDVR institutional-proxy replay tool (preregistered v1)",
+   "prs": [
+    845
+   ],
+   "category": "research_governance",
+   "weight": 1
+  },
+  {
+   "sha": "59bf5d3f61147e696787b3f36c1723d103603155",
+   "date": "2026-09-30T01:22:19+09:00",
+   "parents": [
+    "cfe5715dade1c382df00422f75897b94438dc76f"
+   ],
+   "subject": "research: record US UDVR proxy replay v1 result (H1 RETIRE, H2 INSUFFICIENT)",
+   "prs": [
+    845
+   ],
+   "category": "research_governance",
+   "weight": 1
+  },
+  {
+   "sha": "b9756439b9171f27952cc00a535b6e0dce982335",
+   "date": "2026-09-30T07:15:19+09:00",
+   "parents": [
+    "fbb7a9c0909242da49154cbae0ac60fcfb08e7a3"
+   ],
+   "subject": "fix: state that US daily institutional flow is not supplied",
+   "prs": [
+    846
+   ],
+   "category": "trading_rules",
+   "weight": 1
+  },
+  {
+   "sha": "70b97e93f606ce5c7dd08dbe1f1370ec8ee2cb05",
+   "date": "2026-09-30T09:33:29+09:00",
+   "parents": [
+    "fbb7a9c0909242da49154cbae0ac60fcfb08e7a3",
+    "b9756439b9171f27952cc00a535b6e0dce982335"
+   ],
+   "subject": "Merge pull request #846 from dragon1086/fix/us-institutional-flow-not-supplied-20260930",
+   "prs": [
+    846
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "c9981c3bfccddaa9fc430a0761f45805eadf323e",
+   "date": "2026-09-29T23:36:06+09:00",
+   "parents": [
+    "70b97e93f606ce5c7dd08dbe1f1370ec8ee2cb05"
+   ],
+   "subject": "feat: switch Sonnet usages to claude-sonnet-5-5",
+   "prs": [
+    843
+   ],
+   "category": "models_oauth",
+   "weight": 1
+  },
+  {
+   "sha": "55aee6445beb003c5c77097117e14a2696c23129",
+   "date": "2026-09-30T09:47:41+09:00",
+   "parents": [
+    "70b97e93f606ce5c7dd08dbe1f1370ec8ee2cb05"
+   ],
+   "subject": "feat: pick the BUY/SELL Codex effort from the active OAuth account",
+   "prs": [
+    847
+   ],
+   "category": "models_oauth",
+   "weight": 1
+  },
+  {
+   "sha": "b7a03aa1d9cfc4055ffc61af07d41aff69b120e1",
+   "date": "2026-09-30T09:51:41+09:00",
+   "parents": [
+    "70b97e93f606ce5c7dd08dbe1f1370ec8ee2cb05",
+    "c9981c3bfccddaa9fc430a0761f45805eadf323e"
+   ],
+   "subject": "Merge pull request #843 from dragon1086/feat/sonnet-5-5-upgrade",
+   "prs": [
+    843
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "cd1a9d3750deb7b22cfb05fcb7921e0f63d1f9cf",
+   "date": "2026-09-30T10:03:51+09:00",
+   "parents": [
+    "b7a03aa1d9cfc4055ffc61af07d41aff69b120e1"
+   ],
+   "subject": "fix: stop distribution days turning a bull market into \"no new buys\"",
+   "prs": [
+    848
+   ],
+   "category": "trading_rules",
+   "weight": 1
+  },
+  {
+   "sha": "29df1ea94eb18bf33a94601ab3d87d13d273fed6",
+   "date": "2026-09-30T10:13:05+09:00",
+   "parents": [
+    "b7a03aa1d9cfc4055ffc61af07d41aff69b120e1",
+    "cd1a9d3750deb7b22cfb05fcb7921e0f63d1f9cf"
+   ],
+   "subject": "Merge pull request #848 from dragon1086/fix/bull-distribution-entry-floor-20260930",
+   "prs": [
+    848
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "5c08b8ebba14805ea38773d3435fbdd628ab6f81",
+   "date": "2026-09-30T10:13:12+09:00",
+   "parents": [
+    "55aee6445beb003c5c77097117e14a2696c23129",
+    "29df1ea94eb18bf33a94601ab3d87d13d273fed6"
+   ],
+   "subject": "Merge branch 'main' into feat/codex-effort-by-account-20260930",
+   "prs": [
+    847
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "b9c11770d4881e1c1dc59e23da5f5bb28b0b2d32",
+   "date": "2026-09-30T10:23:15+09:00",
+   "parents": [
+    "29df1ea94eb18bf33a94601ab3d87d13d273fed6",
+    "5c08b8ebba14805ea38773d3435fbdd628ab6f81"
+   ],
+   "subject": "Merge pull request #847 from dragon1086/feat/codex-effort-by-account-20260930",
+   "prs": [
+    847
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "3656c77002bbaa1d16aac5e1a2583951c09442b6",
+   "date": "2026-09-30T10:23:38+09:00",
+   "parents": [
+    "b9c11770d4881e1c1dc59e23da5f5bb28b0b2d32"
+   ],
+   "subject": "feat: make the Codex trading service tier configurable per account",
+   "prs": [
+    849
+   ],
+   "category": "models_oauth",
+   "weight": 1
+  },
+  {
+   "sha": "e2f0bfbe4ffd383484a83420fa51d5e6b10a9d34",
+   "date": "2026-09-30T10:32:39+09:00",
+   "parents": [
+    "3656c77002bbaa1d16aac5e1a2583951c09442b6"
+   ],
+   "subject": "fix: keep the Codex telemetry format and _command call shape stable",
+   "prs": [
+    849
+   ],
+   "category": "models_oauth",
+   "weight": 1
+  },
+  {
+   "sha": "6f9f8eda838c6f295a2395c3be862d0da1245060",
+   "date": "2026-09-30T10:33:47+09:00",
+   "parents": [
+    "e2f0bfbe4ffd383484a83420fa51d5e6b10a9d34"
+   ],
+   "subject": "refactor: reuse the #847 account helpers for the Codex service tier",
+   "prs": [
+    849
+   ],
+   "category": "models_oauth",
+   "weight": 1
+  },
+  {
+   "sha": "1b29eb057d9ccc41c1fec00b2c0ba58c31f85501",
+   "date": "2026-09-30T10:44:26+09:00",
+   "parents": [
+    "b9c11770d4881e1c1dc59e23da5f5bb28b0b2d32",
+    "6f9f8eda838c6f295a2395c3be862d0da1245060"
+   ],
+   "subject": "Merge pull request #849 from dragon1086/feat/codex-standard-tier-by-account",
+   "prs": [
+    849
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "609ed8534beab6053d1f2712c3aee3538a20708d",
+   "date": "2026-09-30T12:43:33+09:00",
+   "parents": [
+    "1b29eb057d9ccc41c1fec00b2c0ba58c31f85501"
+   ],
+   "subject": "feat: capped SHADOW comparison of a second BUY-scenario model",
+   "prs": [
+    850
+   ],
+   "category": "models_oauth",
+   "weight": 1
+  },
+  {
+   "sha": "b37d58ab5227a0ef14eb880898b051de5db31ab4",
+   "date": "2026-09-30T12:52:15+09:00",
+   "parents": [
+    "1b29eb057d9ccc41c1fec00b2c0ba58c31f85501",
+    "609ed8534beab6053d1f2712c3aee3538a20708d"
+   ],
+   "subject": "Merge pull request #850 from dragon1086/feat/buy-model-shadow-61sol",
+   "prs": [
+    850
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "11fbca8050bb280fd47173a11203514ac3eaed5c",
+   "date": "2026-09-30T18:43:46+09:00",
+   "parents": [
+    "b37d58ab5227a0ef14eb880898b051de5db31ab4"
+   ],
+   "subject": "docs: correct stale facts in CLAUDE.md (US $1B cap, US macro agent, stop-loss, version)",
+   "prs": [],
+   "category": "ops_security",
+   "weight": 1
+  },
+  {
+   "sha": "227c800367af4f1449039a1b2f95abca59fb6fdd",
+   "date": "2026-09-30T19:10:07+09:00",
+   "parents": [
+    "11fbca8050bb280fd47173a11203514ac3eaed5c"
+   ],
+   "subject": "fix: give the KR company-status writer a fixed quarterly EPS table",
+   "prs": [
+    851
+   ],
+   "category": "reports_messages",
+   "weight": 1
+  },
+  {
+   "sha": "39b6ff354d9757099b22c46a13be217a5262d441",
+   "date": "2026-09-30T19:20:30+09:00",
+   "parents": [
+    "11fbca8050bb280fd47173a11203514ac3eaed5c",
+    "227c800367af4f1449039a1b2f95abca59fb6fdd"
+   ],
+   "subject": "Merge pull request #851 from dragon1086/feat/kr-quarterly-eps-facts",
+   "prs": [
+    851
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "37035c1e000835e652be274f669bebfe5bfb68a3",
+   "date": "2026-09-30T19:49:21+09:00",
+   "parents": [
+    "39b6ff354d9757099b22c46a13be217a5262d441"
+   ],
+   "subject": "fix: check KR flow windows for corporate actions instead of always caveating",
+   "prs": [
+    852
+   ],
+   "category": "trading_rules",
+   "weight": 1
+  },
+  {
+   "sha": "aa88916e07632b2c6c642eb1638d13694dd29abe",
+   "date": "2026-09-30T20:10:26+09:00",
+   "parents": [
+    "37035c1e000835e652be274f669bebfe5bfb68a3"
+   ],
+   "subject": "test: record reviewed KR flow-contract wording in the BUY prompt tail hash",
+   "prs": [
+    852
+   ],
+   "category": "trading_rules",
+   "weight": 1
+  },
+  {
+   "sha": "0178b979555aa663a51a7157a972d75ba8d3ccfc",
+   "date": "2026-09-30T20:17:44+09:00",
+   "parents": [
+    "39b6ff354d9757099b22c46a13be217a5262d441",
+    "aa88916e07632b2c6c642eb1638d13694dd29abe"
+   ],
+   "subject": "Merge pull request #852 from dragon1086/feat/kr-flow-corporate-action-check",
+   "prs": [
+    852
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "21b1a4cfa9adf1b2ee24ada9fa4b4af8cb1908c9",
+   "date": "2026-09-30T21:29:54+09:00",
+   "parents": [
+    "0178b979555aa663a51a7157a972d75ba8d3ccfc"
+   ],
+   "subject": "fix: emit KR micro-split and decision-input SHADOW from the enhanced agent",
+   "prs": [
+    853
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "7fe0e874f01406c68ff5775545b645bbc681398e",
+   "date": "2026-09-30T21:40:20+09:00",
+   "parents": [
+    "0178b979555aa663a51a7157a972d75ba8d3ccfc",
+    "21b1a4cfa9adf1b2ee24ada9fa4b4af8cb1908c9"
+   ],
+   "subject": "Merge pull request #853 from dragon1086/fix/kr-enhanced-micro-split-shadow",
+   "prs": [
+    853
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "561bb64d2e5652badfff52ee9aa66147d1a00e86",
+   "date": "2026-09-30T23:52:13+09:00",
+   "parents": [
+    "7fe0e874f01406c68ff5775545b645bbc681398e"
+   ],
+   "subject": "feat: move off gpt-5.4-mini/gpt-5.6 models (luna -> gpt-6-luna, bot -> gpt-6.1-sol)",
+   "prs": [
+    854
+   ],
+   "category": "models_oauth",
+   "weight": 1
+  },
+  {
+   "sha": "bd1e4e26819e1751e13500d5179fafb3a8ebed77",
+   "date": "2026-09-30T23:54:47+09:00",
+   "parents": [
+    "561bb64d2e5652badfff52ee9aa66147d1a00e86"
+   ],
+   "subject": "test: expect gpt-6-luna/gpt-6.1-sol defaults and the gpt-5.4-mini proxy mapping",
+   "prs": [
+    854
+   ],
+   "category": "models_oauth",
+   "weight": 1
+  },
+  {
+   "sha": "4e3ec73958e584b83067327091488cdadcaeb7c2",
+   "date": "2026-09-30T23:59:26+09:00",
+   "parents": [
+    "bd1e4e26819e1751e13500d5179fafb3a8ebed77"
+   ],
+   "subject": "test: update model registry defaults to gpt-6-luna",
+   "prs": [
+    854
+   ],
+   "category": "models_oauth",
+   "weight": 1
+  },
+  {
+   "sha": "d9dd6a6edd17cb5285c1226d3222b47c8399e0a5",
+   "date": "2026-10-01T00:08:50+09:00",
+   "parents": [
+    "7fe0e874f01406c68ff5775545b645bbc681398e",
+    "4e3ec73958e584b83067327091488cdadcaeb7c2"
+   ],
+   "subject": "Merge pull request #854 from dragon1086/feat/models-gpt6-luna-bot-61sol",
+   "prs": [
+    854
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "2e6e1c505254f9ddd7a16bbd8e6ccd1dbc4902d8",
+   "date": "2026-10-01T00:41:10+09:00",
+   "parents": [
+    "d9dd6a6edd17cb5285c1226d3222b47c8399e0a5"
+   ],
+   "subject": "fix: count OAuth health log errors by line time, not file mtime",
+   "prs": [
+    855
+   ],
+   "category": "models_oauth",
+   "weight": 1
+  },
+  {
+   "sha": "081913533b01d120fb98fd82a26abc44a98921e4",
+   "date": "2026-10-01T00:48:32+09:00",
+   "parents": [
+    "d9dd6a6edd17cb5285c1226d3222b47c8399e0a5",
+    "2e6e1c505254f9ddd7a16bbd8e6ccd1dbc4902d8"
+   ],
+   "subject": "Merge pull request #855 from dragon1086/fix/oauth-health-log-window",
+   "prs": [
+    855
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "564f46a9883dffdcda77967b9e5516a4661b1e60",
+   "date": "2026-10-01T00:52:11+09:00",
+   "parents": [
+    "59bf5d3f61147e696787b3f36c1723d103603155",
+    "081913533b01d120fb98fd82a26abc44a98921e4"
+   ],
+   "subject": "Merge branch 'main' into research/us-udvr-institutional-proxy-20260930",
+   "prs": [
+    845
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "43036ca3cececa1dae688a6aac570fee1ae2c315",
+   "date": "2026-10-01T01:03:06+09:00",
+   "parents": [
+    "081913533b01d120fb98fd82a26abc44a98921e4",
+    "564f46a9883dffdcda77967b9e5516a4661b1e60"
+   ],
+   "subject": "Merge pull request #845 from dragon1086/research/us-udvr-institutional-proxy-20260930",
+   "prs": [
+    845
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "f39a7eb26f37c4ad0a2e791927184a925409ae2c",
+   "date": "2026-10-01T01:41:56+09:00",
+   "parents": [
+    "43036ca3cececa1dae688a6aac570fee1ae2c315"
+   ],
+   "subject": "fix: serialize Codex MCP boot so parallel BUY analyses stop timing out",
+   "prs": [
+    856
+   ],
+   "category": "models_oauth",
+   "weight": 1
+  },
+  {
+   "sha": "d470ebf7bcef3e723013f5e1be84328f457bbfc8",
+   "date": "2026-10-01T01:54:59+09:00",
+   "parents": [
+    "43036ca3cececa1dae688a6aac570fee1ae2c315",
+    "f39a7eb26f37c4ad0a2e791927184a925409ae2c"
+   ],
+   "subject": "Merge pull request #856 from dragon1086/fix/codex-mcp-startup-gate",
+   "prs": [
+    856
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "607726ac11b954c0efe5aedfdf935a3bd75d0b4a",
+   "date": "2026-10-01T10:17:40+09:00",
+   "parents": [
+    "d470ebf7bcef3e723013f5e1be84328f457bbfc8"
+   ],
+   "subject": "docs: preregister KR intraday volume pace replay v1",
+   "prs": [
+    857
+   ],
+   "category": "research_governance",
+   "weight": 1
+  },
+  {
+   "sha": "135796a8228cdc6adff9a7680778f1b403e25ef0",
+   "date": "2026-10-01T10:18:51+09:00",
+   "parents": [
+    "607726ac11b954c0efe5aedfdf935a3bd75d0b4a"
+   ],
+   "subject": "docs: fix the minimum-count rule for H1/H2 before running",
+   "prs": [
+    857
+   ],
+   "category": "research_governance",
+   "weight": 1
+  },
+  {
+   "sha": "1599ce6eddcbb26d8797b7e102d4647cee575543",
+   "date": "2026-10-01T10:19:35+09:00",
+   "parents": [
+    "135796a8228cdc6adff9a7680778f1b403e25ef0"
+   ],
+   "subject": "research: KR intraday volume pace replay tool (preregistered v1)",
+   "prs": [
+    857
+   ],
+   "category": "research_governance",
+   "weight": 1
+  },
+  {
+   "sha": "74b2f2abe98bafb0dac63166031b586e83eb3216",
+   "date": "2026-10-01T11:16:07+09:00",
+   "parents": [
+    "1599ce6eddcbb26d8797b7e102d4647cee575543"
+   ],
+   "subject": "docs: preregister KR micro-split B3 replay v1 (same rules as US adaptive v2)",
+   "prs": [
+    857
+   ],
+   "category": "research_governance",
+   "weight": 1
+  },
+  {
+   "sha": "7f9cd905a1de1c82fc46ff1687b6b522e1142bbe",
+   "date": "2026-10-01T11:17:23+09:00",
+   "parents": [
+    "74b2f2abe98bafb0dac63166031b586e83eb3216"
+   ],
+   "subject": "research: KR micro-split B3 daily replay tool (preregistered v1)",
+   "prs": [
+    857
+   ],
+   "category": "research_governance",
+   "weight": 1
+  },
+  {
+   "sha": "d743a7f9086123cd4eac71a4265bc4bb4e2becef",
+   "date": "2026-10-01T17:36:51+09:00",
+   "parents": [
+    "7f9cd905a1de1c82fc46ff1687b6b522e1142bbe"
+   ],
+   "subject": "research: record KR volume pace v1 and micro-split B3 v1 results",
+   "prs": [
+    857
+   ],
+   "category": "research_governance",
+   "weight": 1
+  },
+  {
+   "sha": "c6569920ad729cfa4da87e887c132b7a594727bf",
+   "date": "2026-10-01T19:38:37+09:00",
+   "parents": [
+    "d470ebf7bcef3e723013f5e1be84328f457bbfc8"
+   ],
+   "subject": "fix: weight cumulative returns by occupied slot fraction (KR/US)",
+   "prs": [
+    858
+   ],
+   "category": "reports_messages",
+   "weight": 1
+  },
+  {
+   "sha": "3667de41af3fa6f75c67b28952845bed202e49f7",
+   "date": "2026-10-01T19:46:38+09:00",
+   "parents": [
+    "d470ebf7bcef3e723013f5e1be84328f457bbfc8"
+   ],
+   "subject": "fix: protect pyramided holdings intraday and align stop wording (KR/US)",
+   "prs": [
+    859
+   ],
+   "category": "trading_rules",
+   "weight": 1
+  },
+  {
+   "sha": "24b3a41dc616230cbe86e506430b57de4fd3390a",
+   "date": "2026-10-01T19:55:07+09:00",
+   "parents": [
+    "d470ebf7bcef3e723013f5e1be84328f457bbfc8"
+   ],
+   "subject": "fix: journal/translation LLM 400s, per-metric peer usability, hold reasons and jargon (KR/US)",
+   "prs": [
+    860
+   ],
+   "category": "reports_messages",
+   "weight": 1
+  },
+  {
+   "sha": "f878ff827f24ace6465216560003bc5d5c99db7e",
+   "date": "2026-10-01T19:58:41+09:00",
+   "parents": [
+    "d470ebf7bcef3e723013f5e1be84328f457bbfc8"
+   ],
+   "subject": "feat: morning reference fact \"오전 누적 거래량 ≥ 전일 거래량\" in BUY trend facts (KR/US)",
+   "prs": [
+    861
+   ],
+   "category": "trading_rules",
+   "weight": 1
+  },
+  {
+   "sha": "2d57439cca7402bddf0d19caec7c23e5c2a1067f",
+   "date": "2026-10-01T20:01:09+09:00",
+   "parents": [
+    "3667de41af3fa6f75c67b28952845bed202e49f7"
+   ],
+   "subject": "test: accept row-split kwargs in the mechanical-loop protection stub",
+   "prs": [
+    859
+   ],
+   "category": "trading_rules",
+   "weight": 1
+  },
+  {
+   "sha": "74291372ad53e21721513f2536c0adceb723035f",
+   "date": "2026-10-01T20:01:44+09:00",
+   "parents": [
+    "d470ebf7bcef3e723013f5e1be84328f457bbfc8",
+    "d743a7f9086123cd4eac71a4265bc4bb4e2becef"
+   ],
+   "subject": "Merge pull request #857 from dragon1086/research/kr-intraday-volume-pace-20261001",
+   "prs": [
+    857
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "ae2a939018491c61f2f7c48b7715f91223be5358",
+   "date": "2026-10-01T20:01:48+09:00",
+   "parents": [
+    "74291372ad53e21721513f2536c0adceb723035f",
+    "c6569920ad729cfa4da87e887c132b7a594727bf"
+   ],
+   "subject": "Merge pull request #858 from dragon1086/fix/slot-weighted-returns",
+   "prs": [
+    858
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "75b24afea850731f9c39f1cc17bcea740d9bc835",
+   "date": "2026-10-01T20:03:24+09:00",
+   "parents": [
+    "24b3a41dc616230cbe86e506430b57de4fd3390a"
+   ],
+   "subject": "fix: proxy stops forwarding temperature on translated chat requests",
+   "prs": [
+    860
+   ],
+   "category": "reports_messages",
+   "weight": 1
+  },
+  {
+   "sha": "9dd49d6bb2910836bd410c964a542a9a863a177a",
+   "date": "2026-10-01T20:15:07+09:00",
+   "parents": [
+    "2d57439cca7402bddf0d19caec7c23e5c2a1067f",
+    "ae2a939018491c61f2f7c48b7715f91223be5358"
+   ],
+   "subject": "Merge remote-tracking branch 'origin/main' into fix/multirow-stop-protection",
+   "prs": [
+    859
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "22ffbaf6be621205771609b9b02bccb8eaa7d85c",
+   "date": "2026-10-01T20:25:30+09:00",
+   "parents": [
+    "ae2a939018491c61f2f7c48b7715f91223be5358",
+    "9dd49d6bb2910836bd410c964a542a9a863a177a"
+   ],
+   "subject": "Merge pull request #859 from dragon1086/fix/multirow-stop-protection",
+   "prs": [
+    859
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "3a93e16d11c6c5757c8df388d3f60a7a63cedf01",
+   "date": "2026-10-01T20:25:35+09:00",
+   "parents": [
+    "75b24afea850731f9c39f1cc17bcea740d9bc835",
+    "22ffbaf6be621205771609b9b02bccb8eaa7d85c"
+   ],
+   "subject": "Merge remote-tracking branch 'origin/main' into fix/journal-peer-hold-reason",
+   "prs": [
+    860
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "316d585d3cba66b5d6d4b466add6ec2cfb1d24a9",
+   "date": "2026-10-01T20:25:38+09:00",
+   "parents": [
+    "f878ff827f24ace6465216560003bc5d5c99db7e",
+    "22ffbaf6be621205771609b9b02bccb8eaa7d85c"
+   ],
+   "subject": "Merge remote-tracking branch 'origin/main' into feat/morning-prev-day-volume-fact",
+   "prs": [
+    861
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "1b427740eec2872d70dcea2e5e29807b865d1de3",
+   "date": "2026-10-01T20:34:02+09:00",
+   "parents": [
+    "22ffbaf6be621205771609b9b02bccb8eaa7d85c",
+    "3a93e16d11c6c5757c8df388d3f60a7a63cedf01"
+   ],
+   "subject": "Merge pull request #860 from dragon1086/fix/journal-peer-hold-reason",
+   "prs": [
+    860
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "94db4169e122eab8ffa3343e32fd91eab2cbd5c0",
+   "date": "2026-10-01T20:34:07+09:00",
+   "parents": [
+    "316d585d3cba66b5d6d4b466add6ec2cfb1d24a9",
+    "1b427740eec2872d70dcea2e5e29807b865d1de3"
+   ],
+   "subject": "Merge remote-tracking branch 'origin/main' into feat/morning-prev-day-volume-fact",
+   "prs": [
+    861
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "6cb7a77f6dcab87ec0b11e53e674bb6ed20863e8",
+   "date": "2026-10-01T20:44:12+09:00",
+   "parents": [
+    "1b427740eec2872d70dcea2e5e29807b865d1de3",
+    "94db4169e122eab8ffa3343e32fd91eab2cbd5c0"
+   ],
+   "subject": "Merge pull request #861 from dragon1086/feat/morning-prev-day-volume-fact",
+   "prs": [
+    861
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "fbcb32b371e3a3ae9e9f9a257783e65a5a5d36e8",
+   "date": "2026-10-02T07:07:46+09:00",
+   "parents": [
+    "6cb7a77f6dcab87ec0b11e53e674bb6ed20863e8"
+   ],
+   "subject": "fix: render regime/score codes and score-adjustment reasons in Korean messages",
+   "prs": [
+    862
+   ],
+   "category": "reports_messages",
+   "weight": 1
+  },
+  {
+   "sha": "93d81cd230e491ac11c1f48ffeb477be5549fe96",
+   "date": "2026-10-02T07:18:34+09:00",
+   "parents": [
+    "6cb7a77f6dcab87ec0b11e53e674bb6ed20863e8",
+    "fbcb32b371e3a3ae9e9f9a257783e65a5a5d36e8"
+   ],
+   "subject": "Merge pull request #862 from dragon1086/fix/hold-reason-korean-labels",
+   "prs": [
+    862
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "fecd407bda295c271f9edf1d568d4648a0f40dc4",
+   "date": "2026-10-02T09:10:19+09:00",
+   "parents": [
+    "93d81cd230e491ac11c1f48ffeb477be5549fe96"
+   ],
+   "subject": "feat: B3 all-entries SHADOW core (oneil-adaptive-v3-ae, KR/US)",
+   "prs": [
+    863
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "357edb77211ecfc1d68c1558419efdc67d1fd804",
+   "date": "2026-10-02T09:19:08+09:00",
+   "parents": [
+    "fecd407bda295c271f9edf1d568d4648a0f40dc4"
+   ],
+   "subject": "feat: B3 all-entries SHADOW runtime — KR inputs, entry/exit hooks, worker (KR/US)",
+   "prs": [
+    864
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "184dc0ee1abeff4a1d0de965661ea393a51fe902",
+   "date": "2026-10-02T09:19:33+09:00",
+   "parents": [
+    "93d81cd230e491ac11c1f48ffeb477be5549fe96",
+    "fecd407bda295c271f9edf1d568d4648a0f40dc4"
+   ],
+   "subject": "Merge pull request #863 from dragon1086/feat/b3-ae-shadow-core",
+   "prs": [
+    863
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "db5beb6072afdf5b170baa1bcc60b0d3fabca171",
+   "date": "2026-10-02T09:19:41+09:00",
+   "parents": [
+    "357edb77211ecfc1d68c1558419efdc67d1fd804",
+    "184dc0ee1abeff4a1d0de965661ea393a51fe902"
+   ],
+   "subject": "Merge remote-tracking branch 'origin/main' into feat/b3-ae-shadow-runtime",
+   "prs": [
+    864
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "180239a1429014deb8e563084ed501f4dabc9e3a",
+   "date": "2026-10-02T09:30:00+09:00",
+   "parents": [
+    "db5beb6072afdf5b170baa1bcc60b0d3fabca171"
+   ],
+   "subject": "fix: literal per-market SQL in the B3 worker and log SHADOW guard failures",
+   "prs": [
+    864
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "8c807ee1187713a712999ec9a2da0e99e05ad27e",
+   "date": "2026-10-02T09:41:06+09:00",
+   "parents": [
+    "184dc0ee1abeff4a1d0de965661ea393a51fe902",
+    "180239a1429014deb8e563084ed501f4dabc9e3a"
+   ],
+   "subject": "Merge pull request #864 from dragon1086/feat/b3-ae-shadow-runtime",
+   "prs": [
+    864
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "73cb852d3a2af896983ffc0497206780f06dc97a",
+   "date": "2026-10-02T10:14:13+09:00",
+   "parents": [
+    "8c807ee1187713a712999ec9a2da0e99e05ad27e"
+   ],
+   "subject": "fix: stamp the B3 worker decision after every input is collected",
+   "prs": [
+    865
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "00a15c95a274419157b1639bb0ac6a362033f01f",
+   "date": "2026-10-02T10:25:39+09:00",
+   "parents": [
+    "8c807ee1187713a712999ec9a2da0e99e05ad27e",
+    "73cb852d3a2af896983ffc0497206780f06dc97a"
+   ],
+   "subject": "Merge pull request #865 from dragon1086/fix/b3-ae-worker-clock",
+   "prs": [
+    865
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "de28ed0e61c7b488a5021f1db806c4c1e1adbecc",
+   "date": "2026-10-02T10:27:06+09:00",
+   "parents": [
+    "00a15c95a274419157b1639bb0ac6a362033f01f"
+   ],
+   "subject": "fix: B3 SHADOW unit uses the versioned interpreter (shim gave 203/EXEC)",
+   "prs": [
+    866
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "2edd84094f76928778c7c8bc6ba2db074cadd1b5",
+   "date": "2026-10-02T13:30:59+09:00",
+   "parents": [
+    "00a15c95a274419157b1639bb0ac6a362033f01f"
+   ],
+   "subject": "feat: micro-split LIVE (KR/US) behind MICRO_SPLIT_LIVE_ENABLED (default off)",
+   "prs": [
+    867
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "40c0945a2bb45024e9340bd648cb448334273a34",
+   "date": "2026-10-02T13:31:23+09:00",
+   "parents": [
+    "00a15c95a274419157b1639bb0ac6a362033f01f",
+    "de28ed0e61c7b488a5021f1db806c4c1e1adbecc"
+   ],
+   "subject": "Merge pull request #866 from dragon1086/fix/b3-ae-unit-python",
+   "prs": [
+    866
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "849f64df7268f01f640f9e01b3b1df0031aed3dd",
+   "date": "2026-10-02T13:31:33+09:00",
+   "parents": [
+    "2edd84094f76928778c7c8bc6ba2db074cadd1b5",
+    "40c0945a2bb45024e9340bd648cb448334273a34"
+   ],
+   "subject": "Merge remote-tracking branch 'origin/main' into feat/micro-split-live",
+   "prs": [
+    867
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "f4e599e74abe3c79e2806e32a174e977104fcfcc",
+   "date": "2026-10-02T13:40:01+09:00",
+   "parents": [
+    "849f64df7268f01f640f9e01b3b1df0031aed3dd"
+   ],
+   "subject": "fix: fixed argv for the micro-split add subprocess (Codacy)",
+   "prs": [
+    867
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "c097801b8fcf9c665356967ff0a645843e36da44",
+   "date": "2026-10-02T13:50:40+09:00",
+   "parents": [
+    "40c0945a2bb45024e9340bd648cb448334273a34",
+    "f4e599e74abe3c79e2806e32a174e977104fcfcc"
+   ],
+   "subject": "Merge pull request #867 from dragon1086/feat/micro-split-live",
+   "prs": [
+    867
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "aa35dfcdc567a87c40d3e51f8bc338bb3ad63a52",
+   "date": "2026-10-02T13:54:37+09:00",
+   "parents": [
+    "c097801b8fcf9c665356967ff0a645843e36da44"
+   ],
+   "subject": "fix: micro-split display — USD in the Korean US summary, one-step ladder text for an 80% entry",
+   "prs": [
+    868
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "50d60af22d29544012f93e806984459a488e0a3d",
+   "date": "2026-10-02T14:05:09+09:00",
+   "parents": [
+    "c097801b8fcf9c665356967ff0a645843e36da44",
+    "aa35dfcdc567a87c40d3e51f8bc338bb3ad63a52"
+   ],
+   "subject": "Merge pull request #868 from dragon1086/fix/micro-split-live-display",
+   "prs": [
+    868
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "606273b17d8ed09ac49f6bd18f808481975b52ed",
+   "date": "2026-10-02T16:03:41+09:00",
+   "parents": [
+    "c097801b8fcf9c665356967ff0a645843e36da44"
+   ],
+   "subject": "fix: F4 business clarity passes an identified business without sourced decline; holding look-through",
+   "prs": [
+    869
+   ],
+   "category": "trading_rules",
+   "weight": 1
+  },
+  {
+   "sha": "1aebcb471a407c1d97e4ce1cd1dbe3884d262798",
+   "date": "2026-10-02T16:06:18+09:00",
+   "parents": [
+    "606273b17d8ed09ac49f6bd18f808481975b52ed",
+    "50d60af22d29544012f93e806984459a488e0a3d"
+   ],
+   "subject": "Merge remote-tracking branch 'origin/main' into fix/f4-business-clarity-holding",
+   "prs": [
+    869
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "19c7c813cac239cb1337c59b2f4274538f9ee18e",
+   "date": "2026-10-02T16:08:44+09:00",
+   "parents": [
+    "50d60af22d29544012f93e806984459a488e0a3d",
+    "1aebcb471a407c1d97e4ce1cd1dbe3884d262798"
+   ],
+   "subject": "Merge pull request #869 from dragon1086/fix/f4-business-clarity-holding",
+   "prs": [
+    869
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "048c38aa868520295bc57aced754be987706f886",
+   "date": "2026-10-02T18:26:52+09:00",
+   "parents": [
+    "19c7c813cac239cb1337c59b2f4274538f9ee18e"
+   ],
+   "subject": "fix: pause fixed-ladder micro-split adds by default (scenario-based adds to follow)",
+   "prs": [
+    872
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "e13297ae264019d528b4f85084b792b4c3d4b841",
+   "date": "2026-10-02T18:29:15+09:00",
+   "parents": [
+    "19c7c813cac239cb1337c59b2f4274538f9ee18e",
+    "048c38aa868520295bc57aced754be987706f886"
+   ],
+   "subject": "Merge pull request #872 from dragon1086/fix/micro-split-pause-fixed-ladder",
+   "prs": [
+    872
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "7b8fb0082f01441d47613622827369ccd7bcaa60",
+   "date": "2026-10-02T19:11:41+09:00",
+   "parents": [
+    "e13297ae264019d528b4f85084b792b4c3d4b841"
+   ],
+   "subject": "feat: micro-split entries need buy score >= 5 in every regime (KR/US)",
+   "prs": [
+    873
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "7548345878c6cbbad93e074ac4065b0b810facde",
+   "date": "2026-10-02T19:14:01+09:00",
+   "parents": [
+    "e13297ae264019d528b4f85084b792b4c3d4b841",
+    "7b8fb0082f01441d47613622827369ccd7bcaa60"
+   ],
+   "subject": "Merge pull request #873 from dragon1086/feat/micro-split-score-floor",
+   "prs": [
+    873
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "e1a6cb5bf67df7233a48739a402462305d67e2ad",
+   "date": "2026-10-02T19:20:29+09:00",
+   "parents": [
+    "7548345878c6cbbad93e074ac4065b0b810facde"
+   ],
+   "subject": "fix: journal, compression, weekly report and pending exit carry micro-split size (KR/US)",
+   "prs": [
+    874
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "1042fd30a40692b98356647d7ebab909bf4fe375",
+   "date": "2026-10-02T19:22:51+09:00",
+   "parents": [
+    "7548345878c6cbbad93e074ac4065b0b810facde",
+    "e1a6cb5bf67df7233a48739a402462305d67e2ad"
+   ],
+   "subject": "Merge pull request #874 from dragon1086/fix/micro-split-journal",
+   "prs": [
+    874
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "8c8e8624084bb2b6a0859deabcc305ae91821116",
+   "date": "2026-10-02T19:06:17+09:00",
+   "parents": [
+    "1042fd30a40692b98356647d7ebab909bf4fe375"
+   ],
+   "subject": "feat: scenario-based micro-split add plans replace the fixed ladder (KR/US)",
+   "prs": [
+    875
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "60efbc3fd575b5357618aeda508eff8e5f76560f",
+   "date": "2026-10-02T19:43:16+09:00",
+   "parents": [
+    "8c8e8624084bb2b6a0859deabcc305ae91821116"
+   ],
+   "subject": "fix: pace, cap (12 sessions) and day-cache the KR prior minute walk for add-plan volume pace",
+   "prs": [
+    875
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "aaf1ee7e3113c97698c558044fd2e16aea3d7e6c",
+   "date": "2026-10-02T19:47:36+09:00",
+   "parents": [
+    "60efbc3fd575b5357618aeda508eff8e5f76560f"
+   ],
+   "subject": "fix: log skipped add_planned events (Codacy B110)",
+   "prs": [
+    875
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "a962bd3c8f5840c58219c758c3a1b745dda3f30f",
+   "date": "2026-10-02T19:49:57+09:00",
+   "parents": [
+    "1042fd30a40692b98356647d7ebab909bf4fe375",
+    "aaf1ee7e3113c97698c558044fd2e16aea3d7e6c"
+   ],
+   "subject": "Merge pull request #875 from dragon1086/feat/micro-split-add-plan",
+   "prs": [
+    875
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "3e965efb78b691d5f2773e1b56f9bc17e54d8659",
+   "date": "2026-10-02T19:59:42+09:00",
+   "parents": [
+    "a962bd3c8f5840c58219c758c3a1b745dda3f30f"
+   ],
+   "subject": "fix: add_plan lens labels are normalized, never drop an executable scenario",
+   "prs": [
+    876
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "a4825ae1a6e33082f2de920d6e7db47071f90702",
+   "date": "2026-10-02T20:02:06+09:00",
+   "parents": [
+    "a962bd3c8f5840c58219c758c3a1b745dda3f30f",
+    "3e965efb78b691d5f2773e1b56f9bc17e54d8659"
+   ],
+   "subject": "Merge pull request #876 from dragon1086/fix/add-plan-lens-tolerant",
+   "prs": [
+    876
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "aeb303440a2961cdec63043dcc4155359173ca77",
+   "date": "2026-10-02T21:52:42+09:00",
+   "parents": [
+    "a4825ae1a6e33082f2de920d6e7db47071f90702"
+   ],
+   "subject": "fix: keep micro-split add plans per session so a next-session review never replaces today's plan",
+   "prs": [
+    877
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "2bab03be858b7c1ffac9e213a2515427006fcc6c",
+   "date": "2026-10-02T21:55:04+09:00",
+   "parents": [
+    "a4825ae1a6e33082f2de920d6e7db47071f90702",
+    "aeb303440a2961cdec63043dcc4155359173ca77"
+   ],
+   "subject": "Merge pull request #877 from dragon1086/docs/add-plan-us-schedule",
+   "prs": [
+    877
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "715acf0334a552de7586992767e9bc8c6995421c",
+   "date": "2026-10-03T00:23:19+09:00",
+   "parents": [
+    "2bab03be858b7c1ffac9e213a2515427006fcc6c"
+   ],
+   "subject": "fix: volume-surge screening excludes stocks closing below the previous close",
+   "prs": [
+    878
+   ],
+   "category": "screening_data",
+   "weight": 1
+  },
+  {
+   "sha": "df1dca2433dfa75468b78decdd741ce89ff21bbc",
+   "date": "2026-10-03T00:24:16+09:00",
+   "parents": [
+    "2bab03be858b7c1ffac9e213a2515427006fcc6c"
+   ],
+   "subject": "fix: subscriber skips Pub/Sub signals older than the age cutoff",
+   "prs": [
+    879
+   ],
+   "category": "ops_security",
+   "weight": 1
+  },
+  {
+   "sha": "00ec13a620a743dcc0d2d61b4cfd4e3426a68189",
+   "date": "2026-10-03T00:34:02+09:00",
+   "parents": [
+    "2bab03be858b7c1ffac9e213a2515427006fcc6c",
+    "715acf0334a552de7586992767e9bc8c6995421c"
+   ],
+   "subject": "Merge pull request #878 from dragon1086/fix/volume-surge-prev-close",
+   "prs": [
+    878
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "18a274d8edc6004cfe41c9676741e601b0ecdbde",
+   "date": "2026-10-03T00:34:06+09:00",
+   "parents": [
+    "00ec13a620a743dcc0d2d61b4cfd4e3426a68189",
+    "df1dca2433dfa75468b78decdd741ce89ff21bbc"
+   ],
+   "subject": "Merge pull request #879 from dragon1086/fix/subscriber-stale-signal-guard",
+   "prs": [
+    879
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "ff461e5ab64e0bcdd0310ae8383aa5497c2791d8",
+   "date": "2026-10-03T09:16:14+09:00",
+   "parents": [
+    "18a274d8edc6004cfe41c9676741e601b0ecdbde"
+   ],
+   "subject": "fix: buy_score rubric matches the trend and repeat stop-out gates",
+   "prs": [
+    880
+   ],
+   "category": "trading_rules",
+   "weight": 1
+  },
+  {
+   "sha": "2e6ba489001def25651e777a2f951d7725d5cc2d",
+   "date": "2026-10-03T10:00:03+09:00",
+   "parents": [
+    "ff461e5ab64e0bcdd0310ae8383aa5497c2791d8"
+   ],
+   "subject": "test: pin now() in micro-split LIVE tests so fixture bars never go stale",
+   "prs": [
+    880
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "7ef1accd45150910658b68c47be32e9e5a5c6c36",
+   "date": "2026-10-03T10:08:51+09:00",
+   "parents": [
+    "18a274d8edc6004cfe41c9676741e601b0ecdbde"
+   ],
+   "subject": "feat(btc): add gated LLM scenario foundation and order-free preview",
+   "prs": [
+    881
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "ba8f8a9c8c92780c5ae65ee3b7a110ea60f552ab",
+   "date": "2026-10-03T10:10:50+09:00",
+   "parents": [
+    "18a274d8edc6004cfe41c9676741e601b0ecdbde",
+    "2e6ba489001def25651e777a2f951d7725d5cc2d"
+   ],
+   "subject": "Merge pull request #880 from dragon1086/fix/buy-score-rubric-gate-alignment",
+   "prs": [
+    880
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "ba6343d752e4c0a32233062a0d03efc7f4c78abb",
+   "date": "2026-10-03T10:51:22+09:00",
+   "parents": [
+    "7ef1accd45150910658b68c47be32e9e5a5c6c36"
+   ],
+   "subject": "feat(btc): complete guarded demo scenario execution and exact accounting",
+   "prs": [
+    881
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "827a34f32302a33669b3f5a87dc5c229909bc632",
+   "date": "2026-10-03T10:54:13+09:00",
+   "parents": [
+    "ba6343d752e4c0a32233062a0d03efc7f4c78abb",
+    "ba8f8a9c8c92780c5ae65ee3b7a110ea60f552ab"
+   ],
+   "subject": "Merge remote-tracking branch 'origin/main' into feat/btc-llm-scenario-20261003",
+   "prs": [
+    881
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "f725e25ea0acb22bfe3bb30a69cd7fd66822183f",
+   "date": "2026-10-03T10:54:46+09:00",
+   "parents": [
+    "827a34f32302a33669b3f5a87dc5c229909bc632"
+   ],
+   "subject": "chore: preserve upstream clock fixture fix without duplication",
+   "prs": [
+    881
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "9e28419bbd2c5315ab39644a677e9afe64ce7511",
+   "date": "2026-10-03T10:57:15+09:00",
+   "parents": [
+    "f725e25ea0acb22bfe3bb30a69cd7fd66822183f"
+   ],
+   "subject": "fix(btc): clarify bound SQL and explicit uncertain-cancel handling",
+   "prs": [
+    881
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "3db7eff2914f82386c75b09bb8438afd72d6f549",
+   "date": "2026-10-03T11:00:22+09:00",
+   "parents": [
+    "9e28419bbd2c5315ab39644a677e9afe64ce7511"
+   ],
+   "subject": "fix(btc): carry the active plan and verified target fills into rechecks",
+   "prs": [
+    881
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "7b080d3e8f9d3ea2bccd120080948c95f6f239cf",
+   "date": "2026-10-03T11:01:18+09:00",
+   "parents": [
+    "3db7eff2914f82386c75b09bb8438afd72d6f549"
+   ],
+   "subject": "fix(btc): preserve requested trade plan across cancellation actions",
+   "prs": [
+    881
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "5abf5515ca16c6ce8b5a9e1c7389570322d72215",
+   "date": "2026-10-03T11:08:48+09:00",
+   "parents": [
+    "ba8f8a9c8c92780c5ae65ee3b7a110ea60f552ab"
+   ],
+   "subject": "feat: US negative-equity issuers get a deterministic F2 block",
+   "prs": [
+    882
+   ],
+   "category": "trading_rules",
+   "weight": 1
+  },
+  {
+   "sha": "b341040cc8e1d120128a5f86e749eba21f0447c8",
+   "date": "2026-10-03T11:11:35+09:00",
+   "parents": [
+    "ba8f8a9c8c92780c5ae65ee3b7a110ea60f552ab",
+    "7b080d3e8f9d3ea2bccd120080948c95f6f239cf"
+   ],
+   "subject": "Merge pull request #881 from dragon1086/feat/btc-llm-scenario-20261003",
+   "prs": [
+    881
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "e3cc9bad513905fffdcda3e2ca0608eac34554e4",
+   "date": "2026-10-03T11:23:50+09:00",
+   "parents": [
+    "5abf5515ca16c6ce8b5a9e1c7389570322d72215",
+    "b341040cc8e1d120128a5f86e749eba21f0447c8"
+   ],
+   "subject": "Merge remote-tracking branch 'origin/main' into feat/f2-negative-equity-facts",
+   "prs": [
+    882
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "07fb8fb440327a3816aa563faf3b2f114f7b20aa",
+   "date": "2026-10-03T11:25:12+09:00",
+   "parents": [
+    "b341040cc8e1d120128a5f86e749eba21f0447c8"
+   ],
+   "subject": "docs(btc): record verified LLM demo rollout and first scheduled observation",
+   "prs": [
+    883
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "02b3e275d3bf7792a26e3e64f966dcdc29c4929f",
+   "date": "2026-10-03T11:25:50+09:00",
+   "parents": [
+    "b341040cc8e1d120128a5f86e749eba21f0447c8",
+    "07fb8fb440327a3816aa563faf3b2f114f7b20aa"
+   ],
+   "subject": "Merge pull request #883 from dragon1086/docs/btc-scenario-rollout-20261003",
+   "prs": [
+    883
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "c86e78e73b41b767812f53b8b8e88288d2852d81",
+   "date": "2026-10-03T11:35:19+09:00",
+   "parents": [
+    "02b3e275d3bf7792a26e3e64f966dcdc29c4929f",
+    "e3cc9bad513905fffdcda3e2ca0608eac34554e4"
+   ],
+   "subject": "Merge pull request #882 from dragon1086/feat/f2-negative-equity-facts",
+   "prs": [
+    882
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "50b4dd80af27685df27c2aaaf0d0e50cc58ca0ed",
+   "date": "2026-10-03T14:46:26+09:00",
+   "parents": [
+    "c86e78e73b41b767812f53b8b8e88288d2852d81"
+   ],
+   "subject": "feat(btc): add isolated causal scenario backtests and strict decision tapes",
+   "prs": [
+    884
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "f502e55a1dd32ad5734bc993b53ddb2a584660a1",
+   "date": "2026-10-03T14:47:44+09:00",
+   "parents": [
+    "50b4dd80af27685df27c2aaaf0d0e50cc58ca0ed"
+   ],
+   "subject": "test(btc): record actual model calls separately from reproducible result hash",
+   "prs": [
+    884
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "94aeaf3e13f0553af2af9e0c75bb966557f23987",
+   "date": "2026-10-03T15:02:25+09:00",
+   "parents": [
+    "f502e55a1dd32ad5734bc993b53ddb2a584660a1"
+   ],
+   "subject": "fix(btc): preserve rejected identities during frozen replay and harden public fetch",
+   "prs": [
+    884
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "8f8794a8b843642cf045da74f0f15f03ecda5ba9",
+   "date": "2026-10-03T15:24:06+09:00",
+   "parents": [
+    "94aeaf3e13f0553af2af9e0c75bb966557f23987"
+   ],
+   "subject": "docs(btc): record no-trade pilot outcomes and verified frozen replay",
+   "prs": [
+    884
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "3ad8254fb1720f2452699e4c3b55379626412a2f",
+   "date": "2026-10-03T15:33:13+09:00",
+   "parents": [
+    "c86e78e73b41b767812f53b8b8e88288d2852d81",
+    "8f8794a8b843642cf045da74f0f15f03ecda5ba9"
+   ],
+   "subject": "Merge pull request #884 from dragon1086/feat/btc-llm-backtest-20261003",
+   "prs": [
+    884
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "53298838919953cb357ea230a8da0b251de8cdaf",
+   "date": "2026-10-03T16:42:50+09:00",
+   "parents": [
+    "3ad8254fb1720f2452699e4c3b55379626412a2f"
+   ],
+   "subject": "fix(btc): enforce LLM output contracts and separate model incidents",
+   "prs": [
+    885
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "e0caad04a49dc9c54b13d96083701b69a20de7fc",
+   "date": "2026-10-03T16:47:33+09:00",
+   "parents": [
+    "53298838919953cb357ea230a8da0b251de8cdaf"
+   ],
+   "subject": "fix(btc): explicitly open historical SQLite inputs in read-only URI mode",
+   "prs": [
+    885
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "d289851d98826076fbb128a3371628b1cc38f21f",
+   "date": "2026-10-03T16:57:01+09:00",
+   "parents": [
+    "3ad8254fb1720f2452699e4c3b55379626412a2f",
+    "e0caad04a49dc9c54b13d96083701b69a20de7fc"
+   ],
+   "subject": "Merge pull request #885 from dragon1086/fix/btc-llm-contract-20261003",
+   "prs": [
+    885
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "78967c6944f81878f13073ba780984df7284020f",
+   "date": "2026-10-03T17:08:42+09:00",
+   "parents": [
+    "d289851d98826076fbb128a3371628b1cc38f21f"
+   ],
+   "subject": "fix(btc): retain decision audits without contending on execution mutex",
+   "prs": [
+    886
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "1364bc401546b7214411927d60c9d81c171f9da1",
+   "date": "2026-10-03T17:16:18+09:00",
+   "parents": [
+    "d289851d98826076fbb128a3371628b1cc38f21f",
+    "78967c6944f81878f13073ba780984df7284020f"
+   ],
+   "subject": "Merge pull request #886 from dragon1086/fix/btc-decision-audit-contention-20261003",
+   "prs": [
+    886
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "08fa2004e2115d2181a617b66499f2debd040bb6",
+   "date": "2026-10-03T20:21:58+09:00",
+   "parents": [
+    "1364bc401546b7214411927d60c9d81c171f9da1"
+   ],
+   "subject": "fix(btc): settle proven unsubmitted replacements after cancellation",
+   "prs": [
+    888
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "77251f1d271c12bd0b3b2af9426a68966756598e",
+   "date": "2026-10-03T20:37:09+09:00",
+   "parents": [
+    "1364bc401546b7214411927d60c9d81c171f9da1"
+   ],
+   "subject": "feat: micro-split entry frame and BUY prompt contradiction fixes",
+   "prs": [
+    889
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "b6d6d6ddd81be731496ce73a14b2a162318735b4",
+   "date": "2026-10-03T20:40:48+09:00",
+   "parents": [
+    "08fa2004e2115d2181a617b66499f2debd040bb6"
+   ],
+   "subject": "docs(btc): separate execution repair from experimental regime framing",
+   "prs": [
+    888
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "fbebd46d9f5a5cb3f138b14c830c49211259f9cb",
+   "date": "2026-10-03T20:53:52+09:00",
+   "parents": [
+    "1364bc401546b7214411927d60c9d81c171f9da1",
+    "b6d6d6ddd81be731496ce73a14b2a162318735b4"
+   ],
+   "subject": "Merge pull request #888 from dragon1086/fix/btc-cancel-replace-abort-20261003",
+   "prs": [
+    888
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "b9295552e6866a520d6bd1bd9723d3fa96c84f50",
+   "date": "2026-10-03T21:16:42+09:00",
+   "parents": [
+    "77251f1d271c12bd0b3b2af9426a68966756598e",
+    "fbebd46d9f5a5cb3f138b14c830c49211259f9cb"
+   ],
+   "subject": "Merge remote-tracking branch 'origin/main' into feat/micro-split-entry-framing",
+   "prs": [
+    889
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "188a5ceabef4880d3363e77252a56e3215f8b245",
+   "date": "2026-10-03T21:25:41+09:00",
+   "parents": [
+    "fbebd46d9f5a5cb3f138b14c830c49211259f9cb"
+   ],
+   "subject": "fix(btc): align prompt decision logic with verified order semantics",
+   "prs": [
+    890
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "256e7ed7f8e3972fe655545023812d8b6cde1ecd",
+   "date": "2026-10-03T21:27:54+09:00",
+   "parents": [
+    "fbebd46d9f5a5cb3f138b14c830c49211259f9cb",
+    "b9295552e6866a520d6bd1bd9723d3fa96c84f50"
+   ],
+   "subject": "Merge pull request #889 from dragon1086/feat/micro-split-entry-framing",
+   "prs": [
+    889
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "b797d09ed2db7cc6e1a7c2716243200d1e9dd284",
+   "date": "2026-10-03T21:34:25+09:00",
+   "parents": [
+    "188a5ceabef4880d3363e77252a56e3215f8b245",
+    "256e7ed7f8e3972fe655545023812d8b6cde1ecd"
+   ],
+   "subject": "Merge remote-tracking branch 'origin/main' into fix/btc-prompt-logic-20261003",
+   "prs": [
+    890
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "3872b9e89ba2d67f9f65fe76086802342d46fd45",
+   "date": "2026-10-03T21:48:30+09:00",
+   "parents": [
+    "256e7ed7f8e3972fe655545023812d8b6cde1ecd",
+    "b797d09ed2db7cc6e1a7c2716243200d1e9dd284"
+   ],
+   "subject": "Merge pull request #890 from dragon1086/fix/btc-prompt-logic-20261003",
+   "prs": [
+    890
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "d443ecf0d7dd5d2c68c14b7013531f19273d7be7",
+   "date": "2026-10-03T22:48:16+09:00",
+   "parents": [
+    "3872b9e89ba2d67f9f65fe76086802342d46fd45"
+   ],
+   "subject": "feat(btc): explain position notices with risk percentages and verified comparisons",
+   "prs": [
+    891
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "08dacfc3e01b2d62694cfde9c25dfebd728f04c2",
+   "date": "2026-10-03T22:54:14+09:00",
+   "parents": [
+    "d443ecf0d7dd5d2c68c14b7013531f19273d7be7"
+   ],
+   "subject": "fix(btc): fully roll back optional notices when savepoint cleanup fails",
+   "prs": [
+    891
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "144fccfaa2e6e49077b393ca7395e378bb5c3528",
+   "date": "2026-10-03T22:55:44+09:00",
+   "parents": [
+    "08dacfc3e01b2d62694cfde9c25dfebd728f04c2"
+   ],
+   "subject": "docs(btc): record optional notice rollback verification",
+   "prs": [
+    891
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "c96b697626a0b637960398d3049ab5068fbb4796",
+   "date": "2026-10-03T23:06:29+09:00",
+   "parents": [
+    "3872b9e89ba2d67f9f65fe76086802342d46fd45",
+    "144fccfaa2e6e49077b393ca7395e378bb5c3528"
+   ],
+   "subject": "Merge pull request #891 from dragon1086/feat/btc-readable-notices-20261003",
+   "prs": [
+    891
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "1169f64ef45c6d81bf777d7c9cf71a2009a068b6",
+   "date": "2026-10-04T00:26:17+09:00",
+   "parents": [
+    "c96b697626a0b637960398d3049ab5068fbb4796"
+   ],
+   "subject": "fix(btc): clarify concise trade notices and retry brief post-model lock contention",
+   "prs": [
+    892
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "07890448a254209d317d23506d19740ef5ecfc43",
+   "date": "2026-10-04T00:35:45+09:00",
+   "parents": [
+    "c96b697626a0b637960398d3049ab5068fbb4796",
+    "1169f64ef45c6d81bf777d7c9cf71a2009a068b6"
+   ],
+   "subject": "Merge pull request #892 from dragon1086/fix/btc-concise-notices-20261004",
+   "prs": [
+    892
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "877600a376095678b2b8e58023870be8c86ad897",
+   "date": "2026-10-04T00:54:52+09:00",
+   "parents": [
+    "07890448a254209d317d23506d19740ef5ecfc43"
+   ],
+   "subject": "fix(btc): back off transient public data limits and tolerate observed protection wait",
+   "prs": [
+    893
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "2506854b1acd678fe7a807d93e7aac1f8ff66e3c",
+   "date": "2026-10-04T01:05:54+09:00",
+   "parents": [
+    "07890448a254209d317d23506d19740ef5ecfc43",
+    "877600a376095678b2b8e58023870be8c86ad897"
+   ],
+   "subject": "Merge pull request #893 from dragon1086/fix/btc-public-rate-backoff-20261004",
+   "prs": [
+    893
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "86f0be013eb82758bdf62d1f7e423eca02499f60",
+   "date": "2026-10-04T01:10:41+09:00",
+   "parents": [
+    "877600a376095678b2b8e58023870be8c86ad897"
+   ],
+   "subject": "fix(btc): separate scenario decisions and protection in health alerts",
+   "prs": [
+    894
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "c10b7e5708293bda7171e6e4b5e843ce7f083477",
+   "date": "2026-10-04T01:22:33+09:00",
+   "parents": [
+    "2506854b1acd678fe7a807d93e7aac1f8ff66e3c",
+    "86f0be013eb82758bdf62d1f7e423eca02499f60"
+   ],
+   "subject": "Merge pull request #894 from dragon1086/fix/btc-health-scenario-context-20261004",
+   "prs": [
+    894
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "66763193dfc3bc87d158f2e13838b0cfd4f4b347",
+   "date": "2026-10-04T01:34:46+09:00",
+   "parents": [
+    "c10b7e5708293bda7171e6e4b5e843ce7f083477"
+   ],
+   "subject": "fix(btc): suppress status reannouncements and isolate notice bookkeeping contention",
+   "prs": [
+    895
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "3b5a4a6933bf0f6f934b9e4f5fe3b687bb2221af",
+   "date": "2026-10-04T01:45:56+09:00",
+   "parents": [
+    "c10b7e5708293bda7171e6e4b5e843ce7f083477",
+    "66763193dfc3bc87d158f2e13838b0cfd4f4b347"
+   ],
+   "subject": "Merge pull request #895 from dragon1086/fix/btc-notice-dedup-final-20261004",
+   "prs": [
+    895
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "64437b89c499d4827c42b67ba5745cac3bfa97b5",
+   "date": "2026-10-04T02:21:33+09:00",
+   "parents": [
+    "3b5a4a6933bf0f6f934b9e4f5fe3b687bb2221af"
+   ],
+   "subject": "feat(reentry): v3 campaign re-entry SHADOW with lunch-time decision",
+   "prs": [
+    900
+   ],
+   "category": "reentry",
+   "weight": 1
+  },
+  {
+   "sha": "38e01504c93840e2eaabb0937ebbaa4817cb3a19",
+   "date": "2026-10-04T08:26:59+09:00",
+   "parents": [
+    "64437b89c499d4827c42b67ba5745cac3bfa97b5"
+   ],
+   "subject": "feat(reentry): apply user decisions to v3 SHADOW (14:00/13:50, BUY target/stop, shakeout recovery)",
+   "prs": [
+    900
+   ],
+   "category": "reentry",
+   "weight": 1
+  },
+  {
+   "sha": "e83ade9da408bd445bdc0b9642f5bc4192084594",
+   "date": "2026-10-04T08:28:07+09:00",
+   "parents": [
+    "3b5a4a6933bf0f6f934b9e4f5fe3b687bb2221af"
+   ],
+   "subject": "docs: research lessons ledger linked from the trading change harness",
+   "prs": [
+    896
+   ],
+   "category": "research_governance",
+   "weight": 1
+  },
+  {
+   "sha": "e59dc2711d61a05db38f06857e342980696813b1",
+   "date": "2026-10-04T08:29:38+09:00",
+   "parents": [
+    "3b5a4a6933bf0f6f934b9e4f5fe3b687bb2221af"
+   ],
+   "subject": "fix: redact Telegram bot tokens from all logs",
+   "prs": [
+    897
+   ],
+   "category": "ops_security",
+   "weight": 1
+  },
+  {
+   "sha": "2b41c369151852ed0b60741c273f4c64e7282122",
+   "date": "2026-10-04T08:38:20+09:00",
+   "parents": [
+    "3b5a4a6933bf0f6f934b9e4f5fe3b687bb2221af",
+    "e83ade9da408bd445bdc0b9642f5bc4192084594"
+   ],
+   "subject": "Merge pull request #896 from dragon1086/docs/research-lessons",
+   "prs": [
+    896
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "4e8f97c152521d6a7a188cb5c5278303d8190ae9",
+   "date": "2026-10-04T08:38:31+09:00",
+   "parents": [
+    "2b41c369151852ed0b60741c273f4c64e7282122",
+    "e59dc2711d61a05db38f06857e342980696813b1"
+   ],
+   "subject": "Merge pull request #897 from dragon1086/fix/telegram-token-log-redaction",
+   "prs": [
+    897
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "ade3aa87b4f90c26949eb7a11c8dde046328364b",
+   "date": "2026-10-04T08:43:22+09:00",
+   "parents": [
+    "3b5a4a6933bf0f6f934b9e4f5fe3b687bb2221af"
+   ],
+   "subject": "fix(btc): corroborate funding executions without blocking or double counting settlement",
+   "prs": [
+    898
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "63bf3a214301909c8ad4f6dc9e6c9a50aee905ec",
+   "date": "2026-10-04T08:55:23+09:00",
+   "parents": [
+    "ade3aa87b4f90c26949eb7a11c8dde046328364b",
+    "4e8f97c152521d6a7a188cb5c5278303d8190ae9"
+   ],
+   "subject": "Merge remote-tracking branch 'origin/main' into fix/btc-funding-execution-proof-20261004",
+   "prs": [
+    898
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "6d8902ddc9f569959499c182bc09d6d377351d56",
+   "date": "2026-10-04T09:06:38+09:00",
+   "parents": [
+    "38e01504c93840e2eaabb0937ebbaa4817cb3a19"
+   ],
+   "subject": "feat(reentry): re-entry v3 LIVE on the real accounts through the normal entry path",
+   "prs": [
+    900
+   ],
+   "category": "reentry",
+   "weight": 1
+  },
+  {
+   "sha": "a8f40349469f129ac810fe6c7ab4a4e65f07af5a",
+   "date": "2026-10-04T09:08:20+09:00",
+   "parents": [
+    "4e8f97c152521d6a7a188cb5c5278303d8190ae9",
+    "63bf3a214301909c8ad4f6dc9e6c9a50aee905ec"
+   ],
+   "subject": "Merge pull request #898 from dragon1086/fix/btc-funding-execution-proof-20261004",
+   "prs": [
+    898
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "08b186f5ea5b7961d289fbf4600cbf4b43d78ae9",
+   "date": "2026-10-04T08:20:23+09:00",
+   "parents": [
+    "a8f40349469f129ac810fe6c7ab4a4e65f07af5a"
+   ],
+   "subject": "feat(btc): add read-only operational evidence packet and preregister replay validation",
+   "prs": [
+    901
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "209ac216d293b6706a52da7bd1ae1a56826a2bd1",
+   "date": "2026-10-04T08:26:15+09:00",
+   "parents": [
+    "08b186f5ea5b7961d289fbf4600cbf4b43d78ae9"
+   ],
+   "subject": "feat(btc): verify registered replay accounting and tolerate rejected audit proposals",
+   "prs": [
+    901
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "24a246246acea77cec1591e4225bdcc0b97b6b33",
+   "date": "2026-10-04T09:33:36+09:00",
+   "parents": [
+    "6d8902ddc9f569959499c182bc09d6d377351d56",
+    "a8f40349469f129ac810fe6c7ab4a4e65f07af5a"
+   ],
+   "subject": "Merge remote-tracking branch 'origin/main' into feat/reentry-v3-intraday-shadow",
+   "prs": [
+    900
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "5836ba2eba77c8ded93c83c8682e26e93450a8cb",
+   "date": "2026-10-04T09:38:14+09:00",
+   "parents": [
+    "a8f40349469f129ac810fe6c7ab4a4e65f07af5a"
+   ],
+   "subject": "fix(btc): tolerate flat notice fields and audit explicit missing closure recovery",
+   "prs": [
+    899
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "8227311d66210aa2bad676ebb5e3d239b93752f9",
+   "date": "2026-10-04T09:46:25+09:00",
+   "parents": [
+    "5836ba2eba77c8ded93c83c8682e26e93450a8cb"
+   ],
+   "subject": "fix(btc): use literal parameterized closure dedup query",
+   "prs": [
+    899
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "ee904661c3c438ac05c450994f32ef06b6896726",
+   "date": "2026-10-04T09:55:03+09:00",
+   "parents": [
+    "24a246246acea77cec1591e4225bdcc0b97b6b33"
+   ],
+   "subject": "fix(reentry): address re-entry v3 LIVE review (ledger real exits, primary-only, deadline, lock, no full slot)",
+   "prs": [
+    900
+   ],
+   "category": "reentry",
+   "weight": 1
+  },
+  {
+   "sha": "f513dd84b6e5b11c10d560d3a24902e24f4b6857",
+   "date": "2026-10-04T09:55:51+09:00",
+   "parents": [
+    "a8f40349469f129ac810fe6c7ab4a4e65f07af5a",
+    "8227311d66210aa2bad676ebb5e3d239b93752f9"
+   ],
+   "subject": "Merge pull request #899 from dragon1086/fix/btc-flat-close-notices-20261004",
+   "prs": [
+    899
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "af7d6a04164226f32275eeaa88eacb5fa3ba18c3",
+   "date": "2026-10-04T09:56:20+09:00",
+   "parents": [
+    "209ac216d293b6706a52da7bd1ae1a56826a2bd1"
+   ],
+   "subject": "fix(research): retain replay readiness warnings in comparisons",
+   "prs": [
+    901
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "41c436568deea200ec3a6921bd2d0eea494a4367",
+   "date": "2026-10-04T09:56:52+09:00",
+   "parents": [
+    "af7d6a04164226f32275eeaa88eacb5fa3ba18c3",
+    "f513dd84b6e5b11c10d560d3a24902e24f4b6857"
+   ],
+   "subject": "Merge remote-tracking branch 'origin/main' into feat/btc-forward-verification-tools-20261004",
+   "prs": [
+    901
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "5804f3a4ba4f7409f9cb2f883555ce93a83ab45d",
+   "date": "2026-10-04T10:02:06+09:00",
+   "parents": [
+    "41c436568deea200ec3a6921bd2d0eea494a4367"
+   ],
+   "subject": "docs(btc): record registered replay results and forward evidence limits",
+   "prs": [
+    901
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "8bc3068cb85e746b7e0b8b0913137d69c5f943c7",
+   "date": "2026-10-04T10:06:23+09:00",
+   "parents": [
+    "5804f3a4ba4f7409f9cb2f883555ce93a83ab45d"
+   ],
+   "subject": "fix(audit): replace assembled SQL with fixed read-only queries",
+   "prs": [
+    901
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "065dc317b857d75240e73829dee7aa3b3ec75f39",
+   "date": "2026-10-04T10:15:40+09:00",
+   "parents": [
+    "f513dd84b6e5b11c10d560d3a24902e24f4b6857",
+    "8bc3068cb85e746b7e0b8b0913137d69c5f943c7"
+   ],
+   "subject": "Merge pull request #901 from dragon1086/feat/btc-forward-verification-tools-20261004",
+   "prs": [
+    901
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "30aa496fddf11cdf579fcdf1da8eb9c85173f9b7",
+   "date": "2026-10-04T10:20:33+09:00",
+   "parents": [
+    "ee904661c3c438ac05c450994f32ef06b6896726"
+   ],
+   "subject": "fix(reentry): skip the real entry lock for virtual runs, name the shakeout support, fixed SQL",
+   "prs": [
+    900
+   ],
+   "category": "reentry",
+   "weight": 1
+  },
+  {
+   "sha": "40dd59b57b2b72b139a64c6abaef98c5386bb585",
+   "date": "2026-10-04T10:31:49+09:00",
+   "parents": [
+    "30aa496fddf11cdf579fcdf1da8eb9c85173f9b7",
+    "065dc317b857d75240e73829dee7aa3b3ec75f39"
+   ],
+   "subject": "Merge remote-tracking branch 'origin/main' into HEAD",
+   "prs": [
+    900
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "2a6662e265fc0350911b735de16de27d3fb0df1e",
+   "date": "2026-10-04T10:42:47+09:00",
+   "parents": [
+    "065dc317b857d75240e73829dee7aa3b3ec75f39",
+    "40dd59b57b2b72b139a64c6abaef98c5386bb585"
+   ],
+   "subject": "Merge pull request #900 from dragon1086/feat/reentry-v3-intraday-shadow",
+   "prs": [
+    900
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "bda04e1e21877759204bf35e37474bcec18d53b7",
+   "date": "2026-10-04T11:20:05+09:00",
+   "parents": [
+    "2a6662e265fc0350911b735de16de27d3fb0df1e"
+   ],
+   "subject": "fix: micro-split add plans follow exchange calendars, never a holiday",
+   "prs": [
+    902
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "4d060d33a82d2b4fd6cbd50833936fd6964ae948",
+   "date": "2026-10-04T11:40:08+09:00",
+   "parents": [
+    "2a6662e265fc0350911b735de16de27d3fb0df1e"
+   ],
+   "subject": "feat(btc): make trade notices readable with verified position and PnL blocks",
+   "prs": [
+    903
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "89b5bc4f3bd3db3809fa0b1c76dc439445ae66e8",
+   "date": "2026-10-04T11:48:19+09:00",
+   "parents": [
+    "2a6662e265fc0350911b735de16de27d3fb0df1e",
+    "4d060d33a82d2b4fd6cbd50833936fd6964ae948"
+   ],
+   "subject": "Merge pull request #903 from dragon1086/feat/btc-readable-trade-notices-20261004",
+   "prs": [
+    903
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "ac9b966bc5691cef835e6f1b4b228c14d4fdae00",
+   "date": "2026-10-04T15:01:25+09:00",
+   "parents": [
+    "bda04e1e21877759204bf35e37474bcec18d53b7",
+    "89b5bc4f3bd3db3809fa0b1c76dc439445ae66e8"
+   ],
+   "subject": "Merge branch 'main' into fix/add-plan-exchange-holidays",
+   "prs": [
+    902
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "8a53364f1959fb86e5c613d5e23f5833488250e6",
+   "date": "2026-10-04T15:12:30+09:00",
+   "parents": [
+    "89b5bc4f3bd3db3809fa0b1c76dc439445ae66e8",
+    "ac9b966bc5691cef835e6f1b4b228c14d4fdae00"
+   ],
+   "subject": "Merge pull request #902 from dragon1086/fix/add-plan-exchange-holidays",
+   "prs": [
+    902
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "a896c85405ec1af16d52578a132d933e7703db11",
+   "date": "2026-10-04T16:54:58+09:00",
+   "parents": [
+    "8a53364f1959fb86e5c613d5e23f5833488250e6"
+   ],
+   "subject": "docs: north-star investment direction in the trading harness",
+   "prs": [
+    904
+   ],
+   "category": "research_governance",
+   "weight": 1
+  },
+  {
+   "sha": "95bceb5673cdcf92a3fa5b5a35e144d99d7d0a38",
+   "date": "2026-10-04T16:55:31+09:00",
+   "parents": [
+    "8a53364f1959fb86e5c613d5e23f5833488250e6"
+   ],
+   "subject": "docs(btc): distinguish paired replay parity from profitability improvement",
+   "prs": [
+    905
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "d816ffe55c49512c10e193a05cb299c5c52a18cd",
+   "date": "2026-10-04T17:06:34+09:00",
+   "parents": [
+    "8a53364f1959fb86e5c613d5e23f5833488250e6",
+    "a896c85405ec1af16d52578a132d933e7703db11"
+   ],
+   "subject": "Merge pull request #904 from dragon1086/docs/north-star-philosophy",
+   "prs": [
+    904
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "2f7e52035c0a7caeae2c9d7e8aa7f819d0f9cff2",
+   "date": "2026-10-04T17:07:04+09:00",
+   "parents": [
+    "95bceb5673cdcf92a3fa5b5a35e144d99d7d0a38",
+    "d816ffe55c49512c10e193a05cb299c5c52a18cd"
+   ],
+   "subject": "Merge remote-tracking branch 'origin/main' into docs/btc-precision-comparison-20261004",
+   "prs": [
+    905
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "13728885382e79dc1c2af5b9202cec1f83a6c0ab",
+   "date": "2026-10-04T17:10:35+09:00",
+   "parents": [
+    "2f7e52035c0a7caeae2c9d7e8aa7f819d0f9cff2"
+   ],
+   "subject": "docs(btc): interpret winner concentration against trend-following objectives",
+   "prs": [
+    905
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "1ee6fa8ca4cc898fadb562fd49a7e25e5a84cc94",
+   "date": "2026-10-04T17:21:46+09:00",
+   "parents": [
+    "d816ffe55c49512c10e193a05cb299c5c52a18cd",
+    "13728885382e79dc1c2af5b9202cec1f83a6c0ab"
+   ],
+   "subject": "Merge pull request #905 from dragon1086/docs/btc-precision-comparison-20261004",
+   "prs": [
+    905
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "20e42a9791d08676eb15c346d0b4b8923bf43790",
+   "date": "2026-10-04T18:26:42+09:00",
+   "parents": [
+    "1ee6fa8ca4cc898fadb562fd49a7e25e5a84cc94"
+   ],
+   "subject": "feat: weekly leader report (KR/US) against the north-star indicators",
+   "prs": [
+    906
+   ],
+   "category": "observability",
+   "weight": 1
+  },
+  {
+   "sha": "4020db9681a0a220549ae567903daa54ef4dbdd7",
+   "date": "2026-10-04T18:29:50+09:00",
+   "parents": [
+    "20e42a9791d08676eb15c346d0b4b8923bf43790"
+   ],
+   "subject": "fix(report): size account contribution on the fixed 10-slot book",
+   "prs": [
+    906
+   ],
+   "category": "observability",
+   "weight": 1
+  },
+  {
+   "sha": "4c224b091346ab132c8502da2bad2b125d59841b",
+   "date": "2026-10-04T18:37:53+09:00",
+   "parents": [
+    "1ee6fa8ca4cc898fadb562fd49a7e25e5a84cc94"
+   ],
+   "subject": "feat(micro-split): acceleration adds and conviction tilt (KR/US)",
+   "prs": [
+    908
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "0cf66472cc7fa3a648a0307cdf7ec4cc1d6aa360",
+   "date": "2026-10-04T18:38:09+09:00",
+   "parents": [
+    "1ee6fa8ca4cc898fadb562fd49a7e25e5a84cc94"
+   ],
+   "subject": "feat(trading): runner hold rule (R5) for KR/US sell paths",
+   "prs": [
+    909
+   ],
+   "category": "runner_hold",
+   "weight": 1
+  },
+  {
+   "sha": "e30f4c126b185044018df9fba6af130d3787fd6a",
+   "date": "2026-10-04T18:40:25+09:00",
+   "parents": [
+    "1ee6fa8ca4cc898fadb562fd49a7e25e5a84cc94"
+   ],
+   "subject": "feat(screening): data-driven trigger quality priority in final selection (KR/US)",
+   "prs": [
+    907
+   ],
+   "category": "screening_data",
+   "weight": 1
+  },
+  {
+   "sha": "31d323c1339f6ca9fbe2e853eaac1d3a75c677f4",
+   "date": "2026-10-04T18:51:55+09:00",
+   "parents": [
+    "0cf66472cc7fa3a648a0307cdf7ec4cc1d6aa360"
+   ],
+   "subject": "feat(trading): runner hold phases, stop reset to entry, docs and tests",
+   "prs": [
+    909
+   ],
+   "category": "runner_hold",
+   "weight": 1
+  },
+  {
+   "sha": "d9f1194e1ba8808ef9c4d839d00af09648dcb0bd",
+   "date": "2026-10-04T19:05:05+09:00",
+   "parents": [
+    "e30f4c126b185044018df9fba6af130d3787fd6a"
+   ],
+   "subject": "test: provide trigger_quality global to AST-extracted KR run_batch hook test",
+   "prs": [
+    907
+   ],
+   "category": "screening_data",
+   "weight": 1
+  },
+  {
+   "sha": "51dee91f390d46b078e279972b41b1c8ed3a855c",
+   "date": "2026-10-04T19:14:32+09:00",
+   "parents": [
+    "1ee6fa8ca4cc898fadb562fd49a7e25e5a84cc94",
+    "4020db9681a0a220549ae567903daa54ef4dbdd7"
+   ],
+   "subject": "Merge pull request #906 from dragon1086/feat/weekly-runner-report",
+   "prs": [
+    906
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "12e5710c961ca892bd198796f5bb2711a7d7f894",
+   "date": "2026-10-04T19:22:23+09:00",
+   "parents": [
+    "4c224b091346ab132c8502da2bad2b125d59841b"
+   ],
+   "subject": "fix(micro-split): keep the 7-holdings 6-point rule in the micro-split BUY appendix",
+   "prs": [
+    908
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "a6e1d78744787b083a8c37a2a53e7ae39caf79f1",
+   "date": "2026-10-04T19:24:29+09:00",
+   "parents": [
+    "51dee91f390d46b078e279972b41b1c8ed3a855c",
+    "d9f1194e1ba8808ef9c4d839d00af09648dcb0bd"
+   ],
+   "subject": "Merge pull request #907 from dragon1086/feat/trigger-quality-priority",
+   "prs": [
+    907
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "4dea8f0e334a37feac9369a13c66dc3e7562d067",
+   "date": "2026-10-04T19:26:07+09:00",
+   "parents": [
+    "31d323c1339f6ca9fbe2e853eaac1d3a75c677f4",
+    "a6e1d78744787b083a8c37a2a53e7ae39caf79f1"
+   ],
+   "subject": "Merge origin/main into feat/runner-hold-rule; weekly report reads the runner-hold layout",
+   "prs": [
+    909
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "3f837342ea9c63a7ebade421f368ec3ed979e5e0",
+   "date": "2026-10-04T19:29:43+09:00",
+   "parents": [
+    "12e5710c961ca892bd198796f5bb2711a7d7f894"
+   ],
+   "subject": "fix(micro-split): rebase tilted add_plan targets in code; clip with the effective stop",
+   "prs": [
+    908
+   ],
+   "category": "micro_split",
+   "weight": 1
+  },
+  {
+   "sha": "9403d4049e41ff72e4dab258b9156fa2a03cbb5c",
+   "date": "2026-10-04T19:31:09+09:00",
+   "parents": [
+    "3f837342ea9c63a7ebade421f368ec3ed979e5e0",
+    "a6e1d78744787b083a8c37a2a53e7ae39caf79f1"
+   ],
+   "subject": "Merge origin/main into feat/acceleration-adds-conviction",
+   "prs": [
+    908
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "7502f581d1f58997e264009a11d0ac723a9a01c0",
+   "date": "2026-10-04T19:43:57+09:00",
+   "parents": [
+    "a6e1d78744787b083a8c37a2a53e7ae39caf79f1",
+    "9403d4049e41ff72e4dab258b9156fa2a03cbb5c"
+   ],
+   "subject": "Merge pull request #908 from dragon1086/feat/acceleration-adds-conviction",
+   "prs": [
+    908
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "3ec2d6e01b929b5ea713af27509eb3a20010bf63",
+   "date": "2026-10-04T19:50:51+09:00",
+   "parents": [
+    "4dea8f0e334a37feac9369a13c66dc3e7562d067",
+    "7502f581d1f58997e264009a11d0ac723a9a01c0"
+   ],
+   "subject": "Merge origin/main into feat/runner-hold-rule",
+   "prs": [
+    909
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "9950c0e0b67147a2947ab99ab1bfb3ba0edd5173",
+   "date": "2026-10-04T20:02:52+09:00",
+   "parents": [
+    "7502f581d1f58997e264009a11d0ac723a9a01c0",
+    "3ec2d6e01b929b5ea713af27509eb3a20010bf63"
+   ],
+   "subject": "Merge pull request #909 from dragon1086/feat/runner-hold-rule",
+   "prs": [
+    909
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "4b63f5083f661c8e207f1626122ec4c3713d26b6",
+   "date": "2026-10-04T21:20:20+09:00",
+   "parents": [
+    "9950c0e0b67147a2947ab99ab1bfb3ba0edd5173"
+   ],
+   "subject": "fix(btc): retain current TP context in concise protection notices",
+   "prs": [
+    910
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "d051b466c8773a9d97187687b8bff62185c71f8a",
+   "date": "2026-10-04T21:33:59+09:00",
+   "parents": [
+    "9950c0e0b67147a2947ab99ab1bfb3ba0edd5173",
+    "4b63f5083f661c8e207f1626122ec4c3713d26b6"
+   ],
+   "subject": "Merge pull request #910 from dragon1086/fix/btc-notice-current-targets-20261004",
+   "prs": [
+    910
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "f9ad9b7243ee898b412250b8b1416f34148a85f4",
+   "date": "2026-10-04T21:57:18+09:00",
+   "parents": [
+    "d051b466c8773a9d97187687b8bff62185c71f8a"
+   ],
+   "subject": "fix(btc): show verified post-close account equity in settlement notices",
+   "prs": [
+    911
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "938a92ff46317d772a394927d3c37a0829f17001",
+   "date": "2026-10-04T21:57:54+09:00",
+   "parents": [
+    "f9ad9b7243ee898b412250b8b1416f34148a85f4"
+   ],
+   "subject": "docs(btc): use a synthetic closing equity example",
+   "prs": [
+    911
+   ],
+   "category": "btc",
+   "weight": 1
+  },
+  {
+   "sha": "e12bb83d8fad3126dedf44464cd1b147828ab085",
+   "date": "2026-10-04T22:08:15+09:00",
+   "parents": [
+    "d051b466c8773a9d97187687b8bff62185c71f8a",
+    "938a92ff46317d772a394927d3c37a0829f17001"
+   ],
+   "subject": "Merge pull request #911 from dragon1086/fix/btc-closed-equity-notice-20261004",
+   "prs": [
+    911
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "2419323d533c79ebf32fd3f3d88c77fad68813ae",
+   "date": "2026-10-04T22:22:04+09:00",
+   "parents": [
+    "9950c0e0b67147a2947ab99ab1bfb3ba0edd5173"
+   ],
+   "subject": "feat(observability): two-week review evidence and tools/two_week_review.py",
+   "prs": [
+    912
+   ],
+   "category": "observability",
+   "weight": 1
+  },
+  {
+   "sha": "542fc2ad295e5a695a05fd5dd807d6fa0674de49",
+   "date": "2026-10-04T22:25:18+09:00",
+   "parents": [
+    "2419323d533c79ebf32fd3f3d88c77fad68813ae",
+    "e12bb83d8fad3126dedf44464cd1b147828ab085"
+   ],
+   "subject": "Merge origin/main into feat/two-week-review-observability",
+   "prs": [
+    912
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "1253573a9bec70968cf27bee3ce97e2625132d07",
+   "date": "2026-10-04T22:35:31+09:00",
+   "parents": [
+    "e12bb83d8fad3126dedf44464cd1b147828ab085",
+    "542fc2ad295e5a695a05fd5dd807d6fa0674de49"
+   ],
+   "subject": "Merge pull request #912 from dragon1086/feat/two-week-review-observability",
+   "prs": [
+    912
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "f6853e95a3b184e3d4f3de42852e9ebcb6527af7",
+   "date": "2026-10-04T23:40:23+09:00",
+   "parents": [
+    "1253573a9bec70968cf27bee3ce97e2625132d07"
+   ],
+   "subject": "fix(logging): keep Telegram bot tokens out of BTC reporter and weekly firecrawl logs",
+   "prs": [
+    913
+   ],
+   "category": "ops_security",
+   "weight": 1
+  },
+  {
+   "sha": "b1ae89804d45b485a6da7791ceeac0df7efeb4f7",
+   "date": "2026-10-04T23:48:26+09:00",
+   "parents": [
+    "1253573a9bec70968cf27bee3ce97e2625132d07",
+    "f6853e95a3b184e3d4f3de42852e9ebcb6527af7"
+   ],
+   "subject": "Merge pull request #913 from dragon1086/fix/btc-firecrawl-token-redaction",
+   "prs": [
+    913
+   ],
+   "category": "merge",
+   "weight": 1
+  },
+  {
+   "sha": "4a666ebe1fbf0b1bc2f07fc96e3e13534716c88f",
+   "date": "2026-10-05T00:29:38+09:00",
+   "parents": [
+    "b1ae89804d45b485a6da7791ceeac0df7efeb4f7"
+   ],
+   "subject": "fix(runner-hold): harden first-session edges from the final review",
+   "prs": [
+    914
+   ],
+   "category": "runner_hold",
+   "weight": 1
+  },
+  {
+   "sha": "3988a9850055cee301bb8194c610caf3ff8e70cc",
+   "date": "2026-10-05T00:44:46+09:00",
+   "parents": [
+    "b1ae89804d45b485a6da7791ceeac0df7efeb4f7",
+    "4a666ebe1fbf0b1bc2f07fc96e3e13534716c88f"
+   ],
+   "subject": "Merge pull request #914 from dragon1086/fix/runner-hold-review-hardening",
+   "prs": [
+    914
+   ],
+   "category": "merge",
+   "weight": 1
+  }
+ ],
+ "prs": [
+  {
+   "additions": 1226,
+   "baseRefName": "main",
+   "changedFiles": 66,
+   "deletions": 1370,
+   "mergeCommit": {
+    "oid": "2a8cf7f4e66479b82e65822269aa19d8f2b09a91"
+   },
+   "mergedAt": "2026-09-27T17:11:51Z",
+   "number": 819,
+   "state": "MERGED",
+   "title": "chore: test hygiene, stale-test reconciliation, publish-guard fix (tkgo11 #742 extract)"
+  },
+  {
+   "additions": 153,
+   "baseRefName": "main",
+   "changedFiles": 5,
+   "deletions": 7,
+   "mergeCommit": {
+    "oid": "c43fd741dc3391aed796a1a830ab8d1d5820edcd"
+   },
+   "mergedAt": "2026-09-27T16:43:04Z",
+   "number": 820,
+   "state": "MERGED",
+   "title": "fix: screen US index members first in the expanded universe"
+  },
+  {
+   "additions": 3,
+   "baseRefName": "main",
+   "changedFiles": 1,
+   "deletions": 1,
+   "mergeCommit": {
+    "oid": "2e4d67111562ccf94d7af33b0825e9787531e8dd"
+   },
+   "mergedAt": "2026-09-27T16:59:02Z",
+   "number": 821,
+   "state": "MERGED",
+   "title": "ci: allowlist contributors who gave retroactive CLA consent in #603"
+  },
+  {
+   "additions": 215,
+   "baseRefName": "main",
+   "changedFiles": 7,
+   "deletions": 32,
+   "mergeCommit": {
+    "oid": "d173b6380d4753694585568b31c659a733195383"
+   },
+   "mergedAt": "2026-09-28T01:26:19Z",
+   "number": 823,
+   "state": "MERGED",
+   "title": "feat: re-entry v2 second chance after a declined recheck (pullback bounce / re-breakout)"
+  },
+  {
+   "additions": 25,
+   "baseRefName": "main",
+   "changedFiles": 4,
+   "deletions": 4,
+   "mergeCommit": {
+    "oid": "250e6e575ae4444f10c039612b7e8e860ba4504b"
+   },
+   "mergedAt": "2026-09-28T01:43:27Z",
+   "number": 824,
+   "state": "MERGED",
+   "title": "fix: re-entry recheck strips base64 chart images from report text (~12x fewer tokens)"
+  },
+  {
+   "additions": 94,
+   "baseRefName": "main",
+   "changedFiles": 12,
+   "deletions": 12,
+   "mergeCommit": {
+    "oid": "5749d30e5a3e1bf50c53cb87bf1c6bc14f16321e"
+   },
+   "mergedAt": "2026-09-28T10:29:27Z",
+   "number": 825,
+   "state": "MERGED",
+   "title": "fix: keep data-vendor names out of published reports and trading messages"
+  },
+  {
+   "additions": 117,
+   "baseRefName": "main",
+   "changedFiles": 7,
+   "deletions": 99,
+   "mergeCommit": {
+    "oid": "1d60ce95d6f1b9c92ed6e3fe04c719ba3919748a"
+   },
+   "mergedAt": "2026-09-28T10:59:02Z",
+   "number": 826,
+   "state": "MERGED",
+   "title": "feat: unify the US trading-value floor at $50M across all triggers (#822 step 1)"
+  },
+  {
+   "additions": 388,
+   "baseRefName": "main",
+   "changedFiles": 4,
+   "deletions": 1,
+   "mergeCommit": {
+    "oid": "c956eda47d2535b1e9f0306393785adbd1be7ba2"
+   },
+   "mergedAt": "2026-09-28T14:08:25Z",
+   "number": 827,
+   "state": "MERGED",
+   "title": "feat: shortlist the US universe with the KIS condition search before pricing (#822 step 2)"
+  },
+  {
+   "additions": 49,
+   "baseRefName": "main",
+   "changedFiles": 1,
+   "deletions": 6,
+   "mergeCommit": {
+    "oid": "c336c4d7b0673f5d7667c0fa0a7249ee0940fc99"
+   },
+   "mergedAt": "2026-09-28T12:59:53Z",
+   "number": 829,
+   "state": "MERGED",
+   "title": "docs: #822 step 3 (relative turnover) not adopted after pre-registered validation"
+  },
+  {
+   "additions": 145,
+   "baseRefName": "main",
+   "changedFiles": 3,
+   "deletions": 0,
+   "mergeCommit": {
+    "oid": "b9e423f33089c64182a3aba4c396422099dd8f0f"
+   },
+   "mergedAt": "2026-09-28T12:34:15Z",
+   "number": 830,
+   "state": "MERGED",
+   "title": "fix: give the KR AI sell decision the system's live market regime"
+  },
+  {
+   "additions": 103,
+   "baseRefName": "main",
+   "changedFiles": 4,
+   "deletions": 7,
+   "mergeCommit": {
+    "oid": "60aef9352b5ec3b4659080f1780abe3a53f74961"
+   },
+   "mergedAt": "2026-09-28T12:34:19Z",
+   "number": 831,
+   "state": "MERGED",
+   "title": "fix: stop internal terms leaking into KR trading messages and fix particles"
+  },
+  {
+   "additions": 1273,
+   "baseRefName": "main",
+   "changedFiles": 29,
+   "deletions": 130,
+   "mergeCommit": {
+    "oid": "7c76b75f23b27d5988ef29303d29d0945c579b04"
+   },
+   "mergedAt": "2026-09-28T15:05:52Z",
+   "number": 832,
+   "state": "MERGED",
+   "title": "feat: oneil-adaptive-v2 SHADOW policy — volatility-sized first entry, wider add ladder, no volume gate"
+  },
+  {
+   "additions": 284,
+   "baseRefName": "main",
+   "changedFiles": 7,
+   "deletions": 25,
+   "mergeCommit": {
+    "oid": "e51e6862b3c728940a045f12dd9705196923c655"
+   },
+   "mergedAt": "2026-09-28T15:58:47Z",
+   "number": 833,
+   "state": "MERGED",
+   "title": "feat: US Market Pulse reads the S&P 500 and the NASDAQ Composite together"
+  },
+  {
+   "additions": 232,
+   "baseRefName": "main",
+   "changedFiles": 4,
+   "deletions": 9,
+   "mergeCommit": {
+    "oid": "e1fb38cab385167d4e8b5b39b3d24f99febd0c88"
+   },
+   "mergedAt": "2026-09-29T01:29:56Z",
+   "number": 834,
+   "state": "MERGED",
+   "title": "fix: finish US eligibility metadata within budget (liquidity order, cache, KIS cap)"
+  },
+  {
+   "additions": 495,
+   "baseRefName": "main",
+   "changedFiles": 8,
+   "deletions": 1,
+   "mergeCommit": {
+    "oid": "9277093645a8a753106134b544528a6bb08fa8a4"
+   },
+   "mergedAt": "2026-09-29T00:38:30Z",
+   "number": 835,
+   "state": "MERGED",
+   "title": "fix: let BUY count today's volume surge as a lower bound (KR/US)"
+  },
+  {
+   "additions": 15,
+   "baseRefName": "main",
+   "changedFiles": 1,
+   "deletions": 0,
+   "mergeCommit": {
+    "oid": "3c6ea86d0409cb56a6cd3dce1c7a064a064ddf05"
+   },
+   "mergedAt": "2026-09-29T01:04:52Z",
+   "number": 836,
+   "state": "MERGED",
+   "title": "docs: record volume lower-bound deploy and first KR batch"
+  },
+  {
+   "additions": 0,
+   "baseRefName": "main",
+   "changedFiles": 98,
+   "deletions": 9198,
+   "mergeCommit": {
+    "oid": "34f7ae6f05ace6db46c32ef4faf7a02dcd7227b1"
+   },
+   "mergedAt": "2026-09-29T01:44:07Z",
+   "number": 837,
+   "state": "MERGED",
+   "title": "docs: prune temporary notes, old release notes and unused images"
+  },
+  {
+   "additions": 57,
+   "baseRefName": "main",
+   "changedFiles": 2,
+   "deletions": 1,
+   "mergeCommit": {
+    "oid": "c06ea05fac0a20ebceabf820251244663179e887"
+   },
+   "mergedAt": "2026-09-29T06:17:21Z",
+   "number": 838,
+   "state": "MERGED",
+   "title": "fix: retry KIS intraday snapshot chunks on transport errors"
+  },
+  {
+   "additions": 440,
+   "baseRefName": "main",
+   "changedFiles": 3,
+   "deletions": 0,
+   "mergeCommit": {
+    "oid": "b371b05c9e18ef1348bf2c3a87eee7b3025763ae"
+   },
+   "mergedAt": "2026-09-29T10:26:02Z",
+   "number": 839,
+   "state": "MERGED",
+   "title": "research: confirmed-resistance target replay v1 (RETIRE)"
+  },
+  {
+   "additions": 251,
+   "baseRefName": "main",
+   "changedFiles": 13,
+   "deletions": 5,
+   "mergeCommit": {
+    "oid": "80f5f27cb2e2a362943248698d42d3b8c4e84476"
+   },
+   "mergedAt": "2026-09-29T10:10:52Z",
+   "number": 840,
+   "state": "MERGED",
+   "title": "fix: stop treating today's open-bar high as resistance; add 52-week-high facts for 2a"
+  },
+  {
+   "additions": 239,
+   "baseRefName": "main",
+   "changedFiles": 4,
+   "deletions": 1,
+   "mergeCommit": {
+    "oid": "37a2e4a95c9fbe3c9f9d08b24aca66b91c3a2674"
+   },
+   "mergedAt": "2026-09-29T11:13:53Z",
+   "number": 841,
+   "state": "MERGED",
+   "title": "feat: route the BUY/SELL Codex CLI through the OAuth proxy (one login)"
+  },
+  {
+   "additions": 108,
+   "baseRefName": "main",
+   "changedFiles": 4,
+   "deletions": 2,
+   "mergeCommit": {
+    "oid": "74ad38043c64c1c362cf3cc7d1690f4fe68c9f04"
+   },
+   "mergedAt": "2026-09-29T11:28:04Z",
+   "number": 842,
+   "state": "MERGED",
+   "title": "fix: refresh the shared OAuth token ahead of the healthcheck cron gap"
+  },
+  {
+   "additions": 60,
+   "baseRefName": "main",
+   "changedFiles": 3,
+   "deletions": 14,
+   "mergeCommit": {
+    "oid": "b7a03aa1d9cfc4055ffc61af07d41aff69b120e1"
+   },
+   "mergedAt": "2026-09-30T00:51:42Z",
+   "number": 843,
+   "state": "MERGED",
+   "title": "feat: switch Sonnet usages to claude-sonnet-5-5"
+  },
+  {
+   "additions": 71,
+   "baseRefName": "main",
+   "changedFiles": 2,
+   "deletions": 4,
+   "mergeCommit": {
+    "oid": "fbb7a9c0909242da49154cbae0ac60fcfb08e7a3"
+   },
+   "mergedAt": "2026-09-29T15:07:57Z",
+   "number": 844,
+   "state": "MERGED",
+   "title": "fix: start US report translations after the BUY/SELL tracking step"
+  },
+  {
+   "additions": 346,
+   "baseRefName": "main",
+   "changedFiles": 3,
+   "deletions": 0,
+   "mergeCommit": {
+    "oid": "43036ca3cececa1dae688a6aac570fee1ae2c315"
+   },
+   "mergedAt": "2026-09-30T16:03:07Z",
+   "number": 845,
+   "state": "MERGED",
+   "title": "research: US UDVR institutional-proxy replay v1 (H1 RETIRE, H2 INSUFFICIENT)"
+  },
+  {
+   "additions": 47,
+   "baseRefName": "main",
+   "changedFiles": 4,
+   "deletions": 9,
+   "mergeCommit": {
+    "oid": "70b97e93f606ce5c7dd08dbe1f1370ec8ee2cb05"
+   },
+   "mergedAt": "2026-09-30T00:33:29Z",
+   "number": 846,
+   "state": "MERGED",
+   "title": "fix: state that US daily institutional flow is not supplied"
+  },
+  {
+   "additions": 91,
+   "baseRefName": "main",
+   "changedFiles": 3,
+   "deletions": 0,
+   "mergeCommit": {
+    "oid": "b9c11770d4881e1c1dc59e23da5f5bb28b0b2d32"
+   },
+   "mergedAt": "2026-09-30T01:23:16Z",
+   "number": 847,
+   "state": "MERGED",
+   "title": "feat: pick the BUY/SELL Codex effort from the active OAuth account"
+  },
+  {
+   "additions": 114,
+   "baseRefName": "main",
+   "changedFiles": 5,
+   "deletions": 12,
+   "mergeCommit": {
+    "oid": "29df1ea94eb18bf33a94601ab3d87d13d273fed6"
+   },
+   "mergedAt": "2026-09-30T01:13:06Z",
+   "number": 848,
+   "state": "MERGED",
+   "title": "fix: stop distribution days turning a bull market into \"no new buys\""
+  },
+  {
+   "additions": 119,
+   "baseRefName": "main",
+   "changedFiles": 7,
+   "deletions": 9,
+   "mergeCommit": {
+    "oid": "1b29eb057d9ccc41c1fec00b2c0ba58c31f85501"
+   },
+   "mergedAt": "2026-09-30T01:44:27Z",
+   "number": 849,
+   "state": "MERGED",
+   "title": "feat: make the Codex trading service tier configurable per account"
+  },
+  {
+   "additions": 293,
+   "baseRefName": "main",
+   "changedFiles": 5,
+   "deletions": 1,
+   "mergeCommit": {
+    "oid": "b37d58ab5227a0ef14eb880898b051de5db31ab4"
+   },
+   "mergedAt": "2026-09-30T03:52:16Z",
+   "number": 850,
+   "state": "MERGED",
+   "title": "feat: capped SHADOW comparison of a second BUY-scenario model (gpt-6.1-sol)"
+  },
+  {
+   "additions": 736,
+   "baseRefName": "main",
+   "changedFiles": 6,
+   "deletions": 14,
+   "mergeCommit": {
+    "oid": "39b6ff354d9757099b22c46a13be217a5262d441"
+   },
+   "mergedAt": "2026-09-30T10:20:30Z",
+   "number": 851,
+   "state": "MERGED",
+   "title": "fix: give the KR company-status writer a fixed quarterly EPS table"
+  },
+  {
+   "additions": 283,
+   "baseRefName": "main",
+   "changedFiles": 8,
+   "deletions": 10,
+   "mergeCommit": {
+    "oid": "0178b979555aa663a51a7157a972d75ba8d3ccfc"
+   },
+   "mergedAt": "2026-09-30T11:17:44Z",
+   "number": 852,
+   "state": "MERGED",
+   "title": "fix: check KR flow windows for corporate actions instead of always caveating"
+  },
+  {
+   "additions": 32,
+   "baseRefName": "main",
+   "changedFiles": 2,
+   "deletions": 2,
+   "mergeCommit": {
+    "oid": "7fe0e874f01406c68ff5775545b645bbc681398e"
+   },
+   "mergedAt": "2026-09-30T12:40:20Z",
+   "number": 853,
+   "state": "MERGED",
+   "title": "fix: emit KR micro-split and decision-input SHADOW from the enhanced agent"
+  },
+  {
+   "additions": 113,
+   "baseRefName": "main",
+   "changedFiles": 43,
+   "deletions": 106,
+   "mergeCommit": {
+    "oid": "d9dd6a6edd17cb5285c1226d3222b47c8399e0a5"
+   },
+   "mergedAt": "2026-09-30T15:08:50Z",
+   "number": 854,
+   "state": "MERGED",
+   "title": "feat: move off gpt-5.4-mini/gpt-5.6 models (luna -> gpt-6-luna, bot -> gpt-6.1-sol)"
+  },
+  {
+   "additions": 70,
+   "baseRefName": "main",
+   "changedFiles": 2,
+   "deletions": 2,
+   "mergeCommit": {
+    "oid": "081913533b01d120fb98fd82a26abc44a98921e4"
+   },
+   "mergedAt": "2026-09-30T15:48:32Z",
+   "number": 855,
+   "state": "MERGED",
+   "title": "fix: count OAuth health log errors by line time, not file mtime"
+  },
+  {
+   "additions": 104,
+   "baseRefName": "main",
+   "changedFiles": 4,
+   "deletions": 2,
+   "mergeCommit": {
+    "oid": "d470ebf7bcef3e723013f5e1be84328f457bbfc8"
+   },
+   "mergedAt": "2026-09-30T16:54:59Z",
+   "number": 856,
+   "state": "MERGED",
+   "title": "fix: serialize Codex MCP boot so parallel BUY analyses stop timing out"
+  },
+  {
+   "additions": 964,
+   "baseRefName": "main",
+   "changedFiles": 6,
+   "deletions": 0,
+   "mergeCommit": {
+    "oid": "74291372ad53e21721513f2536c0adceb723035f"
+   },
+   "mergedAt": "2026-10-01T11:01:45Z",
+   "number": 857,
+   "state": "MERGED",
+   "title": "research: KR intraday volume pace v1 and KR micro-split B3 v1 replays"
+  },
+  {
+   "additions": 228,
+   "baseRefName": "main",
+   "changedFiles": 8,
+   "deletions": 11,
+   "mergeCommit": {
+    "oid": "ae2a939018491c61f2f7c48b7715f91223be5358"
+   },
+   "mergedAt": "2026-10-01T11:01:49Z",
+   "number": 858,
+   "state": "MERGED",
+   "title": "fix: weight cumulative returns by occupied slot fraction (KR/US)"
+  },
+  {
+   "additions": 424,
+   "baseRefName": "main",
+   "changedFiles": 17,
+   "deletions": 162,
+   "mergeCommit": {
+    "oid": "22ffbaf6be621205771609b9b02bccb8eaa7d85c"
+   },
+   "mergedAt": "2026-10-01T11:25:31Z",
+   "number": 859,
+   "state": "MERGED",
+   "title": "fix: protect pyramided holdings intraday and align stop wording (KR/US)"
+  },
+  {
+   "additions": 269,
+   "baseRefName": "main",
+   "changedFiles": 16,
+   "deletions": 34,
+   "mergeCommit": {
+    "oid": "1b427740eec2872d70dcea2e5e29807b865d1de3"
+   },
+   "mergedAt": "2026-10-01T11:34:03Z",
+   "number": 860,
+   "state": "MERGED",
+   "title": "fix: journal/translation LLM 400s, per-metric peer usability, hold reasons, jargon (KR/US)"
+  },
+  {
+   "additions": 100,
+   "baseRefName": "main",
+   "changedFiles": 5,
+   "deletions": 7,
+   "mergeCommit": {
+    "oid": "6cb7a77f6dcab87ec0b11e53e674bb6ed20863e8"
+   },
+   "mergedAt": "2026-10-01T11:44:13Z",
+   "number": 861,
+   "state": "MERGED",
+   "title": "feat: morning reference fact — morning cumulative volume ≥ previous day (KR/US)"
+  },
+  {
+   "additions": 39,
+   "baseRefName": "main",
+   "changedFiles": 2,
+   "deletions": 1,
+   "mergeCommit": {
+    "oid": "93d81cd230e491ac11c1f48ffeb477be5549fe96"
+   },
+   "mergedAt": "2026-10-01T22:18:35Z",
+   "number": 862,
+   "state": "MERGED",
+   "title": "fix: render regime/score codes and score-adjustment reasons in Korean messages"
+  },
+  {
+   "additions": 523,
+   "baseRefName": "main",
+   "changedFiles": 7,
+   "deletions": 43,
+   "mergeCommit": {
+    "oid": "184dc0ee1abeff4a1d0de965661ea393a51fe902"
+   },
+   "mergedAt": "2026-10-02T00:19:34Z",
+   "number": 863,
+   "state": "MERGED",
+   "title": "feat: B3 all-entries SHADOW core (oneil-adaptive-v3-ae, KR/US)"
+  },
+  {
+   "additions": 780,
+   "baseRefName": "main",
+   "changedFiles": 11,
+   "deletions": 2,
+   "mergeCommit": {
+    "oid": "8c807ee1187713a712999ec9a2da0e99e05ad27e"
+   },
+   "mergedAt": "2026-10-02T00:41:06Z",
+   "number": 864,
+   "state": "MERGED",
+   "title": "feat: B3 all-entries SHADOW runtime — KR inputs, hooks, worker (KR/US)"
+  },
+  {
+   "additions": 29,
+   "baseRefName": "main",
+   "changedFiles": 2,
+   "deletions": 4,
+   "mergeCommit": {
+    "oid": "00a15c95a274419157b1639bb0ac6a362033f01f"
+   },
+   "mergedAt": "2026-10-02T01:25:40Z",
+   "number": 865,
+   "state": "MERGED",
+   "title": "fix: stamp the B3 worker decision after every input is collected"
+  },
+  {
+   "additions": 2,
+   "baseRefName": "main",
+   "changedFiles": 1,
+   "deletions": 1,
+   "mergeCommit": {
+    "oid": "40c0945a2bb45024e9340bd648cb448334273a34"
+   },
+   "mergedAt": "2026-10-02T04:31:23Z",
+   "number": 866,
+   "state": "MERGED",
+   "title": "fix: B3 SHADOW unit uses the versioned interpreter"
+  },
+  {
+   "additions": 1016,
+   "baseRefName": "main",
+   "changedFiles": 29,
+   "deletions": 52,
+   "mergeCommit": {
+    "oid": "c097801b8fcf9c665356967ff0a645843e36da44"
+   },
+   "mergedAt": "2026-10-02T04:50:40Z",
+   "number": 867,
+   "state": "MERGED",
+   "title": "feat: micro-split LIVE (KR/US), default off"
+  },
+  {
+   "additions": 25,
+   "baseRefName": "main",
+   "changedFiles": 3,
+   "deletions": 7,
+   "mergeCommit": {
+    "oid": "50d60af22d29544012f93e806984459a488e0a3d"
+   },
+   "mergedAt": "2026-10-02T05:05:09Z",
+   "number": 868,
+   "state": "MERGED",
+   "title": "fix: micro-split display (USD in US summary, 80% entry ladder text)"
+  },
+  {
+   "additions": 251,
+   "baseRefName": "main",
+   "changedFiles": 13,
+   "deletions": 78,
+   "mergeCommit": {
+    "oid": "19c7c813cac239cb1337c59b2f4274538f9ee18e"
+   },
+   "mergedAt": "2026-10-02T07:08:45Z",
+   "number": 869,
+   "state": "MERGED",
+   "title": "fix: F4 business clarity + holding-company look-through (KR/US)"
+  },
+  {
+   "additions": 35,
+   "baseRefName": "main",
+   "changedFiles": 4,
+   "deletions": 1,
+   "mergeCommit": {
+    "oid": "e13297ae264019d528b4f85084b792b4c3d4b841"
+   },
+   "mergedAt": "2026-10-02T09:29:15Z",
+   "number": 872,
+   "state": "MERGED",
+   "title": "fix: pause fixed-ladder micro-split adds (default off)"
+  },
+  {
+   "additions": 209,
+   "baseRefName": "main",
+   "changedFiles": 7,
+   "deletions": 0,
+   "mergeCommit": {
+    "oid": "7548345878c6cbbad93e074ac4065b0b810facde"
+   },
+   "mergedAt": "2026-10-02T10:14:02Z",
+   "number": 873,
+   "state": "MERGED",
+   "title": "feat: micro-split entry score floor 5 (KR/US)"
+  },
+  {
+   "additions": 154,
+   "baseRefName": "main",
+   "changedFiles": 10,
+   "deletions": 30,
+   "mergeCommit": {
+    "oid": "1042fd30a40692b98356647d7ebab909bf4fe375"
+   },
+   "mergedAt": "2026-10-02T10:22:52Z",
+   "number": 874,
+   "state": "MERGED",
+   "title": "fix: micro-split size in journal, compression, weekly report, pending exit"
+  },
+  {
+   "additions": 2284,
+   "baseRefName": "main",
+   "changedFiles": 17,
+   "deletions": 82,
+   "mergeCommit": {
+    "oid": "a962bd3c8f5840c58219c758c3a1b745dda3f30f"
+   },
+   "mergedAt": "2026-10-02T10:49:58Z",
+   "number": 875,
+   "state": "MERGED",
+   "title": "feat: 시나리오 기반 초분할 증액 계획(add_plan)으로 고정 사다리 대체 (KR/US)"
+  },
+  {
+   "additions": 18,
+   "baseRefName": "main",
+   "changedFiles": 2,
+   "deletions": 3,
+   "mergeCommit": {
+    "oid": "a4825ae1a6e33082f2de920d6e7db47071f90702"
+   },
+   "mergedAt": "2026-10-02T11:02:07Z",
+   "number": 876,
+   "state": "MERGED",
+   "title": "fix: add_plan lens labels never drop a scenario"
+  },
+  {
+   "additions": 58,
+   "baseRefName": "main",
+   "changedFiles": 6,
+   "deletions": 6,
+   "mergeCommit": {
+    "oid": "2bab03be858b7c1ffac9e213a2515427006fcc6c"
+   },
+   "mergedAt": "2026-10-02T12:55:04Z",
+   "number": 877,
+   "state": "MERGED",
+   "title": "fix: per-session add plans (next-session review must not replace today's plan)"
+  },
+  {
+   "additions": 105,
+   "baseRefName": "main",
+   "changedFiles": 3,
+   "deletions": 0,
+   "mergeCommit": {
+    "oid": "00ec13a620a743dcc0d2d61b4cfd4e3426a68189"
+   },
+   "mergedAt": "2026-10-02T15:34:03Z",
+   "number": 878,
+   "state": "MERGED",
+   "title": "fix: volume-surge screening excludes stocks closing below the previous close"
+  },
+  {
+   "additions": 94,
+   "baseRefName": "main",
+   "changedFiles": 3,
+   "deletions": 0,
+   "mergeCommit": {
+    "oid": "18a274d8edc6004cfe41c9676741e601b0ecdbde"
+   },
+   "mergedAt": "2026-10-02T15:34:07Z",
+   "number": 879,
+   "state": "MERGED",
+   "title": "fix: subscriber skips Pub/Sub signals older than the age cutoff"
+  },
+  {
+   "additions": 62,
+   "baseRefName": "main",
+   "changedFiles": 5,
+   "deletions": 24,
+   "mergeCommit": {
+    "oid": "ba8f8a9c8c92780c5ae65ee3b7a110ea60f552ab"
+   },
+   "mergedAt": "2026-10-03T01:10:50Z",
+   "number": 880,
+   "state": "MERGED",
+   "title": "fix: buy_score rubric matches the trend and repeat stop-out gates"
+  },
+  {
+   "additions": 5351,
+   "baseRefName": "main",
+   "changedFiles": 34,
+   "deletions": 1,
+   "mergeCommit": {
+    "oid": "b341040cc8e1d120128a5f86e749eba21f0447c8"
+   },
+   "mergedAt": "2026-10-03T02:11:36Z",
+   "number": 881,
+   "state": "MERGED",
+   "title": "BTC LLM scenario foundation — execution disabled pending broker proof"
+  },
+  {
+   "additions": 235,
+   "baseRefName": "main",
+   "changedFiles": 3,
+   "deletions": 0,
+   "mergeCommit": {
+    "oid": "c86e78e73b41b767812f53b8b8e88288d2852d81"
+   },
+   "mergedAt": "2026-10-03T02:35:20Z",
+   "number": 882,
+   "state": "MERGED",
+   "title": "feat: US negative-equity issuers get a deterministic F2 block"
+  },
+  {
+   "additions": 32,
+   "baseRefName": "main",
+   "changedFiles": 2,
+   "deletions": 3,
+   "mergeCommit": {
+    "oid": "02b3e275d3bf7792a26e3e64f966dcdc29c4929f"
+   },
+   "mergedAt": "2026-10-03T02:25:50Z",
+   "number": 883,
+   "state": "MERGED",
+   "title": "docs: record BTC LLM demo rollout evidence"
+  },
+  {
+   "additions": 1844,
+   "baseRefName": "main",
+   "changedFiles": 13,
+   "deletions": 0,
+   "mergeCommit": {
+    "oid": "3ad8254fb1720f2452699e4c3b55379626412a2f"
+   },
+   "mergedAt": "2026-10-03T06:33:13Z",
+   "number": 884,
+   "state": "MERGED",
+   "title": "BTC LLM causal replay and semantic decision tapes"
+  },
+  {
+   "additions": 531,
+   "baseRefName": "main",
+   "changedFiles": 23,
+   "deletions": 31,
+   "mergeCommit": {
+    "oid": "d289851d98826076fbb128a3371628b1cc38f21f"
+   },
+   "mergedAt": "2026-10-03T07:57:01Z",
+   "number": 885,
+   "state": "MERGED",
+   "title": "BTC: strict LLM contracts, bounded decision memory and separate model incidents"
+  },
+  {
+   "additions": 48,
+   "baseRefName": "main",
+   "changedFiles": 3,
+   "deletions": 6,
+   "mergeCommit": {
+    "oid": "1364bc401546b7214411927d60c9d81c171f9da1"
+   },
+   "mergedAt": "2026-10-03T08:16:19Z",
+   "number": 886,
+   "state": "MERGED",
+   "title": "BTC: preserve decision audits across independent protection contention"
+  },
+  {
+   "additions": 196,
+   "baseRefName": "main",
+   "changedFiles": 6,
+   "deletions": 8,
+   "mergeCommit": {
+    "oid": "fbebd46d9f5a5cb3f138b14c830c49211259f9cb"
+   },
+   "mergedAt": "2026-10-03T11:53:52Z",
+   "number": 888,
+   "state": "MERGED",
+   "title": "BTC: reconcile proven unsubmitted cancelled replacements safely"
+  },
+  {
+   "additions": 150,
+   "baseRefName": "main",
+   "changedFiles": 8,
+   "deletions": 21,
+   "mergeCommit": {
+    "oid": "256e7ed7f8e3972fe655545023812d8b6cde1ecd"
+   },
+   "mergedAt": "2026-10-03T12:27:54Z",
+   "number": 889,
+   "state": "MERGED",
+   "title": "feat: micro-split entry frame and BUY prompt contradiction fixes"
+  },
+  {
+   "additions": 339,
+   "baseRefName": "main",
+   "changedFiles": 10,
+   "deletions": 17,
+   "mergeCommit": {
+    "oid": "3872b9e89ba2d67f9f65fe76086802342d46fd45"
+   },
+   "mergedAt": "2026-10-03T12:48:31Z",
+   "number": 890,
+   "state": "MERGED",
+   "title": "BTC: audit prompt logic, align order contracts and exact target identity"
+  },
+  {
+   "additions": 898,
+   "baseRefName": "main",
+   "changedFiles": 9,
+   "deletions": 45,
+   "mergeCommit": {
+    "oid": "c96b697626a0b637960398d3049ab5068fbb4796"
+   },
+   "mergedAt": "2026-10-03T14:06:30Z",
+   "number": 891,
+   "state": "MERGED",
+   "title": "BTC: readable position/risk notices and verified before-after comparisons"
+  },
+  {
+   "additions": 715,
+   "baseRefName": "main",
+   "changedFiles": 9,
+   "deletions": 113,
+   "mergeCommit": {
+    "oid": "07890448a254209d317d23506d19740ef5ecfc43"
+   },
+   "mergedAt": "2026-10-03T15:35:45Z",
+   "number": 892,
+   "state": "MERGED",
+   "title": "fix(btc): concise lifecycle notices and bounded post-model lock acquisition"
+  },
+  {
+   "additions": 203,
+   "baseRefName": "main",
+   "changedFiles": 7,
+   "deletions": 10,
+   "mergeCommit": {
+    "oid": "2506854b1acd678fe7a807d93e7aac1f8ff66e3c"
+   },
+   "mergedAt": "2026-10-03T16:05:54Z",
+   "number": 893,
+   "state": "MERGED",
+   "title": "fix(btc): bounded public rate-limit recovery and observed protection contention"
+  },
+  {
+   "additions": 177,
+   "baseRefName": "main",
+   "changedFiles": 4,
+   "deletions": 5,
+   "mergeCommit": {
+    "oid": "c10b7e5708293bda7171e6e4b5e843ce7f083477"
+   },
+   "mergedAt": "2026-10-03T16:22:34Z",
+   "number": 894,
+   "state": "MERGED",
+   "title": "fix(btc): distinguish judgment and protection status in error-burst alerts"
+  },
+  {
+   "additions": 343,
+   "baseRefName": "main",
+   "changedFiles": 9,
+   "deletions": 29,
+   "mergeCommit": {
+    "oid": "3b5a4a6933bf0f6f934b9e4f5fe3b687bb2221af"
+   },
+   "mergedAt": "2026-10-03T16:45:56Z",
+   "number": 895,
+   "state": "MERGED",
+   "title": "fix(btc): no status reannouncements and safer notification completion"
+  },
+  {
+   "additions": 47,
+   "baseRefName": "main",
+   "changedFiles": 2,
+   "deletions": 0,
+   "mergeCommit": {
+    "oid": "2b41c369151852ed0b60741c273f4c64e7282122"
+   },
+   "mergedAt": "2026-10-03T23:38:21Z",
+   "number": 896,
+   "state": "MERGED",
+   "title": "docs: research lessons ledger linked from the trading change harness"
+  },
+  {
+   "additions": 91,
+   "baseRefName": "main",
+   "changedFiles": 13,
+   "deletions": 0,
+   "mergeCommit": {
+    "oid": "4e8f97c152521d6a7a188cb5c5278303d8190ae9"
+   },
+   "mergedAt": "2026-10-03T23:38:32Z",
+   "number": 897,
+   "state": "MERGED",
+   "title": "fix: redact Telegram bot tokens from all logs"
+  },
+  {
+   "additions": 261,
+   "baseRefName": "main",
+   "changedFiles": 4,
+   "deletions": 1,
+   "mergeCommit": {
+    "oid": "a8f40349469f129ac810fe6c7ab4a4e65f07af5a"
+   },
+   "mergedAt": "2026-10-04T00:08:21Z",
+   "number": 898,
+   "state": "MERGED",
+   "title": "fix(btc): exact Funding execution proof for pending settlement"
+  },
+  {
+   "additions": 495,
+   "baseRefName": "main",
+   "changedFiles": 8,
+   "deletions": 4,
+   "mergeCommit": {
+    "oid": "f513dd84b6e5b11c10d560d3a24902e24f4b6857"
+   },
+   "mergedAt": "2026-10-04T00:55:52Z",
+   "number": 899,
+   "state": "MERGED",
+   "title": "fix(btc): flat closure notices and explicit guarded recovery"
+  },
+  {
+   "additions": 5543,
+   "baseRefName": "main",
+   "changedFiles": 19,
+   "deletions": 639,
+   "mergeCommit": {
+    "oid": "2a6662e265fc0350911b735de16de27d3fb0df1e"
+   },
+   "mergedAt": "2026-10-04T01:42:48Z",
+   "number": 900,
+   "state": "MERGED",
+   "title": "feat: re-entry v3 LIVE (re-break / retest / shakeout recovery, intraday 14:00 KR · 13:50 ET)"
+  },
+  {
+   "additions": 1346,
+   "baseRefName": "main",
+   "changedFiles": 7,
+   "deletions": 1,
+   "mergeCommit": {
+    "oid": "065dc317b857d75240e73829dee7aa3b3ec75f39"
+   },
+   "mergedAt": "2026-10-04T01:15:40Z",
+   "number": 901,
+   "state": "MERGED",
+   "title": "feat(btc): add read-only forward audit and registered replay comparison"
+  },
+  {
+   "additions": 62,
+   "baseRefName": "main",
+   "changedFiles": 2,
+   "deletions": 7,
+   "mergeCommit": {
+    "oid": "8a53364f1959fb86e5c613d5e23f5833488250e6"
+   },
+   "mergedAt": "2026-10-04T06:12:31Z",
+   "number": 902,
+   "state": "MERGED",
+   "title": "fix: micro-split add plans follow exchange calendars, never a holiday"
+  },
+  {
+   "additions": 404,
+   "baseRefName": "main",
+   "changedFiles": 11,
+   "deletions": 39,
+   "mergeCommit": {
+    "oid": "89b5bc4f3bd3db3809fa0b1c76dc439445ae66e8"
+   },
+   "mergedAt": "2026-10-04T02:48:20Z",
+   "number": 903,
+   "state": "MERGED",
+   "title": "feat(btc): readable trade notices with fill, position and account PnL"
+  },
+  {
+   "additions": 24,
+   "baseRefName": "main",
+   "changedFiles": 2,
+   "deletions": 0,
+   "mergeCommit": {
+    "oid": "d816ffe55c49512c10e193a05cb299c5c52a18cd"
+   },
+   "mergedAt": "2026-10-04T08:06:35Z",
+   "number": 904,
+   "state": "MERGED",
+   "title": "docs: north-star investment direction in the trading harness"
+  },
+  {
+   "additions": 145,
+   "baseRefName": "main",
+   "changedFiles": 3,
+   "deletions": 0,
+   "mergeCommit": {
+    "oid": "1ee6fa8ca4cc898fadb562fd49a7e25e5a84cc94"
+   },
+   "mergedAt": "2026-10-04T08:21:47Z",
+   "number": 905,
+   "state": "MERGED",
+   "title": "docs(btc): precise latest-version replay comparison and accounting audit"
+  },
+  {
+   "additions": 1037,
+   "baseRefName": "main",
+   "changedFiles": 3,
+   "deletions": 0,
+   "mergeCommit": {
+    "oid": "51dee91f390d46b078e279972b41b1c8ed3a855c"
+   },
+   "mergedAt": "2026-10-04T10:14:32Z",
+   "number": 906,
+   "state": "MERGED",
+   "title": "feat: weekly leader (runner) report for KR/US"
+  },
+  {
+   "additions": 1228,
+   "baseRefName": "main",
+   "changedFiles": 11,
+   "deletions": 16,
+   "mergeCommit": {
+    "oid": "a6e1d78744787b083a8c37a2a53e7ae39caf79f1"
+   },
+   "mergedAt": "2026-10-04T10:24:30Z",
+   "number": 907,
+   "state": "MERGED",
+   "title": "feat(screening): data-driven trigger quality priority in final selection (KR/US)"
+  },
+  {
+   "additions": 708,
+   "baseRefName": "main",
+   "changedFiles": 10,
+   "deletions": 83,
+   "mergeCommit": {
+    "oid": "7502f581d1f58997e264009a11d0ac723a9a01c0"
+   },
+   "mergedAt": "2026-10-04T10:43:58Z",
+   "number": 908,
+   "state": "MERGED",
+   "title": "feat(micro-split): acceleration adds and conviction tilt (KR/US)"
+  },
+  {
+   "additions": 1838,
+   "baseRefName": "main",
+   "changedFiles": 19,
+   "deletions": 15,
+   "mergeCommit": {
+    "oid": "9950c0e0b67147a2947ab99ab1bfb3ba0edd5173"
+   },
+   "mergedAt": "2026-10-04T11:02:52Z",
+   "number": 909,
+   "state": "MERGED",
+   "title": "feat(trading): runner hold rule (O'Neil 8-week, R5) with staged profit protection (KR/US)"
+  },
+  {
+   "additions": 189,
+   "baseRefName": "main",
+   "changedFiles": 5,
+   "deletions": 58,
+   "mergeCommit": {
+    "oid": "d051b466c8773a9d97187687b8bff62185c71f8a"
+   },
+   "mergedAt": "2026-10-04T12:34:00Z",
+   "number": 910,
+   "state": "MERGED",
+   "title": "fix(btc): keep current TP and runner context in concise notices"
+  },
+  {
+   "additions": 230,
+   "baseRefName": "main",
+   "changedFiles": 8,
+   "deletions": 1,
+   "mergeCommit": {
+    "oid": "e12bb83d8fad3126dedf44464cd1b147828ab085"
+   },
+   "mergedAt": "2026-10-04T13:08:16Z",
+   "number": 911,
+   "state": "MERGED",
+   "title": "fix(btc): include verified account equity after scenario closure"
+  },
+  {
+   "additions": 1813,
+   "baseRefName": "main",
+   "changedFiles": 20,
+   "deletions": 31,
+   "mergeCommit": {
+    "oid": "1253573a9bec70968cf27bee3ce97e2625132d07"
+   },
+   "mergedAt": "2026-10-04T13:35:32Z",
+   "number": 912,
+   "state": "MERGED",
+   "title": "feat(observability): 2주 점검(10/18) 근거 기록 보강 + tools/two_week_review.py"
+  },
+  {
+   "additions": 15,
+   "baseRefName": "main",
+   "changedFiles": 4,
+   "deletions": 0,
+   "mergeCommit": {
+    "oid": "b1ae89804d45b485a6da7791ceeac0df7efeb4f7"
+   },
+   "mergedAt": "2026-10-04T14:48:27Z",
+   "number": 913,
+   "state": "MERGED",
+   "title": "fix(logging): keep Telegram bot tokens out of BTC reporter and weekly firecrawl logs"
+  },
+  {
+   "additions": 45,
+   "baseRefName": "main",
+   "changedFiles": 7,
+   "deletions": 21,
+   "mergeCommit": {
+    "oid": "3988a9850055cee301bb8194c610caf3ff8e70cc"
+   },
+   "mergedAt": "2026-10-04T15:44:46Z",
+   "number": 914,
+   "state": "MERGED",
+   "title": "fix(runner-hold): harden first-session edges from the final review"
+  }
+ ]
+}

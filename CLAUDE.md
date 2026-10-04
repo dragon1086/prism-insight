@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide for PRISM-INSIGHT
 
-> **Version**: 2.23.0 | **Updated**: 2026-09-30
+> **Version**: 2.24.0 | **Updated**: 2026-10-05
 
 ## Quick Overview
 
