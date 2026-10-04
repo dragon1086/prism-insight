@@ -18,7 +18,7 @@ import hashlib
 import json
 import re
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import ROUND_DOWN, Decimal, InvalidOperation
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
@@ -276,16 +276,40 @@ def _validate_scenario(raw, allocation, last_step):
     return scenario, ({"id": sid, "reason": "CHASE_CLAMPED"} if chase > MAX_CHASE_PCT else None)
 
 
-def validate_plan(raw, *, market, source, created_at, valid_for, allocation, last_step):
+def rebase_targets(raw, delta):
+    """Copy of a BUY ``add_plan`` with every scenario target shifted by ``delta`` (conviction tilt).
+
+    The BUY prompt never mentions the tilt, so the LLM writes targets for the volatility
+    initial; shifting by (tilted - base) keeps each planned step. Targets are re-snapped to
+    the 5%p grid and capped at one slot; malformed targets are left for the validator.
+    """
+    delta = Decimal(str(delta))
+    if not isinstance(raw, dict) or not isinstance(raw.get("scenarios"), list):
+        return raw
+    out = dict(raw, scenarios=[])
+    for item in raw["scenarios"]:
+        target = _dec(item.get("target_allocation")) if isinstance(item, dict) else None
+        if target is not None and target <= 1:
+            moved = min((target + delta) / GRID, 1 / GRID).to_integral_value(rounding=ROUND_HALF_UP) * GRID
+            item = dict(item, target_allocation=str(moved.quantize(Decimal("0.01"))))
+        out["scenarios"].append(item)
+    return out
+
+
+def validate_plan(raw, *, market, source, created_at, valid_for, allocation, last_step, rebase=None):
     """(plan or None, issues). Invalid scenarios are dropped with a reason code, never executed.
 
     ``allocation`` is the current slot allocation, ``last_step`` the previous leg's
     allocation (the initial allocation before any add). A review may cancel with
-    ``{"cancel": true, "reason": ...}``.
+    ``{"cancel": true, "reason": ...}``. ``rebase`` (the conviction-tilt delta) shifts
+    the targets first and is recorded on the plan (``rebased``, ``rebase_delta``).
     """
     allocation, last_step = Decimal(str(allocation)), Decimal(str(last_step))
     base = {"contract": CONTRACT, "market": str(market).upper(), "source": source, "created_at": created_at,
             "valid_for": valid_for, "allocation_at_plan": str(allocation)}
+    if rebase is not None:
+        raw = rebase_targets(raw, rebase)
+        base.update(rebased=True, rebase_delta=str(Decimal(str(rebase))))
     if not isinstance(raw, dict):
         return None, [{"id": None, "reason": "PLAN_NOT_OBJECT"}]
     if raw.get("cancel") is True:
@@ -383,8 +407,13 @@ def weighted_entry(legs):
 
 
 def risk_clip(*, legs, target, price, initial_entry, initial_stop, current_stop, fee_rate):
-    """Largest target (5%p grid, <= ``target``) whose loss at the current stop stays within
-    the initial-entry risk of one slot: (entry - stop) / entry.
+    """Largest target (5%p grid, <= ``target``) whose loss at the current effective stop stays
+    within the initial-entry risk of one slot: (entry - initial stop) / entry.
+
+    The effective stop is max(initial stop, the holding's current stop_loss); stops only move
+    up (review ratchet, runner/trailing floor at entry), so a runner whose stop was raised can
+    reach one slot while the total risk stays within the initial one-slot budget (user decision,
+    2026-10-04).
 
     Same ledger math as ``oneil_adaptive_policy.evaluate_target`` (B3 risk clip).
     """

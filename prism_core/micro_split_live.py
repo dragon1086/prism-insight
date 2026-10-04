@@ -207,18 +207,22 @@ def attach_buy_add_plan(scenario, *, market, ticker, raw, logger=None):
     """Validate the BUY agent's ``add_plan`` and store it on the new micro_split block (in place).
 
     An invalid or missing plan leaves the position without adds until the next
-    holdings review provides one.
+    holdings review provides one. With a conviction tilt the targets (written for the
+    volatility initial, since the prompt never mentions the tilt) are rebased by
+    (tilted - base) before the usual validation.
     """
     from prism_core import add_plan
 
     block = scenario[SCENARIO_KEY]
     created = block["legs"][0]["at"]
+    tilt = block.get("conviction_tilt") or {}
+    rebase = _dec(tilt["tilted"]) - _dec(tilt["base"]) if tilt.get("tilted") else None
     if raw is None:
         plan, issues = None, [{"id": None, "reason": "PLAN_MISSING"}]
     else:
         plan, issues = add_plan.validate_plan(
             raw, market=market, source="BUY", created_at=created, valid_for=add_plan.buy_valid_for(market, created),
-            allocation=block["allocation"], last_step=block["allocation"])
+            allocation=block["allocation"], last_step=block["allocation"], rebase=rebase)
     add_plan.store(block, plan, issues, raw=raw, source="BUY", created_at=created)
     _emit_planned(market=market, ticker=ticker, position_id=None, block=block, plan=plan, issues=issues)
     if logger:
@@ -302,9 +306,7 @@ def add_plan_buy_block(agent, *, market, ticker, language):
     if not live_enabled(market):
         return ""
     from prism_core import add_plan_prompts
-    trigger = ((getattr(agent, "trigger_info_map", None) or {}).get(ticker) or {}).get("trigger_type")
-    return add_plan_prompts.buy_block(market, language, expected_initial=_expected_initial(agent, market, ticker),
-                                      conviction=conviction_tilt_enabled() and conviction_trigger(market, trigger))
+    return add_plan_prompts.buy_block(market, language, expected_initial=_expected_initial(agent, market, ticker))
 
 
 def _expected_initial(agent, market, ticker):

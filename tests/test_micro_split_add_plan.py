@@ -307,6 +307,45 @@ def test_acceleration_caps_two_adds_and_keeps_chase_profit_risk_and_sell_day_rai
     assert no_room["action"] == "WAIT" and no_room["reasons"][P.ACCELERATION] == "RISK_LIMIT"
 
 
+def test_raised_holding_stop_lets_a_runner_reach_one_slot_within_the_initial_risk():
+    # 2026-10-04 decision: the clip uses max(initial stop, holding stop_loss); stops only move up.
+    plan, _ = _plan(_scenario(target=0.70, price_above=10800), _scenario("b2", target=0.70, price_above=12000))
+    raised = P.evaluate_plan(plan, _added_today(current_stop=10000), _accel_evidence(), now=_now())
+    assert raised["action"] == "ADD" and raised["target_allocation"] == "0.95" and raised["risk_clipped"] is False
+    legs = _added_today()["legs"] + [{"allocation": "0.25", "price": "10850"}]
+    full = P.risk_clip(legs=legs, target="1.00", price=11500, initial_entry=10000, initial_stop=9300,
+                       current_stop=10000, fee_rate="0.001")
+    assert full == Decimal("1.00")
+    # Total loss at the effective stop stays within the initial one-slot risk (7%).
+    legs.append({"allocation": "0.05", "price": "11500"})
+    units = sum(Decimal(leg["allocation"]) / Decimal(leg["price"]) for leg in legs)
+    assert 1 - units * 10000 <= Decimal("0.07")
+    # A holding stop below the initial stop never loosens the clip.
+    lower = P.risk_clip(legs=_added_today()["legs"], target="0.95", price=10850, initial_entry=10000,
+                        initial_stop=9300, current_stop=9000, fee_rate="0.001")
+    assert lower == Decimal("0.70")
+
+
+def test_rebase_targets_keeps_steps_on_the_grid_and_is_recorded():
+    raw = {"thesis_check": "t", "scenarios": [_scenario(target=0.55), _scenario("b2", target="0.60"),
+                                              _scenario("bad", target="x"), _scenario("big", target=1.2), "junk"]}
+    moved = P.rebase_targets(raw, "0.2000")
+    assert [s["target_allocation"] if isinstance(s, dict) else s for s in moved["scenarios"]] == [
+        "0.75", "0.80", "x", 1.2, "junk"]
+    assert raw["scenarios"][0]["target_allocation"] == 0.55  # input untouched
+    capped = P.rebase_targets({"scenarios": [_scenario(target=0.90), _scenario("b2", target=0.75)]}, "0.0223")
+    assert [s["target_allocation"] for s in capped["scenarios"]] == ["0.90", "0.75"]  # 0.9223 -> 0.90 grid
+    top = P.rebase_targets({"scenarios": [_scenario(target=0.95)]}, "0.20")
+    assert top["scenarios"][0]["target_allocation"] == "1.00"
+    plan, issues = P.validate_plan({"scenarios": [_scenario(target=0.55), _scenario("b2", target=0.60, price_above=10500)]},
+                                   market="US", source="BUY", created_at="t", valid_for=SESSION, allocation="0.5888",
+                                   last_step="0.5888", rebase=Decimal("0.2000"))
+    assert issues == [] and plan["rebased"] is True and plan["rebase_delta"] == "0.2000" and P.plan_intact(plan)
+    assert [s["target_allocation"] for s in plan["scenarios"]] == ["0.75", "0.80"]
+    plain, _ = _plan()
+    assert "rebased" not in plain
+
+
 @pytest.mark.parametrize("market,language", [("KR", "ko"), ("KR", "en"), ("US", "en")])
 def test_prompt_rails_match_the_acceleration_rule_and_examples_validate(market, language):
     from prism_core import add_plan_prompts as prompts
@@ -575,6 +614,21 @@ def test_worker_fetches_pace_after_todays_add_and_records_the_acceleration_rail(
         live_worker.executor.message_queue[-1]
     executed = [kw for name, kw in live_worker.emitted if name == "micro_split.add_executed"][-1]
     assert executed["attributes"]["rail"] == P.ACCELERATION
+
+
+def test_worker_clips_with_the_holdings_current_stop(live_worker, monkeypatch):
+    seen = []
+    real = P.evaluate_plan
+
+    def capture(plan, state, evidence, *, now):
+        seen.append((state["initial_stop"], state["current_stop"]))
+        return real(plan, state, evidence, now=now)
+
+    monkeypatch.setattr(P, "evaluate_plan", capture)
+    live_worker.conn.execute("UPDATE stock_holdings SET stop_loss = 10000 WHERE id = 7")  # review ratchet
+    live_worker.conn.commit()
+    live_worker.worker.once()
+    assert float(seen[0][0]) == 9300 and seen[0][1] == 10000
 
 
 def test_kill_switch_stops_plan_adds_and_sell_day_blocks(live_worker, monkeypatch):

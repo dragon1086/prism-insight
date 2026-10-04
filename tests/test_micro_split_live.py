@@ -489,7 +489,8 @@ def test_conviction_tilt_reaches_every_consumer(live_on, monkeypatch, market, tr
 
     raw = {"thesis_check": "intact", "scenarios": [
         {"id": "b_low", "type": "breakout", "trigger": {"price_above": 10500}, "target_allocation": 0.55},
-        {"id": "b_high", "type": "breakout", "trigger": {"price_above": 10800}, "target_allocation": 0.80}]}
+        {"id": "b_high", "type": "breakout", "trigger": {"price_above": 10800}, "target_allocation": 0.60},
+        {"id": "b_far", "type": "breakout", "trigger": {"price_above": 11000}, "target_allocation": 0.70}]}
     plan, cash, scenario = _tilted(market, trigger, add_plan=raw)
     block = scenario["micro_split"]
     # B3 plan and its hash keep the volatility initial; the tilt is explicit on the holding block.
@@ -508,9 +509,15 @@ def test_conviction_tilt_reaches_every_consumer(live_on, monkeypatch, market, tr
     line = live.entry_message_line(scenario, market)
     assert ("59% of one slot (top-setup tilt from 39%)" in line if market == "US"
             else "초분할 비중: 59% (1슬롯 기준, 상위 셋업 가중으로 기본 39%에서 상향)" in line)
-    # Add rails: "previous leg" and "above the allocation" use the tilted first leg.
-    assert [s["id"] for s in block["add_plan"]["scenarios"]] == ["b_high"]
-    assert block["add_plan"]["dropped"] == [{"id": "b_low", "reason": "TARGET_NOT_ABOVE_ALLOCATION"}]
+    # The BUY targets (written for the 39% initial) are rebased by +20%p in code; the rails then
+    # judge each step against the tilted first leg (0.70 -> 0.90 is a 0.31 step and stays dropped).
+    stored = block["add_plan"]
+    assert stored["rebased"] is True and stored["rebase_delta"] == "0.2000"
+    assert [(s["id"], s["target_allocation"]) for s in stored["scenarios"]] == [("b_low", "0.75"),
+                                                                             ("b_high", "0.80")]
+    assert stored["dropped"] == [{"id": "b_far", "reason": "STEP_TOO_LARGE"}]
+    from prism_core import add_plan
+    assert add_plan.plan_intact(stored)
     assert block["add_plan"]["allocation_at_plan"] == "0.5888"
     sent = []
     publisher = SignalPublisher.__new__(SignalPublisher)
@@ -547,19 +554,25 @@ def test_batch_entries_pass_the_trigger_and_reentry_passes_none(path):
     assert value.test.id == "require_micro_plan" and isinstance(value.body, ast.Constant) and value.body.value is None
 
 
-def test_buy_prompt_states_the_tilt_only_for_strong_triggers(live_on, monkeypatch):
+def test_buy_prompt_never_mentions_the_tilt(live_on, monkeypatch):
+    # 2026-10-04 coordinator decision: no score-inflation incentive, strong-trigger prompts are byte-identical.
     from prism_core.add_plan_prompts import buy_block
 
     agent = _agent()
     plain = live.add_plan_buy_block(agent, market="KR", ticker="005930", language="ko")
     assert plain == buy_block("KR", "ko", expected_initial=0.7777) and "상위 셋업" not in plain
     agent.trigger_info_map = {"005930": {"trigger_type": "갭 상승 모멘텀 상위주"}}
-    tilted = live.add_plan_buy_block(agent, market="KR", ticker="005930", language="ko")
-    assert "buy_score가 8점 이상이면 최초 비중을 한 단계(+20%p, 최대 80%) 크게 시작합니다(예상 약 80%)" in tilted
-    assert "점수를 올리거나 내리지 말고 채점표대로" in tilted
-    us = _agent("US")
-    us.trigger_info_map = {"005930": {"trigger_type": "Intraday Rise Top"}}
-    assert "top-setup trigger: with buy_score >= 8" in live.add_plan_buy_block(
-        us, market="US", ticker="005930", language="en")
-    monkeypatch.setenv("MICRO_SPLIT_CONVICTION_TILT", "false")
     assert live.add_plan_buy_block(agent, market="KR", ticker="005930", language="ko") == plain
+    us = _agent("US")
+    us_plain = live.add_plan_buy_block(us, market="US", ticker="005930", language="en")
+    us.trigger_info_map = {"005930": {"trigger_type": "Intraday Rise Top"}}
+    assert live.add_plan_buy_block(us, market="US", ticker="005930", language="en") == us_plain
+    assert "top-setup" not in us_plain and "buy_score >= 8" not in us_plain
+
+
+def test_untilted_buy_plan_is_not_rebased(live_on):
+    raw = {"scenarios": [{"id": "b1", "type": "breakout", "trigger": {"price_above": 10500}, "target_allocation": 0.55},
+                         {"id": "b2", "type": "breakout", "trigger": {"price_above": 10800}, "target_allocation": 0.60}]}
+    _, _, scenario = _tilted(trigger=None, add_plan=raw)
+    stored = scenario["micro_split"]["add_plan"]
+    assert "rebased" not in stored and [s["target_allocation"] for s in stored["scenarios"]] == ["0.55", "0.60"]
