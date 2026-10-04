@@ -50,6 +50,7 @@ from cores.rs_rating import oneil_weighted_return, percentile_ratings
 from cores.kis_us_market_screen import fetch_market_screen
 from prism_core.screening_price_evidence import build_screening_price_evidence
 from prism_core.ohlcv_shape import normalize_single_ticker_ohlcv
+from prism_core import trigger_quality
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -1148,7 +1149,8 @@ def _get_regime_selection_plan(market_regime: str) -> tuple[int, int, int]:
     )
 
 
-def _build_topdown_pool(trigger_candidates: dict, macro_context: dict, score_column: str, sector_map: dict = None) -> list:
+def _build_topdown_pool(trigger_candidates: dict, macro_context: dict, score_column: str, sector_map: dict = None,
+                        trigger_weights: dict = None) -> list:
     """Build top-down candidate pool from leading sectors.
 
     Args:
@@ -1156,6 +1158,7 @@ def _build_topdown_pool(trigger_candidates: dict, macro_context: dict, score_col
         macro_context: Macro intelligence context dict
         score_column: Column name for scores (e.g., "FinalScore", "CompositeScore")
         sector_map: Ticker -> sector mapping (for US, passed explicitly from get_us_sector_map)
+        trigger_weights: Optional trigger-quality priority (prism_core.trigger_quality)
 
     Returns list of (ticker, trigger_name, topdown_score, ticker_df) sorted by topdown_score desc.
     """
@@ -1183,6 +1186,9 @@ def _build_topdown_pool(trigger_candidates: dict, macro_context: dict, score_col
                 base_score = df.loc[ticker, score_column]
                 confidence = leader.get("confidence", 0.5)
                 topdown_score = base_score * (1 + confidence * 0.3)
+                if trigger_weights:
+                    topdown_score = trigger_quality.weighted_score(
+                        topdown_score, trigger_weights.get(trigger_name, 1.0))
                 pool.append((ticker, trigger_name, topdown_score, df.loc[[ticker]]))
 
     pool.sort(key=lambda x: x[2], reverse=True)
@@ -1206,7 +1212,8 @@ def get_us_sector_map(tickers: list) -> dict:
 
 def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: bool = True,
                          lookback_days: int = 10, macro_context: dict = None,
-                         quality_capture: dict = None, expected_completed_session: str = None) -> dict:
+                         quality_capture: dict = None, expected_completed_session: str = None,
+                         trigger_weights: dict = None) -> dict:
     """
     Aggregate selected stocks from all triggers and make final selection.
 
@@ -1221,6 +1228,8 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
         trade_date: Reference trading date (required for hybrid mode)
         use_hybrid: Whether to use hybrid selection (default: True)
         lookback_days: Number of past days for descriptive price evidence
+        trigger_weights: Optional trigger-quality priority {trigger: weight}.
+            None/empty keeps the legacy ordering exactly.
 
     Returns:
         Dict of final selected stocks
@@ -1350,7 +1359,8 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
         topdown_slots, bottomup_slots, max_selections = (0, 3, 3)
 
     # Build top-down pool from leading sectors (empty when macro_context is None)
-    topdown_pool = _build_topdown_pool(trigger_candidates, macro_context, score_column, sector_map)
+    topdown_pool = _build_topdown_pool(trigger_candidates, macro_context, score_column, sector_map,
+                                       trigger_weights)
 
     # Compute unique leading sectors that have candidates in pool (for utilization logging)
     topdown_sectors_matched = list({
@@ -1394,7 +1404,15 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
     remaining_slots = max_selections - len(selected_tickers)
 
     # --- Phase 2: Fill bottom-up slots (per-trigger top-1) ---
-    for name, df in trigger_candidates.items():
+    # Triggers with measurably weak history lose only this guarantee and
+    # compete in the weighted Phase 3 fill.
+    phase2_order = trigger_quality.guaranteed_pick_triggers(trigger_candidates, trigger_weights)
+    for name in trigger_candidates:
+        if name not in phase2_order:
+            logger.info("[TRIGGER_QUALITY] %s w=%.3f -> no guaranteed pick, competes in weighted fill",
+                        name, trigger_weights.get(name, 1.0))
+    for name in phase2_order:
+        df = trigger_candidates[name]
         if remaining_slots <= 0:
             break
         if df.empty:
@@ -1425,6 +1443,8 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
             for ticker in df.index:
                 if ticker not in selected_tickers:
                     score = df.loc[ticker, score_column] if score_column in df.columns else 0
+                    if trigger_weights:
+                        score = trigger_quality.weighted_score(score, trigger_weights.get(name, 1.0))
                     all_candidates.append((name, ticker, score, df.loc[[ticker]]))
 
         all_candidates.sort(key=lambda x: x[2], reverse=True)
@@ -1725,6 +1745,8 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
         today_str = datetime.datetime.now(tz=us_eastern).strftime("%Y%m%d")
         trade_date = get_nearest_business_day(today_str, prev=True)
         logger.info(f"Batch reference date: {trade_date} (US Eastern Time)")
+    quality_snapshot = trigger_quality.load_trigger_quality("US", trade_date)
+    trigger_quality.log_snapshot(quality_snapshot, logger)
 
     tickers, snapshot, prev_snapshot, prev_date, universe_diagnostic = _load_screening_inputs(trade_date)
     from prism_core.batch_run_status import snapshot_coverage
@@ -1928,7 +1950,8 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
     quality_capture = ({} if os.getenv('US_SCREENING_QUALITY_CAPTURE_ENABLED', '').lower() == 'true' else None)
     capture_args = ({'quality_capture': quality_capture, 'expected_completed_session': prev_date}
                     if quality_capture is not None else {})
-    final_results = select_final_tickers(triggers, trade_date=trade_date, macro_context=macro_context, **capture_args)
+    final_results = select_final_tickers(triggers, trade_date=trade_date, macro_context=macro_context,
+                                         trigger_weights=quality_snapshot.weights, **capture_args)
 
     # Research observes a copy boundary, never modifies ranking, JSON or BUY inputs.
     if watch_batch_ref:
@@ -1986,6 +2009,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
                     # Selection channel (top-down vs bottom-up)
                     if "SelectionChannel" in stocks_df.columns:
                         stock_info["selection_channel"] = str(stocks_df.loc[ticker, "SelectionChannel"])
+                    stock_info["trigger_quality_weight"] = quality_snapshot.weight(trigger_type)
 
                     if "CapacityFill" in stocks_df.columns:
                         stock_info["capacity_fill"] = bool(stocks_df.loc[ticker, "CapacityFill"])
@@ -2039,6 +2063,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             "capacity_fill_candidate_count": capacity_fill_candidate_count,
             "market_cap_lookup_attempted": cap_lookup_attempted,
             "market_cap_lookup_coverage": cap_lookup_coverage,
+            "trigger_quality": quality_snapshot.to_metadata(),
         }
 
         with open(output_file, 'w', encoding='utf-8') as f:
