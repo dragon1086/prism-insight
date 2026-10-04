@@ -374,9 +374,9 @@ def apply_review(agent, *, market, row_id, ticker, decision, now=None, logger=No
 
 
 _ROW_SQL = {
-    "KR": "SELECT id, ticker, company_name, account_key, scenario, buy_price FROM stock_holdings "
+    "KR": "SELECT id, ticker, company_name, account_key, scenario, buy_price, stop_loss FROM stock_holdings "
           "WHERE id=? AND ticker=? AND account_key=?",
-    "US": "SELECT id, ticker, company_name, account_key, scenario, buy_price FROM us_stock_holdings "
+    "US": "SELECT id, ticker, company_name, account_key, scenario, buy_price, stop_loss FROM us_stock_holdings "
           "WHERE id=? AND ticker=? AND account_key=?",
 }
 _UPDATE_SQL = {
@@ -389,32 +389,60 @@ _SCENARIO_SQL = {
 }
 
 
-def add_message(*, market, company_name, ticker, before, after, price, average, order_status, scenario=None):
+def add_order_status(result, market):
+    """Plain order status for the add message (reason codes stay in logs and the add_executed event)."""
+    us = str(market).upper() == "US"
+    if result.get("success"):
+        return "Submitted (fill not yet confirmed)" if us else "주문 접수(체결은 별도 확인)"
+    if result.get("reason_code") == "micro_split_add_below_one_share":
+        return ("Not placed: below one share (strategy allocation recorded)" if us
+                else "1주 미만이라 주문하지 않았습니다(전략 비중에는 반영)")
+    return ("Not placed (strategy allocation recorded)" if us
+            else "주문이 접수되지 않았습니다(전략 비중에는 반영)")
+
+
+def add_message(*, market, company_name, ticker, before, after, price, average, order_status, scenario=None,
+                stop_loss=None):
     """Telegram text for an executed in-slot add (KR Korean, US English like other US trade texts)."""
     from prism_core.add_plan import TYPE_LABELS
 
     old, new = round(before * 100), round(after * 100)
     us = str(market).upper() == "US"
+
+    def money(value):
+        return f"${value:,.2f}" if us else f"{value:,.0f}원"
+
     why = ""
     if scenario:
         name = TYPE_LABELS.get(scenario.get("scenario_type"), ("", ""))[1 if us else 0]
         rationale = (scenario.get("rationale") or "")[:80]
-        why = (f"Scenario: {name} ({scenario.get('scenario_id')})" if us else
-               f"시나리오: {name} ({scenario.get('scenario_id')})") + (f" — {rationale}" if rationale else "") + "\n"
+        if name:
+            why = (f"Why: {name} condition confirmed" if us else f"근거: {name} 조건 확인")
+            why += (f" — {rationale}" if rationale else "") + "\n"
         if scenario.get("rail") == "ACCELERATION":
             accel = scenario.get("acceleration") or {}
             gain, pace = accel.get("gain_pct"), accel.get("volume_pace")
-            facts = ((f" (+{gain:.1f}% vs entry, volume {pace:.1f}x)" if us else
-                      f" (최초 진입가 대비 +{gain:.1f}%, 거래량 {pace:.1f}배)") if gain is not None and pace else "")
-            why += (f"Acceleration: second add this session{facts}\n" if us else
-                    f"가속 구간: 이번 세션 두 번째 증액{facts}\n")
+            facts = ((f" (+{gain:.1f}% vs initial entry, volume {pace:.1f}x usual)" if us else
+                      f" (최초 매수가 대비 +{gain:.1f}%, 거래량 평소의 {pace:.1f}배)") if gain is not None and pace else "")
+            why += (f"Acceleration: second add today{facts}\n" if us else
+                    f"가속 구간: 오늘 두 번째 추가 매수{facts}\n")
+    stop = ""
+    if stop_loss:
+        stop = (f"Stop Loss: {money(float(stop_loss))} (a stop exits the whole position)\n" if us else
+                f"손절가: {money(float(stop_loss))} (손절 시 전량 매도)\n")
     if us:
-        return (f"📈 Micro-split Add: {company_name}({ticker})\n"
-                f"Allocation: {old}% → {new}% of one slot\nAdd Price: ${price:,.2f}\n"
-                f"Average Entry: ${average:,.2f}\n{why}Order: {order_status}\n")
-    return (f"📈 초분할 추가 매수: {company_name}({ticker})\n"
-            f"비중: {old}% → {new}% (1슬롯 기준)\n추가 매수가: {price:,.0f}원\n"
-            f"평균 매수가: {average:,.0f}원\n{why}주문: {order_status}\n")
+        return (f"📈 Position Add: {company_name}({ticker})\n"
+                f"Allocation: {old}% → {new}% of one slot\nAdd Price: {money(price)}\n"
+                f"Average Entry: {money(average)}\n{stop}{why}Order: {order_status}\n")
+    return (f"📈 추가 매수(비중 확대): {company_name}({ticker})\n"
+            f"비중: {old}% → {new}% (1슬롯 기준)\n추가 매수가: {money(price)}\n"
+            f"평균 매수가: {money(average)}\n{stop}{why}주문: {order_status}\n")
+
+
+def primary_account_key(agent):
+    """Account key of the primary (first configured) account, or None."""
+    accounts = getattr(agent, "account_configs", None) or []
+    return accounts[0].get("account_key") if accounts and isinstance(accounts[0], dict) else None
 
 
 async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
@@ -491,15 +519,16 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
             kwargs = {"stock_code": campaign["symbol"]} if market == "KR" else {"ticker": campaign["symbol"]}
             result = await trading.execute_buy(buy_amount=cash, limit_price=price, intent=intent,
                                                strict_budget=True, **kwargs)
-    status = ("주문 접수" if market == "KR" else "Submitted") if result.get("success") else (
-        f"미체결/실패({result.get('reason_code') or result.get('message')})" if market == "KR"
-        else f"Not filled ({result.get('reason_code') or result.get('message')})")
-    agent.message_queue.append(add_message(market=market, company_name=row.get("company_name") or campaign["symbol"],
-                                           ticker=campaign["symbol"], before=before, after=after, price=price,
-                                           average=average, order_status=status, scenario=meta))
-    agent._msg_types.append("analysis")
-    if chat_id:
-        await agent.send_telegram_message(chat_id, await_broadcast=True)
+    # One channel message per add: a secondary account's add of the same position sends no second notice.
+    announce = campaign["account_key"] == (primary_account_key(agent) or campaign["account_key"])
+    if announce:
+        agent.message_queue.append(add_message(
+            market=market, company_name=row.get("company_name") or campaign["symbol"], ticker=campaign["symbol"],
+            before=before, after=after, price=price, average=average, order_status=add_order_status(result, market),
+            scenario=meta, stop_loss=row.get("stop_loss")))
+        agent._msg_types.append("analysis")
+        if chat_id:
+            await agent.send_telegram_message(chat_id, await_broadcast=True)
     emit_event("micro_split.add_executed", service=f"prism-{market.lower()}-micro-split", market=market,
                ticker=campaign["symbol"], position_id=campaign["position_id"],
                attributes={"campaign_id": campaign["campaign_id"], "slot_allocation": after,
@@ -514,7 +543,7 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
                            "broker_reason": result.get("reason_code") or result.get("message"),
                            "planned_target": decision.get("target_allocation"), "trigger_price": meta.get("trigger_price"),
                            "session": meta.get("session")})
-    return {"status": "EXECUTED", "allocation": after, "cash": cash, "broker": result}
+    return {"status": "EXECUTED", "allocation": after, "cash": cash, "broker": result, "announced": announce}
 
 
 def allocation_line(scenario, *, profit_rate=None, current_price=None, market="KR", indent="", language=None):

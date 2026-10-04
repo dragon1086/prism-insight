@@ -567,7 +567,8 @@ def test_worker_executes_a_qualified_plan_add_once_per_scenario_and_session(live
     block = json.loads(live_worker.conn.execute("SELECT scenario FROM stock_holdings").fetchone()[0])["micro_split"]
     assert block["allocation"] == "0.9000" and block["legs"][-1]["bar_end"] == "add-plan:2026-10-05:breakout_1"
     assert block["legs"][-1]["scenario_id"] == "breakout_1" and block["legs"][-1]["session"] == SESSION
-    assert "시나리오: 돌파 (breakout_1)" in live_worker.executor.message_queue[0]
+    assert "근거: 돌파 조건 확인" in live_worker.executor.message_queue[0]
+    assert "손절가: 9,300원 (손절 시 전량 매도)" in live_worker.executor.message_queue[0]
     names = [name for name, _ in live_worker.emitted]
     assert "micro_split.add_plan_qualified" in names and "micro_split.add_executed" in names
     qualified = dict(live_worker.emitted)["micro_split.add_plan_qualified"]["attributes"]
@@ -610,7 +611,7 @@ def test_worker_fetches_pace_after_todays_add_and_records_the_acceleration_rail(
     block = json.loads(live_worker.conn.execute("SELECT scenario FROM stock_holdings").fetchone()[0])["micro_split"]
     assert block["allocation"] == "1.0000" and block["legs"][-1]["rail"] == P.ACCELERATION
     assert block["legs"][-1]["bar_end"] == "add-plan:2026-10-05:breakout_1:acceleration"
-    assert "가속 구간: 이번 세션 두 번째 증액 (최초 진입가 대비 +8.5%, 거래량 2.4배)" in \
+    assert "가속 구간: 오늘 두 번째 추가 매수 (최초 매수가 대비 +8.5%, 거래량 평소의 2.4배)" in \
         live_worker.executor.message_queue[-1]
     executed = [kw for name, kw in live_worker.emitted if name == "micro_split.add_executed"][-1]
     assert executed["attributes"]["rail"] == P.ACCELERATION

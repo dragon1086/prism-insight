@@ -475,3 +475,51 @@ def sell_message_line(scenario, *, language="ko"):
                 f"({block['gain_pct']:+.1f}%), hold window until {_mmdd(block['hold_until'])}")
     return (f"🏃 주도주 보유 규칙 적용 종목: 매수 후 {block['session']}거래일 {block['gain_pct']:+.1f}%로 주도주 판정, "
             f"보유 기한 ~{_mmdd(block['hold_until'])}")
+
+
+EXIT_PREFIX = "RUNNER_MA50:"
+
+
+def public_reason(reason):
+    """Sell reason for channel messages: the internal RUNNER_MA50 prefix (kept in the DB for exit_kind) is dropped."""
+    text = str(reason or "")
+    return text[len(EXIT_PREFIX):].lstrip() if text.startswith(EXIT_PREFIX) else text
+
+
+def notice(block, *, market, company_name, ticker, today, detected, stop_change=None, ma50=None, deferred=False):
+    """Channel notice for a runner: ``detected`` (became a runner in this review) or a later stop move to the
+    initial entry (``stop_change`` = (old, new) without a new detection). KR Korean, US English.
+
+    ``deferred``: found while the price is at/below the entry, so the stop moves on a later review.
+    """
+    block = block or {}
+    us = str(market).upper() == "US"
+    extended = phase(block, today) == EXTENDED
+    until = _mmdd(block.get("hold_until") or "")
+    gain, session = float(block.get("gain_pct") or 0), block.get("session")
+    if us:
+        floor = f"the 50-day MA ({_money(ma50, market)})" if _num(ma50) is not None else "the 50-day MA"
+        keep = (f"The hold window has ended: it sells on a close below the 20-day MA, {floor} or the entry."
+                if extended else f"Held until a close below {floor} or below the entry (through {until}).")
+        if stop_change:
+            stop = f"Stop Loss: {_money(stop_change[0], market)} → entry {_money(stop_change[1], market)}\n"
+        else:
+            stop = "Stop Loss: moves to the entry once the price is back above it\n" if deferred else ""
+        if not detected:
+            return f"🏃 Runner Stop Update: {company_name}({ticker})\n{stop}{keep}\n"
+        return (f"🏃 Runner Hold: {company_name}({ticker})\n"
+                f"Closed {gain:+.1f}% above the entry {session} trading days after the buy; now held as a "
+                f"market leader.\n{stop}{keep}\n"
+                "Target, overheating and short-term trend signals no longer sell it.\n")
+    floor = f"50일선({_money(ma50, market)})" if _num(ma50) is not None else "50일선"
+    keep = (f"보유 기한이 지나 20일선, {floor} 또는 매수가 아래로 마감하면 매도합니다." if extended
+            else f"{floor} 또는 매수가 아래로 마감하기 전까지 보유합니다 (~{until}).")
+    if stop_change:
+        stop = f"손절가: {_money(stop_change[0], market)} → 매수가 {_money(stop_change[1], market)}\n"
+    else:
+        stop = "손절가: 현재가가 매수가 위로 올라오면 매수가로 옮깁니다\n" if deferred else ""
+    if not detected:
+        return f"🏃 주도주 손절가 조정: {company_name}({ticker})\n{stop}{keep}\n"
+    return (f"🏃 주도주 전환: {company_name}({ticker})\n"
+            f"매수 후 {session}거래일째 종가가 매수가 대비 {gain:+.1f}%로 주도주로 판정했습니다.\n{stop}{keep}\n"
+            "목표가 도달·과열·단기 추세 이탈로는 팔지 않습니다.\n")
