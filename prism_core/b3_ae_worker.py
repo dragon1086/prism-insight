@@ -168,9 +168,13 @@ class B3AeWorker:
         plan = add_plan.plan_for_session(block or {}, today) or {}
         if block is None or plan.get("status") != "ACTIVE" or plan.get("valid_for") != today:
             return dict(out, status="WAIT", reason="NO_ACTIVE_PLAN_FOR_SESSION")
-        evidence = self.providers["add_inputs"](symbol, now, phase, plan)
-        current = self.clock()
         legs = block["legs"]
+        # After today's first add the acceleration rail needs the matched volume pace, so the
+        # provider fetches it once the price reaches the acceleration level (+8% over the entry).
+        added_today = any(leg.get("kind") == "ADD" and leg.get("session") == today for leg in legs)
+        pace_above = add_plan.acceleration_price(legs[0]["price"]) if added_today else None
+        evidence = self.providers["add_inputs"](symbol, now, phase, plan, pace_above=pace_above)
+        current = self.clock()
         state = dict(allocation=block["allocation"], legs=legs, initial_entry=legs[0]["price"],
                      initial_stop=campaign["plan"]["initial_stop"],
                      current_stop=row["stop_loss"] or campaign["plan"]["initial_stop"],
@@ -196,10 +200,13 @@ class B3AeWorker:
         meta = {k: decision[k] for k in ("scenario_id", "scenario_type", "lens", "plan_hash", "trigger_price",
                                          "rationale")}
         meta["session"] = decision["session_date"]
+        if decision.get("rail"):
+            meta.update(rail=decision["rail"], acceleration=decision.get("acceleration"))
         attributes.update(scenario_id=decision["scenario_id"], scenario_type=decision["scenario_type"],
                           lens=decision["lens"], target_allocation=decision["target_allocation"],
                           price=decision["price"], trigger_price=decision["trigger_price"],
-                          risk_clipped=decision["risk_clipped"])
+                          risk_clipped=decision["risk_clipped"], rail=decision.get("rail"),
+                          acceleration=decision.get("acceleration"))
         self.store.record_event(cid, current, "add_plan.qualified", attributes)
         emit_event("micro_split.add_plan_qualified", service=service, market=self.market, ticker=symbol,
                    position_id=campaign["position_id"], attributes=attributes)
@@ -314,8 +321,12 @@ def kr_providers():
         ready = _time(today["close_at"]) + timedelta(minutes=30) <= moment and local.hour * 60 + local.minute < 1410
         return today["trade_date"] if ready else None
 
-    def add_inputs(symbol, now, phase, plan):
-        """Add-plan evidence: completed KIS daily bars, today's 5m bars, quote, matched volume pace."""
+    def add_inputs(symbol, now, phase, plan, pace_above=None):
+        """Add-plan evidence: completed KIS daily bars, today's 5m bars, quote, matched volume pace.
+
+        The pace is fetched for plans that use it, and for the acceleration rail once the quote
+        reaches ``pace_above`` (the worker passes it only after today's first add).
+        """
         moment = _time(now)
         try:
             sessions = calendar(moment)["sessions"]
@@ -343,7 +354,8 @@ def kr_providers():
             for b in rows if opened <= _time(b["provider_timestamp"])
             and _time(b["provider_timestamp"]) + timedelta(minutes=5) <= cutoff]
         out["price"] = K.quote(source, symbol)["price"]
-        if out["today_bars"] and add_plan.needs_intraday_pace(plan):
+        accelerating = pace_above is not None and float(out["price"] or 0) >= pace_above
+        if out["today_bars"] and (add_plan.needs_intraday_pace(plan) or accelerating):
             if ("add_curves", symbol) not in daily:
                 daily[("add_curves", symbol)] = K.prior_minute_volumes(source, symbol, sessions[:-1])
             end = out["today_bars"][-1]["end_at"]
@@ -420,10 +432,12 @@ def us_providers():
     def _bar(row, **extra):
         return dict(extra, **{k: row[k] for k in ("open", "high", "low", "close", "volume")})
 
-    def add_inputs(symbol, now, phase, plan):
+    def add_inputs(symbol, now, phase, plan, pace_above=None):
         """Add-plan evidence from yfinance: completed daily bars, today's regular 5m bars, quote, volume pace.
 
         Prior sessions (daily bars and their 5m volume) are fetched once per symbol and trading day.
+        The pace is fetched for plans that use it, and for the acceleration rail once the quote
+        reaches ``pace_above`` (the worker passes it only after today's first add).
         """
         moment = _time(now)
         today = schedule(moment)
@@ -454,7 +468,8 @@ def us_providers():
         if not price:
             return dict(status="MISSING", reason="QUOTE_UNAVAILABLE")
         out["price"] = price
-        if out["today_bars"] and add_plan.needs_intraday_pace(plan) and len(prior["daily"]) >= 20:
+        accelerating = pace_above is not None and float(price) >= pace_above
+        if out["today_bars"] and (add_plan.needs_intraday_pace(plan) or accelerating) and len(prior["daily"]) >= 20:
             if prior["minutes"] is None:
                 first = datetime.combine(date.fromisoformat(prior["daily"][-20]["date"]), opened.astimezone(NY).timetz())
                 prior["minutes"] = _rows(symbol, "5m", first.astimezone(timezone.utc), opened)

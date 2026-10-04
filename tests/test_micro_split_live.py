@@ -432,3 +432,128 @@ def test_buy_prompt_block_states_the_frame_and_what_it_supersedes(live_on):
     en = live.buy_prompt_block("US", "en")
     assert "scout entry" in en and "System constraint 4" in en and "within +3% of the current" in en
     assert "Standalone no-entry reason 1" in en and "effective_score >= 5" in en
+
+
+# ---------------------------------------------------------------- conviction tilt (2026-10-04, design 2)
+
+def _wide_agent(market="KR", ticker="005930"):
+    """Decision bars with ATR14 = 600 -> stop proxy 9% -> B3 initial 0.3888 (room for the tilt)."""
+    agent = _agent(market, ticker)
+    for bar in agent._decision_input_bars[ticker]["bars"]:
+        bar.update(high=10300.0, low=9700.0)
+    return agent
+
+
+def _tilted(market="KR", trigger="일중 상승률 상위주", score=8, unit=1_000_000, **extra):
+    return live.prepare_entry(
+        _wide_agent(market), market=market, ticker="005930", current_price=10000,
+        scenario=dict({"stop_loss": 9300, "sector": "IT", "buy_score": score}, **extra), decision_ref="report:x.pdf",
+        account={"buy_amount_krw": unit, "buy_amount_usd": unit}, trigger_type=trigger)
+
+
+@pytest.mark.parametrize("market,trigger,score,expected", [
+    ("KR", "일중 상승률 상위주", 8, "0.5888"), ("KR", "갭 상승 모멘텀 상위주", 9.5, "0.5888"),
+    ("KR", "일중 상승률 상위주", 7.9, None), ("KR", "거래량 급증 상위주", 9, None), ("KR", None, 9, None),
+    ("KR", "Intraday Rise Top", 9, None),  # the US name never tilts a KR entry
+    ("US", "Intraday Rise Top", 8, "0.5888"), ("US", "Gap Up Momentum Top", 10, "0.5888"),
+    ("US", "Volume Surge Top", 9, None), ("US", "일중 상승률 상위주", 9, None)])
+def test_conviction_tilt_matrix(live_on, market, trigger, score, expected):
+    tilt = live.conviction_tilt("0.3888", market=market, buy_score=score, trigger_type=trigger)
+    assert (tilt or {}).get("tilted") == expected
+    if expected:
+        assert tilt["base"] == "0.3888" and tilt["reason"] == "CONVICTION_TOP_SETUP"
+
+
+def test_conviction_tilt_caps_at_80_and_has_a_kill_switch(live_on, monkeypatch):
+    strong = "일중 상승률 상위주"
+    assert live.conviction_tilt("0.7777", market="KR", buy_score=9, trigger_type=strong)["tilted"] == "0.80"
+    assert live.conviction_tilt("0.80", market="KR", buy_score=9, trigger_type=strong) is None
+    for bad in (None, "", "eight", True, float("nan")):
+        assert live.conviction_tilt("0.4", market="KR", buy_score=bad, trigger_type=strong) is None
+    monkeypatch.setenv("MICRO_SPLIT_CONVICTION_TILT", "off")
+    assert live.conviction_tilt("0.4", market="KR", buy_score=9, trigger_type=strong) is None
+    _, cash, scenario = _tilted()
+    assert cash == 388_800 and "conviction_tilt" not in scenario["micro_split"]
+
+
+@pytest.mark.parametrize("market,trigger", [("KR", "일중 상승률 상위주"), ("US", "Gap Up Momentum Top")])
+def test_conviction_tilt_reaches_every_consumer(live_on, monkeypatch, market, trigger):
+    from messaging.redis_signal_publisher import SignalPublisher
+    from prism_core.oneil_adaptive_policy import _validate
+
+    raw = {"thesis_check": "intact", "scenarios": [
+        {"id": "b_low", "type": "breakout", "trigger": {"price_above": 10500}, "target_allocation": 0.55},
+        {"id": "b_high", "type": "breakout", "trigger": {"price_above": 10800}, "target_allocation": 0.80}]}
+    plan, cash, scenario = _tilted(market, trigger, add_plan=raw)
+    block = scenario["micro_split"]
+    # B3 plan and its hash keep the volatility initial; the tilt is explicit on the holding block.
+    assert plan["initial_nominal"] == "0.3888"
+    _validate(plan)
+    assert block["plan_hash"] == plan["plan_hash"]
+    assert block["conviction_tilt"] == {"base": "0.3888", "tilted": "0.5888", "reason": "CONVICTION_TOP_SETUP",
+                                        "buy_score": 8.0, "trigger_type": trigger}
+    assert cash == live.scaled_cash(1_000_000, "0.5888", market)
+    assert block["allocation"] == "0.5888" and block["legs"][0]["allocation"] == "0.5888"
+    assert slot_fraction(scenario) == pytest.approx(0.5888)
+    assert live.used_slots([json.dumps(scenario), "{}"]) == pytest.approx(1.5888)
+    assert live.display(scenario) == "비중 59%"
+    assert live.dashboard_fields(scenario, buy_price=10000, current_price=10500)["allocation"] == pytest.approx(0.5888)
+    assert "initial 59% (top-setup tilt from 39%)" in live.journal_position_line(scenario)
+    line = live.entry_message_line(scenario, market)
+    assert ("59% of one slot (top-setup tilt from 39%)" in line if market == "US"
+            else "초분할 비중: 59% (1슬롯 기준, 상위 셋업 가중으로 기본 39%에서 상향)" in line)
+    # Add rails: "previous leg" and "above the allocation" use the tilted first leg.
+    assert [s["id"] for s in block["add_plan"]["scenarios"]] == ["b_high"]
+    assert block["add_plan"]["dropped"] == [{"id": "b_low", "reason": "TARGET_NOT_ABOVE_ALLOCATION"}]
+    assert block["add_plan"]["allocation_at_plan"] == "0.5888"
+    sent = []
+    publisher = SignalPublisher.__new__(SignalPublisher)
+    publisher._redis = SimpleNamespace(xadd=lambda stream, mid, data: sent.append(json.loads(data["data"])) or "1-0")
+    monkeypatch.setattr(publisher, "_is_connected", lambda: True, raising=False)
+    monkeypatch.setattr("messaging.redis_signal_publisher.signal_publishing_disabled", lambda: False)
+    asyncio.run(publisher.publish_buy_signal(ticker="005930", company_name="x", price=10000, scenario=scenario))
+    assert sent[0]["position_fraction"] == pytest.approx(0.5888)
+
+
+def test_no_tilt_without_a_trigger_keeps_the_entry_unchanged(live_on):
+    # Re-entry v3 and other non-batch entries pass no trigger type: identical record and order.
+    plan, cash, scenario = _tilted(trigger=None, score=10)
+    base_plan, base_cash, base = live.prepare_entry(
+        _wide_agent(), market="KR", ticker="005930", current_price=10000,
+        scenario={"stop_loss": 9300, "sector": "IT", "buy_score": 10}, decision_ref="report:x.pdf",
+        account={"buy_amount_krw": 1_000_000})
+    assert cash == base_cash == 388_800 and scenario == base and plan == base_plan
+    assert "conviction_tilt" not in scenario["micro_split"]
+
+
+@pytest.mark.parametrize("path", ["stock_tracking_enhanced_agent.py", "prism-us/us_stock_tracking_agent.py"])
+def test_batch_entries_pass_the_trigger_and_reentry_passes_none(path):
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse((Path(__file__).resolve().parents[1] / path).read_text())
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute) and node.func.attr == "prepare_entry"
+             and isinstance(node.func.value, ast.Name) and node.func.value.id == "micro_split_live"]
+    assert len(calls) == 1
+    value = next(k.value for k in calls[0].keywords if k.arg == "trigger_type")
+    assert isinstance(value, ast.IfExp) and isinstance(value.test, ast.Name)
+    assert value.test.id == "require_micro_plan" and isinstance(value.body, ast.Constant) and value.body.value is None
+
+
+def test_buy_prompt_states_the_tilt_only_for_strong_triggers(live_on, monkeypatch):
+    from prism_core.add_plan_prompts import buy_block
+
+    agent = _agent()
+    plain = live.add_plan_buy_block(agent, market="KR", ticker="005930", language="ko")
+    assert plain == buy_block("KR", "ko", expected_initial=0.7777) and "상위 셋업" not in plain
+    agent.trigger_info_map = {"005930": {"trigger_type": "갭 상승 모멘텀 상위주"}}
+    tilted = live.add_plan_buy_block(agent, market="KR", ticker="005930", language="ko")
+    assert "buy_score가 8점 이상이면 최초 비중을 한 단계(+20%p, 최대 80%) 크게 시작합니다(예상 약 80%)" in tilted
+    assert "점수를 올리거나 내리지 말고 채점표대로" in tilted
+    us = _agent("US")
+    us.trigger_info_map = {"005930": {"trigger_type": "Intraday Rise Top"}}
+    assert "top-setup trigger: with buy_score >= 8" in live.add_plan_buy_block(
+        us, market="US", ticker="005930", language="en")
+    monkeypatch.setenv("MICRO_SPLIT_CONVICTION_TILT", "false")
+    assert live.add_plan_buy_block(agent, market="KR", ticker="005930", language="ko") == plain
