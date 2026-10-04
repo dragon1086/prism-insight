@@ -27,7 +27,7 @@ def test_compact_initial_status_is_not_a_new_entry():
         position_after=position(scenario_risk=48.57, scenario_risk_includes_pending=True)))
     assert "기존 포지션" in out and "신규 진입 아님" in out
     assert "비용·미체결 포함" in out
-    assert len(out) <= 650 and len(out.splitlines()) <= 11
+    assert len(out) <= 750 and len(out.splitlines()) <= 28
 
 
 def test_compact_change_only_compares_changed_fields():
@@ -36,13 +36,13 @@ def test_compact_change_only_compares_changed_fields():
     assert "84,500.00 → 84,600.00" in out
     assert "-25.00 → -15.00 USDT" in out
     assert "변경 없음" not in out and "익절 목표" not in out
-    assert len(out) <= 650 and len(out.splitlines()) <= 11
+    assert len(out) <= 650 and len(out.splitlines()) <= 24
 
 
 def test_protection_without_before_keeps_event_timestamp():
     out = render_notice(dict(kind="PROTECTION", timestamp=1000, protection_confirmed=True,
         position_after=position(timestamp=1050)))
-    assert "01/01 09:16:40 KST" in out.splitlines()[0]
+    assert "01/01 09:16:40 KST" in out.splitlines()[1]
     assert "01/01 09:17:30 KST" in out
 
 
@@ -62,7 +62,7 @@ def test_changed_notice_groups_unknown_protection_not_unchanged(unknown_targets)
 def test_entry_stage_has_explicit_lifecycle_title(stage, title):
     out = render_notice(filled(entry_stage=stage, entry_timestamp=900, reason_code="BREAKOUT"))
     assert title in out
-    assert len(out) <= 650 and len(out.splitlines()) <= 11
+    assert len(out) <= 750 and len(out.splitlines()) <= 28
 
 
 def test_additional_fill_compares_verified_quantity_and_average():
@@ -92,8 +92,8 @@ def test_partial_exit_is_compact_and_keeps_remaining_protection_and_settlement()
         entry_timestamp=500, reason_code="TAKE_PROFIT",
         position_after=position(quantity=.04, take_profits=[])))
     assert "부분 청산" in out and "보유 0.04 BTC" in out
-    assert "남은 물량 SL" in out and "정산 미확정" in out
-    assert len(out) <= 650 and len(out.splitlines()) <= 11
+    assert "손절 SL" in out and "남은 전량" in out and "정산 미확정" in out
+    assert len(out) <= 850 and len(out.splitlines()) <= 38
 
 
 def test_readable_sample_math_and_distinct_risk_bases():
@@ -226,7 +226,7 @@ def test_account_and_position_overflow_never_prints_infinite_return():
 def test_partial_with_after_shows_actual_remaining_quantity():
     out = render_notice(dict(kind="PARTIAL", timestamp=1000, side="LONG", fill_confirmed=True,
         quantity=.06, position_after=position(quantity=.04, take_profits=[])))
-    assert "보유 0.04 BTC" in out and "정리 수량: 0.06 BTC" in out
+    assert "보유 0.04 BTC" in out and "이번 체결: 0.06 BTC" in out
     assert "정산 미확정" in out
 
 
@@ -386,3 +386,91 @@ def test_model_notice_never_exposes_payload_or_claims_exchange_uncertainty(reaso
 def test_model_error_requires_safe_reason_code():
     with pytest.raises(ValueError,match='model_error_reason_required'):
         render_notice(dict(kind='MODEL_ERROR',timestamp=1000,reason_code='raw exception'))
+
+
+def test_readable_blocks_show_notional_and_verified_equity_without_fake_margin():
+    out = render_notice(filled(quantity=.03, price=85000, entry_stage="additional",
+        position_before=position(timestamp=900, quantity=.07)))
+    for text in ("\n\n🧾", "\n\n📦", "\n\n💰", "\n\n🛡", "\n\n🎯",
+                 "체결금액(명목): 2,550.00 USDT · 증거금 아님",
+                 "계좌 순자산: 9,613.09 USDT", "0.07 BTC → 0.1 BTC",
+                 "총 증거금 851.85 USDT", "관측 기준"):
+        assert text in out
+    assert "추가 증거금" not in out and "**" not in out and "<b>" not in out
+
+
+def test_partial_preserves_remaining_target_money_and_equity_percent():
+    out = render_notice(dict(kind="PARTIAL", timestamp=1000, fill_confirmed=True,
+        protection_confirmed=True, quantity=.06, price=85200, entry_price=84750,
+        position_before=position(timestamp=900), position_after=position(quantity=.04,
+            take_profits=[dict(price=85500, quantity=.02)])))
+    for text in ("0.1 BTC → 0.04 BTC", "-10.00 USDT", "계좌 -0.10%",
+                 "+15.00 USDT", "계좌 +0.16%", "9,613.09 USDT", "정산 미확정"):
+        assert text in out
+    assert "확정 순손익:" not in out
+
+
+@pytest.mark.parametrize("initial", [None, 0, -10, float("nan"), True])
+def test_closed_invalid_start_equity_does_not_invent_account_return(initial):
+    out = render_notice(dict(kind="CLOSED", timestamp=1000, flat_confirmed=True,
+        orders_terminal=True, settlement_confirmed=True, net_pnl=-11.71,
+        fees=6.35, funding=.04, scenario_initial_equity=initial))
+    assert "대비" not in out
+
+
+def test_closed_account_percent_uses_start_not_current_account():
+    out = render_notice(dict(kind="CLOSED", timestamp=1000, flat_confirmed=True,
+        orders_terminal=True, settlement_confirmed=True, net_pnl=-11.71,
+        fees=6.35, funding=.04, scenario_initial_equity=10000,
+        account_snapshot=dict(same_event=True, same_account=True, timestamp=1000, equity=100)))
+    assert "시작 계좌 10,000.00 USDT 대비 -0.12%" in out
+    assert "-11.71%" not in out
+
+
+def test_confirmed_cumulative_net_and_remaining_stop_are_not_double_counted():
+    out = render_notice(dict(kind="PARTIAL", timestamp=1000, fill_confirmed=True,
+        protection_confirmed=True, quantity=.06, price=85200,
+        position_after=position(quantity=.04, take_profits=[],
+            scenario_realized_net_pnl=23, scenario_accounting_confirmed=True)))
+    assert "누적 실현손익(기록된 비용 포함): +23.00 USDT" in out
+    assert "SL 시 매매 전체 예상: +13.00 USDT · 계좌 +0.14%" in out
+    assert "향후 수수료·슬리피지·펀딩 제외" in out
+    assert "정산 미확정" in out  # aggregate accounting does not settle this fill
+
+
+@pytest.mark.parametrize("confirmed,net", [(False, 23), (None, 23), (True, float("nan")), (True, None)])
+def test_unconfirmed_cumulative_net_never_used_for_combined_result(confirmed, net):
+    out = render_notice(filled(position(scenario_realized_net_pnl=net,
+        scenario_accounting_confirmed=confirmed)))
+    assert "SL 시 매매 전체 예상" not in out
+    assert "누적 실현손익" not in out
+
+
+def test_exact_partial_gross_is_not_promoted_to_settled_net():
+    out = render_notice(dict(kind="PARTIAL", timestamp=1000, fill_confirmed=True,
+        protection_confirmed=True, quantity=.06, price=85200, fill_gross_pnl=27,
+        fill_gross_pnl_confirmed=True,
+        position_after=position(quantity=.04, take_profits=[])))
+    assert "이번 청산 가격손익: +27.00 USDT · 계좌 +0.28%" in out
+    assert "수수료·펀딩 전 · 확정 순손익 아님" in out
+    assert "정산 미확정" in out
+    assert "확정 순손익:" not in out
+
+
+@pytest.mark.parametrize("confirmed", [None, False])
+def test_partial_gross_requires_specific_confirmation_flag(confirmed):
+    out = render_notice(dict(kind="PARTIAL", timestamp=1000, fill_confirmed=True,
+        fill_gross_pnl_confirmed=confirmed,
+        fill_gross_pnl=27, position_after=position(quantity=.04, take_profits=[])))
+    assert "이번 청산 가격손익:" not in out
+
+
+def test_partial_result_precedes_remaining_risk_and_is_not_repeated():
+    out = render_notice(dict(kind="PARTIAL", timestamp=1000, fill_confirmed=True,
+        fill_gross_pnl_confirmed=True, fill_gross_pnl=27,
+        position_after=position(quantity=.04, take_profits=[])))
+    assert out.index("이번 청산 가격손익") < out.index("📦 전체 포지션")
+    assert out.index("정산 미확정") < out.index("📦 전체 포지션")
+    assert out.count("정산 미확정") == 1
+    assert "💵 청산 결과" not in out
+    assert "TP/SL 물량 손익은" in out

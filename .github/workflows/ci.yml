@@ -276,6 +276,7 @@ jobs:
             prism-btc/tests/test_scenario_runtime.py \
             prism-btc/tests/test_scenario_runner.py \
             prism-btc/tests/test_scenario_notice.py \
+            prism-btc/tests/test_scenario_notice_progress.py \
             prism-btc/tests/test_scenario_outbox.py \
             prism-btc/tests/test_scenario_broker.py \
             prism-btc/tests/test_scenario_accounting.py \

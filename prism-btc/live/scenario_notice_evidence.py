@@ -50,6 +50,16 @@ def position_snapshot(active, children, observed, protected, pending, accounting
         account_snapshot=dict(same_event=True, same_account=True, timestamp=observed["captured_at"],
             position_margin=number(position.get("positionIM")), equity=observed["equity"], margin_mode="REGULAR_MARGIN"),
         scenario_initial_equity=active["initial_equity"], scenario_budget=active["initial_equity"]*.02)
+    if accounting and accounting.get("status") == "confirmed" and accounting.get("accounting_complete") is True:
+        # Reuse the reconciler's totals, including recorded costs on open lots.
+        # This is not a fee allocation or a per-exit settlement calculation.
+        keys = ("gross_pnl", "fees", "funding_net", "net_pnl")
+        values = [accounting.get(key) for key in keys]
+        if all(isinstance(value, (int, float)) and not isinstance(value, bool)
+               and math.isfinite(value) for value in values):
+            gross, fees, funding, net = values
+            if math.isclose(gross - fees + funding, net, rel_tol=0, abs_tol=1e-8):
+                snapshot.update(scenario_realized_net_pnl=net, scenario_accounting_confirmed=True)
     if accounting and accounting.get("status") == "confirmed" and stop:
         from core.llm_scenario import risk_snapshot, ScenarioValidationError
         try:
