@@ -249,34 +249,27 @@ def _emit_planned(*, market, ticker, position_id, block, plan, issues):
         logging.getLogger(__name__).warning("[MICRO_SPLIT][%s] add_planned event skipped: %s", market, error)
 
 
-def entry_message_line(scenario, market):
-    """Buy-message line for a micro-split entry (allocation and the add scenarios), or ''."""
+def entry_message_block(scenario, market):
+    """Korean buy-message lines for a micro-split entry (allocation and add scenarios), or []."""
     from prism_core import add_plan
 
     block = record(scenario)
     if block is None:
-        return ""
-    us = str(market).upper() == "US"
+        return []
     pct = round(float(block["allocation"]) * 100)
     tilt = block.get("conviction_tilt") or {}
     base = round(float(tilt["base"]) * 100) if tilt.get("base") else None
+    tilted = f" (상위 셋업 가중, 기본 {base}%에서 상향)" if base is not None else ""
     plan = block.get("add_plan") or {}
-    labels = [add_plan.scenario_label(s, market, "en" if us else "ko") for s in plan.get("scenarios") or []]
+    labels = [add_plan.scenario_label(s, market, "ko") for s in plan.get("scenarios") or []]
     if not plan_adds_enabled(market):
-        adds = "adds are currently paused" if us else "추가 매수는 현재 멈춰 있고"
+        adds = ["추가 매수는 현재 멈춰 있습니다"]
     elif labels:
-        adds = (f"add scenarios: {'; '.join(labels)} (adds only when a scenario is confirmed)" if us
-                else f"증액 시나리오: {'; '.join(labels)} (조건이 확인될 때만 증액하며)")
+        adds = labels
     else:
-        adds = ("no add scenario yet; the next holdings review sets one" if us
-                else "증액 시나리오는 다음 보유 점검에서 세우며")
-    if us:
-        tilted = f" (top-setup tilt from {base}%)" if base is not None else ""
-        return (f"Micro-split allocation: {pct}% of one slot{tilted} — {adds}; a stop exits the whole position. "
-                "Whole shares are rounded down.\n")
-    tilted = f", 상위 셋업 가중으로 기본 {base}%에서 상향" if base is not None else ""
-    return (f"초분할 비중: {pct}% (1슬롯 기준{tilted}) — {adds}, 손절 시 전량 매도합니다. "
-            "정수 수량 내림으로 실제 체결 비중은 조금 낮을 수 있습니다.\n")
+        adds = ["증액 조건은 다음 보유 점검에서 정합니다"]
+    head = f"🧩 초분할: 1슬롯의 {pct}%로 시작{tilted}" + (", 조건 확인 시 증액" if labels and plan_adds_enabled(market) else "")
+    return [head] + [f"  • {line}" for line in adds] + ["  • 손절 시 전량 매도"]
 
 
 def _utc_now():

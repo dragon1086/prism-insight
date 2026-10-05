@@ -234,15 +234,15 @@ def _live_meta(scenario):
     return meta if isinstance(meta, dict) and meta.get("version") == LIVE_VERSION else None
 
 
-def entry_message_line(scenario, market):
+def entry_message_line(scenario, market, language=None):
     """Plain-language re-entry line for the Telegram buy message ('' for every other entry).
 
-    KR in Korean; US in English like the other US trade texts."""
+    Korean by default for KR, English for US; the buy message asks for Korean in both."""
     meta = _live_meta(scenario)
     if meta is None:
         return ""
     signal = meta.get("signal")
-    if str(market).upper() == "US":
+    if (language or ("en" if str(market).upper() == "US" else "ko")) == "en":
         why = SIGNAL_WHY_EN.get(signal, "").format(level=level_phrase_en(meta, market))
         source = SOURCE_SENTENCE_EN.get(meta.get("source"), "")
         return (f"🔁 Re-entry Buy ({SIGNAL_EN.get(signal, signal)}, attempt {meta.get('attempt_label')})\n"
