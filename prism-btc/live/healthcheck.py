@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import json
 import math
 import os
 from datetime import datetime, timedelta, timezone
@@ -195,6 +196,35 @@ def _check_error_burst(conn, mode: str, now: datetime) -> dict | None:
     return None
 
 
+def _intentional_flat_halt(conn, now: datetime) -> bool:
+    """Recent independent loops prove an intentional skip, not a market refresh."""
+    try:
+        from live.scenario_control import read_control
+        control = read_control(conn)
+        if not control or control["state"] not in {"active", "paused"}:
+            return False
+        state = json.loads(conn.execute("SELECT body FROM llm_scenario_state WHERE id=1").fetchone()[0])
+        if "active" not in state or state["active"] is not None:
+            return False
+        if conn.execute("SELECT 1 FROM llm_scenario_intents WHERE status IS NULL OR status!='TERMINAL'").fetchone():
+            return False
+        values = {}
+        for lane, max_age in (("decision", 600), ("protection", 180)):
+            value = json.loads(tracking.get_meta(conn,"scenario_health_"+lane,"demo"))
+            stamp = value["at"]
+            if (type(stamp) not in {int, float} or not math.isfinite(stamp)
+                    or not 0 <= now.timestamp()-stamp <= max_age):
+                return False
+            values[lane] = value
+        decision, protection = values["decision"], values["protection"]
+        return (decision.get("status") == "blocked" and decision.get("reason") == "new_risk_halted"
+                and decision.get("verified_flat_halt") is True
+                and protection.get("status") == "protection_checked"
+                and protection.get("verified_flat") is True)
+    except Exception:
+        return False
+
+
 def _check_price_stale(conn, mode: str, now: datetime) -> dict | None:
     """3) 시세 갱신 정지: last_processed_30m_ns 나이 > 90분 → alert (없으면 warn)."""
     try:
@@ -204,8 +234,15 @@ def _check_price_stale(conn, mode: str, now: datetime) -> dict | None:
                 ms = tracking.get_meta(conn,"scenario_input_asof_ms",mode)
                 if ms is None:
                     return {"level":"warn","code":"price_stale","msg":"LLM 시나리오의 시세 관측 기록이 아직 없습니다."}
-                age = _ns_age_minutes(int(ms)*1_000_000,now)
-                if age is None or age > 15:
+                try:
+                    age = _ns_age_minutes(int(ms)*1_000_000,now)
+                except (ValueError, TypeError, OverflowError, OSError):
+                    age = None
+                if age is None or not math.isfinite(age) or age < 0:
+                    return {"level":"warn","code":"price_stale","msg":"LLM 시나리오의 시세 관측 시각을 확인할 수 없습니다."}
+                if age > 15:
+                    if _intentional_flat_halt(conn, now):
+                        return None
                     return {"level":"alert","code":"price_stale","msg":"LLM 시나리오의 시세 관측이 15분 이상 지연됐습니다."}
                 return None
         ns = tracking.get_meta(conn, "last_processed_30m_ns", mode)

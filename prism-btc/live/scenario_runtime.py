@@ -24,6 +24,7 @@ from core.scenario_limit_prices import validate_execution_prices
 from live.shared_entry_coordinator import database_path, mutation_lock
 from live.entry_reservations import LockBusy
 from live.scenario_llm import ScenarioModelError
+from live.scenario_review_memory import apply_review, observe_review
 
 REQUIRED_CAPABILITIES = frozenset({"exact_fills", "atomic_protection",
     "exact_settlement", "idempotent_intents", "fresh_risk_context"})
@@ -259,6 +260,10 @@ class ScenarioRuntime:
         state["breaker"] = update_circuit_breaker(state["breaker"],
             **{k: ctx[k] for k in ("day", "day_start_equity", "daily_net_pnl")})
         active = state["active"]
+        observe_review(active, ctx, self.clock())
+        ctx.update(review_contract_version=1,
+                   review_memory=json.loads(_json(active.get("review_memory", []))) if active else [],
+                   review_status=active.get("review_status", "not_initialized") if active else "no_scenario")
         ctx.update(scenario_id=active["scenario_id"] if active else None,
                    revision=active["revision"] if active else 0,
                    seen_action_ids=[r[0] for r in self.conn.execute("SELECT id FROM llm_scenario_intents")])
@@ -321,7 +326,11 @@ class ScenarioRuntime:
                 if ctx["legacy_fenced"] or not ctx["protection_ok"]:
                     return {"status": "fenced"}
                 if ctx["new_risk_blocked"] and state["active"] is None:
-                    return {"status":"blocked","reason":"new_risk_halted"}
+                    return {"status":"blocked","reason":"new_risk_halted",
+                            "verified_flat_halt": (ctx.get("positions") == []
+                                and ctx.get("pending_entries") == []
+                                and ctx.get("accounting_status") == "confirmed"
+                                and not self.conn.execute("SELECT 1 FROM llm_scenario_intents WHERE status IS NULL OR status!='TERMINAL'").fetchone())}
                 if self.conn.execute("SELECT 1 FROM llm_scenario_intents WHERE status='PENDING'").fetchone():
                     return {"status": "intent_pending"}
                 if self.conn.execute("SELECT 1 FROM llm_scenario_slots WHERE slot=?", (slot,)).fetchone():
@@ -350,6 +359,11 @@ class ScenarioRuntime:
             record_hashed("decision_input", {"snapshot": snap, "context": ctx, "input_id": input_id},
                           scenario_id=ctx.get("scenario_id"), decision_slot=slot)
             payload = self.propose(snap, ctx)  # No broker mutation lock held.
+            if isinstance(payload, dict) and "review" in payload:
+                try:
+                    _json(payload["review"])
+                except (ValueError, TypeError, OverflowError):
+                    payload = dict(payload, review={"invalid_metadata": "not_json_serializable"})
             # Audit-only write: an already-claimed slot is owned by this caller.
             # Persist the proposal even if independent protection owns the trading
             # mutex when the model returns. This does NOT authorize execution.
@@ -368,8 +382,12 @@ class ScenarioRuntime:
                 fresh.update(now=self.clock(), input_id=input_id, input_captured_at=captured,
                              max_input_age_seconds=120)
                 stage = "validation"
-                validated = validate_execution_prices(payload, fresh)
+                core_payload = {key: value for key, value in payload.items() if key != "review"}
+                validated = validate_execution_prices(core_payload, fresh)
                 if validated["action"] == "WAIT" and not validated.get("cancel_entry_ids"):
+                    apply_review(state["active"], payload.get("review"), validated["action_id"],
+                                 now=self.clock(), presented=ctx["review_memory"])
+                    self._save(state)
                     return {"status": "wait"}
                 stage = "execution"
                 ident = validated["action_id"]
@@ -379,6 +397,8 @@ class ScenarioRuntime:
                     state["active"] = {"scenario_id": validated["scenario_id"], "initial_equity": fresh["initial_equity"],
                         "side": validated["side"], "hard_stop": validated["hard_stop"], "revision": 0,
                         "created_at": self.clock(), "expires_at": validated["expires_at"]}
+                apply_review(state["active"], payload.get("review"), validated["action_id"],
+                             now=self.clock(), presented=ctx["review_memory"])
                 state["active"]["revision"] = validated["revision"]
                 if validated["action"] in ("OPEN", "ADJUST"):
                     state["active"]["desired_hard_stop"] = validated["hard_stop"]

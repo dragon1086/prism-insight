@@ -21,7 +21,7 @@ from live.scenario_llm import propose
 
 def response_contract(context):
     from live.scenario_contract import identity_fields, response_schema
-    return {
+    contract = {
         **identity_fields(context),
         "action": " | ".join(response_schema(context)["properties"]["action"]["enum"]),
         "side": "LONG | SHORT for OPEN/ADJUST; null for WAIT/EXIT",
@@ -48,6 +48,11 @@ def response_contract(context):
                   "For each lot D=price-hard_stop for LONG, hard_stop-price for SHORT. New/pending entries require D>0; filled positions allow profitable stops using max(0,D). Lot risk=quantity*(max(0,D)+price*estimated_cost_rate+hard_stop*slippage_bps/10000).",
                   "Total risk=realized_loss+fees_paid+funding_paid+filled lot risk+ALL current pending lot risk+new lot risk. For new entries total risk <= budget; requested cancellation does not remove pending risk. Unknown costs are not zero.",
                   "New order risk <= ORIGINAL budget*confidence AND remaining budget, not remaining budget*confidence. Round quantity DOWN to the supplied quantity_step and obey minimum_quantity/minimum_notional and price_tick. Code is the final risk/precision authority."]}
+    if context.get("review_contract_version") == 1:
+        contract["review"] = {"conditions": [{"source": "MARK_PRICE", "operator": "ge | le", "price": "positive numeric threshold"}],
+                              "acknowledgements": [{"id": "exact review_memory host ID", "disposition": "hold | replace", "reason": "1..240 characters explaining decision"}]}
+        contract["rules"].append("review is advisory, nullable, max 3 conditions and 3 acknowledgements. Empty/missing review does not clear prior conditions. A reached condition stays reached; acknowledge its exact host ID and explain hold or replacement, not silent goalpost movement. Only MARK_PRICE ge/le thresholds are executable observations, not candle closes or exchange orders.")
+    return contract
 
 
 def collect_snapshot(*, fetch=None, clock=time.time):

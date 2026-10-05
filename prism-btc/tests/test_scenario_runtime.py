@@ -725,7 +725,7 @@ def test_flat_halt_skips_llm_but_still_reconciles(setup):
     r,b,now,_=setup
     b.ctx["daily_net_pnl"]=-500
     r.propose=lambda *args:pytest.fail("halted flat account must not call LLM")
-    assert r.tick()=={"status":"blocked","reason":"new_risk_halted"}
+    assert r.tick()=={"status":"blocked","reason":"new_risk_halted","verified_flat_halt":False}
     assert b.reconciles>0
     assert r.state()["breaker"]["blocked"]
 

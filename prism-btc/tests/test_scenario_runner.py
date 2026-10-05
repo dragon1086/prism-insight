@@ -225,3 +225,69 @@ def test_health_uses_scenario_observation_not_stale_legacy_cursor(tmp_path):
     assert healthcheck._check_price_stale(c,'demo',datetime.fromtimestamp(1010,timezone.utc)) is None
     assert healthcheck._check_price_stale(c,'demo',datetime.fromtimestamp(2000,timezone.utc))['code']=='price_stale'
     c.close()
+
+
+@pytest.mark.parametrize('fault', [None, 'held', 'orders', 'fenced', 'missing', 'status'])
+def test_protection_health_flat_proof_requires_exchange_observation(tmp_path, fault):
+    c = sqlite3.connect(tmp_path/'health.db')
+    observation = {'exchange_flat': True, 'open_orders': [], 'legacy_fenced': False}
+    evidence = {'protection_confirmed': True, 'protection_status': 'verified_flat_no_exposure',
+                'observation': observation}
+    if fault == 'held':
+        observation['exchange_flat'] = False
+    elif fault == 'orders':
+        observation['open_orders'] = [{'id': 'unknown'}]
+    elif fault == 'fenced':
+        observation['legacy_fenced'] = True
+    elif fault == 'missing':
+        evidence.pop('observation')
+    elif fault == 'status':
+        evidence['protection_status'] = 'protected_position'
+    broker = SimpleNamespace(environment='demo', lane='MAIN', reconcile=lambda: evidence)
+    result = run_once(c, broker, protect_only=True)
+    assert result['verified_flat'] is (fault is None)
+    c.close()
+
+
+def test_health_lanes_overwrite_failures_without_changing_market_timestamp(tmp_path):
+    from live import tracking
+    from live.scenario_runner import record_health
+    c = tracking.get_connection(tmp_path/'health.db')
+    tracking.ensure_schema(c)
+    tracking.set_meta(c, 'scenario_input_asof_ms', 1000, 'demo')
+    record_health(c, {'status': 'blocked', 'reason': 'new_risk_halted', 'verified_flat_halt': True},
+                  loop='decision', clock=lambda: 2000)
+    record_health(c, {'status': 'protection_checked', 'verified_flat': True},
+                  loop='protection', clock=lambda: 2001)
+    record_health(c, {'status': 'blocked', 'reason': 'protection_unconfirmed'},
+                  loop='protection', clock=lambda: 2002)
+    decision = json.loads(tracking.get_meta(c, 'scenario_health_decision', 'demo'))
+    protection = json.loads(tracking.get_meta(c, 'scenario_health_protection', 'demo'))
+    assert decision['verified_flat_halt'] is True and decision['at'] == 2000
+    assert protection['status'] == 'blocked' and protection['verified_flat'] is False
+    assert tracking.get_meta(c, 'scenario_input_asof_ms', 'demo') == 1000
+    record_health(c, {'status': 'lock_busy'}, loop='decision', clock=lambda: 2003)
+    assert json.loads(tracking.get_meta(c, 'scenario_health_decision', 'demo'))['verified_flat_halt'] is False
+    c.close()
+
+
+@pytest.mark.parametrize('fault', [None, 'held', 'orders', 'accounting', 'fenced'])
+def test_runtime_halt_proof_is_conservative_without_market_call(tmp_path, fault):
+    from tests.test_scenario_runtime import Broker
+    from live.scenario_runtime import ScenarioRuntime
+    c = sqlite3.connect(tmp_path/'health.db')
+    b = Broker()
+    b.ctx.update(new_risk_blocked=True, accounting_status='confirmed')
+    if fault == 'held':
+        b.ctx['positions'] = [{'price': 100, 'quantity': 1}]
+    elif fault == 'orders':
+        b.ctx['pending_entries'] = [{'id': 'entry', 'price': 100, 'quantity': 1}]
+    elif fault == 'accounting':
+        b.ctx['accounting_status'] = 'pending'
+    elif fault == 'fenced':
+        b.ctx['legacy_fenced'] = True
+    runtime = ScenarioRuntime(c, b, lambda *a: 1/0, lambda: 1/0, clock=lambda: 1800000000)
+    result = runtime.tick()
+    assert (result.get('verified_flat_halt') is True) is (fault is None)
+    assert not b.executed
+    c.close()
