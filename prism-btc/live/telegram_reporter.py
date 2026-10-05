@@ -18,7 +18,9 @@ import argparse
 import asyncio
 import logging
 import os
+import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 
 from live import tracking
 
@@ -231,9 +233,10 @@ def _hold_reason_kr(reason: str | None) -> str:
 def _last_price(conn) -> float | None:
     """현재가 — market.db 30m 마지막 종가에서 best-effort 조회."""
     try:
-        from collector.store import get_connection as market_connection
-        mc = market_connection()
+        from collector.store import _get_db_path
+        mc = sqlite3.connect(Path(_get_db_path()).resolve().as_uri() + '?mode=ro', uri=True)
         try:
+            mc.execute('PRAGMA query_only=ON')
             r = mc.execute(
                 "SELECT close FROM klines WHERE timeframe='30m' "
                 "ORDER BY open_time DESC LIMIT 1"
@@ -305,6 +308,14 @@ def build_message(conn, mode: str) -> str:
 
     전문용어(롱/숏/R/PF/MDD/섀도우 등) 대신 쉬운 말로 풀어 쓴다.
     """
+    if mode == 'demo':
+        from live.scenario_daily_report import build_report, unavailable
+        try:
+            scenario = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_scenario_control'").fetchone()
+        except Exception:
+            return unavailable()
+        if scenario:
+            return build_report(conn)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     equity = tracking.latest_equity(conn, mode)
     peak = tracking.peak_equity(conn, mode)
@@ -534,6 +545,7 @@ def main() -> int:
                         choices=["shadow", "demo", "live"])
     parser.add_argument("--channel", default=None, help="채널 ID 오버라이드")
     parser.add_argument("--root-db", default=None, help="root tracking db 경로")
+    parser.add_argument("--preview", action="store_true", help="읽기 전용 출력만, 전송하지 않음")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -550,13 +562,24 @@ def main() -> int:
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     channel = _resolve_channel(args.channel, mode=args.mode)
 
-    conn = tracking.get_connection(args.root_db)
+    conn = None
     try:
-        tracking.ensure_schema(conn)
+        path = Path(args.root_db or tracking.root_db_path()).resolve()
+        conn = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
+        conn.row_factory = sqlite3.Row
+        conn.execute('PRAGMA query_only=ON')
+        conn.execute('BEGIN')
         message = build_message(conn, args.mode)
+    except Exception:
+        log.warning('BTC report data unavailable')
+        message = '⚠️ BTC 현황 자료 확인 필요 · 계좌/포지션을 확인하지 못했습니다.'
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
+    if args.preview:
+        print(message)
+        return 0
     asyncio.run(_send(token, channel, message))
     return 0
 
