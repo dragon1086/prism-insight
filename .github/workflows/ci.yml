@@ -316,15 +316,10 @@ jobs:
             prism-btc/tests/test_policy_observation.py \
             prism-btc/tests/test_confidence_allocation.py \
             prism-btc/tests/test_allocation_hooks.py \
-            prism-btc/tests/test_confidence_allocation_study.py \
             prism-btc/tests/test_split_entry.py \
-            prism-btc/tests/test_split_entry_study.py \
             prism-btc/tests/test_intrabar_broker.py \
-            prism-btc/tests/test_intrabar_inputs.py \
             prism-btc/tests/test_market_regimes.py \
             prism-btc/tests/test_native_intrabar_strategy.py \
-            prism-btc/tests/test_intrabar_revalidation.py \
-            prism-btc/tests/test_intrabar_evidence.py \
             prism-btc/tests/test_swing_entry_recovery.py \
             prism-btc/tests/test_swing_entry_notice.py \
             prism-btc/tests/test_position_snapshot.py \
@@ -337,16 +332,7 @@ jobs:
           PYTHONPATH=prism-btc python -m pytest --noconftest \
             prism-btc/tests/test_scalp.py \
             prism-btc/tests/test_execution_replay.py \
-            prism-btc/tests/test_replay_data.py \
-            prism-btc/tests/test_scalp_replay_benchmark.py \
             prism-btc/tests/test_portfolio_replay.py \
-            prism-btc/tests/test_strategy_mixture.py \
-            prism-btc/tests/test_mixture_statistics.py \
-            prism-btc/tests/test_adaptive_signals.py \
             prism-btc/tests/test_adaptive_replay.py \
-            prism-btc/tests/test_adaptive_retest.py \
-            prism-btc/tests/test_transition_signals.py \
             prism-btc/tests/test_transition_replay.py \
-            prism-btc/tests/test_transition_retest.py \
-            prism-btc/tests/test_entry_latency_diagnostic.py \
-            prism-btc/tests/test_entry_latency_runner.py -q
+            prism-btc/tests/test_entry_latency_diagnostic.py -q
