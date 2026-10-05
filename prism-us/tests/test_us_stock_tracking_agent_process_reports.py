@@ -172,10 +172,10 @@ def test_committed_exit_optional_oneil_tape(monkeypatch, capture_enabled, broken
 @pytest.mark.parametrize(
     "elapsed, expected_period, stored_days",
     [
-        (timedelta(seconds=30), "<1 minute", 0),
-        (timedelta(hours=18, minutes=6), "18h 6m", 0),
-        (timedelta(hours=24), "1 day", 1),
-        (timedelta(days=2, hours=3), "2 days", 2),
+        (timedelta(seconds=30), "1분 미만", 0),
+        (timedelta(hours=18, minutes=6), "18시간 6분", 0),
+        (timedelta(hours=24), "1일", 1),
+        (timedelta(days=2, hours=3), "2일", 2),
     ],
 )
 async def test_sell_notice_distinguishes_reference_return_and_elapsed_time(
@@ -219,10 +219,10 @@ async def test_sell_notice_distinguishes_reference_return_and_elapsed_time(
         }, "stop loss", exit_kind="stop")
         assert len(agent.message_queue) == 1
         message = agent.message_queue[0]
-        assert f"Holding Period: {expected_period}\n" in message
-        assert "Strategy/Reference Return: ⬇️ 5.00%" in message
-        assert "not broker-confirmed realized P&L" in message
-        assert "Holding Period: 0 days" not in message
+        assert f"보유기간: {expected_period}\n" in message
+        assert "수익률(전략 기준): ⬇️ 5.00%" in message
+        assert "증권사 확정 실현손익이 아닙니다" in message
+        assert "보유기간: 0일" not in message
         assert agent._msg_types == ["analysis"]
         assert agent.conn.execute(
             "SELECT holding_days, profit_rate FROM us_trading_history"
