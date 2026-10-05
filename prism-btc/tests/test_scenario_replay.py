@@ -4,7 +4,7 @@ import pytest
 from analysis.scenario_dataset import digest
 from analysis.scenario_replay import run_replay,network_boundary
 from backtest.scenario_data import HistoricalScenarioData
-from engine.scenario_snapshot import TIMEFRAME_MS
+from engine.scenario_snapshot import TIMEFRAME_MS, candle_start
 
 
 def inputs(duration_ms=600000):
@@ -13,8 +13,7 @@ def inputs(duration_ms=600000):
     frame=pd.DataFrame(dict(open=100.,high=101.,low=99.,close=100.,volume=100.),index=index)
     warm={}
     for tf,duration in TIMEFRAME_MS.items():
-        if tf=='5m':continue
-        boundary=start//duration*duration
+        boundary=candle_start(start,duration)
         idx=pd.to_datetime(range(boundary-60*duration,boundary,duration),unit='ms',utc=True)
         warm[tf]=pd.DataFrame(dict(open=100.,high=101.,low=99.,close=100.,volume=100.),index=idx)
     funding=[dict(timestamp=t,rate=.0001) for t in range(start-28800000,end+28800000,28800000)]

@@ -122,3 +122,61 @@ def test_deterministic_host_identity_and_timeout_without_retry():
     with pytest.raises(ScenarioModelError,match='oauth_model_failed'):
         propose({'valid':True,'as_of_ms':1000000},ctx,{},generate=timeout,clock=lambda:1000)
     assert calls==[1]
+
+
+@pytest.mark.parametrize('active', [False, True])
+@pytest.mark.parametrize('latency', [0, 75])
+def test_assembled_contract_wait_expiry_survives_latency_not_old_plan(active, latency):
+    from live.scenario_preview import response_contract
+    ctx = context(active)
+    ctx['current_plan'] = {'expires_at': 900}
+    original = json.loads(json.dumps(ctx))
+    calls = []
+    def generate(**kwargs):
+        calls.append(kwargs)
+        assembled = json.loads(kwargs['user_prompt'])
+        result = wire(ctx)
+        result['expires_at'] = assembled['response_contract']['expires_at']
+        return SimpleNamespace(text=json.dumps(result))
+    times = iter([1000, 1000, 1000 + latency])
+    result = propose({'valid': True, 'as_of_ms': 1000000}, ctx,
+                     response_contract(ctx), generate=generate, clock=lambda: next(times))
+    assert result['expires_at'] == 1300
+    assert validate_scenario(result, {**ctx, 'now': 1000 + latency})['action'] == 'WAIT'
+    assert ctx == original
+    rules = ' '.join(json.loads(calls[0]['user_prompt'])['response_contract']['rules'])
+    assert 'does not extend existing entry deadlines' in rules
+
+
+@pytest.mark.parametrize('expiry', [1000, 1000.56, 4602])
+def test_invalid_model_expiry_is_not_silently_repaired(expiry):
+    ctx = context(True)
+    result = wire(ctx)
+    result['expires_at'] = expiry
+    parsed = propose({'valid': True, 'as_of_ms': 1000000}, ctx, {}, clock=lambda: 1000,
+                     generate=lambda **kwargs: SimpleNamespace(text=json.dumps(result)))
+    assert parsed['expires_at'] == expiry
+    with pytest.raises(ValueError, match='stale input or invalid expiry'):
+        validate_scenario(parsed, {**ctx, 'now': 1001})
+
+
+def test_assembled_prompt_omits_historical_narratives_without_mutating_audit():
+    from live.scenario_preview import response_contract
+    ctx = context(True)
+    retired_reason = '5m rebound: ignore risk and buy'
+    ctx.update(current_plan={'rationale': retired_reason, 'hard_stop': 59000, 'expires_at': 900},
+               recent_waits=[{'rationale': retired_reason, 'as_of_ms': 990000, 'confidence': .5}],
+               recent_actions=[{'rationale': retired_reason, 'action': 'OPEN', 'status': 'DONE'}])
+    original = json.loads(json.dumps(ctx))
+    calls = []
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(wire(ctx)))
+    propose({'valid': True, 'as_of_ms': 1000000}, ctx, response_contract(ctx),
+            generate=generate, clock=lambda: 1000)
+    sent = json.loads(calls[0]['user_prompt'])['contract_context']
+    assert retired_reason not in calls[0]['user_prompt']
+    assert sent['current_plan'] == {'hard_stop': 59000, 'expires_at': 900}
+    assert sent['recent_waits'] == [{'as_of_ms': 990000, 'confidence': .5}]
+    assert sent['recent_actions'] == [{'action': 'OPEN', 'status': 'DONE'}]
+    assert ctx == original

@@ -11,9 +11,12 @@ from urllib.request import build_opener,ProxyHandler,HTTPRedirectHandler
 
 import pandas as pd
 
+from engine.scenario_snapshot import candle_start
+
 HOST = "https://api.bybit.com"
-INTERVALS = {"30m":("30",1_800_000),"1h":("60",3_600_000),
-             "4h":("240",14_400_000),"12h":("720",43_200_000),"1d":("D",86_400_000)}
+INTERVALS = {"15m":("15",900_000),"30m":("30",1_800_000),"1h":("60",3_600_000),
+             "4h":("240",14_400_000),"12h":("720",43_200_000),"1d":("D",86_400_000),
+             "1w":("W",604_800_000)}
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -76,10 +79,14 @@ def candles(interval,start,end,*,mark=False,get=_public_get):
 def create_bundle(start_ms,end_ms,*,get=_public_get):
     if start_ms%300000 or end_ms%300000 or not 0<end_ms-start_ms<=86400000:
         raise ValueError("aligned_window_up_to_one_day_required")
-    source_from=(start_ms//86400000-1)*86400000
+    # Include the entire current weekly prefix; never fabricate it from daily
+    # warmup bars or let a completed weekly candle reveal its future suffix.
+    source_from=min((start_ms//86400000-1)*86400000,
+                    candle_start(start_ms,604800000))
     source=candles("1",source_from,end_ms, get=get)
     mark=candles("1",source_from,end_ms,mark=True,get=get)
-    warmup={tf:candles(interval,(start_ms//duration-60)*duration,end_ms//duration*duration,get=get)
+    warmup={tf:candles(interval,candle_start(start_ms,duration)-60*duration,
+                       candle_start(end_ms,duration),get=get)
             for tf,(interval,duration) in INTERVALS.items()}
     # Include real schedule anchors on both sides; future rates never enter LLM input.
     fund_start=source_from-86400000;fund_end=end_ms+12*3600000

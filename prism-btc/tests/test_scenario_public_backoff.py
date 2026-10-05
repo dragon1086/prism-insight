@@ -78,14 +78,14 @@ def test_legacy_default_still_sleeps_after_last_failure(transport):
 
 
 @pytest.mark.parametrize("offset,elapsed,expected", [
-    (100, 1, None), (299.5, 1, "candle_boundary_crossed_during_collection"),
+    (100, 1, None), (899.5, 1, "candle_boundary_crossed_during_collection"),
     (100, 61, "collection_too_slow"),
 ])
-def test_real_six_timeframe_collection_preserves_freshness_gates(monkeypatch, offset, elapsed, expected):
-    from engine.scenario_snapshot import TIMEFRAME_MS
-    from engine.config import TF_INTERVAL_MAP, PROTECTION_TF_INTERVAL_MAP
+def test_real_seven_timeframe_collection_preserves_freshness_gates(monkeypatch, offset, elapsed, expected):
+    from engine.scenario_snapshot import TIMEFRAME_MS, candle_start
+    from engine.config import TF_INTERVAL_MAP
     import live.scenario_preview as preview_module
-    intervals = {**TF_INTERVAL_MAP, **PROTECTION_TF_INTERVAL_MAP}
+    intervals = {**TF_INTERVAL_MAP, "15m": "15"}
     lookup = {intervals[tf]: tf for tf in TIMEFRAME_MS}
     now = [1800000000. + offset]
     initial = now[0]
@@ -97,9 +97,9 @@ def test_real_six_timeframe_collection_preserves_freshness_gates(monkeypatch, of
             return response(10006)
         tf = lookup[kwargs["params"]["interval"]]
         duration = TIMEFRAME_MS[tf]
-        opened = int(now[0]*1000)//duration*duration
+        opened = candle_start(int(now[0]*1000), duration)
         rows = [[str(opened-i*duration), "100", "101", "99", "100", "10", "1000"]
-                for i in range(401 if tf == "5m" else 100)]
+                for i in range(401 if tf == "15m" else 100)]
         return response(rows=rows)
     def sleep(seconds):
         sleeps.append(seconds)
@@ -115,9 +115,9 @@ def test_real_six_timeframe_collection_preserves_freshness_gates(monkeypatch, of
         assert snapshot["valid"] is True
         assert snapshot["as_of_ms"] == int((initial + elapsed)*1000)
         assert snapshot["timeframes"]["30m"]["forming"]["observed_at_ms"] == snapshot["as_of_ms"]
-    assert sleeps == [1] and len(calls) == 7 and not model_calls
+    assert sleeps == [1] and len(calls) == 8 and not model_calls
     assert [call["interval"] for call in calls[1:]] == [intervals[tf] for tf in TIMEFRAME_MS]
-    assert all(call["limit"] == (1000 if call["interval"] == intervals["5m"] else 100) for call in calls)
+    assert all(call["limit"] == (1000 if call["interval"] == intervals["15m"] else 100) for call in calls)
 
 
 def test_persistent_limit_aborts_collection_before_other_timeframes_or_model(transport, monkeypatch):

@@ -88,7 +88,7 @@ def test_missing_primary_history_invalid_and_stale_source_rejected():
         HistoricalScenarioData(source).snapshot(ms(source.index[-1])+600_000)
 
 
-def test_one_minute_source_has_causal_five_minute_volume():
+def test_one_minute_source_has_causal_fifteen_minute_volume():
     source = bars(3000, "1min")
     now = ms(source.index[2900])
     result = HistoricalScenarioData(source, source_interval_ms=60_000).snapshot(now)
