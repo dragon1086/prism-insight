@@ -215,11 +215,11 @@ def test_execute_add_updates_row_orders_delta_and_reports(live_on, monkeypatch, 
     assert order["strict_budget"] is True and order["limit_price"] == price
     assert "50% → 80%" in agent.message_queue[0] and agent._msg_types == ["analysis"]
     text = agent.message_queue[0]
-    assert ("Why: breakout condition confirmed" if market == "US" else "근거: 돌파 조건 확인") in text
+    assert "근거: 돌파 조건 확인" in text
     assert "prior high reclaimed" in text and "breakout_1" not in text  # no internal scenario id
-    assert (f"Stop Loss: ${price * 0.93:,.2f} (a stop exits the whole position)" if market == "US"
+    assert (f"손절가: ${price * 0.93:,.2f} (손절 시 전량 매도)" if market == "US"
             else f"손절가: {price * 0.93:,.0f}원 (손절 시 전량 매도)") in text
-    assert ("Order: Submitted (fill not yet confirmed)" if market == "US" else "주문: 주문 접수(체결은 별도 확인)") in text
+    assert "주문: 주문 접수(체결은 별도 확인)" in text
     assert result["announced"] is True
     name, kw = emitted[0]
     assert name == "micro_split.add_executed"
