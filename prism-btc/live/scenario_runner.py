@@ -54,7 +54,14 @@ def _run_once(conn, broker, *, execute=False, protect_only=False,
                     conn.commit()
             if not isinstance(evidence,dict) or evidence.get("protection_confirmed") is not True:
                 return {"status":"blocked","reason":"protection_not_verified_by_scenario_adapter","model_called":False}
-            return {"status":"protection_checked","model_called":False}
+            observation = evidence.get("observation")
+            verified_flat = (isinstance(observation, dict)
+                and observation.get("exchange_flat") is True
+                and observation.get("open_orders") == []
+                and observation.get("legacy_fenced") is False
+                and evidence.get("protection_status") == "verified_flat_no_exposure")
+            return {"status":"protection_checked","model_called":False,
+                    "verified_flat":verified_flat}
         except LockBusy:
             return {"status":"lock_busy","model_called":False}
         except Exception:
@@ -66,13 +73,20 @@ def _run_once(conn, broker, *, execute=False, protect_only=False,
     return runtime.tick()
 
 
-def record_health(conn,result,*,snapshot=None):
+def record_health(conn,result,*,snapshot=None,loop=None,clock=time.time):
     """Keep existing BTC liveness monitoring, without forging legacy bar cursors."""
     from live import tracking
     from live.scenario_runtime import snapshot_input_time
+    status=result.get("status","unknown")
+    # Separate latest outcomes: protection success must not overwrite a failed
+    # decision loop, and a legacy heartbeat is never this evidence.
+    if loop in {"decision", "protection"}:
+        tracking.set_meta(conn,"scenario_health_"+loop,json.dumps({
+            "at":clock(),"status":status,"reason":result.get("reason"),
+            "verified_flat_halt":result.get("verified_flat_halt") is True,
+            "verified_flat":result.get("verified_flat") is True},allow_nan=False),"demo")
     if snapshot is not None and snapshot.get("valid") is True:
         tracking.set_meta(conn,"scenario_input_asof_ms",snapshot_input_time(snapshot)*1000,"demo")
-    status=result.get("status","unknown")
     if status=="blocked" and result.get("reason")!="new_risk_halted":
         detail="scenario tick blocked: "+str(result.get("reason","unknown"))
         if result.get("failure_stage") in _FAILURE_STAGES:
@@ -83,9 +97,9 @@ def record_health(conn,result,*,snapshot=None):
     tracking.log_event(conn,"heartbeat","scenario tick: "+status,mode="demo")
 
 
-def _record_health_best_effort(conn, result, *, snapshot=None):
+def _record_health_best_effort(conn, result, *, snapshot=None, loop=None):
     try:
-        record_health(conn, result, snapshot=snapshot)
+        record_health(conn, result, snapshot=snapshot, loop=loop)
     except Exception:
         result["health_recording"] = "failed"
 
@@ -196,7 +210,8 @@ def main():
             return value
         failure_stage="run"
         result=run_once(conn,broker,execute=args.execute,protect_only=args.protect_only,snapshot=snapshot)
-        _record_health_best_effort(conn,result,snapshot=snapshots[-1] if snapshots else None)
+        _record_health_best_effort(conn,result,snapshot=snapshots[-1] if snapshots else None,
+                                   loop="protection" if args.protect_only else "decision")
         # Disabled adapters cannot produce trade notices. Delivery occurs only
         # after the runtime released the trading lock and only for queued proofs.
         if result.get("status")!="lock_busy":
@@ -210,7 +225,7 @@ def main():
                 "error_type":"LockBusy"}
         if failure_stage in {"control", "broker_init", "activation"}:
             result["model_called"]=False
-        _record_health_best_effort(conn,result)
+        _record_health_best_effort(conn,result,loop="protection" if args.protect_only else "decision")
         print(json.dumps(result))
         return 0
     except Exception as exc:
@@ -218,7 +233,7 @@ def main():
         result={"status":"blocked","reason":"scenario_runtime_unavailable",
                 "failure_stage":failure_stage,
                 "error_type":error_type if error_type in _ERROR_TYPES else "Exception"}
-        _record_health_best_effort(conn,result)
+        _record_health_best_effort(conn,result,loop="protection" if args.protect_only else "decision")
         if conn is not None:
             deliver_notices(conn,result)
         print(json.dumps(result))

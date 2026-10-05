@@ -437,7 +437,15 @@ class ScenarioDemoBroker(ScenarioExecution):
                 accounting=dict(positions=[dict(price=float(observed["position"]["avgPrice"]),quantity=size)] if size else [],
                     realized_loss=None,fees_paid=None,funding_paid=None)
         protection=not float(observed["position"]["size"]) or bool(active and self._verify_protection(observed,active["hard_stop"],active["side"]))
+        from live.scenario_runner_economics import runner_economics
+        review_finance = runner_economics(accounting=accounting,
+            side=active["side"] if active else None, mark_price=observed["mark_price"],
+            hard_stop=active["hard_stop"] if active else None,
+            observed_at=observed["captured_at"], now=self.clock(), pending_entries=pending,
+            initial_equity=active["initial_equity"] if active else observed["equity"],
+            estimated_cost_rate=.002, slippage_bps=20)
         return dict(account_version=observed["account_version"],legacy_fenced=observed["legacy_fenced"],
+            account_captured_at=observed["captured_at"], runner_economics=review_finance,
             target_status=[dict(target_id=c["local_id"],kind=c["kind"],status=c["status"],
                 intent_id=c["intent_id"],
                 logical_target_id=c["local_id"].partition(":")[2] if ":" in c["local_id"] else None,

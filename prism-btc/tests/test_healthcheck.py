@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -18,6 +19,64 @@ from live.tracking import PositionRow, ensure_schema
 # ---------------------------------------------------------------------------
 
 _NOW = datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _halted_scenario_conn():
+    conn = _root_conn()
+    conn.execute("CREATE TABLE llm_scenario_control(id INTEGER,body TEXT)")
+    conn.execute("INSERT INTO llm_scenario_control VALUES(1,?)", (json.dumps(
+        {"version": 1, "state": "active", "main_uid": "123"}),))
+    conn.execute("CREATE TABLE llm_scenario_state(id INTEGER,body TEXT)")
+    conn.execute("INSERT INTO llm_scenario_state VALUES(1,?)", (json.dumps({"active": None}),))
+    conn.execute("CREATE TABLE llm_scenario_intents(status TEXT)")
+    tracking.set_meta(conn, "scenario_input_asof_ms", int((_NOW.timestamp()-3600)*1000), "demo")
+    for lane, status in (("decision", "blocked"), ("protection", "protection_checked")):
+        tracking.set_meta(conn, "scenario_health_"+lane, json.dumps({
+            "at": _NOW.timestamp()-60, "status": status,
+            "reason": "new_risk_halted" if lane == "decision" else None,
+            "verified_flat_halt": lane == "decision", "verified_flat": lane == "protection"}), "demo")
+    return conn
+
+
+def test_intentional_flat_halt_does_not_forge_market_freshness():
+    conn = _halted_scenario_conn()
+    before = tracking.get_meta(conn, "scenario_input_asof_ms", "demo")
+    assert healthcheck._check_price_stale(conn, "demo", _NOW) is None
+    assert tracking.get_meta(conn, "scenario_input_asof_ms", "demo") == before
+
+
+@pytest.mark.parametrize("lane", ["decision", "protection"])
+@pytest.mark.parametrize("fault", ["missing", "malformed", "future", "stale", "failed", "unproven"])
+def test_halt_does_not_hide_missing_or_failed_loop(lane, fault):
+    conn = _halted_scenario_conn()
+    key = "scenario_health_"+lane
+    value = json.loads(tracking.get_meta(conn, key, "demo"))
+    if fault == "missing":
+        conn.execute("DELETE FROM btc_meta WHERE key=?", (key,))
+    else:
+        if fault in {"future", "stale"}:
+            value["at"] = _NOW.timestamp() + (1 if fault == "future" else -901)
+        elif fault == "failed":
+            value["status"] = "blocked" if lane == "protection" else "lock_busy"
+        elif fault == "unproven":
+            value["verified_flat_halt" if lane == "decision" else "verified_flat"] = "true"
+        tracking.set_meta(conn, key, "invalid" if fault == "malformed" else json.dumps(value), "demo")
+    assert healthcheck._check_price_stale(conn, "demo", _NOW)["code"] == "price_stale"
+
+
+@pytest.mark.parametrize("fault", ["active", "pending", "live", "unknown_order", "null_order", "bad_state", "bad_market", "future_market", "missing_market"])
+def test_flat_halt_never_masks_uncertain_exposure_or_invalid_market(fault):
+    conn = _halted_scenario_conn()
+    if fault in {"active", "bad_state"}:
+        conn.execute("UPDATE llm_scenario_state SET body=?", (json.dumps({"active": {}}) if fault == "active" else "{}",))
+    elif fault in {"pending", "live", "unknown_order", "null_order"}:
+        status = {"pending": "PENDING", "live": "LIVE_RECONCILED", "unknown_order": "UNKNOWN", "null_order": None}[fault]
+        conn.execute("INSERT INTO llm_scenario_intents VALUES(?)", (status,))
+    elif fault == "missing_market":
+        conn.execute("DELETE FROM btc_meta WHERE key='scenario_input_asof_ms'")
+    else:
+        tracking.set_meta(conn, "scenario_input_asof_ms", "invalid" if fault == "bad_market" else int((_NOW.timestamp()+60)*1000), "demo")
+    assert healthcheck._check_price_stale(conn, "demo", _NOW)["code"] == "price_stale"
 
 
 def _root_conn() -> sqlite3.Connection:

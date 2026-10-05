@@ -121,6 +121,8 @@ def _loaded_parity(name, source, selected=None):
 def _manifest():
     root = Path(__file__).resolve().parents[1]
     policy_files = ['live/scenario_llm.py', 'live/scenario_contract.py',
+                    'live/scenario_review_memory.py',
+                    'live/scenario_runner_economics.py',
                     'live/scenario_preview.py', 'engine/scenario_snapshot.py',
                     'engine/indicators.py']
     execution_files = ['live/scenario_execution.py', 'live/scenario_accounting.py',

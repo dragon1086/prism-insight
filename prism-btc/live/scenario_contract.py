@@ -55,6 +55,16 @@ def response_schema(context):
                                                "max_reprices": {"type": "integer"}}),
                                        {"type": "null"}]},
                       rationale={"type": "string"}, leverage={"type": "integer", "enum": [10]})
+    if context.get("review_contract_version") == 1:
+        properties["review"] = {"anyOf": [_object({
+            "conditions": {"type": "array", "maxItems": 3, "items": _object({
+                "source": {"type": "string", "enum": ["MARK_PRICE"]},
+                "operator": {"type": "string", "enum": ["ge", "le"]},
+                "price": {"type": "number"}})},
+            "acknowledgements": {"type": "array", "maxItems": 3, "items": _object({
+                "id": {"type": "string"},
+                "disposition": {"type": "string", "enum": ["hold", "replace"]},
+                "reason": {"type": "string"}})}}), {"type": "null"}]}
     return _object(properties)
 
 
@@ -90,6 +100,15 @@ def validate_wire_proposal(payload, context):
     schema = response_schema(context)
     if not isinstance(payload, dict):
         raise ValueError("response_contract_mismatch")
+    # Advisory metadata must never veto otherwise valid protective actions.
+    # Keep its original value for the decision audit; the runtime ignores invalid
+    # metadata and strips it before all economic validation / execution.
+    has_review = context.get("review_contract_version") == 1
+    review = payload.get("review") if has_review else None
+    if has_review:
+        payload = {key: value for key, value in payload.items() if key != "review"}
+        schema = dict(schema, properties={key: value for key, value in schema["properties"].items() if key != "review"},
+                      required=[key for key in schema["required"] if key != "review"])
     if set(payload) - set(schema["properties"]):
         raise ValueError("response_unknown_fields")
     if payload.get("scenario_id") is None:
@@ -111,4 +130,6 @@ def validate_wire_proposal(payload, context):
             del normalized[key]
     elif any(payload[key] is None for key in ("side", "hard_stop", "chase")):
         raise ValueError("response_contract_missing_protection")
+    if has_review:
+        normalized["review"] = review
     return normalized
