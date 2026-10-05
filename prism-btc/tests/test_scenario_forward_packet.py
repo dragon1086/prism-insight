@@ -316,3 +316,351 @@ def test_ambiguous_exact_proposals_never_select_nearest_or_earliest(db):
     assert result["scenarios"][0]["open_decision_slot_start"] is None
     assert result["scenarios"][0]["issues"] == ["AMBIGUOUS_DECISION_ACTION_LINK"]
     assert result["scenarios"][0]["entry_quantity"] == "1"
+
+
+def test_optional_notice_exact_link_and_no_raw_export(db):
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE llm_scenario_broker_notices(event_id TEXT,scenario_id TEXT,body TEXT)")
+        body = json.dumps(dict(event_id="private-notice", kind="FILLED", timestamp=500))
+        conn.execute("INSERT INTO llm_scenario_broker_notices VALUES('private-notice','private-scenario',?)", (body,))
+        conn.execute("INSERT INTO llm_scenario_outbox VALUES('private-notice','FILLED','secret','SENT',123)")
+    item = scenario(db)
+    assert item["notice_links"][0]["receipt_confirmed"] is True
+    assert "private-notice" not in json.dumps(item)
+    assert item["provenance_status"] == "MISSING"
+
+
+def test_optional_tables_absent_keeps_historical_unknown(db):
+    item = scenario(db)
+    assert item["provenance_status"] == "MISSING"
+    assert item["code_versions"] == []
+    assert item["settlement_timestamp"] is None
+    assert item["independent_accounting_complete"] is False
+
+
+def test_notice_body_identity_conflict_not_nearest_join(db):
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE llm_scenario_broker_notices(event_id TEXT,scenario_id TEXT,body TEXT)")
+        conn.execute("INSERT INTO llm_scenario_broker_notices VALUES('one','private-scenario',?)",
+                     (json.dumps(dict(event_id="other", kind="CLOSED", timestamp=500)),))
+    assert scenario(db)["notice_link_status"] == "CONFLICT"
+
+
+def audit_event(db, kind, body, *, event_id="event", sid="private-scenario"):
+    manifest = dict(policy_hash="a"*64, execution_hash="b"*64, git_revision="c"*40,
+                    source_hashes={"source.py": "d"*64}, loaded_code_status="UNKNOWN")
+    manifest_id = packet.digest(manifest)
+    with sqlite3.connect(db) as conn:
+        if 'snapshot' not in {r[1] for r in conn.execute('PRAGMA table_info(llm_scenario_decisions)')}:
+            conn.execute("ALTER TABLE llm_scenario_decisions ADD COLUMN snapshot TEXT DEFAULT '{}'")
+        conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_audit_manifests(manifest_id TEXT,body TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_audit_events(event_id TEXT,run_id TEXT,kind TEXT,observed_at REAL,scenario_id TEXT,intent_id TEXT,decision_slot INTEGER,manifest_id TEXT,body TEXT)")
+        if not conn.execute("SELECT 1 FROM llm_scenario_audit_manifests").fetchone():
+            conn.execute("INSERT INTO llm_scenario_audit_manifests VALUES(?,?)", (manifest_id, json.dumps(manifest)))
+        conn.execute("INSERT INTO llm_scenario_audit_events VALUES(?,'private-run',?,1000,?,NULL,1,?,?)",
+                     (event_id, kind, sid, manifest_id, json.dumps(dict(schema_version=1, **body))))
+
+
+def accounting_body(db):
+    children, owned, trades = [], [], []
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        for row in conn.execute("SELECT * FROM llm_scenario_children"):
+            item = dict(row)
+            item["evidence"] = json.loads(item["evidence"])
+            item["request"] = json.loads(item["request"])
+            children.append(item)
+            owned.append(dict(order_id=item["order_id"], role="entry" if item["kind"] == "entry" else "exit",
+                              side=item["request"]["side"], cumulative_qty=1, terminal=True))
+            raw = item["evidence"]["executions"][0]
+            pnl = 0 if item["kind"] == "entry" else 10
+            txn = dict(tradeId=raw["execId"], orderId=raw["orderId"], type="TRADE", symbol="BTCUSDT",
+                       currency="USDT", fee=raw["execFee"], cashFlow=pnl, funding=0)
+            trades.append(dict(order_id=raw["orderId"], execution_id=raw["execId"], raw_execution=raw,
+                               raw_transaction=txn, quantity=raw["execQty"], price=raw["execPrice"],
+                               timestamp=raw["execTime"], fee=raw["execFee"], gross_pnl=pnl))
+    evidence = dict(response_pages_complete=True, start_ms=400000, end_ms=1000000,
+                    unmatched_ids=[], trades=trades, funding=[])
+    schedule = dict(complete=True, start_ms=400000, end_ms=1000000, events=[])
+    observation = dict(position=dict(symbol="BTCUSDT", positionIdx=0, size=0), open_orders=[])
+    spec = importlib.util.spec_from_file_location("accounting_fixture", SOURCE.parents[1] / "prism-btc/live/scenario_accounting.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    result = module.reconcile_scenario("private-scenario", evidence, owned, observation, funding_schedule=schedule)
+    assert result["accounting_complete"]
+    return dict(financial_evidence=evidence, owned_orders=owned, children=children, observation=observation,
+                funding_schedule=schedule, funding_source=dict(raw_rows=[], instruments=[dict(symbol="BTCUSDT", fundingInterval=480)],
+                next_funding_time=28800000), result=result)
+
+
+def test_raw_source_rereconciliation_and_detection_not_execution_time(db):
+    ids = [child(db), child(db, "exit", "1", "110", "600000")]
+    settlement(db, ids)
+    body = accounting_body(db)
+    audit_event(db, "accounting_observation", body)
+    audit_event(db, "settlement_recorded", dict(settlement=body["result"]["settlement"], detected_at=1000), event_id="settle")
+    item = scenario(db)
+    assert item["accounting_source_check"]["status"] == "SOURCE_RECONCILIATION_VERIFIED"
+    assert item["settlement_timestamp"] == 1000
+    assert item["last_execution_timestamp"] == 600
+    assert item["code_versions"] == ["c"*40]
+    assert item["provenance_status"] == "PARTIAL"
+    assert item["independent_accounting_complete"] is False
+    assert "private-" not in json.dumps(item)
+
+
+@pytest.mark.parametrize("fault", ["source_missing", "foreign_child", "duplicate_exec", "fee", "source_rate", "missing_trade"])
+def test_raw_evidence_faults_never_complete(db, fault):
+    ids = [child(db), child(db, "exit", "1", "110", "600000")]
+    settlement(db, ids)
+    body = accounting_body(db)
+    if fault == "source_missing":
+        del body["funding_source"]
+    elif fault == "foreign_child":
+        body["children"][0]["scenario_id"] = "other"
+    elif fault == "duplicate_exec":
+        body["financial_evidence"]["trades"].append(body["financial_evidence"]["trades"][0])
+    elif fault == "fee":
+        body["financial_evidence"]["trades"][0]["raw_transaction"]["fee"] = 100
+    elif fault == "source_rate":
+        body["funding_source"]["raw_rows"] = [dict(symbol="BTCUSDT", fundingRateTimestamp=500000, fundingRate=.001)]
+    else:
+        body["financial_evidence"]["trades"].pop()
+    audit_event(db, "accounting_observation", body)
+    item = scenario(db)
+    assert item["accounting_source_check"]["status"] != "SOURCE_RECONCILIATION_VERIFIED"
+    assert item["independent_accounting_complete"] is False
+
+
+def test_foreign_sid_and_duplicate_event_do_not_link(db):
+    audit_event(db, "intent_committed", {}, sid="other")
+    assert scenario(db)["provenance_status"] == "MISSING"
+    audit_event(db, "intent_committed", {})
+    assert scenario(db)["provenance_status"] == "CONFLICT"
+
+
+def hashed_body(**fields):
+    return dict(fields, **{name + "_hash": packet.digest(value) for name, value in fields.items()})
+
+
+def test_pre_scenario_decision_and_ack_use_exact_ids_only(db):
+    child(db)
+    audit_event(db, "decision_input", hashed_body(snapshot={}, context={"input_id": "input-1"}, input_id="input-1"), sid=None)
+    audit_event(db, "exchange_call", hashed_body(request=dict(orderLinkId="entry-private-link"), status="ACK_ONLY"),
+                event_id="ack", sid=None)
+    item = scenario(db)
+    assert item["judgement_policy_hashes"] == ["a"*64]
+    assert item["execution_policy_hashes"] == ["b"*64]
+    assert item["audit_links"][0]["kind"] == "exchange_call"
+    assert item["audit_links"][0]["status"] == "ACK_ONLY"
+    assert item["independent_accounting_complete"] is False
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE llm_scenario_audit_events SET decision_slot=99 WHERE kind='decision_input'")
+    assert scenario(db)["judgement_policy_hashes"] == []
+
+
+def test_intent_risk_and_reservations_link_without_raw_payload_export(db):
+    with sqlite3.connect(db) as conn:
+        payload = json.loads(conn.execute("SELECT payload FROM llm_scenario_intents").fetchone()[0])
+    audit_event(db, "intent_committed", hashed_body(payload=payload, risk={"budget": 20}, initial_equity=1000, pending_entries=[]))
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE llm_scenario_audit_events SET intent_id='private-action'")
+    item = scenario(db)
+    assert item["audit_links"][0]["risk_hash"] == packet.digest({"budget": 20})
+    assert "private-action" not in json.dumps(item)
+    assert item["provenance_status"] == "PARTIAL"
+
+
+def test_accounting_envelope_cannot_change_same_id_ledger_fill(db):
+    ids = [child(db), child(db, "exit", "1", "110", "600000")]
+    settlement(db, ids)
+    body = accounting_body(db)
+    body["children"][0]["evidence"]["executions"][0]["execPrice"] = "101"
+    audit_event(db, "accounting_observation", body)
+    assert scenario(db)["provenance_status"] == "CONFLICT"
+
+
+@pytest.mark.parametrize("fault", ["slot", "context", "snapshot", "foreign"])
+def test_bound_decision_requires_exact_durable_input_not_self_hash(db, fault):
+    body = hashed_body(snapshot={}, context={"input_id": "input-1"}, input_id="input-1")
+    if fault == "context":
+        body = hashed_body(snapshot={}, context={"input_id": "input-1", "forged": True}, input_id="input-1")
+    if fault == "snapshot":
+        body = hashed_body(snapshot={"forged": True}, context={"input_id": "input-1"}, input_id="input-1")
+    audit_event(db, "decision_input", body)
+    with sqlite3.connect(db) as conn:
+        if fault == "slot":
+            conn.execute("UPDATE llm_scenario_audit_events SET decision_slot=2")
+        if fault == "foreign":
+            context = dict(input_id="input-1", scenario_id="foreign")
+            conn.execute("UPDATE llm_scenario_decisions SET context=?", (json.dumps(context),))
+            changed = dict(schema_version=1, **hashed_body(snapshot={}, context=context, input_id="input-1"))
+            conn.execute("UPDATE llm_scenario_audit_events SET body=?", (json.dumps(changed),))
+    assert scenario(db)["provenance_status"] == "CONFLICT"
+
+
+def test_active_wait_decision_exact_durable_link(db):
+    context = dict(input_id="wait-input", scenario_id="private-scenario")
+    audit_event(db, "decision_input", hashed_body(snapshot={}, context=context, input_id="wait-input"))
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE llm_scenario_audit_events SET decision_slot=2")
+        conn.execute("INSERT INTO llm_scenario_decisions(slot,proposal,outcome,context,snapshot) VALUES(2,?,'{}',?,'{}')",
+                     (json.dumps(dict(action="WAIT", scenario_id="private-scenario", input_id="wait-input")), json.dumps(context)))
+    assert scenario(db)["judgement_policy_hashes"] == ["a"*64]
+    assert scenario(db)["provenance_status"] == "PARTIAL"
+
+
+@pytest.mark.parametrize("earlier", ["nonterminal", "before_replacement"])
+def test_valid_historical_accounting_prefix_does_not_poison_final(db, earlier):
+    ids = [child(db), child(db, "exit", "1", "110", "600000")]
+    settlement(db, ids)
+    old = accounting_body(db)
+    if earlier == "nonterminal":
+        old["owned_orders"][0]["terminal"] = False
+        old["result"]["settlement"] = None
+    else:
+        req = dict(symbol="BTCUSDT", side="Sell", orderLinkId="replacement")
+        proof = dict(order=dict(orderId="replacement-order", orderLinkId="replacement", symbol="BTCUSDT", side="Sell",
+                               qty="1", cumExecQty="0", orderStatus="Cancelled"), executions=[])
+        with sqlite3.connect(db) as conn:
+            conn.execute("INSERT INTO llm_scenario_children VALUES('replacement','private-action','private-scenario','tp','',?,'TERMINAL','replacement-order',?,650)",
+                         (json.dumps(req), json.dumps(proof)))
+    final = accounting_body(db) if earlier == "nonterminal" else json.loads(json.dumps(old))
+    if earlier == "before_replacement":
+        with sqlite3.connect(db) as conn:
+            conn.row_factory = sqlite3.Row
+            extra = dict(conn.execute("SELECT * FROM llm_scenario_children WHERE link_id='replacement'").fetchone())
+        extra["evidence"] = json.loads(extra["evidence"])
+        extra["request"] = json.loads(extra["request"])
+        final["children"].append(extra)
+        final["owned_orders"].append(dict(order_id="replacement-order", role="exit", side="Sell", cumulative_qty=0, terminal=True))
+    audit_event(db, "accounting_observation", old, event_id="earlier")
+    audit_event(db, "accounting_observation", final, event_id="later")
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE llm_scenario_audit_events SET observed_at=999 WHERE event_id='earlier'")
+    item = scenario(db)
+    assert item["provenance_status"] == "PARTIAL"
+    assert item["accounting_source_check"]["status"] == "SOURCE_RECONCILIATION_VERIFIED"
+    assert any(link.get("accounting_scope") == "HISTORICAL_PREFIX_NOT_CURRENT_PROOF" for link in item["audit_links"])
+
+
+def test_environment_change_separates_policy_groups(db):
+    audit_event(db, "other", {}, event_id="a")
+    audit_event(db, "other", {}, event_id="b")
+    with sqlite3.connect(db) as conn:
+        manifest = json.loads(conn.execute("SELECT body FROM llm_scenario_audit_manifests").fetchone()[0])
+        manifest.update(python="3.12.12", libraries={"pandas": "2.2.3"})
+        ident = packet.digest(manifest)
+        conn.execute("INSERT INTO llm_scenario_audit_manifests VALUES(?,?)", (ident, json.dumps(manifest)))
+        conn.execute("UPDATE llm_scenario_audit_events SET manifest_id=? WHERE event_id='b'", (ident,))
+    item = scenario(db)
+    assert len(item["policy_hashes"]) == 1
+    assert len(item["environment_hashes"]) == len(item["policy_groups"]) == 2
+
+
+def test_pending_accounting_same_fills_is_not_conflict(db):
+    child(db)
+    child(db, "exit", "1", "110", "600000")
+    body = accounting_body(db)
+    body["result"] = dict(status="pending", accounting_complete=False, settlement=None, reasons=["fees_missing"])
+    audit_event(db, "accounting_observation", body)
+    item = scenario(db)
+    assert item["provenance_status"] == "PARTIAL"
+    assert item["accounting_source_check"]["status"] == "MISSING"
+
+
+def test_pending_missing_transaction_trade_then_full_proof(db):
+    child(db)
+    child(db, "exit", "1", "110", "600000")
+    complete = accounting_body(db)
+    pending = json.loads(json.dumps(complete))
+    removed = pending["financial_evidence"]["trades"].pop()
+    pending["financial_evidence"]["unmatched_ids"] = [removed["execution_id"]]
+    pending["result"] = dict(status="pending", accounting_complete=False, settlement=None, reasons=["financial_rows_unmatched"])
+    audit_event(db, "accounting_observation", pending, event_id="pending")
+    audit_event(db, "accounting_observation", complete, event_id="complete")
+    item = scenario(db)
+    assert item["provenance_status"] == "PARTIAL"
+    assert item["accounting_source_check"]["status"] == "SOURCE_RECONCILIATION_VERIFIED"
+    assert len(item["accounting_source_check"]["calculator_source_sha256"]) == 64
+
+
+def update_manifest(db, **changes):
+    with sqlite3.connect(db) as conn:
+        old_id, raw = conn.execute("SELECT manifest_id,body FROM llm_scenario_audit_manifests").fetchone()
+        body = dict(json.loads(raw), **changes)
+        ident = packet.digest(body)
+        conn.execute("UPDATE llm_scenario_audit_manifests SET manifest_id=?,body=? WHERE manifest_id=?",
+                     (ident, json.dumps(body), old_id))
+        conn.execute("UPDATE llm_scenario_audit_events SET manifest_id=? WHERE manifest_id=?", (ident, old_id))
+
+
+@pytest.mark.parametrize("execution_status", ["VERIFIED", "UNKNOWN", "MIXED"])
+def test_protection_uses_execution_domain_not_unused_judgement(db, execution_status):
+    child(db)
+    child(db, "exit", "1", "110", "600000")
+    audit_event(db, "accounting_observation", accounting_body(db))
+    update_manifest(db, loaded_code_status="UNKNOWN", judgment_loaded_code_status="UNKNOWN",
+                    execution_loaded_code_status=execution_status)
+    item = scenario(db)
+    assert item["loaded_code_status"] == execution_status
+    assert item["audit_links"][0]["loaded_code_status"] == execution_status
+    assert item["provenance_status"] == "PARTIAL"
+    assert item["independent_accounting_complete"] is False
+    assert packet.build_packet(db)["auto_promotion"] is False
+
+
+def test_decision_only_uses_judgement_domain(db):
+    audit_event(db, "decision_input", hashed_body(snapshot={}, context={"input_id": "input-1"}, input_id="input-1"))
+    update_manifest(db, loaded_code_status="UNKNOWN", judgment_loaded_code_status="VERIFIED",
+                    execution_loaded_code_status="UNKNOWN")
+    assert scenario(db)["loaded_code_status"] == "VERIFIED"
+
+
+def test_intent_requires_both_domains(db):
+    with sqlite3.connect(db) as conn:
+        payload = json.loads(conn.execute("SELECT payload FROM llm_scenario_intents").fetchone()[0])
+    audit_event(db, "intent_committed", hashed_body(payload=payload, risk={}, initial_equity=1000, pending_entries=[]))
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE llm_scenario_audit_events SET intent_id='private-action'")
+    update_manifest(db, loaded_code_status="UNKNOWN", judgment_loaded_code_status="VERIFIED",
+                    execution_loaded_code_status="UNKNOWN")
+    assert scenario(db)["loaded_code_status"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("legacy", ["UNKNOWN", "MIXED", "VERIFIED"])
+def test_old_manifest_without_domain_proof_remains_unknown(db, legacy):
+    audit_event(db, "decision_input", hashed_body(snapshot={}, context={"input_id": "input-1"}, input_id="input-1"))
+    update_manifest(db, loaded_code_status=legacy)
+    assert scenario(db)["loaded_code_status"] == "UNKNOWN"
+    assert scenario(db)["manifest_loaded_code_statuses"] == [legacy]
+
+
+def test_five_minute_judgement_plus_one_minute_protection_domains(db):
+    child(db)
+    child(db, "exit", "1", "110", "600000")
+    audit_event(db, "decision_input", hashed_body(snapshot={}, context={"input_id": "input-1"}, input_id="input-1"), event_id="judgement")
+    audit_event(db, "accounting_observation", accounting_body(db), event_id="protection")
+    update_manifest(db, loaded_code_status="VERIFIED", judgment_loaded_code_status="VERIFIED", execution_loaded_code_status="VERIFIED")
+    with sqlite3.connect(db) as conn:
+        body = json.loads(conn.execute("SELECT body FROM llm_scenario_audit_manifests").fetchone()[0])
+        body.update(loaded_code_status="UNKNOWN", judgment_loaded_code_status="UNKNOWN")
+        ident = packet.digest(body)
+        conn.execute("INSERT INTO llm_scenario_audit_manifests VALUES(?,?)", (ident, json.dumps(body)))
+        conn.execute("UPDATE llm_scenario_audit_events SET manifest_id=? WHERE event_id='protection'", (ident,))
+    item = scenario(db)
+    assert item["loaded_code_status"] == "VERIFIED"
+    assert item["manifest_loaded_code_statuses"] == ["UNKNOWN", "VERIFIED"]
+    assert item["judgement_policy_hashes"] == ["a"*64]
+    assert item["provenance_status"] == "PARTIAL"
+    assert item["independent_accounting_complete"] is False
+
+
+def test_unmapped_event_never_uses_overall_verified_as_domain_proof(db):
+    audit_event(db, "unmapped", {})
+    update_manifest(db, loaded_code_status="VERIFIED", judgment_loaded_code_status="VERIFIED",
+                    execution_loaded_code_status="VERIFIED")
+    item = scenario(db)
+    assert item["loaded_code_status"] == "UNKNOWN"
+    assert item["audit_links"][0]["loaded_code_status"] == "UNKNOWN"
+    assert item["manifest_loaded_code_statuses"] == ["VERIFIED"]

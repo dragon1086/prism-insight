@@ -278,6 +278,8 @@ jobs:
             prism-btc/tests/test_scenario_limit_prices.py \
             prism-btc/tests/test_scenario_limit_price_execution.py \
             prism-btc/tests/test_scenario_runner.py \
+            prism-btc/tests/test_scenario_provenance.py \
+            prism-btc/tests/test_scenario_forward_packet.py \
             prism-btc/tests/test_scenario_notice.py \
             prism-btc/tests/test_scenario_notice_progress.py \
             prism-btc/tests/test_scenario_outbox.py \
