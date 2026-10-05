@@ -1847,126 +1847,13 @@ class StockTrackingAgent:
         trigger_type: str,
     ) -> str:
         """Build the existing first-entry message without enqueueing it."""
+        from prism_core.buy_message import render_buy_message
 
-        message = (
-            f"📈 신규 매수: {company_name}({ticker})\n"
-            f"매수가: {current_price:,.0f}원\n"
-            f"목표가: {scenario.get('target_price', 0):,.0f}원\n"
-            f"손절가: {scenario.get('stop_loss', 0):,.0f}원\n"
-            f"투자기간: {scenario.get('investment_period', '단기')}\n"
-            f"산업군: {scenario.get('sector', '알 수 없음')}\n"
-        )
-        entry_policy = scenario.get("regime_entry_policy") or {}
-        if entry_policy.get("mode") == "rebound_pilot":
-            message += "주문 예산 상한: 정상 예산의 50% (상승 전환 파일럿)\n정수 수량 내림으로 미사용 예산이 남을 수 있으며, 체결 비중 50%를 보장하지 않습니다.\n"
-        from prism_core.reentry_v3_live import entry_message_line as reentry_message_line
-        message += reentry_message_line(scenario, "KR")          # '' unless a re-entry v3 LIVE entry
-
-        trigger_win_rate = self._get_trigger_win_rate(trigger_type)
-        if trigger_win_rate:
-            message += f"{trigger_win_rate}\n"
-        if scenario.get("valuation_analysis"):
-            message += f"밸류에이션: {scenario.get('valuation_analysis')}\n"
-        if scenario.get("sector_outlook"):
-            message += f"업종 전망: {scenario.get('sector_outlook')}\n"
-        if rank_change_msg:
-            message += f"거래대금 분석: {rank_change_msg}\n"
-        message += f"투자근거: {scenario.get('rationale', '정보 없음')}\n"
-
-        journal_reflection = scenario.get("journal_reflection") or {}
-        if isinstance(journal_reflection, dict):
-            if journal_reflection.get("recent_exit_caution"):
-                message += (
-                    "⚠️ 최근 매도 주의: "
-                    f"{journal_reflection.get('recent_exit_caution')}\n"
-                )
-            if journal_reflection.get("applied_lessons"):
-                message += (
-                    "📒 매매일지 반영: "
-                    f"{journal_reflection.get('applied_lessons')}\n"
-                )
-        score_adjustment = scenario.get("score_adjustment") or {}
-        if isinstance(score_adjustment, dict) and score_adjustment.get("value"):
-            reasons = ", ".join(score_adjustment.get("reasons", []) or [])
-            message += (
-                f"📊 경험 기반 점수조정: {score_adjustment.get('value'):+d}점 "
-                f"({reasons})\n"
-            )
-
-        trading_scenarios = scenario.get("trading_scenarios", {})
-        if trading_scenarios and isinstance(trading_scenarios, dict):
-            message += "\n" + "=" * 40 + "\n"
-            message += "📋 매매 시나리오\n"
-            message += "=" * 40 + "\n\n"
-
-            key_levels = trading_scenarios.get("key_levels", {})
-            if key_levels:
-                message += "💰 핵심 가격대:\n"
-                primary_resistance = self._parse_price_value(
-                    key_levels.get("primary_resistance", 0)
-                )
-                secondary_resistance = self._parse_price_value(
-                    key_levels.get("secondary_resistance", 0)
-                )
-                if primary_resistance or secondary_resistance:
-                    message += "  📈 저항선:\n"
-                    if secondary_resistance:
-                        message += f"    • 2차: {secondary_resistance:,.0f}원\n"
-                    if primary_resistance:
-                        message += f"    • 1차: {primary_resistance:,.0f}원\n"
-                message += f"  ━━ 현재가: {current_price:,.0f}원 ━━\n"
-
-                primary_support = self._parse_price_value(
-                    key_levels.get("primary_support", 0)
-                )
-                secondary_support = self._parse_price_value(
-                    key_levels.get("secondary_support", 0)
-                )
-                if primary_support or secondary_support:
-                    message += "  📉 지지선:\n"
-                    if primary_support:
-                        message += f"    • 1차: {primary_support:,.0f}원\n"
-                    if secondary_support:
-                        message += f"    • 2차: {secondary_support:,.0f}원\n"
-                volume_baseline = key_levels.get("volume_baseline", "")
-                if volume_baseline:
-                    message += f"  📊 거래량 기준: {volume_baseline}\n"
-                message += "\n"
-
-            sell_triggers = trading_scenarios.get("sell_triggers", [])
-            if sell_triggers:
-                message += "🔔 매도 시그널:\n"
-                for trigger in sell_triggers:
-                    lowered = trigger.lower()
-                    if any(
-                        marker in lowered
-                        for marker in ("profit", "target", "resistance")
-                    ):
-                        emoji = "✅"
-                    elif any(
-                        marker in lowered
-                        for marker in ("loss", "support", "decline")
-                    ):
-                        emoji = "⛔"
-                    elif "time" in lowered or "sideways" in lowered:
-                        emoji = "⏰"
-                    else:
-                        emoji = "•"
-                    message += f"  {emoji} {trigger}\n"
-                message += "\n"
-
-            hold_conditions = trading_scenarios.get("hold_conditions", [])
-            if hold_conditions:
-                message += "✋ 보유 지속 조건:\n"
-                for condition in hold_conditions:
-                    message += f"  • {condition}\n"
-                message += "\n"
-
-            portfolio_context = trading_scenarios.get("portfolio_context", "")
-            if portfolio_context:
-                message += f"💼 포트폴리오 관점:\n  {portfolio_context}\n"
-
-        return message
+        return render_buy_message(
+            market="KR", company_name=company_name, ticker=ticker, current_price=current_price,
+            scenario=scenario, rank_change_msg=rank_change_msg,
+            trigger_win_rate=self._get_trigger_win_rate(trigger_type),
+            parse_price=self._parse_price_value)
 
     def _prepare_pending_kr_entry(
         self,
@@ -2893,140 +2780,17 @@ class StockTrackingAgent:
                 source="kr_batch_entry",
             )
 
-            # Add purchase message — pyramiding adds (#288) get a distinct header
-            # showing the entry number and the new aggregate average price.
+            # Shared KR/US buy message; pyramiding adds (#288) carry the entry number and new average.
+            from prism_core.buy_message import render_buy_message
+            add_entry = None
             if is_add:
                 agg = get_existing_position_for_ticker(self.cursor, ticker, account_key=account_key)
-                entry_no = agg.get("row_count", 1)  # this entry is the Nth row
-                new_avg = agg.get("avg_buy_price", current_price)
-                message = f"📈 추가 진입 ({entry_no}차): {company_name}({ticker})\n" \
-                          f"이번 진입가: {current_price:,.0f}원\n" \
-                          f"누적 평단가: {new_avg:,.0f}원\n" \
-                          f"⚠️ 포트폴리오 비중이 증가했습니다 (독립 슬롯 1 소비)\n" \
-                          f"목표가: {scenario.get('target_price', 0):,.0f}원\n" \
-                          f"손절가: {scenario.get('stop_loss', 0):,.0f}원\n" \
-                          f"투자기간: {scenario.get('investment_period', '단기')}\n" \
-                          f"산업군: {scenario.get('sector', '알 수 없음')}\n"
-            else:
-                message = f"📈 신규 매수: {company_name}({ticker})\n" \
-                          f"매수가: {current_price:,.0f}원\n" \
-                          f"목표가: {scenario.get('target_price', 0):,.0f}원\n" \
-                          f"손절가: {scenario.get('stop_loss', 0):,.0f}원\n" \
-                          f"투자기간: {scenario.get('investment_period', '단기')}\n" \
-                          f"산업군: {scenario.get('sector', '알 수 없음')}\n"
-
-            entry_policy = scenario.get("regime_entry_policy") or {}
-            if entry_policy.get("mode") == "rebound_pilot":
-                message += "주문 예산 상한: 정상 예산의 50% (상승 전환 파일럿)\n정수 수량 내림으로 미사용 예산이 남을 수 있으며, 체결 비중 50%를 보장하지 않습니다.\n"
-            from prism_core.micro_split_live import entry_message_line
-            message += entry_message_line(scenario, "KR")
-            from prism_core.reentry_v3_live import entry_message_line as reentry_message_line
-            message += reentry_message_line(scenario, "KR")      # '' unless a re-entry v3 LIVE entry
-
-            # Add trigger win rate
-            trigger_win_rate = self._get_trigger_win_rate(trigger_type)
-            if trigger_win_rate:
-                message += f"{trigger_win_rate}\n"
-
-            # Add valuation analysis if available
-            if scenario.get('valuation_analysis'):
-                message += f"밸류에이션: {scenario.get('valuation_analysis')}\n"
-
-            # Add sector outlook if available
-            if scenario.get('sector_outlook'):
-                message += f"업종 전망: {scenario.get('sector_outlook')}\n"
-
-            # Add trading value ranking info if available
-            if rank_change_msg:
-                message += f"거래대금 분석: {rank_change_msg}\n"
-
-            message += f"투자근거: {scenario.get('rationale', '정보 없음')}\n"
-
-            # Surface journal-grounded reasoning so the feedback loop is transparent (#280).
-            # All fields are optional — defends against scenarios without journal_reflection.
-            _jr = scenario.get('journal_reflection') or {}
-            if isinstance(_jr, dict):
-                if _jr.get('recent_exit_caution'):
-                    message += f"⚠️ 최근 매도 주의: {_jr.get('recent_exit_caution')}\n"
-                if _jr.get('applied_lessons'):
-                    message += f"📒 매매일지 반영: {_jr.get('applied_lessons')}\n"
-            _sadj = scenario.get('score_adjustment') or {}
-            if isinstance(_sadj, dict) and _sadj.get('value'):
-                _rsn = ', '.join(_sadj.get('reasons', []) or [])
-                message += f"📊 경험 기반 점수조정: {_sadj.get('value'):+d}점 ({_rsn})\n"
-
-            # Format trading scenario
-            trading_scenarios = scenario.get('trading_scenarios', {})
-            if trading_scenarios and isinstance(trading_scenarios, dict):
-                message += "\n" + "="*40 + "\n"
-                message += "📋 매매 시나리오\n"
-                message += "="*40 + "\n\n"
-
-                # 1. Key Levels
-                key_levels = trading_scenarios.get('key_levels', {})
-                if key_levels:
-                    message += "💰 핵심 가격대:\n"
-
-                    # Resistance levels
-                    primary_resistance = self._parse_price_value(key_levels.get('primary_resistance', 0))
-                    secondary_resistance = self._parse_price_value(key_levels.get('secondary_resistance', 0))
-                    if primary_resistance or secondary_resistance:
-                        message += "  📈 저항선:\n"
-                        if secondary_resistance:
-                            message += f"    • 2차: {secondary_resistance:,.0f}원\n"
-                        if primary_resistance:
-                            message += f"    • 1차: {primary_resistance:,.0f}원\n"
-
-                    # Current price
-                    message += f"  ━━ 현재가: {current_price:,.0f}원 ━━\n"
-
-                    # Support levels
-                    primary_support = self._parse_price_value(key_levels.get('primary_support', 0))
-                    secondary_support = self._parse_price_value(key_levels.get('secondary_support', 0))
-                    if primary_support or secondary_support:
-                        message += "  📉 지지선:\n"
-                        if primary_support:
-                            message += f"    • 1차: {primary_support:,.0f}원\n"
-                        if secondary_support:
-                            message += f"    • 2차: {secondary_support:,.0f}원\n"
-
-                    # Volume baseline
-                    volume_baseline = key_levels.get('volume_baseline', '')
-                    if volume_baseline:
-                        message += f"  📊 거래량 기준: {volume_baseline}\n"
-
-                    message += "\n"
-
-                # 2. Sell Signals
-                sell_triggers = trading_scenarios.get('sell_triggers', [])
-                if sell_triggers:
-                    message += "🔔 매도 시그널:\n"
-                    for i, trigger in enumerate(sell_triggers, 1):
-                        # Select emoji based on condition
-                        if "profit" in trigger.lower() or "target" in trigger.lower() or "resistance" in trigger.lower():
-                            emoji = "✅"
-                        elif "loss" in trigger.lower() or "support" in trigger.lower() or "decline" in trigger.lower():
-                            emoji = "⛔"
-                        elif "time" in trigger.lower() or "sideways" in trigger.lower():
-                            emoji = "⏰"
-                        else:
-                            emoji = "•"
-
-                        message += f"  {emoji} {trigger}\n"
-                    message += "\n"
-
-                # 3. Hold Conditions
-                hold_conditions = trading_scenarios.get('hold_conditions', [])
-                if hold_conditions:
-                    message += "✋ 보유 지속 조건:\n"
-                    for condition in hold_conditions:
-                        message += f"  • {condition}\n"
-                    message += "\n"
-
-                # 4. Portfolio Context
-                portfolio_context = trading_scenarios.get('portfolio_context', '')
-                if portfolio_context:
-                    message += f"💼 포트폴리오 관점:\n  {portfolio_context}\n"
+                add_entry = (agg.get("row_count", 1), agg.get("avg_buy_price", current_price))
+            message = render_buy_message(
+                market="KR", company_name=company_name, ticker=ticker, current_price=current_price,
+                scenario=scenario, rank_change_msg=rank_change_msg,
+                trigger_win_rate=self._get_trigger_win_rate(trigger_type),
+                parse_price=self._parse_price_value, add_entry=add_entry)
 
             self._queue_message(message, "analysis")
             logger.info(f"{ticker}({company_name}) strategy entry recorded")
