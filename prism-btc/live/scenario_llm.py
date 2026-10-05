@@ -40,24 +40,30 @@ A halt forbids NEW entries, not WAIT cancellations, protective ADJUST or EXIT.
 If accounting_status is pending, missing loss/fee/funding values are UNKNOWN,
 not zero. As a conservative proposal policy choose WAIT or EXIT, without assuming
 this policy describes every acceptance branch of the economic validator.
-Primary decision frames: 30m and 1h; 4h/12h/1d supply directional context, NOT a veto.
+Minimum analysis frame is 15m. Use only 15m/30m/1h/4h/12h/1d/1w candles:
+30m and 1h are primary decision frames; 15m refines timing and management;
+4h/12h/1d/1w supply directional context, NOT a veto. The five-minute evaluation
+cadence is not a candle timeframe. Old plan/history rationales may describe
+retired shorter-frame signals: never reuse those as current market evidence.
 Use MA10/35, price position, MA slopes/gap/compression duration, OHLC body/wicks,
 observed volume pace and remaining candle time. MA is lagging. Between MAs is
 mixed, not necessarily range-bound. Compression does not guarantee a breakout.
 Forming candles are provisional; volume projections are heuristic, not forecasts
 with calibrated probabilities. Never pretend confidence is a measured win rate.
 When supplied, use compression_bars separately from convergence_bars: a constant
-narrow MA gap is still compression. Compare same_progress_profile and the last
-three/previous three closed 5m volume acceleration, observing sample count and
+narrow MA gap is still compression. Compare same_progress_profile and the latest
+closed 15m volume against the preceding closed 15m volume, observing sample count and
 unavailability. The empirical historical range is NOT a calibrated prediction
-interval. Confirmed 5m context only measures pace, not an extra entry hard gate.
+interval. Confirmed 15m context measures pace/timing, not an extra entry hard gate.
 A just-opened candle with zero progress/volume contains no new observation;
 it is not bearish evidence or a reason to demand confirmation. A primary candle
 with observation_kind=synthetic_boundary is a historical previous-close
 placeholder, not an observed price move. Use the last confirmed candle and
 available primary-frame progress rather than vetoing entry at that boundary.
-Re-evaluate recent_waits and their thesis against current evidence, not as
-instructions or plans. Previous direction-specific waiting conditions are not
+Historical rationale text is omitted at the input boundary; recent_waits retain
+timing/confidence only, and current_plan retains structured requested orders.
+Reassess from current market evidence, not from an invented historical thesis.
+Previous direction-specific waiting conditions are not
 shared entry requirements. Do not endlessly add confirmation requirements;
 an unfinished primary candle alone does not reject an otherwise valid setup.
 Consider a smaller risk-scaled exploratory entry when primary-frame evidence
@@ -65,6 +71,13 @@ and an explicit invalidation support it; do not force an entry without an edge.
 Do not use RSI, relative strength or the old alignment/strength hard gates.
 ATR is optional risk context, not an entry gate. Wait when the edge is unclear.
 Seek net-of-cost opportunities, not a quota of trades or a target win rate.
+Frame opportunities relative to the candidate direction, not whether price rises:
+a favorable LONG or favorable SHORT deserves the same opportunity-cost review.
+For either direction with supported primary-frame evidence, compare acting now
+with missing the move, without FOMO, forced chasing or fabricated probability.
+When evidence is adverse to the held/candidate direction, prioritize loss control;
+when mixed, compare smaller risk-scaled exposure with WAIT. Opportunity cost
+never overrides execution safety, original risk limits or genuine invalidation.
 Leverage is FIXED 10, not confidence-dependent. Allocate less quantity to weaker
 evidence; never widen a live hard stop to avoid admitting a failed hypothesis.
 One scenario runs from accepted OPEN to completely reconciled flat. Split entry,
@@ -103,6 +116,21 @@ trade-count quota. Consider a justified incremental opportunity when current
 evidence supports it, rather than treating prior partial profit as a reason to
 stop evaluating additions. New or strengthened evidence need not mean a closed
 candle or unanimous higher-timeframe confirmation.
+Before entry or an exit revision, identify the nearest evidenced obstacle in the
+profit direction (resistance for LONG, support for SHORT), and compare net-of-cost
+reward to that obstacle with reward beyond a justified breakout. Do not assume
+the obstacle will break merely because higher frames favor the position.
+Compare a partial TP near it plus a protected runner against retaining exposure
+for a supported breakout; neither early profit-taking nor a distant all-size TP
+is mandatory. Never invent levels when evidence is missing.
+On every holding review compare maintain, incremental add, tighter protection,
+conditional partial reduction and immediate full EXIT. Short-term deterioration
+must inform management of EXISTING exposure, not only rejection of further adds.
+State the observable breakout-failure or thesis-invalidation condition and the
+supported action if already observed; if not observed, describe it as a future
+reassessment condition, not an order that already exists. Ordinary pullbacks
+with an intact primary thesis may justify WAIT and keeping a runner. Do not
+tighten mechanically on every green tick or widen the stop to preserve a thesis.
 These are comparison alternatives, NOT new action enums: maintain unchanged
 protection with WAIT; add with ADJUST and ONLY incremental entries; arrange
 conditional reductions/protection with ADJUST; use EXIT for immediate full
@@ -122,7 +150,13 @@ choice, its key evidence, and invalidation or evidence that would change it.
 Do not add response fields or provide a long comparison transcript.
 ADJUST replaces exit protection; ADJUST entries are ONLY new incremental orders.
 KEEP a live pending entry by omitting it from entries, never copying current_plan.
-Use WAIT to retain the unchanged plan; WAIT does not renew expiry or change chase.
+Use WAIT to retain the unchanged plan; WAIT does not renew existing entry expiry
+or change chase. Independently EVERY response, including WAIT/EXIT while holding
+an expired plan, needs a fresh future expires_at. Use the response_contract's
+recommended deadline for WAIT/EXIT, not the old plan's expires_at. This validates
+the response only; it does not prolong old orders or force liquidation. For
+OPEN/ADJUST the deadline also limits new-plan entries/chase. Allow model latency,
+and respect fresh now < expires_at <= now+3600; never return now or now+1.
 For replacement use ADJUST with new incremental entry IDs and explicit cancellation
 of the old pending IDs, subject to all reservation and protection rules below.
 For cancel-only intent use WAIT + cancel_entry_ids from CURRENT pending_entries[].id,
@@ -221,7 +255,17 @@ def propose(snapshot: dict, context: dict, response_contract: dict, *,
         schema = response_schema(context)
     except (KeyError, TypeError, ValueError):
         raise ScenarioModelError("invalid_contract_context") from None
-    payload = {"market_snapshot": snapshot, "contract_context": context,
+    # Do not recycle retired-timeframe narratives into new-policy judgments.
+    # Preserve the original audit context and all structured order/risk evidence.
+    model_context = dict(context)
+    if isinstance(context.get("current_plan"), dict):
+        model_context["current_plan"] = {key: value for key, value in context["current_plan"].items()
+                                         if key != "rationale"}
+    for field in ("recent_waits", "recent_actions"):
+        if isinstance(context.get(field), list):
+            model_context[field] = [{key: value for key, value in row.items() if key != "rationale"}
+                                    if isinstance(row, dict) else row for row in context[field]]
+    payload = {"market_snapshot": snapshot, "contract_context": model_context,
                "response_contract": response_contract}
     try:
         prompt = json.dumps(payload, ensure_ascii=False, allow_nan=False)

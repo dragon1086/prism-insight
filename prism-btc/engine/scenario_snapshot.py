@@ -13,8 +13,18 @@ import pandas as pd
 
 from engine.indicators import atr, sma
 
-TIMEFRAME_MS = {"30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000,
-                "12h": 43_200_000, "1d": 86_400_000, "5m": 300_000}
+TIMEFRAME_MS = {"15m": 900_000, "30m": 1_800_000, "1h": 3_600_000,
+                "4h": 14_400_000, "12h": 43_200_000, "1d": 86_400_000,
+                "1w": 604_800_000}
+REQUIRED_TIMEFRAMES = ("15m", "30m", "1h")
+MONDAY_ANCHOR_MS = 345_600_000
+
+
+def candle_start(timestamp_ms, duration):
+    """Bybit weekly bars start Monday 00:00 UTC; other bars use epoch grids."""
+    anchor = MONDAY_ANCHOR_MS if duration == TIMEFRAME_MS["1w"] else 0
+    return (timestamp_ms - anchor) // duration * duration + anchor
+
 _OHLCV = ["open", "high", "low", "close", "volume"]
 COMPRESSION_GAP_FRACTION = 0.0015  # Descriptive feature, never an entry gate.
 
@@ -34,7 +44,7 @@ def _frame(frame, duration):
         raise ValueError("missing_ohlcv_columns")
     result = frame[_OHLCV].copy().sort_index()
     result.index = result.index.tz_convert("UTC")
-    if any((result.index.asi8 // 1_000_000) % duration):
+    if any(candle_start(ts, duration) != ts for ts in result.index.asi8 // 1_000_000):
         raise ValueError("unaligned_candle_timestamp")
     return result
 
@@ -94,28 +104,28 @@ def _features(frame, duration):
 
 
 def _intrabar_volume(history, available_at):
-    """Only fully elapsed 5m buckets at the oldest primary observation."""
-    unavailable = dict(status="unavailable", reason="confirmed_5m_history_unavailable",
+    """Only fully elapsed 15m buckets at the oldest primary observation."""
+    unavailable = dict(status="unavailable", reason="confirmed_15m_history_unavailable",
                        available_at_ms=available_at, ratio=None)
     if available_at is None:
         return None, unavailable
     try:
-        frame = _frame(history, TIMEFRAME_MS["5m"])
+        frame = _frame(history, TIMEFRAME_MS["15m"])
         starts = frame.index.asi8 // 1_000_000
-        frame = _validate_values(frame.loc[starts + TIMEFRAME_MS["5m"] <= available_at])
-        last = frame.tail(6)
-        expected_end = available_at // TIMEFRAME_MS["5m"] * TIMEFRAME_MS["5m"]
-        expected = list(range(expected_end-6*TIMEFRAME_MS["5m"], expected_end, TIMEFRAME_MS["5m"]))
+        frame = _validate_values(frame.loc[starts + TIMEFRAME_MS["15m"] <= available_at])
+        last = frame.tail(2)
+        expected_end = available_at // TIMEFRAME_MS["15m"] * TIMEFRAME_MS["15m"]
+        expected = list(range(expected_end-2*TIMEFRAME_MS["15m"], expected_end, TIMEFRAME_MS["15m"]))
         if list(last.index.asi8 // 1_000_000) != expected:
-            return frame, {**unavailable, "reason": "six_recent_contiguous_5m_bars_required"}
-        previous, recent = float(last.volume.iloc[:3].sum()), float(last.volume.iloc[3:].sum())
+            return frame, {**unavailable, "reason": "two_recent_contiguous_15m_bars_required"}
+        previous, recent = float(last.volume.iloc[0]), float(last.volume.iloc[1])
         return frame, dict(status="available" if previous > 0 else "unavailable",
             reason=None if previous > 0 else "zero_previous_volume", available_at_ms=available_at,
             completed_through_ms=expected_end, previous_15m_volume=previous, recent_15m_volume=recent,
             ratio=recent/previous if previous > 0 else None,
-            definition="last 3 complete contiguous 5m volumes / previous 3; not a probability")
+            definition="last complete 15m volume / previous complete 15m volume; not a probability")
     except (ValueError, TypeError, OverflowError):
-        return None, {**unavailable, "reason": "invalid_confirmed_5m_history"}
+        return None, {**unavailable, "reason": "invalid_confirmed_15m_history"}
 
 
 def _same_progress_profile(frame, duration, start, available_at):
@@ -124,19 +134,19 @@ def _same_progress_profile(frame, duration, start, available_at):
                   empirical_projection_range=None, calibrated_probability=False)
     if frame is None or available_at is None or available_at < start:
         return result
-    step = TIMEFRAME_MS["5m"]
+    step = TIMEFRAME_MS["15m"]
     elapsed = min(duration, (available_at-start)//step*step)
     result.update(matched_elapsed_ms=elapsed, matched_progress_fraction=elapsed/duration,
-                  definition="complete historical windows at same completed-5m progress; range is empirical min/max, not a confidence interval")
+                  definition="complete historical windows at same completed-15m progress; range is empirical min/max, not a confidence interval")
     if elapsed <= 0 or elapsed >= duration:
-        return {**result, "reason": "no_completed_current_5m_progress"}
+        return {**result, "reason": "no_completed_current_15m_progress"}
     volumes = {int(timestamp.value//1_000_000): float(value) for timestamp, value in frame.volume.items()}
     current_keys = list(range(start, start+elapsed, step))
     if not all(key in volumes for key in current_keys):
-        return {**result, "reason": "current_5m_path_incomplete"}
+        return {**result, "reason": "current_15m_path_incomplete"}
     current_volume = sum(volumes[key] for key in current_keys)
     ratios, prefixes = [], []
-    for window in sorted({key//duration*duration for key in volumes}):
+    for window in sorted({candle_start(key, duration) for key in volumes}):
         if window+duration > start or window+duration > available_at:
             continue
         keys = list(range(window, window+duration, step))
@@ -164,10 +174,10 @@ def build_scenario_snapshot(
     observed_at_ms: int | None = None, max_observation_age_ms: int = 120_000,
     observed_at_by_tf_ms: Mapping[str, int] | None = None,
 ) -> dict:
-    """Build primary 30m/1h and optional context facts at a bounded clock.
+    """Build required 15m/30m/1h and optional context facts at a bounded clock.
 
     ``valid`` requires complete MA history plus fresh explicit forming snapshots
-    on both primary frames. Missing context is reported but not a trading gate.
+    on all required decision frames. Missing context is reported but not a trading gate.
     Volume extrapolation is a heuristic, never a probability or confidence score.
     """
     if isinstance(current_ms, bool) or int(current_ms) != current_ms or current_ms < 0:
@@ -177,18 +187,16 @@ def build_scenario_snapshot(
     current_ms = int(current_ms)
     provisional_tf_data = provisional_tf_data or {}
     primary_observations = [observed_at_by_tf_ms.get(tf) if observed_at_by_tf_ms is not None else observed_at_ms
-                            for tf in ("30m", "1h")]
+                            for tf in REQUIRED_TIMEFRAMES]
     available_at = min(primary_observations) if all(type(t) is int and 0 <= t <= current_ms
                                                   for t in primary_observations) else None
-    intrabar, acceleration = _intrabar_volume(tf_data.get("5m"), available_at)
+    intrabar, acceleration = _intrabar_volume(tf_data.get("15m"), available_at)
     output = {"as_of_ms": current_ms, "valid": True, "issues": [], "timeframes": {}}
     for tf, duration in TIMEFRAME_MS.items():
         observation = (observed_at_by_tf_ms.get(tf) if observed_at_by_tf_ms is not None
                        else observed_at_ms)
-        if tf == "5m" and tf not in tf_data and tf not in provisional_tf_data:
-            continue
         issues = []
-        fact = {"role": "primary" if tf in ("30m", "1h") else "execution" if tf == "5m" else "context",
+        fact = {"role": "primary" if tf in ("30m", "1h") else "timing" if tf == "15m" else "context",
                 "status": "unavailable", "issues": issues, "confirmed": None, "forming": None}
         output["timeframes"][tf] = fact
         try:
@@ -196,7 +204,7 @@ def build_scenario_snapshot(
             starts = history.index.asi8 // 1_000_000
             history = _validate_values(history.loc[starts + duration <= current_ms])
             # Never silently turn a provisional candle into a confirmed candle.
-            current_start = current_ms // duration * duration
+            current_start = candle_start(current_ms, duration)
             if history.empty:
                 issues.append("missing_confirmed_history")
             else:
@@ -261,6 +269,6 @@ def build_scenario_snapshot(
         except (ValueError, TypeError, OverflowError) as exc:
             issues.append(str(exc))
         output["issues"].extend(f"{tf}:{issue}" for issue in issues)
-        if fact["role"] == "primary" and issues:
+        if tf in REQUIRED_TIMEFRAMES and issues:
             output["valid"] = False
     return output

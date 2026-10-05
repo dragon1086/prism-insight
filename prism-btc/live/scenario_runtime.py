@@ -57,7 +57,7 @@ def _finite(value):
 def snapshot_input_time(snapshot):
     """Use the oldest primary observation, not the end of a sequential fetch."""
     times = [snapshot.get("as_of_ms")]
-    for tf in ("30m", "1h"):
+    for tf in ("15m", "30m", "1h"):
         forming = snapshot.get("timeframes", {}).get(tf, {}).get("forming")
         if isinstance(forming, dict):
             times.append(forming.get("observed_at_ms"))
