@@ -268,7 +268,7 @@ def entry_message_block(scenario, market):
         adds = labels
     else:
         adds = ["증액 조건은 다음 보유 점검에서 정합니다"]
-    head = f"🧩 초분할: 1슬롯의 {pct}%로 시작{tilted}" + (", 조건 확인 시 증액" if labels and plan_adds_enabled(market) else "")
+    head = f"🧩 분할 매수: 1슬롯의 {pct}%로 시작{tilted}" + (", 조건 확인 시 증액" if labels and plan_adds_enabled(market) else "")
     return [head] + [f"  • {line}" for line in adds] + ["  • 손절 시 전량 매도"]
 
 

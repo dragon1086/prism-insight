@@ -123,8 +123,8 @@ def test_display_lines_show_allocation_and_slot_weighted_pnl(live_on):
     assert live.allocation_line(pilot) == "비중 50% (1슬롯 기준)\n"
     assert live.allocation_line({"sector": "IT"}) == ""
     assert live.used_slots([json.dumps(scenario), "{}", pilot]) == pytest.approx(2.2777)
-    assert live.entry_message_block(scenario, "KR")[0].startswith("🧩 초분할: 1슬롯의 78%로 시작")
-    assert live.entry_message_block(scenario, "US")[0].startswith("🧩 초분할: 1슬롯의 78%로 시작")
+    assert live.entry_message_block(scenario, "KR")[0].startswith("🧩 분할 매수: 1슬롯의 78%로 시작")
+    assert live.entry_message_block(scenario, "US")[0].startswith("🧩 분할 매수: 1슬롯의 78%로 시작")
     assert live.entry_message_block({"sector": "IT"}, "KR") == []
 
 
@@ -515,7 +515,7 @@ def test_conviction_tilt_reaches_every_consumer(live_on, monkeypatch, market, tr
     assert live.dashboard_fields(scenario, buy_price=10000, current_price=10500)["allocation"] == pytest.approx(0.5888)
     assert "initial 59% (top-setup tilt from 39%)" in live.journal_position_line(scenario)
     head = live.entry_message_block(scenario, market)[0]
-    assert head.startswith("🧩 초분할: 1슬롯의 59%로 시작 (상위 셋업 가중, 기본 39%에서 상향)")
+    assert head.startswith("🧩 분할 매수: 1슬롯의 59%로 시작 (상위 셋업 가중, 기본 39%에서 상향)")
     # The BUY targets (written for the 39% initial) are rebased by +20%p in code; the rails then
     # judge each step against the tilted first leg (0.70 -> 0.90 is a 0.31 step and stays dropped).
     stored = block["add_plan"]
