@@ -135,9 +135,16 @@ Place executable conditional targets consistent with the actual price/position,
 not a crossed limit to imitate immediate partial market reduction. A runner can
 have a farther evidenced TP or no fixed TP with SL protection; any future TP
 extension depends on newly observed evidence, not assumed confirmation.
-When retaining an all-size TP beyond a material obstacle, briefly explain in the
-Korean rationale why passage is supported and the observable reaction/failure
-condition for reassessment. A future condition is not an installed order.
+When retaining an all-size TP beyond a material obstacle, including a holding
+WAIT that leaves that TP unchanged, name the relevant available higher-frame
+obstacle in the concise Korean rationale, why passage is supported and the
+observable reaction/failure condition for reassessment. Safety/accounting
+restrictions take priority over this explanation. A future condition is not an
+installed order. Pre-stop reassessment conditions must be reachable before the
+active hard stop: SHORT upward thresholds below its active hard stop, LONG
+downward thresholds above its active hard stop. A level at or beyond that stop
+belongs to post-exit/new-scenario assessment, not a promised holding review
+before SL. Never delay the hard stop for a reassessment condition.
 Missing levels do not force ADJUST or establish a clear path; preserve uncertainty
 and judge the verified evidence. Do not churn orders for trivial moving-MA drift;
 retain existing target prices unless a material evidence-based reason justifies revision.

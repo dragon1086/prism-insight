@@ -224,6 +224,8 @@ def test_assembled_obstacle_review_and_valid_management_choices(side, choice):
         'trivial moving-MA drift',
         'For SHORT, a nearer TP is higher and an extended TP lower; reverse for LONG',
         'retaining an all-size TP beyond a material obstacle',
+        'including a holding WAIT that leaves that TP unchanged',
+        'name the relevant available higher-frame obstacle',
         'Missing levels do not force ADJUST',
     ):
         assert rule in policy
@@ -255,3 +257,21 @@ def test_obstacle_tp_revision_keeps_halted_protection_and_stop_guard(side):
     result['hard_stop'] = 60000-sign*600
     with pytest.raises(ValueError):
         check()
+
+
+def test_assembled_prompt_keeps_reassessment_before_stop_and_safety_priority():
+    calls = []
+    ctx = context(True)
+    ctx.update(accounting_status='pending', new_risk_blocked=True)
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(wire(ctx)))
+    accepted = propose({'valid': True, 'as_of_ms': 1000000}, ctx, {}, clock=lambda: 1000,
+                       generate=generate)
+    assert validate_scenario(accepted, ctx)['action'] == 'WAIT'
+    policy = ' '.join(calls[0]['system_prompt'].split())
+    assert 'SHORT upward thresholds below its active hard stop' in policy
+    assert 'LONG downward thresholds above its active hard stop' in policy
+    assert 'at or beyond that stop belongs to post-exit/new-scenario assessment' in policy
+    assert 'Never delay the hard stop for a reassessment condition' in policy
+    assert 'Safety/accounting restrictions take priority over this explanation' in policy
