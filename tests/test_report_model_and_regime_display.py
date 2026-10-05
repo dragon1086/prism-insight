@@ -38,6 +38,14 @@ def test_regime_labels_expose_enum_and_swing_timeframe():
     assert regime_label("strong_bull", "en") == "Strong Bull(strong_bull)"
 
 
+def test_channel_labels_drop_the_internal_code():
+    # Telegram Markdown reads "_" as italics: moderate_bull/trend_up broke the US alert (2026-09-29~10-06).
+    assert regime_label("moderate_bull", code=False) == "온건 강세"
+    assert swing_label("trend_up", code=False) == "상승 지속"
+    assert regime_label("strong_bull", "en", code=False) == "Strong Bull"
+    assert regime_label("new_regime", code=False) == "new regime"
+
+
 def test_batch_report_filenames_are_not_hardcoded_to_mini():
     for relative in (
         "stock_analysis_orchestrator.py",
@@ -67,9 +75,8 @@ def test_kr_trigger_alert_displays_authoritative_enum_and_swing_state():
         "20260827",
     )
 
-    assert "강한 강세(strong_bull)" in message
-    assert "횡보·숨고르기(consolidation)" in message
-    assert "실행기준: 강한 강세(strong_bull)" in message
+    assert "장기추세: 강한 강세 | 스윙: 횡보·숨고르기 | 실행기준: 강한 강세" in message
+    assert "_" not in message and "strong_bull" not in message
 
 
 def test_us_trigger_alert_uses_the_same_regime_contract():
@@ -93,8 +100,8 @@ message = orchestrator._create_trigger_alert_message(
     "20260826",
     "ko",
 )
-assert "강한 강세(strong_bull)" in message
-assert "횡보·숨고르기(consolidation)" in message
+assert "장기추세: 강한 강세 | 스윙: 횡보·숨고르기 | 실행기준: 강한 강세" in message
+assert "_" not in message and "strong_bull" not in message
 '''
     completed = subprocess.run(
         [sys.executable, "-c", script],
