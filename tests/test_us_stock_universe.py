@@ -63,7 +63,7 @@ def test_preferred_bank_is_an_individual_common_stock_not_preferred_security():
     "Example Closed-End Common Stock", "Bank Depositary Shares Representing Preferred Stock",
     "Company Preferred Ordinary Shares", "Company Warrants", "Company Rights",
     "Company Units", "Company Notes", "Company Bonds", "Company Debentures",
-    "Company Shares of Beneficial Interest", "Unknown Corp", "Index Trust",
+    "Company Shares of Beneficial Interest",
     "Bank - Series A Preferred American Depositary Shares",
     "Bank Depositary Shares Representing Series A Preferred",
 ])
@@ -71,6 +71,42 @@ def test_non_individual_and_unknown_names_excluded(name):
     result = parse([nasdaq("TEST", name)])
     assert [r.symbol for r in result.records] == ["BRK-B"]
     assert result.counts["source_rows"] == 2
+
+
+@pytest.mark.parametrize("name", [
+    "Ascendis Pharma A/S - Ordinary Share", "StoneCo Ltd. - Class A Common Share",
+    "Hesai Group - American Depositary Share", "Nanobiotix S.A. - ADSs",
+    "ASML Holding N.V. - New York Registry Shares", "Arcelor Mittal NY Registry Shares NEW",
+    "Logitech International S.A. - Registered Shares",
+    "Shopify Inc. - Class A Subordinate Voting Shares",
+    "Alphabet Inc. - Class C Capital Stock", "Travel   Leisure Co. Common  Stock",
+    "ReNew Energy Global plc - Class A Shares",
+])
+def test_directory_wording_variants_are_verified_common(name):
+    result = parse([nasdaq("TEST", name)])
+    assert [(r.symbol, r.name_verified) for r in result.records] == [("TEST", True), ("BRK-B", True)]
+
+
+@pytest.mark.parametrize("name", ["Visa Inc.", "Taiwan Semiconductor Manufacturing Company Ltd.", "Index Trust"])
+def test_name_only_rows_are_admitted_unverified_unless_disabled(name):
+    result = parse(o=[other("V", name)])
+    assert [(r.symbol, r.name_verified) for r in result.records] == [("AAPL", True), ("V", False)]
+    assert result.counts["unverified_name"] == 1
+    disabled = universe.parse_directories(
+        "\n".join([N_HEADER, nasdaq(), FOOTER]), "\n".join([O_HEADER, other("V", name), FOOTER]),
+        admit_unverified_names=False)
+    assert [r.symbol for r in disabled.records] == ["AAPL"]
+    assert disabled.counts["excluded_unknown_security_type"] == 1
+
+
+def test_unverified_name_in_asset_management_is_fund_like():
+    fund = info(longName="BlackRock Enhanced Equity Dividend Trust", sector="Financial Services",
+                industry="Asset Management")
+    assert universe.eligibility_reason(fund, 500, name_verified=False) == "unverified_fund_like"
+    # Brookfield (BN) states "Class A Limited Voting Shares", so its industry alone never excludes it.
+    assert universe.eligibility_reason(fund, 500) is None
+    visa = info(longName="Visa Inc.", sector="Financial Services", industry="Credit Services")
+    assert universe.eligibility_reason(visa, 500, name_verified=False) is None
 
 
 @pytest.mark.parametrize("changes,reason", [
