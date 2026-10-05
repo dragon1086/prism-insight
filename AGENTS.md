@@ -82,7 +82,6 @@ Avoid broad production-like runs unless the task requires them.
 - BTC deployment remains Bybit demo unless the user separately approves real funds.
   New risk-budget defaults, strategy promotion, and unrelated app-server deployments
   are not authorized merely by this review-workflow preference.
-- See docs/BTC_TPSL_DEPLOYMENT_2026-09-06_ko.md for the authorization and initial rollout evidence.
 
 ## Engineering Rules
 

@@ -35,9 +35,7 @@
 - `prism-btc/live/scenario_runner.py`: 독립 보호 진입점·활성화 경계.
 - `prism-btc/live/scenario_execution.py`: 주문·native SL·부분 출구 quota·추격·담보 검증.
 - `prism-btc/live/scenario_broker.py`: 실제 계좌·체결·보호·회계 통합.
-- `docs/BTC_LLM_SCENARIO_20261003_ko.md`: 전환 승인·배포 당시 스케줄 근거.
-- `docs/BTC_DIRECTIONAL_REASSESSMENT_20261005_ko.md`: 양방향·미체결 재평가.
-- `docs/BTC_ROUND_PRICE_BUFFER_20261005_ko.md`: 신규 지정가 마디 보정.
+- 10/3 전환 승인, 10/5 양방향·미체결 재평가, 신규 지정가 마디 보정 기록: 2026-10-05 문서 정리로 삭제됐으며 git 이력에서 조회합니다.
 - `docs/BTC_POSITION_MESSAGE_CONTRACT_20260915_ko.md`: 공지 계약.
 - `docs/BTC_ROADMAP_ko.md`: 단계·증거·승격 제한.
 
