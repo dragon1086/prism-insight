@@ -140,11 +140,15 @@ WAIT that leaves that TP unchanged, name the relevant available higher-frame
 obstacle in the concise Korean rationale, why passage is supported and the
 observable reaction/failure condition for reassessment. Safety/accounting
 restrictions take priority over this explanation. A future condition is not an
-installed order. Pre-stop reassessment conditions must be reachable before the
-active hard stop: SHORT upward thresholds below its active hard stop, LONG
-downward thresholds above its active hard stop. A level at or beyond that stop
-belongs to post-exit/new-scenario assessment, not a promised holding review
-before SL. Never delay the hard stop for a reassessment condition.
+installed order. Check pre-stop reassessment against the effective hard stop of
+the intended plan: WAIT uses retained protection; OPEN/ADJUST uses the proposed
+hard stop, never the superseded stop when tightening. Use SHORT upward thresholds
+below the effective hard stop and LONG downward thresholds above the effective
+hard stop. A level at or beyond that stop belongs to post-exit/new-scenario
+assessment. This price ordering does not guarantee a five-minute review before SL:
+prices can gap and MarkPrice can differ from the observed trade price. Never
+delay the hard stop for a reassessment condition; exchange-native SL protection
+remains independent of the next model review.
 Missing levels do not force ADJUST or establish a clear path; preserve uncertainty
 and judge the verified evidence. Do not churn orders for trivial moving-MA drift;
 retain existing target prices unless a material evidence-based reason justifies revision.

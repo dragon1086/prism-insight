@@ -270,8 +270,39 @@ def test_assembled_prompt_keeps_reassessment_before_stop_and_safety_priority():
                        generate=generate)
     assert validate_scenario(accepted, ctx)['action'] == 'WAIT'
     policy = ' '.join(calls[0]['system_prompt'].split())
-    assert 'SHORT upward thresholds below its active hard stop' in policy
-    assert 'LONG downward thresholds above its active hard stop' in policy
+    assert 'SHORT upward thresholds below the effective hard stop' in policy
+    assert 'LONG downward thresholds above the effective hard stop' in policy
     assert 'at or beyond that stop belongs to post-exit/new-scenario assessment' in policy
     assert 'Never delay the hard stop for a reassessment condition' in policy
     assert 'Safety/accounting restrictions take priority over this explanation' in policy
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_assembled_stop_geometry_uses_proposed_not_superseded_stop(side):
+    """Specification regression: prose geometry is not a new host validator."""
+    sign = 1 if side == 'LONG' else -1
+    old_stop = 60000-sign*800
+    proposed_stop = 60000-sign*500
+    stale_review = 60000-sign*650
+    valid_review = 60000-sign*400
+    assert sign*(stale_review-old_stop) > 0
+    assert sign*(stale_review-proposed_stop) < 0
+    assert sign*(valid_review-proposed_stop) > 0
+    ctx = context(True)
+    ctx.update(side=side, mark_price=60000, previous_hard_stop=old_stop,
+               positions=[dict(price=60000, quantity=.01)])
+    result = wire(ctx, 'ADJUST')
+    result.update(side=side, hard_stop=proposed_stop,
+                  take_profits=[dict(id='tp', price=60000+sign*500, fraction=.5)])
+    calls = []
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(result))
+    parsed = propose({'valid': True, 'as_of_ms': 1000000}, ctx, {}, clock=lambda: 1000,
+                     generate=generate)
+    assert validate_scenario(parsed, ctx)['hard_stop'] == proposed_stop
+    policy = ' '.join(calls[0]['system_prompt'].split())
+    assert 'WAIT uses retained protection; OPEN/ADJUST uses the proposed hard stop' in policy
+    assert 'never the superseded stop when tightening' in policy
+    assert 'ordering does not guarantee a five-minute review before SL' in policy
+    assert 'MarkPrice can differ from the observed trade price' in policy
