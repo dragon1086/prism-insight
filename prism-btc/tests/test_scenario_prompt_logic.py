@@ -249,7 +249,46 @@ def test_prompt_reassesses_zero_fill_without_imaginary_confirmation_orders():
     assert 'If genuine additional confirmation is required, WAIT' in text
     assert 'WAIT + cancel_entry_ids and await exact cancellation; bare WAIT leaves it live' in text
     assert 'marketable LIMIT may be proposed' in text
-    assert 'WAIT does not renew expiry or change chase' in text
+    assert 'WAIT does not renew existing entry expiry or change chase' in text
+
+
+def test_management_framing_preserves_both_trend_runner_and_failure_responses():
+    text = ' '.join(SYSTEM_PROMPT.split())
+    assert 'Minimum analysis frame is 15m' in text
+    assert '15m/30m/1h/4h/12h/1d/1w' in text
+    assert 'five-minute evaluation cadence is not a candle timeframe' in text
+    assert 'favorable LONG or favorable SHORT deserves the same opportunity-cost review' in text
+    assert 'neither early profit-taking nor a distant all-size TP is mandatory' in text
+    assert 'Ordinary pullbacks with an intact primary thesis may justify WAIT' in text
+    assert 'deterioration must inform management of EXISTING exposure' in text
+    assert 'Immediate partial market reduction is unsupported' in text
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('choice', ['intact_pullback', 'partial_tp_runner', 'failed_breakout_protect', 'invalidated_exit'])
+def test_symmetric_management_alternatives_reach_real_validator(side, choice):
+    ctx = context(True)
+    sign = 1 if side == 'LONG' else -1
+    ctx.update(side=side, positions=[dict(price=60000, quantity=.01)], mark_price=60000,
+               previous_hard_stop=60000-sign*100)
+    action = {'intact_pullback': 'WAIT', 'partial_tp_runner': 'ADJUST',
+              'failed_breakout_protect': 'ADJUST', 'invalidated_exit': 'EXIT'}[choice]
+    proposal = wire(ctx, action)
+    proposal.update(side=side, hard_stop=60000-sign*50,
+                    take_profits=[dict(id='obstacle-tp', price=60000+sign*100, fraction=.5)])
+    if action in ('WAIT', 'EXIT'):
+        proposal.update(side=None, hard_stop=None, chase=None, take_profits=[])
+    if choice == 'failed_breakout_protect':
+        proposal['partial_stops'] = [dict(id='failure-stop', price=60000-sign*20, fraction=.5)]
+    accepted = validate_scenario(validate_wire_proposal(proposal, ctx), ctx)
+    assert accepted['action'] == action
+    if action == 'ADJUST':
+        assert accepted['entries'] == []
+        assert accepted['take_profits'][0]['fraction'] == .5
+        assert accepted['risk']['budget'] == 200
+        proposal['hard_stop'] = 60000-sign*200
+        with pytest.raises(ValueError):
+            validate_scenario(validate_wire_proposal(proposal, ctx), ctx)
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])

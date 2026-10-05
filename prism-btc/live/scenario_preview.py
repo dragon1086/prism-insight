@@ -15,7 +15,7 @@ import uuid
 import pandas as pd
 
 from core.llm_scenario import validate_scenario
-from engine.scenario_snapshot import TIMEFRAME_MS, build_scenario_snapshot
+from engine.scenario_snapshot import TIMEFRAME_MS, build_scenario_snapshot, candle_start
 from live.scenario_llm import propose
 
 
@@ -26,7 +26,7 @@ def response_contract(context):
         "action": " | ".join(response_schema(context)["properties"]["action"]["enum"]),
         "side": "LONG | SHORT for OPEN/ADJUST; null for WAIT/EXIT",
         "confidence": "number 0..1 (NOT calibrated win probability)",
-        "expires_at": "Unix seconds >now and <=now+3600",
+        "expires_at": context["now"] + 300,
         "hard_stop": "positive price for OPEN/ADJUST; no widening; null for WAIT/EXIT",
         "entries": [{"id":"unique", "price":"positive number", "quantity":"positive BTC number"}],
         "take_profits": [{"id":"unique", "price":"positive number", "fraction":"number >0..1"}],
@@ -36,6 +36,8 @@ def response_contract(context):
         "rationale": "short Korean evidence/invalidation explanation",
         "leverage": 10,
         "rules": ["Do not include this rules field in the response.",
+                  "expires_at above is the recommended Unix-seconds response validity deadline (request now+300), including WAIT/EXIT. It leaves room for the model's 75-second timeout. Every action must still satisfy fresh validation now < expires_at <= now+3600. Do not copy an old current_plan expiry or use now/now+1. Never exceed the 3600-second limit.",
+                  "A WAIT/EXIT response deadline does not extend existing entry deadlines or change chase. OPEN/ADJUST also use expires_at as their new plan's entry/chase deadline; choose a justified duration within the validity limit, allowing response latency. Expired entries do not require closing a held position. The host does not repair invalid timestamps.",
                   "All schema fields are required. WAIT/EXIT require empty entries/take_profits/partial_stops and explicit null hard_stop, side and chase. OPEN/ADJUST require non-null side, hard_stop and chase.",
                   "OPEN only when no active scenario; ADJUST/EXIT only when active.",
                   "cancel_entry_ids defaults to []. Only a unique subset of CURRENT contract_context.pending_entries[].id may be selected; never exchange/historical IDs. Cancel-only uses WAIT.",
@@ -51,15 +53,15 @@ def response_contract(context):
 def collect_snapshot(*, fetch=None, clock=time.time):
     if fetch is None:
         from collector.bybit_public import _get_klines
-        from engine.config import TF_INTERVAL_MAP, PROTECTION_TF_INTERVAL_MAP
-        intervals = {**TF_INTERVAL_MAP, **PROTECTION_TF_INTERVAL_MAP}
+        from engine.config import TF_INTERVAL_MAP
+        intervals = {**TF_INTERVAL_MAP, "15m": "15"}
         def fetch(tf):
-            return _get_klines(intervals[tf], limit=1000 if tf=="5m" else 100,
+            return _get_klines(intervals[tf], limit=1000 if tf=="15m" else 100,
                                retries=3, retry_rate_limit_only=True)
     started = clock()
     frames = {}
     received = {}
-    for tf in ("30m", "1h", "4h", "12h", "1d", "5m"):
+    for tf in TIMEFRAME_MS:
         rows = fetch(tf)
         received[tf] = clock()
         if not rows:
@@ -73,8 +75,8 @@ def collect_snapshot(*, fetch=None, clock=time.time):
     # Never promote an observed forming candle because collection crossed its
     # close. A subsequent tick must obtain the actual final candle instead.
     for tf in frames:
-        duration = TIMEFRAME_MS[tf]/1000
-        if int(started//duration) != int(completed//duration):
+        duration = TIMEFRAME_MS[tf]
+        if candle_start(int(started*1000), duration) != candle_start(int(completed*1000), duration):
             raise ValueError("candle_boundary_crossed_during_collection")
     now_ms = int(completed*1000)
     history, forming = {}, {}

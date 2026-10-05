@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from engine.scenario_snapshot import TIMEFRAME_MS, build_scenario_snapshot, _validate_values
+from engine.scenario_snapshot import TIMEFRAME_MS, build_scenario_snapshot, _validate_values, candle_start
 
 OHLCV = ["open", "high", "low", "close", "volume"]
 
@@ -29,7 +29,7 @@ def validate_frame(frame: pd.DataFrame, interval_ms: int) -> pd.DataFrame:
     result = _validate_values(frame[OHLCV].copy()).sort_index()
     result.index = result.index.tz_convert("UTC")
     starts = result.index.asi8 // 1_000_000
-    if any(starts % interval_ms) or any(result.index.asi8 % 1_000_000):
+    if any(candle_start(ts, interval_ms) != ts for ts in starts) or any(result.index.asi8 % 1_000_000):
         raise ValueError("unaligned_source_timestamp")
     if any(b - a != interval_ms for a, b in zip(starts, starts[1:])):
         raise ValueError("source_gap")
@@ -54,7 +54,7 @@ def load_market_data(path, *, timeframe="5m") -> pd.DataFrame:
     opened mode=ro; mixed market/trading databases are rejected, never mutated.
     """
     path = Path(path).resolve(strict=True)
-    interval = 60_000 if timeframe == "1m" else TIMEFRAME_MS[timeframe]
+    interval = {"1m": 60_000, "5m": 300_000, **TIMEFRAME_MS}[timeframe]
     if path.suffix.lower() in (".db", ".sqlite", ".sqlite3"):
         with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as conn:
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -91,7 +91,7 @@ def frame_inventory(frame: pd.DataFrame, interval_ms: int) -> dict:
 
 
 def _aggregate(frame, duration):
-    groups = (frame.index.asi8 // 1_000_000) // duration * duration
+    groups = [candle_start(ts, duration) for ts in frame.index.asi8 // 1_000_000]
     result = frame.groupby(groups).agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
     result.index = pd.to_datetime(result.index, unit="ms", utc=True)
     return result
@@ -103,7 +103,9 @@ class HistoricalScenarioData:
             raise ValueError("source_must_be_1m_or_5m")
         self.interval_ms = source_interval_ms
         self.source = validate_frame(source, source_interval_ms)
-        self.warmup = {tf: validate_frame(frame, TIMEFRAME_MS[tf]) for tf, frame in (warmup or {}).items()}
+        # Legacy 5m warmup is not a decision input; retain strict rejection of
+        # other unknown timeframe keys rather than silently hiding bad data.
+        self.warmup = {tf: validate_frame(frame, TIMEFRAME_MS[tf]) for tf, frame in (warmup or {}).items() if tf != "5m"}
         self.mark = validate_frame(mark, source_interval_ms) if mark is not None else None
         self.funding = list(funding) if funding is not None else None
         self._source_inventory = frame_inventory(self.source, self.interval_ms)
@@ -134,8 +136,8 @@ class HistoricalScenarioData:
         history, forming, synthetic = {}, {}, []
         first = int(known.index[0].value//1_000_000)
         for tf, duration in TIMEFRAME_MS.items():
-            current_start = now_ms//duration*duration
-            complete_start = (first+duration-1)//duration*duration
+            current_start = candle_start(now_ms, duration)
+            complete_start = candle_start(first+duration-1, duration)
             aggregate = _aggregate(known, duration)
             ast = aggregate.index.asi8//1_000_000
             confirmed = aggregate.loc[(ast >= complete_start) & (ast+duration <= now_ms)]

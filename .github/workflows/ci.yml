@@ -270,6 +270,7 @@ jobs:
           python tools/run_btc_safety_tests.py \
             prism-btc/tests/test_llm_scenario.py \
             prism-btc/tests/test_scenario_snapshot.py \
+            prism-btc/tests/test_scenario_decision_timeframes.py \
             prism-btc/tests/test_scenario_llm.py \
             prism-btc/tests/test_scenario_prompt_logic.py \
             prism-btc/tests/test_scenario_oauth.py \
