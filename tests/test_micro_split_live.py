@@ -123,8 +123,9 @@ def test_display_lines_show_allocation_and_slot_weighted_pnl(live_on):
     assert live.allocation_line(pilot) == "비중 50% (1슬롯 기준)\n"
     assert live.allocation_line({"sector": "IT"}) == ""
     assert live.used_slots([json.dumps(scenario), "{}", pilot]) == pytest.approx(2.2777)
-    assert "초분할 비중: 78%" in live.entry_message_line(scenario, "KR")
-    assert "78% of one slot" in live.entry_message_line(scenario, "US")
+    assert live.entry_message_block(scenario, "KR")[0].startswith("🧩 초분할: 1슬롯의 78%로 시작")
+    assert live.entry_message_block(scenario, "US")[0].startswith("🧩 초분할: 1슬롯의 78%로 시작")
+    assert live.entry_message_block({"sector": "IT"}, "KR") == []
 
 
 def test_legacy_pyramid_is_blocked_for_micro_split_rows(live_on):
@@ -292,15 +293,16 @@ def test_buy_add_plan_is_validated_onto_the_entry_record_and_summarized(live_on)
         "breakout_1", "pullback_1"]
     assert block["add_plan"]["valid_for"] > block["legs"][0]["at"][:10]  # never the entry session
     assert block["add_plan_history"][-1]["plan_hash"] == block["add_plan"]["plan_hash"]
-    line = live.entry_message_line(scenario, "KR")
-    assert "증액 시나리오: 돌파 10,500원 → 95%; 눌림 회복 10,100원 → 90%" in line and "+2%" not in line
-    assert "add scenarios: breakout $10,500.00 → 95%" in live.entry_message_line(scenario, "US")
+    lines = live.entry_message_block(scenario, "KR")
+    assert lines[1:] == ["  • 돌파 10,500원 → 95%", "  • 눌림 회복 10,100원 → 90%", "  • 손절 시 전량 매도"]
+    assert "조건 확인 시 증액" in lines[0] and "+2%" not in "\n".join(lines)
+    assert "  • 돌파 $10,500.00 → 95%" in live.entry_message_block(scenario, "US")
     # Missing or invalid plan: the entry stays, the position has no adds until a review sets one.
     _, _, bare = live.prepare_entry(_agent(), market="KR", ticker="005930", current_price=10000,
                                     scenario={"stop_loss": 9300, "add_plan": {"scenarios": []}},
                                     decision_ref="r", account={"buy_amount_krw": 1_000_000})
     assert "add_plan" not in bare["micro_split"] and bare["micro_split"]["add_plan_history"][0]["issues"]
-    assert "다음 보유 점검에서 세우며" in live.entry_message_line(bare, "KR")
+    assert "  • 증액 조건은 다음 보유 점검에서 정합니다" in live.entry_message_block(bare, "KR")
 
 
 def test_plan_adds_follow_live_with_an_adds_only_kill_switch(monkeypatch):
@@ -312,8 +314,8 @@ def test_plan_adds_follow_live_with_an_adds_only_kill_switch(monkeypatch):
     assert live.live_enabled("KR") and not live.plan_adds_enabled("KR")
     _, cash, scenario = _prepared()
     assert cash == 777_700  # the fractional first entry stays LIVE
-    assert "멈춰 있고" in live.entry_message_line(scenario, "KR")
-    assert "adds are currently paused" in live.entry_message_line(scenario, "US")
+    for market in ("KR", "US"):
+        assert "  • 추가 매수는 현재 멈춰 있습니다" in live.entry_message_block(scenario, market)
     monkeypatch.setenv("MICRO_SPLIT_LIVE_ENABLED", "false")
     monkeypatch.setenv("MICRO_SPLIT_LIVE_ADDS_ENABLED", "true")
     assert not live.plan_adds_enabled("KR")
@@ -512,9 +514,8 @@ def test_conviction_tilt_reaches_every_consumer(live_on, monkeypatch, market, tr
     assert live.display(scenario) == "비중 59%"
     assert live.dashboard_fields(scenario, buy_price=10000, current_price=10500)["allocation"] == pytest.approx(0.5888)
     assert "initial 59% (top-setup tilt from 39%)" in live.journal_position_line(scenario)
-    line = live.entry_message_line(scenario, market)
-    assert ("59% of one slot (top-setup tilt from 39%)" in line if market == "US"
-            else "초분할 비중: 59% (1슬롯 기준, 상위 셋업 가중으로 기본 39%에서 상향)" in line)
+    head = live.entry_message_block(scenario, market)[0]
+    assert head.startswith("🧩 초분할: 1슬롯의 59%로 시작 (상위 셋업 가중, 기본 39%에서 상향)")
     # The BUY targets (written for the 39% initial) are rebased by +20%p in code; the rails then
     # judge each step against the tilted first leg (0.70 -> 0.90 is a 0.31 step and stays dropped).
     stored = block["add_plan"]
