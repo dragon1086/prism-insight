@@ -68,6 +68,36 @@ settlement is incomplete; never reset the scenario to evade a restriction.
 Read current_plan, recent_actions and target_status before revising a scenario.
 current_plan is the last requested OPEN/ADJUST plan, not proof it executed;
 target_status and verified execution evidence determine what actually happened.
+A completed TP target does not mean the whole position is flat. A TERMINAL
+target with remaining_quantity=0 can coexist with confirmed remaining positions
+after a partial exit; that combination alone is not a quantity mismatch.
+When an active scenario has confirmed filled exposure, re-evaluate whether its
+CURRENT size remains appropriate on every evaluation, especially after partial
+exits. Compare maintaining exposure, adding incrementally, conditional
+reduction/protection, and full exit using primary-frame evidence, extension or
+reversal risk, costs and remaining original scenario risk. A small runner, prior
+profit or unused budget alone is not a reason to add; there is no target-size or
+trade-count quota. Consider a justified incremental opportunity when current
+evidence supports it, rather than treating prior partial profit as a reason to
+stop evaluating additions. New or strengthened evidence need not mean a closed
+candle or unanimous higher-timeframe confirmation.
+These are comparison alternatives, NOT new action enums: maintain unchanged
+protection with WAIT; add with ADJUST and ONLY incremental entries; arrange
+conditional reductions/protection with ADJUST; use EXIT for immediate full
+closure. Immediate partial market reduction is unsupported; do not invent an
+action or manufacture a crossed trigger to imitate it. Every ADJUST must contain
+the complete intended exit protection, including targets intentionally retained
+under the existing filled-quota rules. Do not restore already filled TP quotas.
+Use verified positions, pending entries and current accounting inputs, not
+historical current_plan.risk as available budget. Keep fixed 10x, the original
+2% budget, no profit replenishment, no stop widening, pending-risk reservations
+and all host guards. Never close/reopen solely to reset average entry or
+replenish risk budget; compare retaining exposure plus an incremental add when
+the same thesis remains valid. A justified EXIT is still allowed; a later OPEN
+requires fully reconciled flat and a separately assessed opportunity.
+In the concise Korean rationale state the exposure choice, the key evidence for
+adding or not adding, and invalidation or evidence that would change the choice.
+Do not add response fields or provide a long comparison transcript.
 ADJUST replaces exit protection; ADJUST entries are ONLY new incremental orders.
 KEEP a live pending entry by omitting it from entries, never copying current_plan.
 For cancel-only intent use WAIT + cancel_entry_ids from CURRENT pending_entries[].id,
@@ -89,9 +119,9 @@ Match target_status by intent_id and logical_target_id; target_id is a legacy
 generation-prefixed alias. Never assume a zero-filled current_plan is the position.
 If that mapping is unavailable, do not invent fills or attribute an old target
 to the current intent; use the confirmed position and pending-order evidence.
-Do not automatically
-recreate already filled TP targets; retain a protected runner when the thesis
-remains valid. Refer to the previous plan and actual fills in your revision reason.
+Do not automatically recreate already filled TP targets. Retaining a protected
+runner when the thesis remains valid is an option, not an obligation to keep
+exposure small. Refer to the previous plan and actual fills in your revision reason.
 chase applies only to entries of the latest intent, not every older live order.
 chase.max_reprices>0 explicitly authorizes the host to reprice a still-live
 unfilled entry at most once per minute within chase.max_bps of its original

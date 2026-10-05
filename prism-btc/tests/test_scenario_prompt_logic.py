@@ -148,3 +148,84 @@ def test_active_targets_use_mark_not_entry_and_list_fractions_independent():
     p["take_profits"][0]["price"] = 61000
     p["partial_stops"] = [dict(id="sl", price=59500, fraction=.8)]
     assert validate_scenario(validate_wire_proposal(p, ctx), ctx)["action"] == "ADJUST"
+
+
+def test_prompt_reassesses_filled_exposure_without_forcing_add_or_new_actions():
+    text = ' '.join(SYSTEM_PROMPT.split())
+    assert 'active scenario has confirmed filled exposure' in text
+    assert 'maintaining exposure, adding incrementally, conditional reduction/protection, and full exit' in text
+    assert 'small runner, prior profit or unused budget alone is not a reason to add' in text
+    assert 'Immediate partial market reduction is unsupported' in text
+    assert 'historical current_plan.risk' in text
+    assert 'A completed TP target does not mean the whole position is flat' in text
+    assert 'complete intended exit protection' in text
+    assert 'not an obligation to keep exposure small' in text
+    assert 'Never close/reopen solely to reset average entry or replenish risk budget' in text
+
+
+def runner_context():
+    ctx = context(True)
+    ctx.update(positions=[dict(price=60000, quantity=.004)], previous_hard_stop=60100,
+               fees_paid=1., funding_paid=.5, accounting_status='confirmed',
+               current_plan=dict(entries=[], risk=dict(available=999999)))
+    return ctx
+
+
+def exposure_proposal(ctx, action):
+    p = wire(ctx, action)
+    if action in {'WAIT', 'EXIT'}:
+        p.update(side=None, hard_stop=None, chase=None, take_profits=[], partial_stops=[])
+    else:
+        p['hard_stop'] = 60100
+    return p
+
+
+@pytest.mark.parametrize('choice', ['hold', 'add', 'conditional_reduce', 'exit'])
+def test_same_small_runner_all_supported_exposure_alternatives_remain_available(choice):
+    ctx = runner_context()
+    action = {'hold': 'WAIT', 'add': 'ADJUST', 'conditional_reduce': 'ADJUST', 'exit': 'EXIT'}[choice]
+    p = exposure_proposal(ctx, action)
+    if choice == 'add':
+        p['entries'] = [dict(id='increment', price=60500, quantity=.005)]
+    if choice == 'conditional_reduce':
+        p['partial_stops'] = [dict(id='conditional-stop', price=60200, fraction=.5)]
+    result = validate_scenario(validate_wire_proposal(p, ctx), ctx)
+    assert result['action'] == action
+    assert ctx['positions'][0]['quantity'] == .004
+    if choice == 'add':
+        assert result['entries'][0]['quantity'] == .005  # Increment, not replacement total .009.
+        assert result['risk']['within_budget']
+        assert result['hard_stop'] == ctx['previous_hard_stop']
+        assert result['take_profits'] == p['take_profits']
+
+
+@pytest.mark.parametrize('unsafe', ['widen_stop', 'exceed_budget', 'new_risk_blocked', 'missing_costs'])
+def test_exposure_framing_cannot_override_real_guards_or_stale_available_budget(unsafe):
+    ctx = runner_context()
+    p = exposure_proposal(ctx, 'ADJUST')
+    p['entries'] = [dict(id='increment', price=60500, quantity=.005)]
+    if unsafe == 'widen_stop':
+        p['hard_stop'] = 60000
+    elif unsafe == 'exceed_budget':
+        ctx['fees_paid'] = 199.
+    elif unsafe == 'new_risk_blocked':
+        ctx['new_risk_blocked'] = True
+    else:
+        ctx.update(accounting_status='pending', fees_paid=None, funding_paid=None)
+    with pytest.raises(ValueError):
+        validate_scenario(validate_wire_proposal(p, ctx), ctx)
+
+
+@pytest.mark.parametrize('action', ['OPEN', 'ADD', 'HOLD', 'REDUCE'])
+def test_active_exposure_comparison_does_not_add_wire_actions_or_reset_scenario(action):
+    ctx = runner_context()
+    with pytest.raises(ValueError):
+        validate_wire_proposal(exposure_proposal(ctx, action), ctx)
+
+
+@pytest.mark.parametrize('action', ['WAIT', 'EXIT'])
+def test_pending_accounting_still_allows_safe_wait_or_full_exit_proposals(action):
+    ctx = runner_context()
+    ctx.update(accounting_status='pending', fees_paid=None, funding_paid=None, new_risk_blocked=True)
+    result = validate_scenario(validate_wire_proposal(exposure_proposal(ctx, action), ctx), ctx)
+    assert result['action'] == action
