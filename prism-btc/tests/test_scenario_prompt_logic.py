@@ -229,3 +229,83 @@ def test_pending_accounting_still_allows_safe_wait_or_full_exit_proposals(action
     ctx.update(accounting_status='pending', fees_paid=None, funding_paid=None, new_risk_blocked=True)
     result = validate_scenario(validate_wire_proposal(exposure_proposal(ctx, action), ctx), ctx)
     assert result['action'] == action
+
+
+def test_prompt_compares_directions_without_inheriting_one_sided_wait_veto():
+    text = ' '.join(SYSTEM_PROMPT.split())
+    assert 'no active scenario, compare LONG, SHORT and WAIT on equal terms' in text
+    assert 'Failure of a LONG condition is neither proof of a SHORT edge nor a veto on SHORT' in text
+    assert 'Apply the same test in reverse' in text
+    assert 'Previous direction-specific waiting conditions are not shared entry requirements' in text
+
+
+def test_prompt_reassesses_zero_fill_without_imaginary_confirmation_orders():
+    text = ' '.join(SYSTEM_PROMPT.split())
+    assert 'pending entries even when filled quantity is zero' in text
+    assert 'retain the existing limit, replan entry/TP/SL/quantity, or cancel' in text
+    assert 'zero chase allowance is not a command to keep an obsolete plan forever' in text
+    assert 'ADJUST with empty entries cannot enable chase for an older entry' in text
+    assert 'touching a limit price is NOT confirmation of a rebound or breakout' in text
+    assert 'If genuine additional confirmation is required, WAIT' in text
+    assert 'WAIT + cancel_entry_ids and await exact cancellation; bare WAIT leaves it live' in text
+    assert 'marketable LIMIT may be proposed' in text
+    assert 'WAIT does not renew expiry or change chase' in text
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_flat_direction_comparison_keeps_both_real_wire_actions_available(side):
+    ctx = context()
+    proposal = wire(ctx, 'OPEN')
+    proposal.update(side=side, entries=[dict(id='entry', price=60000, quantity=.001)])
+    if side == 'SHORT':
+        proposal.update(hard_stop=61000, take_profits=[dict(id='tp', price=59000, fraction=.5)])
+    result = validate_scenario(validate_wire_proposal(proposal, ctx), ctx)
+    assert result['side'] == side and result['risk']['within_budget']
+    assert result['risk']['budget'] == 200
+
+
+@pytest.mark.parametrize('action', ['OPEN', 'ADJUST'])
+def test_unfilled_active_scenario_cannot_flip_direction(action):
+    ctx = context(True)
+    ctx.update(positions=[], pending_entries=[dict(id='pending', price=60000, quantity=.001)])
+    proposal = wire(ctx, action)
+    proposal.update(side='SHORT', hard_stop=61000,
+                    entries=[dict(id='reverse', price=60000, quantity=.001)],
+                    take_profits=[dict(id='tp', price=59000, fraction=.5)])
+    with pytest.raises(ValueError):
+        validate_scenario(validate_wire_proposal(proposal, ctx), ctx)
+
+
+def test_unfilled_pending_can_be_kept_cancelled_or_replanned_without_budget_reset():
+    ctx = context(True)
+    ctx.update(positions=[], pending_entries=[dict(id='pending', price=60000, quantity=.001)])
+    keep = exposure_proposal(ctx, 'WAIT')
+    assert validate_scenario(validate_wire_proposal(keep, ctx), ctx)['action'] == 'WAIT'
+    cancel = dict(keep, cancel_entry_ids=['pending'])
+    assert validate_scenario(validate_wire_proposal(cancel, ctx), ctx)['cancel_entry_ids'] == ['pending']
+    replace = wire(ctx, 'ADJUST')
+    replace.update(entries=[dict(id='replacement', price=60100, quantity=.001)],
+                   cancel_entry_ids=['pending'])
+    result = validate_scenario(validate_wire_proposal(replace, ctx), ctx)
+    assert result['risk']['budget'] == 200
+    expected = risk_snapshot(initial_equity=10000, side='LONG', hard_stop=59000,
+        positions=[], pending_entries=ctx['pending_entries'], entries=replace['entries'],
+        realized_loss=0, fees_paid=0, funding_paid=0, estimated_cost_rate=.0012, slippage_bps=10)
+    assert result['risk'] == expected
+    replace['hard_stop'] = 58000
+    with pytest.raises(ValueError):
+        validate_scenario(validate_wire_proposal(replace, ctx), ctx)
+
+
+def test_empty_entry_adjust_does_not_activate_chase_on_older_pending_order(tmp_path):
+    from tests.test_scenario_execution import live as fixture, persist
+    broker, exchange = fixture.__wrapped__(tmp_path)
+    broker.clock = lambda: exchange.now
+    broker.execute(persist(broker, chase=dict(max_bps=0, max_reprices=0)), 'a1')
+    broker.execute(persist(broker, action_id='a2', action='ADJUST', entries=[],
+                           chase=dict(max_bps=20, max_reprices=1)), 'a2')
+    exchange.now += 61
+    observed = broker.capture_account()
+    observed['ticker']['ask1Price'] = '100.1'
+    broker._autochase(broker._active(), observed)
+    assert [kind for kind, _ in exchange.writes] == ['place']
