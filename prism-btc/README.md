@@ -39,7 +39,7 @@ shadow/demo의 4시간 확정 판단은 기존 `btc_signal_log`와 함께 versio
 않습니다.
 
 forward return·MFE·MAE Evidence Packet 생성과 전략 실험 계약은
-[`docs/BTC_STRATEGY_EVIDENCE_ko.md`](../docs/BTC_STRATEGY_EVIDENCE_ko.md)를 참고하십시오.
+`docs/BTC_STRATEGY_EVIDENCE_ko.md` (2026-10-05 삭제, git 이력에서 조회)를 참고하십시오.
 
 신규 전략의 미래참조와 indicator startup drift는 배포 전에 다음 audit으로 검사합니다.
 
@@ -50,11 +50,11 @@ cd prism-btc
 ```
 
 검토한 오픈소스 프레임워크와 채택·보류 근거는
-[`docs/BTC_OPEN_SOURCE_RESEARCH_ko.md`](../docs/BTC_OPEN_SOURCE_RESEARCH_ko.md)에 기록합니다.
+`docs/BTC_OPEN_SOURCE_RESEARCH_ko.md` (2026-10-05 삭제, git 이력에서 조회)에 기록합니다.
 
 Bybit demo/live 주문의 send→ACK와 ACK→reconcile 지연은 `btc_execution_samples`에
 원문 order ID 없이 기록합니다. p50~p99 Evidence Packet과 해석 계약은
-[`docs/BTC_EXECUTION_LATENCY_ko.md`](../docs/BTC_EXECUTION_LATENCY_ko.md)를 참고하십시오.
+`docs/BTC_EXECUTION_LATENCY_ko.md` (2026-10-05 삭제, git 이력에서 조회)를 참고하십시오.
 자연 주문 표본이 부족할 때 쓰는 3일 demo-only ACK/cancel probe도 같은 문서에 있으며,
 포지션·미체결 주문이 없는 경우에만 5% 떨어진 PostOnly 주문을 즉시 취소합니다.
 
@@ -140,7 +140,7 @@ protective trailing,50% TP1, and a further runner-management package. A separate
 paired fixed20-lot study must not be interpreted as joint-account CAGR.
 
 This is **research only**, not a live strategy or complete production-main replay.
-The specification is `docs/BTC_ADAPTIVE_RETEST_CONTRACT_2026-09-06_ko.md` in the
+The specification is `docs/BTC_ADAPTIVE_RETEST_CONTRACT_2026-09-06_ko.md` (2026-10-05 삭제, git 이력에서 조회) in the
 repository root. It freezes146 portfolio trials, all raw signal cohorts, costs,
 delays, synthetic paths, partial liquidity, and a22-column statistical family.
 Previously observed2022–2025 data is not a fresh holdout. No candidate is activated.
@@ -170,7 +170,7 @@ before interpreting any report. A completed tool run does not prove profitabilit
 It tests explicitly prior MA-gap convergence, fresh crossing and first expansion,
 recent1h/4h transitions, graded initial sizing, and delayed/MA-based runner exits.
 Confirmed30m and causal developing5m snapshots are separate variants. The source
-specification is `docs/BTC_MA_TRANSITION_CONTRACT_2026-09-06_ko.md`.
+specification is `docs/BTC_MA_TRANSITION_CONTRACT_2026-09-06_ko.md` (2026-10-05 삭제, git 이력에서 조회).
 
 From a clean research worktree, use the existing Python3.12 backtest interpreter:
 
@@ -196,5 +196,5 @@ check, not a replacement for the frozen transition study or its34-column test.
 It requires a completed original run via `--reference-dir`, first registers a
 fresh `--output-dir --preregister-only`, and then verifies16 original5m controls
 before comparing16 idealized0-delay entry cases. Other checks/SL/exit delays stay
-at5m. See `docs/BTC_MA_ENTRY_LATENCY_DIAGNOSTIC_2026-09-06_ko.md`; do not interpret
+at5m. See `docs/BTC_MA_ENTRY_LATENCY_DIAGNOSTIC_2026-09-06_ko.md` (2026-10-05 삭제, git 이력에서 조회); do not interpret
 the ideal next-open price as actual sub-five-minute execution or an upper bound.
