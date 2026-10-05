@@ -63,6 +63,12 @@ def test_kr_message_and_add_entry_header():
     assert detect_market(text) == "kr"
 
 
+def test_readers_see_split_not_the_internal_micro_split_name():
+    scenario = _scenario(rationale="초분할 최초 비중으로 진입하고 돌파 시 증액합니다.")
+    text = _us(scenario=scenario)
+    assert "초분할" not in text and "분할 최초 비중으로 진입" in text
+
+
 def test_missing_prices_are_shown_as_unknown_without_a_percentage():
     text = render_buy_message(market="US", company_name="X", ticker="X", current_price=10.0,
                               scenario={"rationale": "근거"})

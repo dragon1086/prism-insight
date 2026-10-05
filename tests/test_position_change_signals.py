@@ -30,11 +30,13 @@ def test_add_message_is_plain_and_complete_kr_and_us():
                   "가속 구간: 오늘 두 번째 추가 매수 (최초 매수가 대비 +8.5%, 거래량 평소의 2.4배)\n"
                   "주문: 주문 접수(체결은 별도 확인)\n")
     en = live.add_message(market="US", company_name="Nvidia", ticker="NVDA", before=0.35, after=0.6, price=181.2,
-                          average=178.4, order_status="Submitted (fill not yet confirmed)", scenario=meta,
+                          average=178.4, order_status="주문 접수(체결은 별도 확인)", scenario=meta,
                           stop_loss=170)
-    assert en.startswith("📈 Position Add: Nvidia(NVDA)\nAllocation: 35% → 60% of one slot\nAdd Price: $181.20\n")
-    assert "Stop Loss: $170.00 (a stop exits the whole position)" in en
-    assert "Acceleration: second add today (+8.5% vs initial entry, volume 2.4x usual)" in en
+    # US is Korean too (the US channel is Korean); only the currency differs.
+    assert en == ("📈 추가 매수(비중 확대): Nvidia(NVDA)\n비중: 35% → 60% (1슬롯 기준)\n추가 매수가: $181.20\n"
+                  "평균 매수가: $178.40\n손절가: $170.00 (손절 시 전량 매도)\n근거: 돌파 조건 확인 — prior high reclaimed\n"
+                  "가속 구간: 오늘 두 번째 추가 매수 (최초 매수가 대비 +8.5%, 거래량 평소의 2.4배)\n"
+                  "주문: 주문 접수(체결은 별도 확인)\n")
     for text in (ko, en):
         assert "breakout_1" not in text and "초분할" not in text and "Micro-split" not in text
 
@@ -43,7 +45,7 @@ def test_add_order_status_hides_reason_codes():
     assert live.add_order_status({"success": True}, "KR") == "주문 접수(체결은 별도 확인)"
     below = {"success": False, "reason_code": "micro_split_add_below_one_share"}
     assert live.add_order_status(below, "KR") == "1주 미만이라 주문하지 않았습니다(전략 비중에는 반영)"
-    assert live.add_order_status(below, "US") == "Not placed: below one share (strategy allocation recorded)"
+    assert live.add_order_status(below, "US") == "1주 미만이라 주문하지 않았습니다(전략 비중에는 반영)"
     assert live.add_order_status({"success": False, "reason_code": "kis_rejected"}, "KR") == \
         "주문이 접수되지 않았습니다(전략 비중에는 반영)"
 

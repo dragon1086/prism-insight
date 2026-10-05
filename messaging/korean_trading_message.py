@@ -84,6 +84,7 @@ def _fix_particle(match):
 
 def _render_prose(text: str) -> str:
     text = text.replace('매수 Score:', '매수 점수:')
+    text = text.replace('초분할', '분할')  # internal policy name; readers know 분할 (2026-10-06)
     text = text.replace('실제 매매:', '전략 원장 거래:')
     text = text.replace('최근 매도 주의:', '매도 이력·경험 참고:')
     text = re.sub(r'(?<=결정: )Enter\b', '매수 판단', text)

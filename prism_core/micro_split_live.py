@@ -268,7 +268,7 @@ def entry_message_block(scenario, market):
         adds = labels
     else:
         adds = ["증액 조건은 다음 보유 점검에서 정합니다"]
-    head = f"🧩 초분할: 1슬롯의 {pct}%로 시작{tilted}" + (", 조건 확인 시 증액" if labels and plan_adds_enabled(market) else "")
+    head = f"🧩 분할 매수: 1슬롯의 {pct}%로 시작{tilted}" + (", 조건 확인 시 증액" if labels and plan_adds_enabled(market) else "")
     return [head] + [f"  • {line}" for line in adds] + ["  • 손절 시 전량 매도"]
 
 
@@ -384,19 +384,16 @@ _SCENARIO_SQL = {
 
 def add_order_status(result, market):
     """Plain order status for the add message (reason codes stay in logs and the add_executed event)."""
-    us = str(market).upper() == "US"
     if result.get("success"):
-        return "Submitted (fill not yet confirmed)" if us else "주문 접수(체결은 별도 확인)"
+        return "주문 접수(체결은 별도 확인)"
     if result.get("reason_code") == "micro_split_add_below_one_share":
-        return ("Not placed: below one share (strategy allocation recorded)" if us
-                else "1주 미만이라 주문하지 않았습니다(전략 비중에는 반영)")
-    return ("Not placed (strategy allocation recorded)" if us
-            else "주문이 접수되지 않았습니다(전략 비중에는 반영)")
+        return "1주 미만이라 주문하지 않았습니다(전략 비중에는 반영)"
+    return "주문이 접수되지 않았습니다(전략 비중에는 반영)"
 
 
 def add_message(*, market, company_name, ticker, before, after, price, average, order_status, scenario=None,
                 stop_loss=None):
-    """Telegram text for an executed in-slot add (KR Korean, US English like other US trade texts)."""
+    """Telegram text for an executed in-slot add, in Korean for both markets (the US channel is Korean too)."""
     from prism_core.add_plan import TYPE_LABELS
 
     old, new = round(before * 100), round(after * 100)
@@ -407,26 +404,17 @@ def add_message(*, market, company_name, ticker, before, after, price, average, 
 
     why = ""
     if scenario:
-        name = TYPE_LABELS.get(scenario.get("scenario_type"), ("", ""))[1 if us else 0]
+        name = TYPE_LABELS.get(scenario.get("scenario_type"), ("", ""))[0]
         rationale = (scenario.get("rationale") or "")[:80]
         if name:
-            why = (f"Why: {name} condition confirmed" if us else f"근거: {name} 조건 확인")
-            why += (f" — {rationale}" if rationale else "") + "\n"
+            why = f"근거: {name} 조건 확인" + (f" — {rationale}" if rationale else "") + "\n"
         if scenario.get("rail") == "ACCELERATION":
             accel = scenario.get("acceleration") or {}
             gain, pace = accel.get("gain_pct"), accel.get("volume_pace")
-            facts = ((f" (+{gain:.1f}% vs initial entry, volume {pace:.1f}x usual)" if us else
-                      f" (최초 매수가 대비 +{gain:.1f}%, 거래량 평소의 {pace:.1f}배)") if gain is not None and pace else "")
-            why += (f"Acceleration: second add today{facts}\n" if us else
-                    f"가속 구간: 오늘 두 번째 추가 매수{facts}\n")
-    stop = ""
-    if stop_loss:
-        stop = (f"Stop Loss: {money(float(stop_loss))} (a stop exits the whole position)\n" if us else
-                f"손절가: {money(float(stop_loss))} (손절 시 전량 매도)\n")
-    if us:
-        return (f"📈 Position Add: {company_name}({ticker})\n"
-                f"Allocation: {old}% → {new}% of one slot\nAdd Price: {money(price)}\n"
-                f"Average Entry: {money(average)}\n{stop}{why}Order: {order_status}\n")
+            facts = (f" (최초 매수가 대비 +{gain:.1f}%, 거래량 평소의 {pace:.1f}배)"
+                     if gain is not None and pace else "")
+            why += f"가속 구간: 오늘 두 번째 추가 매수{facts}\n"
+    stop = f"손절가: {money(float(stop_loss))} (손절 시 전량 매도)\n" if stop_loss else ""
     return (f"📈 추가 매수(비중 확대): {company_name}({ticker})\n"
             f"비중: {old}% → {new}% (1슬롯 기준)\n추가 매수가: {money(price)}\n"
             f"평균 매수가: {money(average)}\n{stop}{why}주문: {order_status}\n")
