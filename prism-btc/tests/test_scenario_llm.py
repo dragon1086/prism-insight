@@ -180,3 +180,129 @@ def test_assembled_prompt_omits_historical_narratives_without_mutating_audit():
     assert sent['recent_waits'] == [{'as_of_ms': 990000, 'confidence': .5}]
     assert sent['recent_actions'] == [{'action': 'OPEN', 'status': 'DONE'}]
     assert ctx == original
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('choice', ['open_split', 'adjust_split', 'retain_far', 'missing_levels'])
+def test_assembled_obstacle_review_and_valid_management_choices(side, choice):
+    """Contract/transport test with scripted responses, not an LLM behavior test."""
+    from live.scenario_preview import response_contract
+    sign = 1 if side == 'LONG' else -1
+    ctx = context(choice != 'open_split')
+    ctx.update(side=side, mark_price=60000, previous_hard_stop=60000-sign*500,
+               positions=[] if choice == 'open_split' else [dict(price=60000, quantity=.01)])
+    action = 'OPEN' if choice == 'open_split' else 'ADJUST'
+    if choice in ('retain_far', 'missing_levels'):
+        action = 'WAIT'
+    result = wire(ctx, action)
+    if action in ('OPEN', 'ADJUST'):
+        result.update(side=side, hard_stop=60000-sign*400,
+                      take_profits=[dict(id='near', price=60000+sign*190, fraction=.4),
+                                    dict(id='extended', price=60000+sign*500, fraction=.3)])
+    ctx['current_plan'] = {'take_profits': [dict(id='old-far', price=60000+sign*500, fraction=1)]}
+    snapshot = {'valid': True, 'as_of_ms': 1000000, 'timeframes': {}}
+    if choice != 'missing_levels':
+        snapshot['timeframes']['4h'] = {'forming': {'ma35': 60000+sign*200}}
+    original = json.loads(json.dumps(ctx))
+    calls = []
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(result))
+    parsed = propose(snapshot, ctx, response_contract(ctx), generate=generate, clock=lambda: 1000)
+    accepted = validate_scenario(parsed, ctx)
+    assert accepted['action'] == action
+    assert ctx == original
+    sent = json.loads(calls[0]['user_prompt'])
+    assert sent['market_snapshot'] == snapshot
+    assert sent['contract_context']['current_plan'] == ctx['current_plan']
+    policy = ' '.join(calls[0]['system_prompt'].split())
+    for rule in (
+        'On every OPEN, holding review and ADJUST',
+        'available 4h/12h/1d/1w MA10/35',
+        'NOT a veto does not mean ignore exit obstacles',
+        'potential reaction zone, not guaranteed strong support/resistance',
+        'trivial moving-MA drift',
+        'For SHORT, a nearer TP is higher and an extended TP lower; reverse for LONG',
+        'retaining an all-size TP beyond a material obstacle',
+        'including a holding WAIT that leaves that TP unchanged',
+        'name the relevant available higher-frame obstacle',
+        'Missing levels do not force ADJUST',
+    ):
+        assert rule in policy
+    if action in ('OPEN', 'ADJUST'):
+        assert sum(tp['fraction'] for tp in accepted['take_profits']) == pytest.approx(.7)
+        assert accepted['risk']['budget'] == 200
+        assert sign * (accepted['take_profits'][0]['price']-60000) < 200
+        assert sign * (accepted['take_profits'][1]['price']-60000) > 200
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_obstacle_tp_revision_keeps_halted_protection_and_stop_guard(side):
+    sign = 1 if side == 'LONG' else -1
+    ctx = context(True)
+    ctx.update(side=side, mark_price=60000, previous_hard_stop=60000-sign*500,
+               positions=[dict(price=60000, quantity=.01)], new_risk_blocked=True)
+    result = wire(ctx, 'ADJUST')
+    result.update(side=side, hard_stop=60000-sign*400,
+                  take_profits=[dict(id='near', price=60000+sign*190, fraction=.5)])
+    def check():
+        parsed = propose({'valid': True, 'as_of_ms': 1000000}, ctx, {}, clock=lambda: 1000,
+                         generate=lambda **kwargs: SimpleNamespace(text=json.dumps(result)))
+        return validate_scenario(parsed, ctx)
+    assert check()['action'] == 'ADJUST'
+    result['entries'] = [dict(id='new-risk', price=60000, quantity=.001)]
+    with pytest.raises(ValueError):
+        check()
+    result['entries'] = []
+    result['hard_stop'] = 60000-sign*600
+    with pytest.raises(ValueError):
+        check()
+
+
+def test_assembled_prompt_keeps_reassessment_before_stop_and_safety_priority():
+    calls = []
+    ctx = context(True)
+    ctx.update(accounting_status='pending', new_risk_blocked=True)
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(wire(ctx)))
+    accepted = propose({'valid': True, 'as_of_ms': 1000000}, ctx, {}, clock=lambda: 1000,
+                       generate=generate)
+    assert validate_scenario(accepted, ctx)['action'] == 'WAIT'
+    policy = ' '.join(calls[0]['system_prompt'].split())
+    assert 'SHORT upward thresholds below the effective hard stop' in policy
+    assert 'LONG downward thresholds above the effective hard stop' in policy
+    assert 'at or beyond that stop belongs to post-exit/new-scenario assessment' in policy
+    assert 'Never delay the hard stop for a reassessment condition' in policy
+    assert 'Safety/accounting restrictions take priority over this explanation' in policy
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_assembled_stop_geometry_uses_proposed_not_superseded_stop(side):
+    """Specification regression: prose geometry is not a new host validator."""
+    sign = 1 if side == 'LONG' else -1
+    old_stop = 60000-sign*800
+    proposed_stop = 60000-sign*500
+    stale_review = 60000-sign*650
+    valid_review = 60000-sign*400
+    assert sign*(stale_review-old_stop) > 0
+    assert sign*(stale_review-proposed_stop) < 0
+    assert sign*(valid_review-proposed_stop) > 0
+    ctx = context(True)
+    ctx.update(side=side, mark_price=60000, previous_hard_stop=old_stop,
+               positions=[dict(price=60000, quantity=.01)])
+    result = wire(ctx, 'ADJUST')
+    result.update(side=side, hard_stop=proposed_stop,
+                  take_profits=[dict(id='tp', price=60000+sign*500, fraction=.5)])
+    calls = []
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(result))
+    parsed = propose({'valid': True, 'as_of_ms': 1000000}, ctx, {}, clock=lambda: 1000,
+                     generate=generate)
+    assert validate_scenario(parsed, ctx)['hard_stop'] == proposed_stop
+    policy = ' '.join(calls[0]['system_prompt'].split())
+    assert 'WAIT uses retained protection; OPEN/ADJUST uses the proposed hard stop' in policy
+    assert 'never the superseded stop when tightening' in policy
+    assert 'ordering does not guarantee a five-minute review before SL' in policy
+    assert 'MarkPrice can differ from the observed trade price' in policy
