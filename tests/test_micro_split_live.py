@@ -123,8 +123,8 @@ def test_display_lines_show_allocation_and_slot_weighted_pnl(live_on):
     assert live.allocation_line(pilot) == "비중 50% (1슬롯 기준)\n"
     assert live.allocation_line({"sector": "IT"}) == ""
     assert live.used_slots([json.dumps(scenario), "{}", pilot]) == pytest.approx(2.2777)
-    assert live.entry_message_block(scenario, "KR")[0].startswith("🧩 초분할: 1슬롯의 78%로 시작")
-    assert live.entry_message_block(scenario, "US")[0].startswith("🧩 초분할: 1슬롯의 78%로 시작")
+    assert live.entry_message_block(scenario, "KR")[0].startswith("🧩 분할 매수: 1슬롯의 78%로 시작")
+    assert live.entry_message_block(scenario, "US")[0].startswith("🧩 분할 매수: 1슬롯의 78%로 시작")
     assert live.entry_message_block({"sector": "IT"}, "KR") == []
 
 
@@ -215,11 +215,11 @@ def test_execute_add_updates_row_orders_delta_and_reports(live_on, monkeypatch, 
     assert order["strict_budget"] is True and order["limit_price"] == price
     assert "50% → 80%" in agent.message_queue[0] and agent._msg_types == ["analysis"]
     text = agent.message_queue[0]
-    assert ("Why: breakout condition confirmed" if market == "US" else "근거: 돌파 조건 확인") in text
+    assert "근거: 돌파 조건 확인" in text
     assert "prior high reclaimed" in text and "breakout_1" not in text  # no internal scenario id
-    assert (f"Stop Loss: ${price * 0.93:,.2f} (a stop exits the whole position)" if market == "US"
+    assert (f"손절가: ${price * 0.93:,.2f} (손절 시 전량 매도)" if market == "US"
             else f"손절가: {price * 0.93:,.0f}원 (손절 시 전량 매도)") in text
-    assert ("Order: Submitted (fill not yet confirmed)" if market == "US" else "주문: 주문 접수(체결은 별도 확인)") in text
+    assert "주문: 주문 접수(체결은 별도 확인)" in text
     assert result["announced"] is True
     name, kw = emitted[0]
     assert name == "micro_split.add_executed"
@@ -515,7 +515,7 @@ def test_conviction_tilt_reaches_every_consumer(live_on, monkeypatch, market, tr
     assert live.dashboard_fields(scenario, buy_price=10000, current_price=10500)["allocation"] == pytest.approx(0.5888)
     assert "initial 59% (top-setup tilt from 39%)" in live.journal_position_line(scenario)
     head = live.entry_message_block(scenario, market)[0]
-    assert head.startswith("🧩 초분할: 1슬롯의 59%로 시작 (상위 셋업 가중, 기본 39%에서 상향)")
+    assert head.startswith("🧩 분할 매수: 1슬롯의 59%로 시작 (상위 셋업 가중, 기본 39%에서 상향)")
     # The BUY targets (written for the 39% initial) are rebased by +20%p in code; the rails then
     # judge each step against the tilted first leg (0.70 -> 0.90 is a 0.31 step and stays dropped).
     stored = block["add_plan"]

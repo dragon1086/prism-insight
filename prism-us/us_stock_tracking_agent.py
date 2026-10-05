@@ -3976,7 +3976,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             from prism_core.reentry_v3_live import holding_tag as reentry_holding_tag
             runner_today = runner_local_today("US", datetime.now().astimezone()).isoformat()
             if holdings and _used < len(holdings):
-                message += f"🔸 사용 비중: {_used:.2f}/{self.max_slots} 슬롯 (초분할·시험매수 반영)\n"
+                message += f"🔸 사용 비중: {_used:.2f}/{self.max_slots} 슬롯 (분할 매수·시험매수 반영)\n"
 
             # Best profit/loss stock information (if any)
             if holdings and len(holdings) > 0:
