@@ -1266,16 +1266,16 @@ class USStockAnalysisOrchestrator:
         # Hybrid selection summary (regime + strategy)
         if market_regime and "hybrid" in selection_strategy:
             if language == "ko":
-                message += f"🧭 장기추세: {regime_label(primary_trend_regime)}"
+                message += f"🧭 장기추세: {regime_label(primary_trend_regime, code=False)}"
                 if swing_state:
-                    message += f" | 스윙: {swing_label(swing_state)}"
-                message += f" | 실행기준: {regime_label(market_regime)}"
+                    message += f" | 스윙: {swing_label(swing_state, code=False)}"
+                message += f" | 실행기준: {regime_label(market_regime, code=False)}"
                 message += f" | 선정: 탑다운 {topdown_count}종목 + 바텀업 {bottomup_count}종목\n"
             else:
-                message += f"🧭 Primary Trend: {regime_label(primary_trend_regime, 'en')}"
+                message += f"🧭 Primary Trend: {regime_label(primary_trend_regime, 'en', code=False)}"
                 if swing_state:
-                    message += f" | Swing: {swing_label(swing_state, 'en')}"
-                message += f" | Execution: {regime_label(market_regime, 'en')}"
+                    message += f" | Swing: {swing_label(swing_state, 'en', code=False)}"
+                message += f" | Execution: {regime_label(market_regime, 'en', code=False)}"
                 message += f" | Selection: Top-Down {topdown_count} + Bottom-Up {bottomup_count}\n"
 
         message += "\n"
