@@ -267,6 +267,9 @@ def _get_kis_auth():
     return ka
 
 # Create MCPApp instance
+# Korean label for the AI target/stop adjustment direction in the channel message.
+_DIRECTION_KO = {"upward": "상향", "downward": "하향", "maintained": "유지"}
+
 class _LazyMCPApp:
     """Construct mcp-agent only when legacy mode or fallback actually needs it."""
 
@@ -2981,7 +2984,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         direction = "downward"
                     else:
                         direction = "maintained"
-                    update_message += f"Target: ${target_price_num:,.2f} ({direction})\n"
+                    update_message += f"목표가: ${target_price_num:,.2f}로 {_DIRECTION_KO[direction]}조정\n"
                     logger.info(f"{ticker} Target price AI {direction} adjustment: ${target_price_num:,.2f} (prev: ${old_target_price:,.2f})")
 
             # Adjust stop-loss
@@ -3024,7 +3027,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             direction = "downward"
                         else:
                             direction = "maintained"
-                        update_message += f"Stop Loss: ${stop_loss_num:,.2f} ({direction})\n"
+                        update_message += f"손절가: ${stop_loss_num:,.2f}로 {_DIRECTION_KO[direction]}조정\n"
                         logger.info(f"{ticker} Stop-loss AI {direction} adjustment: ${stop_loss_num:,.2f} (prev: ${old_stop_loss:,.2f})")
 
             if db_updated:
@@ -3061,13 +3064,13 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     logger.warning(f"{ticker} Failed to log US portfolio adjustment (non-critical): {log_err}")
 
                 urgency_emoji = {"high": "🚨", "medium": "⚠️", "low": "💡"}.get(urgency, "🔄")
-                message = f"{urgency_emoji} Portfolio Adjustment: {company_name}({ticker})\n"
+                message = f"{urgency_emoji} 포트폴리오 조정: {company_name}({ticker})\n"
                 message += update_message
-                message += f"Reason: {adjustment_reason}\n"
-                message += f"Urgency: {urgency.upper()}\n"
+                message += f"AI 제안 근거: {adjustment_reason}\n"
+                message += f"긴급도: {urgency.upper()}\n"
                 if analysis_summary:
-                    message += f"Technical Trend: {analysis_summary.get('technical_trend', 'N/A')}\n"
-                    message += f"Market Impact: {analysis_summary.get('market_condition_impact', 'N/A')}"
+                    message += f"기술적 추세: {analysis_summary.get('technical_trend', 'N/A')}\n"
+                    message += f"시장 환경 영향: {analysis_summary.get('market_condition_impact', 'N/A')}"
                 self._msg_types.append("portfolio")
                 self.message_queue.append(message)
                 logger.info(f"{ticker} AI-based portfolio adjustment complete: {update_message.strip()}")
@@ -3481,29 +3484,29 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             if holding_days == 0:
                 holding_minutes = int(holding_period.total_seconds() // 60)
                 hours, minutes = divmod(holding_minutes, 60)
-                holding_period_text = f"{hours}h {minutes}m" if holding_minutes else "<1 minute"
+                holding_period_text = f"{hours}시간 {minutes}분" if holding_minutes else "1분 미만"
             else:
-                holding_period_text = f"{holding_days} {'day' if holding_days == 1 else 'days'}"
+                holding_period_text = f"{holding_days}일"
 
             # This simulator record does not confirm broker fills or realized P&L.
             arrow = "⬆️" if profit_rate > 0 else "⬇️" if profit_rate < 0 else "➖"
             from prism_core.runner_hold import public_reason, sell_message_line
-            message = f"📉 Sell: {company_name}({ticker})\n" \
-                      f"Buy Price: ${buy_price:,.2f}\n" \
-                      f"Sell Price: ${current_price:,.2f}\n" \
-                      f"Strategy/Reference Return: {arrow} {abs(profit_rate):.2f}%\n" \
-                      "Simulator prices; not broker-confirmed realized P&L\n" \
-                      f"Holding Period: {holding_period_text}\n" \
-                      f"Sell Reason: {public_reason(sell_reason)}"
+            message = f"📉 매도: {company_name}({ticker})\n" \
+                      f"매수가: ${buy_price:,.2f}\n" \
+                      f"매도가: ${current_price:,.2f}\n" \
+                      f"수익률(전략 기준): {arrow} {abs(profit_rate):.2f}%\n" \
+                      "시뮬레이터 가격 기준이며 증권사 확정 실현손익이 아닙니다\n" \
+                      f"보유기간: {holding_period_text}\n" \
+                      f"매도이유: {public_reason(sell_reason)}"
             from prism_core.micro_split_live import allocation_line
-            _alloc = allocation_line(scenario_json, profit_rate=profit_rate, market="US")
+            _alloc = allocation_line(scenario_json, profit_rate=profit_rate, market="US", language="ko")
             if _alloc:
                 message += "\n" + _alloc.rstrip("\n")
-            _runner_line = sell_message_line(scenario_json, language="en")
+            _runner_line = sell_message_line(scenario_json, language="ko")
             if _runner_line:
                 message += "\n" + _runner_line
             from prism_core.reentry_v3_live import holding_tag
-            _reentry_line = holding_tag(scenario_json, "US")
+            _reentry_line = holding_tag(scenario_json, "US", language="ko")
             if _reentry_line:
                 message += "\n" + _reentry_line.rstrip("\n")
 
@@ -3968,7 +3971,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             message = f"📊 프리즘 US 시뮬레이터 | 실시간 포트폴리오 ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n\n"
 
             # 1. Portfolio summary
-            message += f"🔸 Current Holdings: {len(holdings) if holdings else 0}/{self.max_slots}\n"
+            message += f"🔸 현재 보유: {len(holdings) if holdings else 0}/{self.max_slots}개\n"
             from prism_core.micro_split_live import allocation_line, used_slots
             _used = used_slots([h.get("scenario") for h in holdings or []])
             from prism_core.runner_hold import local_today as runner_local_today
@@ -4001,7 +4004,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             sector_counts = {}
 
             if holdings and len(holdings) > 0:
-                message += "🔸 Holdings List:\n"
+                message += "🔸 보유 종목:\n"
                 for stock in holdings:
                     ticker = stock.get('ticker', '')
                     company_name = stock.get('company_name', '')
@@ -4031,8 +4034,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     days_passed = (datetime.now() - buy_datetime).days
 
                     message += f"- {company_name}({ticker}) [{sector}]\n"
-                    message += f"  Buy: ${buy_price:.2f} / Current: ${current_price:.2f}\n"
-                    message += f"  Target: ${target_price:.2f} / Stop: ${stop_loss:.2f}\n"
+                    message += f"  매수가: ${buy_price:,.2f} / 현재가: ${current_price:,.2f}\n"
+                    message += f"  목표가: ${target_price:,.2f} / 손절가: ${stop_loss:,.2f}\n"
                     message += f"  수익률: {arrow} {profit_rate:.2f}% / 보유기간: {days_passed}일\n"
                     message += allocation_line(scenario_str, profit_rate=profit_rate, current_price=current_price,
                                                market="US", language="ko", indent="  ")
@@ -4041,13 +4044,13 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     message += "\n"
 
                 # Add sector distribution
-                message += "🔸 Sector Distribution:\n"
+                message += "🔸 섹터 분포:\n"
                 for sector, count in sector_counts.items():
                     percentage = (count / len(holdings)) * 100
                     message += f"- {sector}: {count}개 ({percentage:.1f}%)\n"
                 message += "\n"
             else:
-                message += "No holdings.\n\n"
+                message += "현재 보유 종목이 없습니다.\n\n"
 
             # 3. Trading history statistics
             message += "🔸 매매 이력 통계\n"
@@ -4063,10 +4066,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             message += f"- 누적 수익률: {total_profit:.2f}%\n\n"
 
             # 4. Enhanced Disclaimer
-            message += "📝 Important Notice:\n"
-            message += "- This report is an AI-based simulation result and is not related to actual trading.\n"
-            message += "- This information is for reference only. Investment decisions and responsibilities lie solely with the investor.\n"
-            message += "- This channel is not a trading room and does not recommend buying/selling specific stocks."
+            message += "📝 주의사항:\n"
+            message += "- 본 리포트는 AI 기반 시뮬레이션 결과이며 실제 매매와 무관합니다.\n"
+            message += "- 본 정보는 참고용이며, 투자 결정과 책임은 전적으로 투자자에게 있습니다.\n"
+            message += "- 본 채널은 종목 추천 및 매매 방이 아닙니다."
 
             return message
 

@@ -36,14 +36,12 @@ def test_runner_detection_sends_one_notice_with_the_stop_move_on_the_primary_acc
     assert asyncio.run(L.review_holding(agent, market, stock, now=now)) is None
     assert len(agent.message_queue) == 1 and agent._msg_types == ["analysis"]
     text = agent.message_queue[0]
-    if market == "KR":
-        assert text.startswith("🏃 주도주 전환: Leader(T)\n")
-        assert "매수 후 6거래일째 종가가 매수가 대비 +21.0%로 주도주로 판정했습니다." in text
-        assert "손절가: 110원 → 매수가 100원" in text and "또는 매수가 아래로 마감하기 전까지 보유합니다 (~" in text
-        assert "목표가 도달·과열·단기 추세 이탈로는 팔지 않습니다." in text
-    else:
-        assert text.startswith("🏃 Runner Hold: Leader(T)\n")
-        assert "Stop Loss: $110.00 → entry $100.00" in text and "Held until a close below the 50-day MA" in text
+    # Korean for both markets; only the currency differs.
+    stop = "손절가: 110원 → 매수가 100원" if market == "KR" else "손절가: $110.00 → 매수가 $100.00"
+    assert text.startswith("🏃 주도주 전환: Leader(T)\n")
+    assert "매수 후 6거래일째 종가가 매수가 대비 +21.0%로 주도주로 판정했습니다." in text
+    assert stop in text and "또는 매수가 아래로 마감하기 전까지 보유합니다 (~" in text
+    assert "목표가 도달·과열·단기 추세 이탈로는 팔지 않습니다." in text
     for jargon in ("R5", "RUNNER", "runner-hold", "L97", "SHADOW"):
         assert jargon not in text
     # Second review: nothing changes, so nothing is announced again.
@@ -99,7 +97,7 @@ def test_extended_phase_notice_and_public_sell_reason():
     text = R.notice(block, market="KR", company_name="A", ticker="1", today="2026-10-05", detected=False,
                     stop_change=(93.0, 100.0), ma50=95.0)
     assert "보유 기한이 지나 20일선, 50일선(95원) 또는 매수가 아래로 마감하면 매도합니다." in text
-    en = R.notice(block, market="US", company_name="A", ticker="A", today="2026-09-01", detected=True, ma50=None)
-    assert "Held until a close below the 50-day MA or below the entry (through 10/01)." in en
+    us = R.notice(block, market="US", company_name="A", ticker="A", today="2026-09-01", detected=True, ma50=None)
+    assert "50일선 또는 매수가 아래로 마감하기 전까지 보유합니다 (~10/01)." in us
     assert R.public_reason("RUNNER_MA50: 주도주 보유 규칙 매도 — 종가") == "주도주 보유 규칙 매도 — 종가"
     assert R.public_reason("TIER1_STOPLOSS: x") == "TIER1_STOPLOSS: x" and R.public_reason(None) == ""
