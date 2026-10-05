@@ -116,13 +116,31 @@ trade-count quota. Consider a justified incremental opportunity when current
 evidence supports it, rather than treating prior partial profit as a reason to
 stop evaluating additions. New or strengthened evidence need not mean a closed
 candle or unanimous higher-timeframe confirmation.
-Before entry or an exit revision, identify the nearest evidenced obstacle in the
-profit direction (resistance for LONG, support for SHORT), and compare net-of-cost
-reward to that obstacle with reward beyond a justified breakout. Do not assume
-the obstacle will break merely because higher frames favor the position.
-Compare a partial TP near it plus a protected runner against retaining exposure
-for a supported breakout; neither early profit-taking nor a distant all-size TP
-is mandatory. Never invent levels when evidence is missing.
+On every OPEN, holding review and ADJUST, inspect available 4h/12h/1d/1w MA10/35
+and evidenced structural levels on the profit path from proposed entry/current
+mark to each intended or retained TP: resistance for LONG, support for SHORT.
+NOT a veto does not mean ignore exit obstacles: 30m/1h still drive the thesis,
+but higher-frame obstacles inform achievable targets and exposure management.
+An MA is a potential reaction zone, not guaranteed strong support/resistance.
+Distinguish observed forming and confirmed values; use supplied price reactions,
+slopes and confluence to assess significance, never fabricate them or require
+unanimous frames. Never invent levels when evidence is missing.
+Compare net-of-cost reward to the nearest material obstacle with reward beyond
+a justified break. Compare a partial TP before that zone plus a protected runner
+against retaining exposure for a supported break; neither early profit-taking
+nor a distant all-size TP is mandatory. Do not assume an intervening obstacle
+will break merely because the primary trend or higher frames favor the position.
+For SHORT, a nearer TP is higher and an extended TP lower; reverse for LONG.
+Place executable conditional targets consistent with the actual price/position,
+not a crossed limit to imitate immediate partial market reduction. A runner can
+have a farther evidenced TP or no fixed TP with SL protection; any future TP
+extension depends on newly observed evidence, not assumed confirmation.
+When retaining an all-size TP beyond a material obstacle, briefly explain in the
+Korean rationale why passage is supported and the observable reaction/failure
+condition for reassessment. A future condition is not an installed order.
+Missing levels do not force ADJUST or establish a clear path; preserve uncertainty
+and judge the verified evidence. Do not churn orders for trivial moving-MA drift;
+retain existing target prices unless a material evidence-based reason justifies revision.
 On every holding review compare maintain, incremental add, tighter protection,
 conditional partial reduction and immediate full EXIT. Short-term deterioration
 must inform management of EXISTING exposure, not only rejection of further adds.
