@@ -33,16 +33,21 @@ SWING_EN = {
 }
 
 
-def regime_label(value: str | None, language: str = "ko") -> str:
+def _label(labels: dict, value: str | None, code: bool) -> str:
     token = str(value or "unknown")
-    labels = REGIME_KO if language == "ko" else REGIME_EN
-    return f"{labels.get(token, token)}({token})"
+    if code:
+        return f"{labels.get(token, token)}({token})"
+    # Channel text: no internal code. Telegram Markdown reads "_" in moderate_bull/trend_up
+    # as italics, which garbles or rejects the message, so an unmapped code loses it too.
+    return labels.get(token, token.replace("_", " "))
 
 
-def swing_label(value: str | None, language: str = "ko") -> str:
-    token = str(value or "unknown")
-    labels = SWING_KO if language == "ko" else SWING_EN
-    return f"{labels.get(token, token)}({token})"
+def regime_label(value: str | None, language: str = "ko", *, code: bool = True) -> str:
+    return _label(REGIME_KO if language == "ko" else REGIME_EN, value, code)
+
+
+def swing_label(value: str | None, language: str = "ko", *, code: bool = True) -> str:
+    return _label(SWING_KO if language == "ko" else SWING_EN, value, code)
 
 
 __all__ = ["regime_label", "swing_label"]
