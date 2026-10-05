@@ -27,7 +27,8 @@ with patch.object(socket.socket, "connect", forbidden), patch("dotenv.load_doten
     from cores import us_surge_detector as provider
     from prism_core import us_stock_universe as universe
     from observability import oneil_watchlist
-    symbols = ["AAA", "BBB", "CCC", "FUND", "TINY", "SHELL", "UNKNOWN"]
+    symbols = ["AAA", "BBB", "CCC", "FUND", "TINY", "SHELL", "UNKNOWN", "CEF", "VISA"]
+    name_only = {"CEF", "VISA"}  # directory rows like "Visa Inc." state no security type
     calls = []
     def download(tickers, **kwargs):
         calls.append(tickers)
@@ -59,9 +60,11 @@ with patch.object(socket.socket, "connect", forbidden), patch("dotenv.load_doten
         if symbol == "TINY": info["marketCap"] = 1e6
         if symbol == "SHELL": info["industry"] = "Shell Companies"
         if symbol == "UNKNOWN": info.pop("marketCap")
+        if symbol == "CEF": info["industry"] = "Asset Management"
         if shape == "metadata_empty": info = {}
         return SimpleNamespace(info=info,fast_info={"marketCap":info.get("marketCap",0)})
-    records = [universe.UniverseRecord(s,s+" Common Stock","NASDAQ") for s in symbols]
+    records = [universe.UniverseRecord(s,s+(" Inc." if s in name_only else " Common Stock"),"NASDAQ",
+                                       s not in name_only) for s in symbols]
     with patch.object(universe,"fetch_universe",return_value=universe.UniverseResult(records,{"fixture":7})), \
          patch.object(provider.yf,"download",side_effect=download), \
          patch.object(provider.yf,"Ticker",side_effect=ticker), \
@@ -69,7 +72,7 @@ with patch.object(socket.socket, "connect", forbidden), patch("dotenv.load_doten
         result = batch.run_batch(mode,"ERROR",output,override_date="20260914")
         payload = json.loads(Path(output).read_text())
         selected = {s for frame in result.values() for s in frame.index}
-        assert not selected.intersection({"FUND","TINY","SHELL","UNKNOWN"})
+        assert not selected.intersection({"FUND","TINY","SHELL","UNKNOWN","CEF"})
         if shape == "metadata_empty":
             assert not selected
             assert payload["metadata"]["universe_eligibility"]["metadata_status"] == "PARTIAL"
@@ -79,12 +82,13 @@ with patch.object(socket.socket, "connect", forbidden), patch("dotenv.load_doten
             assert "오류" in message
         elif shape not in {"empty","ambiguous"}:
             assert selected, "Must exercise real candidate selection, not just empty output"
-            expected_eligible = 2 if shape == "low_turnover" else 3
+            expected_eligible = 3 if shape == "low_turnover" else 4  # + VISA
             assert payload["metadata"]["universe_eligibility"]["eligible_count"] == expected_eligible
             assert payload["metadata"]["universe_eligibility"]["liquidity_floor_usd"] == 50000000
-            assert payload["metadata"]["snapshot_coverage"]["comparable_count"] == 7
+            assert payload["metadata"]["snapshot_coverage"]["comparable_count"] == 9
             assert payload["metadata"]["universe_eligibility"]["metadata_status"] == "PARTIAL"
             assert {"trigger":"Universe Eligibility", "error_type":"IncompleteMetadata"} in payload["metadata"]["trigger_errors"]
+            assert payload["metadata"]["universe_eligibility"]["exclusion_reasons"]["unverified_fund_like"] == 1
         else:
             assert not selected
             assert payload["metadata"]["snapshot_coverage"]["comparable_count"] == 0

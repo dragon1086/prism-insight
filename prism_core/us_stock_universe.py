@@ -13,6 +13,7 @@ from datetime import date, datetime
 import csv
 import io
 import math
+import os
 import re
 
 import requests
@@ -32,10 +33,17 @@ _PREFERRED_SECURITY = re.compile(
     r"(?:stock|shares|securities)\b|\bdepositary shares\b.*\b(?:preferred|preference)\b",
     re.IGNORECASE,
 )
+# Directory wording varies: singular forms (ASND "Ordinary Share"), registry and
+# voting shares (ASML, SHOP), capital stock (GOOG) and doubled spaces all occur.
 _COMMON_NAME = re.compile(
-    r"\b(?:common (?:stock|shares)|ordinary shares|american depositary (?:shares|receipts)|"
-    r"american depository (?:shares|receipts)|ADR|ADS)\b", re.IGNORECASE,
+    r"\b(?:common\s+(?:stock|shares?)|ordinary\s+shares?|capital\s+stock|"
+    r"american\s+deposit[ao]ry\s+(?:shares?|receipts?)|ADRs?|ADSs?|"
+    r"registry\s+shares|registered\s+shares|voting\s+shares|class\s+[A-Z]\s+shares?)\b",
+    re.IGNORECASE,
 )
+# Name-only rows ("Visa Inc.") carry no security type; closed-end funds listed
+# that way report quoteType EQUITY with an asset-management industry (BDJ, ASA).
+_FUND_LIKE_INDUSTRY = re.compile(r"\basset management\b", re.IGNORECASE)
 _FUND_INDUSTRY = re.compile(
     r"\b(?:shell companies|closed[ -]end|exchange[ -]traded|mutual fund|"
     r"investment funds?|investment trusts?|blank[ -]check|SPAC)\b", re.IGNORECASE,
@@ -47,6 +55,7 @@ class UniverseRecord:
     symbol: str
     name: str
     exchange: str
+    name_verified: bool = True  # False: name states no security type (see eligibility_reason)
 
 
 @dataclass
@@ -100,12 +109,15 @@ def _rows(text: str, nasdaq: bool) -> tuple[list[dict[str, str]], date]:
     return rows, created_date
 
 
-def parse_directories(nasdaq_text: str, other_text: str) -> UniverseResult:
+def parse_directories(nasdaq_text: str, other_text: str,
+                      admit_unverified_names: bool = True) -> UniverseResult:
     """Parse both complete sources; malformed sources never silently degrade.
 
-    Counts include source_rows, eligible_directory and excluded_<reason>. Symbols
-    ending in W/R/U are NOT guessed to be derivatives. Only explicit names and
-    flags establish security type; unknown names are excluded conservatively.
+    Counts include source_rows, eligible_directory, unverified_name and
+    excluded_<reason>. Symbols ending in W/R/U are NOT guessed to be derivatives.
+    Explicitly non-common names are excluded. Names that state no security type
+    (V "Visa Inc.", TSM) are admitted with name_verified=False, so the stricter
+    metadata check decides; admit_unverified_names=False excludes them instead.
     """
     records = []
     counts = Counter(source_rows=0, eligible_directory=0)
@@ -138,16 +150,19 @@ def parse_directories(nasdaq_text: str, other_text: str) -> UniverseResult:
                 reason = "financial_status"
             elif _excluded_security_name(name):
                 reason = "security_type"
-            elif not _COMMON_NAME.search(name):
-                reason = "unknown_security_type"
             elif not re.fullmatch(r"[A-Z][A-Z0-9]{0,9}(?:[.-][A-Z])?", raw):
                 reason = "unsupported_symbol"
+            elif not _COMMON_NAME.search(name) and not admit_unverified_names:
+                reason = "unknown_security_type"
             if reason:
                 counts[f"excluded_{reason}"] += 1
                 continue
+            name_verified = bool(_COMMON_NAME.search(name))
             exchange = "NASDAQ" if nasdaq else {"N": "NYSE", "A": "AMEX"}[row["Exchange"]]
-            records.append(UniverseRecord(symbol, name, exchange))
+            records.append(UniverseRecord(symbol, name, exchange, name_verified))
             counts["eligible_directory"] += 1
+            if not name_verified:
+                counts["unverified_name"] += 1
     return UniverseResult(records, dict(counts))
 
 
@@ -162,19 +177,23 @@ def fetch_universe() -> UniverseResult:
         response = requests.get(url, timeout=(5, 20))
         response.raise_for_status()
         texts.append(response.text)
-    return parse_directories(texts[0], texts[1])
+    admit = os.getenv("US_UNIVERSE_ADMIT_UNVERIFIED_NAMES", "true").strip().lower() != "false"
+    return parse_directories(texts[0], texts[1], admit_unverified_names=admit)
 
 
 def _positive_finite(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0
 
 
-def eligibility_reason(info: Mapping, min_market_cap_usd: float) -> str | None:
+def eligibility_reason(info: Mapping, min_market_cap_usd: float,
+                       name_verified: bool = True) -> str | None:
     """Return exclusion reason, or None only for complete individual-equity info.
 
     Must follow the directory filter. Yahoo quoteType alone is insufficient (some
-    closed-end funds also say EQUITY). Missing sector/industry is unknown, not a
-    healthy-company judgment. No earnings/debt thresholds are invented here.
+    closed-end funds also say EQUITY), so a record whose directory name states no
+    security type (name_verified=False) is also rejected in asset-management
+    industries. Missing sector/industry is unknown, not a healthy-company
+    judgment. No earnings/debt thresholds are invented here.
     """
     if not _positive_finite(min_market_cap_usd):
         raise ValueError("An explicit finite positive USD market-cap minimum is required")
@@ -196,6 +215,8 @@ def eligibility_reason(info: Mapping, min_market_cap_usd: float) -> str | None:
         or re.search(r"\b(?:shell company|blank[ -]check|SPAC)\b", name, re.IGNORECASE)
     ):
         return "non_operating_equity"
+    if not name_verified and _FUND_LIKE_INDUSTRY.search(industry):
+        return "unverified_fund_like"
     if info.get("fundFamily") or info.get("legalType") or info.get("category"):
         return "fund_metadata"
     cap = info.get("marketCap")

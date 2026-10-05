@@ -1616,6 +1616,7 @@ def _load_screening_inputs(trade_date):
         raise ValueError('Invalid expanded-universe market-cap threshold')
     universe = fetch_universe()
     tickers = _prioritized_universe(record.symbol for record in universe.records)
+    unverified_names = {record.symbol for record in universe.records if not record.name_verified}
     shortlist, screen, screen_diagnostic = _kis_price_shortlist(tickers, minimum)
     if shortlist is not None:
         tickers = shortlist
@@ -1703,7 +1704,7 @@ def _load_screening_inputs(trade_date):
         if info is None:
             reason = 'metadata_unavailable'
         else:
-            reason = eligibility_reason(info, minimum)
+            reason = eligibility_reason(info, minimum, name_verified=ticker not in unverified_names)
             if any(info.get(key) is None for key in ('quoteType', 'exchange', 'currency', 'marketCap')):
                 reason = 'missing_metadata'
         if reason:
