@@ -347,6 +347,12 @@ class ScenarioDemoBroker(ScenarioExecution):
             cursor-=interval
         if {e["timestamp"] for e in events}!=expected:
             raise BrokerNotReady("funding_schedule_event_missing")
+        # Optional source retention; never add audit fields to the business result.
+        try:
+            self._audit_funding_source = dict(raw_rows=rows, instruments=instruments,
+                next_funding_time=next_time, observed_at=time.time())
+        except Exception:
+            pass
         return dict(start_ms=start_ms,end_ms=end_ms,complete=True,events=events)
 
     def _accounting(self,observed,active,children):
@@ -362,8 +368,14 @@ class ScenarioDemoBroker(ScenarioExecution):
                 raise BrokerNotReady("child_accounting_evidence_missing")
             owned.append(dict(order_id=c["order_id"],role="entry" if c["kind"]=="entry" else "exit",
                 side=c["request"]["side"],cumulative_qty=float(c["evidence"]["order"]["cumExecQty"]),terminal=c["status"]=="TERMINAL"))
+        schedule=self._funding_schedule(start,end,observed)
         result=reconcile_scenario(active["scenario_id"],evidence,owned,observed,
-            funding_schedule=self._funding_schedule(start,end,observed))
+            funding_schedule=schedule)
+        from live.scenario_provenance import record
+        record("accounting_observation", dict(financial_evidence=evidence, owned_orders=owned,
+            children=children, observation=observed, funding_schedule=schedule,
+            funding_source=getattr(self,"_audit_funding_source",None), result=result),
+            scenario_id=active["scenario_id"])
         self._save("scenario_accounting",result)
         return result
 
@@ -448,6 +460,8 @@ class ScenarioDemoBroker(ScenarioExecution):
     def reconcile(self):
         observed=self.capture_account()
         active=self._active()
+        from live.scenario_provenance import bind
+        bind(active.get("scenario_id") if active else None)
         if not active:
             if self.execution_enabled:
                 self._daily(observed)

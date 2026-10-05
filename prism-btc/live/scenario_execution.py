@@ -93,10 +93,14 @@ class ScenarioExecution:
         self._identity()  # Includes endpoint recheck on every mutation.
         if method not in {"place_order", "cancel_order", "set_trading_stop", "amend_order"}:
             self._fail("unsupported_scenario_mutation")
+        from live.scenario_provenance import exchange_call, observed_time
+        started = observed_time()
         try:
             response = getattr(self.session, method)(**params)
         except Exception:
+            exchange_call(method, params, started)
             self._fail("submission_unknown")
+        exchange_call(method, params, started, response=response)
         if not isinstance(response, dict) or response.get("retCode") != 0:
             self._fail("submission_unconfirmed")
         return response
@@ -324,6 +328,8 @@ class ScenarioExecution:
 
     def execute(self,payload,intent_id):
         from live.shared_entry_coordinator import mutation_lock
+        from live.scenario_provenance import bind
+        bind(payload.get("scenario_id"), intent_id)
         with mutation_lock(self.conn):
             batch=self.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id=?",(intent_id,)).fetchone()
             if batch and batch[0]=="INTERRUPTED":

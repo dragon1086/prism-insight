@@ -10,6 +10,7 @@ from collections import Counter
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import sqlite3
@@ -30,6 +31,7 @@ OUTCOMES = {"wait", "submitted", "pending", "reconciled", "halted", "blocked",
             "intent_pending", "duplicate_slot", "execution_disabled", "fenced"}
 STATUSES = {"QUEUED", "SENDING", "SENT", "UNKNOWN", "FAILED", "SUPPRESSED"}
 TERMINAL = {"Filled", "Cancelled", "Rejected", "Deactivated", "PartiallyFilledCanceled"}
+OPTIONAL = ("llm_scenario_broker_notices", "llm_scenario_audit_manifests", "llm_scenario_audit_events")
 
 
 def canonical(value):
@@ -79,6 +81,8 @@ def _read(db):
         require(set(QUERIES) | {"btc_meta"} <= names)
         data = {name: sorted((dict(r) for r in conn.execute(query)), key=canonical)
                 for name, query in QUERIES.items()}
+        for name in OPTIONAL:
+            data[name] = sorted((dict(r) for r in conn.execute("SELECT * FROM " + name)), key=canonical) if name in names else []
         data["binding"] = [dict(r) for r in conn.execute(
             "SELECT value FROM btc_meta WHERE mode='demo' AND key='shared_entry_policy_v1'")]
         conn.rollback()
@@ -210,8 +214,283 @@ def _scenario(sid, intents, children, settlement, proposals, asof, start, seen):
                            if recorded else "NO_EXECUTIONS_OBSERVED" if not fills else "OPEN_OR_UNSETTLED"),
                 stored_settlement_checks_passed=recorded, recorded_settlement_amounts=amounts,
                 independent_accounting_complete=False, settlement_timestamp=None,
+                last_execution_timestamp=max((v[2] for v in fills.values()), default=None),
                 first_observed_time=first, open_decision_slot_start=min(open_starts) if open_starts else None,
                 cohort=cohort, issues=sorted(issues))
+
+
+def _notice_links(sid, data):
+    links, conflict = [], False
+    notices = [r for r in data["llm_scenario_broker_notices"] if r.get("scenario_id") == sid]
+    for row in notices:
+        try:
+            event = object_json(row["body"])
+            require(event.get("event_id") == row["event_id"])
+            require(sum(r.get("event_id") == row["event_id"] for r in data["llm_scenario_broker_notices"]) == 1)
+            matches = [r for r in data["llm_scenario_outbox"] if r["event_id"] == row["event_id"]]
+            require(len(matches) <= 1)
+            outbox = matches[0] if matches else {}
+            require(not outbox or outbox["kind"] == event["kind"])
+            kind = event["kind"] if event["kind"] in {"FILLED", "PARTIAL", "PROTECTION", "CLOSED", "PENDING", "RESOLVED"} else "OTHER"
+            status = outbox.get("status", "NOT_ENQUEUED")
+            links.append(dict(event_ref=digest(row["event_id"]), kind=kind,
+                status=status if status in STATUSES or status == "NOT_ENQUEUED" else "OTHER",
+                receipt_confirmed=status == "SENT" and type(outbox.get("message_id")) is int and outbox["message_id"] > 0))
+        except (ValueError, TypeError, KeyError):
+            conflict = True
+    return dict(notice_links=links, notice_link_status="CONFLICT" if conflict else "LINKED" if links else "MISSING")
+
+
+def _accounting_source(sid, body, scenario, ledger_children):
+    """Re-run the production pure calculator, plus raw funding-source checks.
+
+    This is source re-reconciliation, NOT an independent accounting algorithm.
+    The existing exporter separately verifies average-cost PnL and execution fees.
+    """
+    evidence, owned = body["financial_evidence"], body["owned_orders"]
+    schedule, source = body["funding_schedule"], body["funding_source"]
+    raw, instruments = source["raw_rows"], source["instruments"]
+    start, end = number(schedule["start_ms"]), number(schedule["end_ms"])
+    require(schedule.get("complete") is True and 0 < end-start <= 7*86400000 and len(raw) < 200)
+    require(len(instruments) == 1 and instruments[0].get("symbol") == "BTCUSDT")
+    interval = number(instruments[0]["fundingInterval"]) * 60000
+    cursor = number(source["next_funding_time"])
+    require(interval >= 60000 and cursor > end and cursor-end <= interval)
+    expected = set()
+    cursor -= interval
+    while cursor >= start:
+        if cursor <= end:
+            expected.add(cursor)
+        cursor -= interval
+    actual = {}
+    for row in raw:
+        require(row.get("symbol") == "BTCUSDT")
+        when = number(row["fundingRateTimestamp"])
+        require(when not in actual and start <= when <= end)
+        actual[when] = number(row["fundingRate"])
+    normalized = {number(r["timestamp"]): number(r["rate"]) for r in schedule["events"]}
+    require(len(normalized) == len(schedule["events"]) and actual == normalized and set(actual) == expected)
+    require(number(evidence["start_ms"]) == start and number(evidence["end_ms"]) == end)
+    trades = evidence["trades"]
+    require(len({r["execution_id"] for r in trades}) == len(trades))
+    require({digest(r["execution_id"]) for r in trades} == set(scenario["execution_refs"]))
+    children = body["children"]
+    require(all(r.get("scenario_id") == sid for r in children))
+    ledger_by_order = {r["order_id"]: r for r in ledger_children}
+    require({r["order_id"] for r in children} == set(ledger_by_order))
+    for child in children:
+        stored = ledger_by_order[child["order_id"]]
+        require(child["intent_id"] == stored["intent_id"] and child["link_id"] == stored["link_id"]
+                and child["kind"] == stored["kind"])
+        require(child["evidence"]["executions"] == object_json(stored["evidence"])["executions"])
+    require({r["order_id"] for r in children} == {r["order_id"] for r in owned})
+    raw_executions = {}
+    for child in children:
+        proof = child["evidence"]
+        for execution in proof["executions"]:
+            require(execution["execId"] not in raw_executions)
+            raw_executions[execution["execId"]] = execution
+    require(set(raw_executions) == {r["execution_id"] for r in trades})
+    require(all(raw_executions[r["execution_id"]] == r["raw_execution"] for r in trades))
+    source_path = Path(__file__).resolve().parents[1] / "prism-btc/live/scenario_accounting.py"
+    spec = importlib.util.spec_from_file_location("_packet_accounting", source_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    result = module.reconcile_scenario(sid, evidence, owned, body["observation"], funding_schedule=schedule)
+    require(result.get("accounting_complete") is True and result == body["result"])
+    if scenario["stored_settlement_checks_passed"]:
+        require(result.get("settlement", {}).get("scenario_id") == sid)
+        for key, value in scenario["recorded_settlement_amounts"].items():
+            require(abs(number(result[key])-number(value)) <= Decimal("0.00000001"))
+    return dict(status="SOURCE_RECONCILIATION_VERIFIED", algorithm="PRODUCTION_CALCULATOR_RERUN_PLUS_EXPORTER_PNL_AND_RAW_SOURCE_CHECKS",
+                calculator_source_sha256=hashlib.sha256(source_path.read_bytes()).hexdigest(),
+                source_ref=digest(body), funding_coverage="RAW_SOURCE_VERIFIED",
+                financial_refs=sorted(digest(r["execution_id"]) for r in trades),
+                funding_refs=sorted(digest(r["transaction_id"]) for r in evidence["funding"]))
+
+
+def _accounting_candidate(sid, body, scenario, ledger_children):
+    current = {r["order_id"]: r for r in ledger_children}
+    past = body["children"]
+    require(len({r["order_id"] for r in past}) == len(past))
+    require({r["order_id"] for r in past} <= set(current))
+    past_executions = {}
+    for child in past:
+        stored = current[child["order_id"]]
+        require(child["scenario_id"] == sid and all(child[k] == stored[k] for k in ("intent_id", "link_id", "kind")))
+        current_execs = {r["execId"]: r for r in object_json(stored["evidence"])["executions"]}
+        for execution in child["evidence"]["executions"]:
+            eid = execution["execId"]
+            require(eid not in past_executions and current_execs.get(eid) == execution)
+            past_executions[eid] = execution
+    trades = body["financial_evidence"]["trades"]
+    require(len({r["execution_id"] for r in trades}) == len(trades))
+    pending = body.get("result", {}).get("status") == "pending" and body["result"].get("accounting_complete") is False
+    trade_ids = {r["execution_id"] for r in trades}
+    require(trade_ids <= set(past_executions) if pending else trade_ids == set(past_executions))
+    require(all(past_executions[r["execution_id"]] == r["raw_execution"] for r in trades))
+    refs = {digest(eid) for eid in past_executions}
+    require(refs <= set(scenario["execution_refs"]))
+    complete = refs == set(scenario["execution_refs"]) and {r["order_id"] for r in past} == set(current)
+    if pending:
+        return False  # Captured missing fees/funding is unproven, not contradictory.
+    if scenario["stored_settlement_checks_passed"]:
+        complete = complete and body.get("result", {}).get("settlement") is not None
+        complete = complete and all(r.get("terminal") is True for r in body["owned_orders"])
+        complete = complete and body["observation"].get("open_orders") == []
+    return complete
+
+
+def _audit_links(sid, scenario, data):
+    rows = [r for r in data["llm_scenario_audit_events"] if r.get("scenario_id") == sid]
+    # Initial decision and exchange mutation events can precede a scenario FK.
+    # Only exact durable IDs/input IDs may attach them; proximity never does.
+    ledger_children = [r for r in data["llm_scenario_children"] if r["scenario_id"] == sid]
+    decisions = [r for r in data["llm_scenario_decisions"] if r.get("proposal")
+                 and object_json(r["proposal"]).get("scenario_id") == sid]
+    for row in data["llm_scenario_audit_events"]:
+        if row.get("scenario_id") is not None:
+            continue
+        try:
+            body = object_json(row["body"])
+            if row["kind"] == "decision_input" and any(
+                    r["slot"] == row["decision_slot"] and body.get("input_id")
+                    == object_json(r["proposal"]).get("input_id")
+                    == object_json(r["context"]).get("input_id") for r in decisions):
+                rows.append(row)
+            elif row["kind"] == "exchange_call":
+                request = body.get("request", {})
+                ids = {value for value in (request.get("orderId"), body.get("order_id")) if value}
+                link = request.get("orderLinkId")
+                matches = [c for c in data["llm_scenario_children"] if
+                           (ids and c["order_id"] in ids) or (link and c["link_id"] == link)]
+                if matches and {c["scenario_id"] for c in matches} == {sid}:
+                    rows.append(row)
+        except (ValueError, TypeError, KeyError):
+            continue  # Unlinked optional events cannot establish any evidence.
+    result = dict(provenance_status="MISSING", provenance_issues=[], audit_event_refs=[], code_versions=[],
+                  code_version_status="OBSERVED_CHECKOUT_ONLY_NOT_VERIFIED_DEPLOYMENT",
+                  policy_hashes=[], execution_hashes=[], policy_groups=[], loaded_code_status="UNKNOWN",
+                  loaded_code_verification_scope="SELECTED_FUNCTION_BYTECODE_AND_LITERAL_CONFIG_ONLY",
+                  audit_links=[], judgement_policy_hashes=[], execution_policy_hashes=[],
+                  environment_hashes=[],
+                  accounting_source_check=dict(status="MISSING", funding_coverage="MISSING", financial_refs=[], funding_refs=[]))
+    manifests, policies, executions, versions, groups, loaded = {}, set(), set(), set(), set(), set()
+    accounting_candidates = []
+    try:
+        for row in data["llm_scenario_audit_manifests"]:
+            ident = row["manifest_id"]
+            require(ident not in manifests)
+            manifest = object_json(row["body"])
+            require(ident == digest(manifest))
+            manifests[ident] = manifest
+        require(len({r["event_id"] for r in data["llm_scenario_audit_events"]}) == len(data["llm_scenario_audit_events"]))
+        for row in rows:
+            body = object_json(row["body"])
+            require(body.get("schema_version") == 1)
+            require(not body.get("scenario_id") or body["scenario_id"] == sid)
+            require(not row.get("intent_id") or digest(row["intent_id"]) in scenario["intent_refs"])
+            manifest = manifests.get(row["manifest_id"])
+            if manifest is None:
+                result["provenance_issues"].append("MISSING_MANIFEST")
+                continue
+            loaded.add(manifest.get("loaded_code_status", "UNKNOWN"))
+            for field, values in (("policy_hash", policies), ("execution_hash", executions)):
+                value = manifest.get(field)
+                require(isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value))
+                values.add(value)
+            revision = manifest.get("git_revision")
+            if revision is not None:
+                require(isinstance(revision, str) and len(revision) == 40 and all(c in "0123456789abcdef" for c in revision))
+                versions.add(revision)
+            environment_hash = digest({k: manifest.get(k) for k in ("python", "libraries")})
+            result["environment_hashes"].append(environment_hash)
+            groups.add(digest({k: manifest.get(k) for k in ("policy_hash", "execution_hash", "git_revision", "source_hashes", "loaded_code_status", "python", "libraries")}))
+            result["audit_event_refs"].append(digest(row["event_id"]))
+            link = dict(event_ref=digest(row["event_id"]), run_ref=digest(row["run_id"]),
+                        kind=row["kind"] if row["kind"] in {"decision_input", "intent_committed", "exchange_call", "accounting_observation", "settlement_recorded"} else "OTHER",
+                        manifest_ref=digest(row["manifest_id"]), observed_at=float(number(row["observed_at"])))
+            if row["kind"] == "decision_input":
+                durable = [r for r in data["llm_scenario_decisions"] if r["slot"] == row["decision_slot"]]
+                require(len(durable) == 1)
+                decision = durable[0]
+                context = object_json(decision["context"])
+                snapshot = object_json(decision["snapshot"])
+                proposal = object_json(decision["proposal"]) if decision.get("proposal") else {}
+                require(isinstance(body["input_id"], str) and body["input_id"])
+                require(body["input_id"] == context.get("input_id"))
+                require(not proposal or proposal.get("input_id") == body["input_id"])
+                require(canonical(body["snapshot"]) == canonical(snapshot) and canonical(body["context"]) == canonical(context))
+                associated = {value for value in (context.get("scenario_id"), proposal.get("scenario_id")) if value}
+                require(associated == {sid})
+                require(body["input_id_hash"] == digest(body["input_id"]))
+                require(body["snapshot_hash"] == digest(body["snapshot"]) and body["context_hash"] == digest(body["context"]))
+                link.update(input_ref=digest(body["input_id"]), snapshot_hash=body["snapshot_hash"], context_hash=body["context_hash"])
+                result["judgement_policy_hashes"].append(manifest["policy_hash"])
+            if row["kind"] == "intent_committed":
+                matching = [r for r in data["llm_scenario_intents"] if r["id"] == row["intent_id"] and r["scenario_id"] == sid]
+                require(len(matching) == 1 and body["payload"] == object_json(matching[0]["payload"]))
+                for name in ("payload", "risk", "initial_equity", "pending_entries"):
+                    require(body[name + "_hash"] == digest(body[name]))
+                link.update(intent_ref=digest(row["intent_id"]), risk_hash=body["risk_hash"],
+                            pending_entries_hash=body["pending_entries_hash"], payload_hash=body["payload_hash"])
+            if row["kind"] == "exchange_call":
+                require(body["request_hash"] == digest(body["request"]))
+                require(body["status"] in {"ACK_ONLY", "UNKNOWN"})
+                ids = {value for value in (body["request"].get("orderId"), body.get("order_id")) if value}
+                order_link = body["request"].get("orderLinkId")
+                matches = [c for c in data["llm_scenario_children"] if
+                           (ids and c["order_id"] in ids) or (order_link and c["link_id"] == order_link)]
+                native = (body.get("method") == "set_trading_stop" and row.get("scenario_id") == sid
+                          and body["request"].get("symbol") == "BTCUSDT" and body["request"].get("positionIdx") == 0
+                          and not ids and not order_link)
+                require(native or (matches and {c["scenario_id"] for c in matches} == {sid}))
+                require(not ids or ids <= {c["order_id"] for c in matches})
+                require(not order_link or {c["link_id"] for c in matches} == {order_link})
+                link.update(status=body["status"], request_hash=body["request_hash"])
+                result["execution_policy_hashes"].append(manifest["execution_hash"])
+            result["audit_links"].append(link)
+            if row["kind"] == "settlement_recorded":
+                require(scenario["stored_settlement_checks_passed"] and body["settlement"]["scenario_id"] == sid)
+                require(sorted(digest(v) for v in body["settlement"]["execution_ids"]) == scenario["execution_refs"])
+                for key, value in scenario["recorded_settlement_amounts"].items():
+                    require(number(body["settlement"][key]) == number(value))
+                detected = float(number(body["detected_at"]))
+                require(detected == float(number(row["observed_at"])) and detected >= (scenario["last_execution_timestamp"] or 0))
+                require(scenario["settlement_timestamp"] in (None, detected))
+                scenario["settlement_timestamp"] = detected
+            if row["kind"] == "accounting_observation":
+                # Historical snapshots may precede unfilled replacement children
+                # or terminal cancellation. Validate shared immutable IDs first;
+                # only full-current coverage can prove cumulative accounting.
+                if _accounting_candidate(sid, body, scenario, ledger_children):
+                    checked = _accounting_source(sid, body, scenario, ledger_children)
+                    accounting_candidates.append((number(row["observed_at"]), checked))
+                else:
+                    link["accounting_scope"] = "HISTORICAL_PREFIX_NOT_CURRENT_PROOF"
+        if accounting_candidates:
+            latest = max(at for at, _ in accounting_candidates)
+            tied = [value for at, value in accounting_candidates if at == latest]
+            require(len({canonical(value) for value in tied}) == 1)
+            result["accounting_source_check"] = tied[0]
+        result.update(code_versions=sorted(versions), policy_hashes=sorted(policies), execution_hashes=sorted(executions), policy_groups=sorted(groups))
+        result["loaded_code_status"] = "MIXED" if "MIXED" in loaded else "VERIFIED" if loaded == {"VERIFIED"} else "UNKNOWN"
+        if rows:
+            result["provenance_status"] = "PARTIAL"
+            if result["loaded_code_status"] != "VERIFIED":
+                result["provenance_issues"].append("LOADED_CODE_NOT_PROVEN")
+            # Merely observing an active carry-in cannot complete its lifecycle.
+            # Decision/intent/run coverage still requires explicit audit below.
+            result["provenance_issues"].append("FULL_LIFECYCLE_RUN_COVERAGE_NOT_PROVEN")
+    except (ValueError, TypeError, KeyError, InvalidOperation, OverflowError):
+        result["provenance_status"] = "CONFLICT"
+        result["provenance_issues"].append("AUDIT_IDENTITY_OR_SOURCE_CONFLICT")
+        result["accounting_source_check"] = dict(status="CONFLICT", funding_coverage="MISSING", financial_refs=[], funding_refs=[])
+        scenario["settlement_timestamp"] = None
+    result["provenance_issues"] = sorted(set(result["provenance_issues"]))
+    for key in ("judgement_policy_hashes", "execution_policy_hashes", "environment_hashes"):
+        result[key] = sorted(set(result[key]))
+    return result
 
 
 def build_packet(db, prospective_start=None):
@@ -263,6 +542,9 @@ def build_packet(db, prospective_start=None):
                      [r for r in children if r["scenario_id"] == sid],
                      next((r for r in settlements if r["scenario_id"] == sid), None),
                      proposals, asof, start, seen) for sid in sorted(sids)]
+        for sid, scenario in zip(sorted(sids), scenarios):
+            scenario.update(_notice_links(sid, data))
+            scenario.update(_audit_links(sid, scenario, data))
         statuses = Counter()
         receipts = 0
         stage = "notice_statuses"
@@ -271,7 +553,21 @@ def build_packet(db, prospective_start=None):
             statuses[status] += 1
             receipts += int(status == "SENT" and type(row["message_id"]) is int and row["message_id"] > 0)
         packet.update(status="AVAILABLE", scenarios=scenarios, decision_outcomes=dict(outcomes),
-                      notice_statuses=dict(statuses), notice_receipts=receipts)
+                      notice_statuses=dict(statuses), notice_receipts=receipts,
+                      notice_scope="GLOBAL_OUTBOX_WITH_OPTIONAL_EXACT_SCENARIO_LINKS")
+        missing = set()
+        for scenario in scenarios:
+            if scenario["provenance_status"] != "COMPLETE":
+                missing.add("FULL_LIFECYCLE_PROVENANCE_NOT_COMPLETE")
+            if not scenario["independent_accounting_complete"]:
+                missing.add("INDEPENDENT_ACCOUNTING_NOT_COMPLETE")
+            if scenario["accounting_source_check"]["funding_coverage"] != "RAW_SOURCE_VERIFIED":
+                missing.update(("MISSING_FUNDING_SCHEDULE", "MISSING_FINANCIAL_SCENARIO_FK"))
+            if not scenario["code_versions"] or scenario["loaded_code_status"] != "VERIFIED":
+                missing.add("MISSING_TRADING_CODE_VERSION")
+            if scenario["settlement_timestamp"] is None:
+                missing.add("MISSING_SETTLEMENT_TIMESTAMP")
+        packet["insufficiency_reasons"] = sorted(missing) if scenarios else packet["insufficiency_reasons"]
     except FileNotFoundError:
         packet["input_error"] = "DATABASE_MISSING"
         packet["input_stage"] = stage

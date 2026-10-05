@@ -233,8 +233,12 @@ class ScenarioRuntime:
                     state["breaker"] = update_circuit_breaker(state["breaker"],
                         **{k: context[k] for k in ("day", "day_start_equity", "daily_net_pnl")},
                         completed_scenario_id=active["scenario_id"], completed_net_pnl=settlement["net_pnl"])
-                self.conn.execute("INSERT OR IGNORE INTO llm_scenario_settlements VALUES(?,?)",
+                inserted = self.conn.execute("INSERT OR IGNORE INTO llm_scenario_settlements VALUES(?,?)",
                                   (active["scenario_id"], _json(settlement)))
+                if inserted.rowcount == 1:
+                    from live.scenario_provenance import record
+                    record("settlement_recorded", {"settlement": settlement},
+                           scenario_id=active["scenario_id"])
                 state["active"] = None
                 state["version"] += 1
         self._save(state)
@@ -342,6 +346,9 @@ class ScenarioRuntime:
                                   (_json(snap), _json(ctx), slot))
                 self.conn.commit()
             stage = "proposal_call"
+            from live.scenario_provenance import record_hashed
+            record_hashed("decision_input", {"snapshot": snap, "context": ctx, "input_id": input_id},
+                          scenario_id=ctx.get("scenario_id"), decision_slot=slot)
             payload = self.propose(snap, ctx)  # No broker mutation lock held.
             # Audit-only write: an already-claimed slot is owned by this caller.
             # Persist the proposal even if independent protection owns the trading
@@ -381,6 +388,10 @@ class ScenarioRuntime:
                 self.conn.execute("INSERT INTO llm_scenario_intents VALUES(?,?,?,'PENDING',NULL)",
                                   (ident, validated["scenario_id"], _json(validated)))
                 self._save(state)  # Intent precedes the first exchange side effect.
+                record_hashed("intent_committed", {"payload": validated, "risk": validated.get("risk"),
+                              "initial_equity": fresh["initial_equity"],
+                              "pending_entries": fresh["pending_entries"]},
+                              scenario_id=validated["scenario_id"], intent_id=ident, decision_slot=slot)
                 if validated["action"] in {"OPEN","ADJUST"}:
                     entries=validated.get("entries",[])
                     quantity=sum(e["quantity"] for e in entries)

@@ -17,6 +17,7 @@ from live.scenario_preview import collect_snapshot, response_contract
 from live.scenario_runtime import ScenarioRuntime
 from live.shared_entry_coordinator import mutation_lock
 from live.entry_reservations import LockBusy
+from live.scenario_provenance import run_capture
 
 
 _FAILURE_STAGES = {"database_init", "control", "broker_init", "activation", "run"}
@@ -26,6 +27,13 @@ _ERROR_TYPES = {"Exception", "ValueError", "RuntimeError", "PermissionError", "T
 
 def run_once(conn, broker, *, execute=False, protect_only=False,
              snapshot=collect_snapshot, proposal=propose):
+    with run_capture(conn):
+        return _run_once(conn, broker, execute=execute, protect_only=protect_only,
+                         snapshot=snapshot, proposal=proposal)
+
+
+def _run_once(conn, broker, *, execute=False, protect_only=False,
+              snapshot=collect_snapshot, proposal=propose):
     if getattr(broker,"environment",None)!="demo" or getattr(broker,"lane",None)!="MAIN":
         return {"status":"blocked","reason":"demo_main_required"}
     if protect_only:
