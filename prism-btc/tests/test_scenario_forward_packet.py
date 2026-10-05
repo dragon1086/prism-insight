@@ -654,3 +654,13 @@ def test_five_minute_judgement_plus_one_minute_protection_domains(db):
     assert item["judgement_policy_hashes"] == ["a"*64]
     assert item["provenance_status"] == "PARTIAL"
     assert item["independent_accounting_complete"] is False
+
+
+def test_unmapped_event_never_uses_overall_verified_as_domain_proof(db):
+    audit_event(db, "unmapped", {})
+    update_manifest(db, loaded_code_status="VERIFIED", judgment_loaded_code_status="VERIFIED",
+                    execution_loaded_code_status="VERIFIED")
+    item = scenario(db)
+    assert item["loaded_code_status"] == "UNKNOWN"
+    assert item["audit_links"][0]["loaded_code_status"] == "UNKNOWN"
+    assert item["manifest_loaded_code_statuses"] == ["VERIFIED"]

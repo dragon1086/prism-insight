@@ -356,7 +356,9 @@ def _event_loaded_status(manifest, kind):
                "exchange_call": ("execution_loaded_code_status",),
                "accounting_observation": ("execution_loaded_code_status",),
                "settlement_recorded": ("execution_loaded_code_status",)}
-    fields = domains.get(kind, ("loaded_code_status",))
+    fields = domains.get(kind)
+    if fields is None:
+        return "UNKNOWN"
     states = {manifest.get(field, "UNKNOWN") for field in fields}
     return "MIXED" if "MIXED" in states else "VERIFIED" if states == {"VERIFIED"} else "UNKNOWN"
 
