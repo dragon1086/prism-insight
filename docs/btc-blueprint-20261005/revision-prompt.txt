@@ -1,0 +1,2 @@
+2장 수정 프롬프트:
+Edit this Korean BTC engineering infographic only in section 5 risk panel. Preserve all other text, layout and style. Correct and ADD exact crucial validator constraint: '신규 주문이 있으면 R ≤ B 및 proposed_risk ≤ B × confidence'. Replace bare 'R ≤ B' bullet with that exact text, allocate two lines if needed. Add '신규 진입 없는 순수 보호 강화는 기존 초과위험 때문에 차단하지 않음.' Preserve risk formula, no profit replenishment, fixed10x. Also add a compact text line in section 7 or 8: 'TP/부분SL fraction 합계는 각각 ≤1, 부분SL은 hard SL 안쪽'. No changes to the other rules. Legible Korean.
