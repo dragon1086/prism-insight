@@ -583,3 +583,74 @@ def test_pending_missing_transaction_trade_then_full_proof(db):
     assert item["provenance_status"] == "PARTIAL"
     assert item["accounting_source_check"]["status"] == "SOURCE_RECONCILIATION_VERIFIED"
     assert len(item["accounting_source_check"]["calculator_source_sha256"]) == 64
+
+
+def update_manifest(db, **changes):
+    with sqlite3.connect(db) as conn:
+        old_id, raw = conn.execute("SELECT manifest_id,body FROM llm_scenario_audit_manifests").fetchone()
+        body = dict(json.loads(raw), **changes)
+        ident = packet.digest(body)
+        conn.execute("UPDATE llm_scenario_audit_manifests SET manifest_id=?,body=? WHERE manifest_id=?",
+                     (ident, json.dumps(body), old_id))
+        conn.execute("UPDATE llm_scenario_audit_events SET manifest_id=? WHERE manifest_id=?", (ident, old_id))
+
+
+@pytest.mark.parametrize("execution_status", ["VERIFIED", "UNKNOWN", "MIXED"])
+def test_protection_uses_execution_domain_not_unused_judgement(db, execution_status):
+    child(db)
+    child(db, "exit", "1", "110", "600000")
+    audit_event(db, "accounting_observation", accounting_body(db))
+    update_manifest(db, loaded_code_status="UNKNOWN", judgment_loaded_code_status="UNKNOWN",
+                    execution_loaded_code_status=execution_status)
+    item = scenario(db)
+    assert item["loaded_code_status"] == execution_status
+    assert item["audit_links"][0]["loaded_code_status"] == execution_status
+    assert item["provenance_status"] == "PARTIAL"
+    assert item["independent_accounting_complete"] is False
+    assert packet.build_packet(db)["auto_promotion"] is False
+
+
+def test_decision_only_uses_judgement_domain(db):
+    audit_event(db, "decision_input", hashed_body(snapshot={}, context={"input_id": "input-1"}, input_id="input-1"))
+    update_manifest(db, loaded_code_status="UNKNOWN", judgment_loaded_code_status="VERIFIED",
+                    execution_loaded_code_status="UNKNOWN")
+    assert scenario(db)["loaded_code_status"] == "VERIFIED"
+
+
+def test_intent_requires_both_domains(db):
+    with sqlite3.connect(db) as conn:
+        payload = json.loads(conn.execute("SELECT payload FROM llm_scenario_intents").fetchone()[0])
+    audit_event(db, "intent_committed", hashed_body(payload=payload, risk={}, initial_equity=1000, pending_entries=[]))
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE llm_scenario_audit_events SET intent_id='private-action'")
+    update_manifest(db, loaded_code_status="UNKNOWN", judgment_loaded_code_status="VERIFIED",
+                    execution_loaded_code_status="UNKNOWN")
+    assert scenario(db)["loaded_code_status"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("legacy", ["UNKNOWN", "MIXED", "VERIFIED"])
+def test_old_manifest_without_domain_proof_remains_unknown(db, legacy):
+    audit_event(db, "decision_input", hashed_body(snapshot={}, context={"input_id": "input-1"}, input_id="input-1"))
+    update_manifest(db, loaded_code_status=legacy)
+    assert scenario(db)["loaded_code_status"] == "UNKNOWN"
+    assert scenario(db)["manifest_loaded_code_statuses"] == [legacy]
+
+
+def test_five_minute_judgement_plus_one_minute_protection_domains(db):
+    child(db)
+    child(db, "exit", "1", "110", "600000")
+    audit_event(db, "decision_input", hashed_body(snapshot={}, context={"input_id": "input-1"}, input_id="input-1"), event_id="judgement")
+    audit_event(db, "accounting_observation", accounting_body(db), event_id="protection")
+    update_manifest(db, loaded_code_status="VERIFIED", judgment_loaded_code_status="VERIFIED", execution_loaded_code_status="VERIFIED")
+    with sqlite3.connect(db) as conn:
+        body = json.loads(conn.execute("SELECT body FROM llm_scenario_audit_manifests").fetchone()[0])
+        body.update(loaded_code_status="UNKNOWN", judgment_loaded_code_status="UNKNOWN")
+        ident = packet.digest(body)
+        conn.execute("INSERT INTO llm_scenario_audit_manifests VALUES(?,?)", (ident, json.dumps(body)))
+        conn.execute("UPDATE llm_scenario_audit_events SET manifest_id=? WHERE event_id='protection'", (ident,))
+    item = scenario(db)
+    assert item["loaded_code_status"] == "VERIFIED"
+    assert item["manifest_loaded_code_statuses"] == ["UNKNOWN", "VERIFIED"]
+    assert item["judgement_policy_hashes"] == ["a"*64]
+    assert item["provenance_status"] == "PARTIAL"
+    assert item["independent_accounting_complete"] is False

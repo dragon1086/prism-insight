@@ -1,6 +1,8 @@
 import json
 import sqlite3
 import time
+import subprocess
+import sys
 
 import pytest
 
@@ -224,6 +226,34 @@ def test_current_loaded_manifest_is_verified_after_policy_imports():
     manifest = audit._manifest()
     assert manifest['loaded_code_status'] == 'VERIFIED', manifest['loaded_code_checks']
     assert manifest['git_revision_status'] == 'OBSERVED_ONLY'
+
+
+def test_fresh_protection_process_uses_execution_parity_without_importing_judgment():
+    script = '''
+import json
+import socket
+import sys
+def forbidden(*args, **kwargs):
+    raise AssertionError("No network allowed")
+socket.socket.connect = forbidden
+socket.getaddrinfo = forbidden
+from live import scenario_runner, scenario_broker, scenario_provenance
+assert "live.scenario_contract" not in sys.modules
+assert "live.scenario_accounting" not in sys.modules
+before = scenario_provenance._manifest()
+assert before["execution_loaded_code_status"] == "UNKNOWN"
+# The actual protected accounting path imports this module, not the auditor.
+from live import scenario_accounting
+manifest = scenario_provenance._manifest()
+assert "live.scenario_contract" not in sys.modules
+print(json.dumps(manifest))
+'''
+    completed = subprocess.run([sys.executable, '-c', script], capture_output=True,
+                               text=True, check=True, timeout=15)
+    manifest = json.loads(completed.stdout)
+    assert manifest['loaded_code_status'] == 'UNKNOWN'
+    assert manifest['judgment_loaded_code_status'] == 'UNKNOWN'
+    assert manifest['execution_loaded_code_status'] == 'VERIFIED'
 
 
 def test_notice_only_edit_does_not_change_judgment_hash(monkeypatch):

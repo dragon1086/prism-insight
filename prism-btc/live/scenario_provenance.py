@@ -12,7 +12,8 @@ import json
 import logging
 from pathlib import Path
 import sqlite3
-import subprocess
+# Only fixed absolute git, read-only literal arguments, and no shell below.
+import subprocess  # nosec B404
 import sys
 import time
 import uuid
@@ -31,7 +32,7 @@ def _gap():
     try:
         logging.getLogger(__name__).warning('AUDIT_GAP')
     except Exception:
-        pass
+        return  # Logging failure must not replace a business result.
 
 
 def encoded(value):
@@ -125,6 +126,7 @@ def _manifest():
     execution_files = ['live/scenario_execution.py', 'live/scenario_accounting.py',
                        'core/scenario_limit_prices.py', 'core/llm_scenario.py']
     sources, policy, execution, parity = {}, {}, {}, {}
+    judgment_parity, execution_parity = {}, {}
     for name in policy_files + execution_files + ['live/scenario_runtime.py', 'live/scenario_broker.py']:
         path = root / name
         source = path.read_text()
@@ -133,8 +135,10 @@ def _manifest():
         selected_names = None
         if name in policy_files:
             policy[name] = ast.dump(tree, include_attributes=False)
+            judgment_parity[name] = _loaded_parity(name, source)
         elif name in execution_files:
             execution[name] = ast.dump(tree, include_attributes=False)
+            execution_parity[name] = _loaded_parity(name, source)
         else:
             context_name = '_context' if 'runtime' in name else 'context'
             execution_names = ({'_tick', '_reconcile', '_enabled'} if 'runtime' in name else
@@ -146,18 +150,27 @@ def _manifest():
             policy[name] = [ast.dump(node, include_attributes=False) for node in selected]
             execution[name] = [ast.dump(node, include_attributes=False) for node in ast.walk(tree)
                                if isinstance(node, ast.FunctionDef) and node.name in execution_names]
+            judgment_parity[name] = _loaded_parity(name, source, {context_name})
+            execution_parity[name] = _loaded_parity(name, source, execution_names)
         parity[name] = _loaded_parity(name, source, selected_names)
     try:
-        revision = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=root, capture_output=True,
-                                  text=True, timeout=1, check=True).stdout.strip()
+        # Fixed absolute executable and literal read-only arguments; no user input.
+        revision = subprocess.run(  # nosec B603
+            ['/usr/bin/git', 'rev-parse', 'HEAD'], cwd=root, capture_output=True,
+            text=True, timeout=1, check=True).stdout.strip()
     except Exception:
         revision = None
-    status = 'MIXED' if 'MIXED' in parity.values() else (
-        'VERIFIED' if set(parity.values()) == {'VERIFIED'} else 'UNKNOWN')
+    def status(checks):
+        return 'MIXED' if 'MIXED' in checks.values() else (
+            'VERIFIED' if set(checks.values()) == {'VERIFIED'} else 'UNKNOWN')
     # Git is an observed checkout, never proof of the code loaded before deploy.
     return dict(schema_version=1, git_revision=revision, source_hashes=sources,
                 policy_hash=digest(policy), execution_hash=digest(execution),
-                hash_basis='OBSERVED_DISK_AST', loaded_code_status=status,
+                hash_basis='OBSERVED_DISK_AST', loaded_code_status=status(parity),
+                judgment_loaded_code_status=status(judgment_parity),
+                execution_loaded_code_status=status(execution_parity),
+                judgment_loaded_code_checks=judgment_parity,
+                execution_loaded_code_checks=execution_parity,
                 loaded_code_checks=parity, git_revision_status='OBSERVED_ONLY',
                 verification_scope='SELECTED_FUNCTION_BYTECODE_AND_LITERAL_CONFIG',
                 python=sys.version.split()[0],

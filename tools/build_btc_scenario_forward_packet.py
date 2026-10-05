@@ -31,7 +31,11 @@ OUTCOMES = {"wait", "submitted", "pending", "reconciled", "halted", "blocked",
             "intent_pending", "duplicate_slot", "execution_disabled", "fenced"}
 STATUSES = {"QUEUED", "SENDING", "SENT", "UNKNOWN", "FAILED", "SUPPRESSED"}
 TERMINAL = {"Filled", "Cancelled", "Rejected", "Deactivated", "PartiallyFilledCanceled"}
-OPTIONAL = ("llm_scenario_broker_notices", "llm_scenario_audit_manifests", "llm_scenario_audit_events")
+OPTIONAL = {
+    "llm_scenario_broker_notices": "SELECT * FROM llm_scenario_broker_notices",
+    "llm_scenario_audit_manifests": "SELECT * FROM llm_scenario_audit_manifests",
+    "llm_scenario_audit_events": "SELECT * FROM llm_scenario_audit_events",
+}
 
 
 def canonical(value):
@@ -81,8 +85,8 @@ def _read(db):
         require(set(QUERIES) | {"btc_meta"} <= names)
         data = {name: sorted((dict(r) for r in conn.execute(query)), key=canonical)
                 for name, query in QUERIES.items()}
-        for name in OPTIONAL:
-            data[name] = sorted((dict(r) for r in conn.execute("SELECT * FROM " + name)), key=canonical) if name in names else []
+        for name, query in OPTIONAL.items():
+            data[name] = sorted((dict(r) for r in conn.execute(query)), key=canonical) if name in names else []
         data["binding"] = [dict(r) for r in conn.execute(
             "SELECT value FROM btc_meta WHERE mode='demo' AND key='shared_entry_policy_v1'")]
         conn.rollback()
@@ -341,6 +345,22 @@ def _accounting_candidate(sid, body, scenario, ledger_children):
     return complete
 
 
+def _event_loaded_status(manifest, kind):
+    """Unused judgement imports must not invalidate a protection-only run.
+
+    Old manifests have no domain evidence: they stay UNKNOWN even if an old
+    overall assertion says VERIFIED. Intent commitment requires both domains.
+    """
+    domains = {"decision_input": ("judgment_loaded_code_status",),
+               "intent_committed": ("judgment_loaded_code_status", "execution_loaded_code_status"),
+               "exchange_call": ("execution_loaded_code_status",),
+               "accounting_observation": ("execution_loaded_code_status",),
+               "settlement_recorded": ("execution_loaded_code_status",)}
+    fields = domains.get(kind, ("loaded_code_status",))
+    states = {manifest.get(field, "UNKNOWN") for field in fields}
+    return "MIXED" if "MIXED" in states else "VERIFIED" if states == {"VERIFIED"} else "UNKNOWN"
+
+
 def _audit_links(sid, scenario, data):
     rows = [r for r in data["llm_scenario_audit_events"] if r.get("scenario_id") == sid]
     # Initial decision and exchange mutation events can precede a scenario FK.
@@ -371,6 +391,7 @@ def _audit_links(sid, scenario, data):
     result = dict(provenance_status="MISSING", provenance_issues=[], audit_event_refs=[], code_versions=[],
                   code_version_status="OBSERVED_CHECKOUT_ONLY_NOT_VERIFIED_DEPLOYMENT",
                   policy_hashes=[], execution_hashes=[], policy_groups=[], loaded_code_status="UNKNOWN",
+                  loaded_code_status_basis="EVENT_RELEVANT_DOMAINS", manifest_loaded_code_statuses=[],
                   loaded_code_verification_scope="SELECTED_FUNCTION_BYTECODE_AND_LITERAL_CONFIG_ONLY",
                   audit_links=[], judgement_policy_hashes=[], execution_policy_hashes=[],
                   environment_hashes=[],
@@ -394,7 +415,10 @@ def _audit_links(sid, scenario, data):
             if manifest is None:
                 result["provenance_issues"].append("MISSING_MANIFEST")
                 continue
-            loaded.add(manifest.get("loaded_code_status", "UNKNOWN"))
+            event_loaded_status = _event_loaded_status(manifest, row["kind"])
+            loaded.add(event_loaded_status)
+            overall = manifest.get("loaded_code_status", "UNKNOWN")
+            result["manifest_loaded_code_statuses"].append(overall if overall in {"VERIFIED", "MIXED", "UNKNOWN"} else "UNKNOWN")
             for field, values in (("policy_hash", policies), ("execution_hash", executions)):
                 value = manifest.get(field)
                 require(isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value))
@@ -405,9 +429,11 @@ def _audit_links(sid, scenario, data):
                 versions.add(revision)
             environment_hash = digest({k: manifest.get(k) for k in ("python", "libraries")})
             result["environment_hashes"].append(environment_hash)
-            groups.add(digest({k: manifest.get(k) for k in ("policy_hash", "execution_hash", "git_revision", "source_hashes", "loaded_code_status", "python", "libraries")}))
+            groups.add(digest({k: manifest.get(k) for k in ("policy_hash", "execution_hash", "git_revision", "source_hashes", "loaded_code_status",
+                "judgment_loaded_code_status", "execution_loaded_code_status", "python", "libraries")}))
             result["audit_event_refs"].append(digest(row["event_id"]))
             link = dict(event_ref=digest(row["event_id"]), run_ref=digest(row["run_id"]),
+                        loaded_code_status=event_loaded_status,
                         kind=row["kind"] if row["kind"] in {"decision_input", "intent_committed", "exchange_call", "accounting_observation", "settlement_recorded"} else "OTHER",
                         manifest_ref=digest(row["manifest_id"]), observed_at=float(number(row["observed_at"])))
             if row["kind"] == "decision_input":
@@ -488,7 +514,7 @@ def _audit_links(sid, scenario, data):
         result["accounting_source_check"] = dict(status="CONFLICT", funding_coverage="MISSING", financial_refs=[], funding_refs=[])
         scenario["settlement_timestamp"] = None
     result["provenance_issues"] = sorted(set(result["provenance_issues"]))
-    for key in ("judgement_policy_hashes", "execution_policy_hashes", "environment_hashes"):
+    for key in ("judgement_policy_hashes", "execution_policy_hashes", "environment_hashes", "manifest_loaded_code_statuses"):
         result[key] = sorted(set(result[key]))
     return result
 

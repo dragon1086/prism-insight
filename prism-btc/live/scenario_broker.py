@@ -352,7 +352,7 @@ class ScenarioDemoBroker(ScenarioExecution):
             self._audit_funding_source = dict(raw_rows=rows, instruments=instruments,
                 next_funding_time=next_time, observed_at=time.time())
         except Exception:
-            pass
+            self._audit_funding_source = None
         return dict(start_ms=start_ms,end_ms=end_ms,complete=True,events=events)
 
     def _accounting(self,observed,active,children):
