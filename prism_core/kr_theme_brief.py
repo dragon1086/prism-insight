@@ -127,6 +127,7 @@ async def theme_brief(metadata, *, now=None, conn=None, ask=_ask_model):
     movers = movers_meta.get("rows") or []
     prev_date = str(movers_meta.get("prev_date") or "")
     if len(movers) < 2 or len(prev_date) != 8:
+        _record("skipped", "no_movers", [])
         return ""
     now = now or datetime.now()
     since = f"{prev_date[:4]}-{prev_date[4:6]}-{prev_date[6:]} 15:30:00"
@@ -140,10 +141,23 @@ async def theme_brief(metadata, *, now=None, conn=None, ask=_ask_model):
             if own:
                 conn.close()
         if not any(evidence.values()):
+            _record("skipped", "no_headlines", [])
             return ""
         raw = await asyncio.wait_for(ask(build_prompt(movers, evidence, now.strftime("%m/%d %H:%M"))),
                                      timeout=TIMEOUT_SECONDS)
-        return render(validate(raw, movers, evidence))
+        themes = validate(raw, movers, evidence)
+        _record("sent" if themes else "skipped", "ok" if themes else "no_valid_theme", themes)
+        return render(themes)
     except Exception as exc:  # noqa: BLE001 - the alert must go out without this block
-        logger.warning("Theme brief unavailable: %s", type(exc).__name__)
+        _record("failed", type(exc).__name__, [])
         return ""
+
+
+def _record(status, reason, themes):
+    """One JSON log line per alert so sent themes can later be checked against real moves."""
+    logger.info("[THEME_BRIEF] %s", json.dumps({
+        "status": status, "reason": reason,
+        "themes": [{"name": t["name"], "reason": t["reason"],
+                    "stocks": [{"code": s["code"], "change_rate": s["change_rate"]} for s in t["stocks"]],
+                    "evidence": [e["serial"] for e in t["evidence"]]} for t in themes],
+    }, ensure_ascii=False))

@@ -96,6 +96,31 @@ def test_theme_brief_falls_back_to_empty_on_missing_inputs_or_model_failure(tmp_
     assert asyncio.run(theme_brief({}, now=now, conn=conn, ask=good)) == ""
 
 
+def test_every_alert_logs_what_the_brief_did(tmp_path, caplog):
+    conn = _store(tmp_path)
+    meta = {"market_movers": {"prev_date": "20261005", "rows": MOVERS}}
+    now = datetime(2026, 10, 6, 10, 30)
+
+    async def good(prompt):
+        return json.dumps({"themes": [{"name": "광통신", "codes": ["069540", "010170"],
+                                       "reason": "美 광통신 강세", "evidence": ["s1"]}]})
+
+    async def nothing(prompt):
+        return '{"themes": []}'
+
+    caplog.set_level("INFO", logger="prism_core.kr_theme_brief")
+    asyncio.run(theme_brief(meta, now=now, conn=conn, ask=good))
+    asyncio.run(theme_brief(meta, now=now, conn=conn, ask=nothing))
+    asyncio.run(theme_brief({}, now=now, conn=conn, ask=good))
+    records = [json.loads(r.getMessage().split("[THEME_BRIEF] ", 1)[1])
+               for r in caplog.records if "[THEME_BRIEF]" in r.getMessage()]
+    assert [(r["status"], r["reason"]) for r in records] == [
+        ("sent", "ok"), ("skipped", "no_valid_theme"), ("skipped", "no_movers")]
+    assert records[0]["themes"][0]["stocks"] == [{"code": "069540", "change_rate": 5.91},
+                                                 {"code": "010170", "change_rate": 3.37}]
+    assert records[0]["themes"][0]["evidence"] == ["s1"]
+
+
 def test_alert_places_the_brief_before_the_candidates():
     from stock_analysis_orchestrator import StockAnalysisOrchestrator
 
