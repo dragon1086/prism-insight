@@ -1815,6 +1815,13 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
     cap_df = market_data.cap_df
     from prism_core.market_intelligence import optional_participation
     market_participation = optional_participation(snapshot, prev_snapshot, "KR", trade_date)
+    # Observation for the alert's theme brief; never feeds candidate selection.
+    try:
+        from prism_core.kr_market_movers import market_movers
+        movers = market_movers(snapshot, prev_snapshot, cap_df, _get_ticker_name_map())
+    except Exception as exc:  # noqa: BLE001 - optional observation must not stop screening
+        logger.warning("Market movers unavailable: %s", type(exc).__name__)
+        movers = []
     logger.debug(f"Previous trading date: {prev_date}")
     logger.debug(f"Market cap data stock count: {len(cap_df)}")
 
@@ -1980,6 +1987,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
         # Add execution time and metadata
         output_data["metadata"] = {
             **({"market_participation": market_participation} if market_participation else {}),
+            **({"market_movers": {"prev_date": prev_date, "rows": movers}} if movers else {}),
             "run_time": datetime.datetime.now().isoformat(),
             "trigger_mode": trigger_time,
             "trade_date": trade_date,

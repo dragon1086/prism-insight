@@ -3189,6 +3189,11 @@ class TelegramAIBot:
     # /signal — KR event impact
     # ==========================================================================
 
+    async def _kr_headline_context(self, query: str, *, days: int) -> str:
+        """Stored KIS headlines for a KR /theme or /signal prompt; "" when unavailable."""
+        from prism_core.kr_news_context import fetch_context
+        return await fetch_context(query, days=days)
+
     async def handle_signal_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         if not await self.check_channel_subscription(user_id):
@@ -3224,7 +3229,7 @@ class TelegramAIBot:
             "3. 과거 유사 사례\n"
             "4. 개인투자자 대응 전략\n"
             "텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
-        ) + self._FIRECRAWL_GROUNDING
+        ) + await self._kr_headline_context(event, days=7) + self._FIRECRAWL_GROUNDING
         success, response_text, msg_id = await self._run_firecrawl_command(
             update, prompt, self._DISCLAIMER_KR, model="spark-1-mini",
             fallback_search_query=event, fallback_analysis_prompt=prompt,
@@ -3328,7 +3333,7 @@ class TelegramAIBot:
             "4. 부정 요인 3개\n"
             "5. 진입 타이밍 의견\n"
             "텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
-        ) + self._FIRECRAWL_GROUNDING
+        ) + await self._kr_headline_context(theme, days=14) + self._FIRECRAWL_GROUNDING
         success, response_text, msg_id = await self._run_firecrawl_command(
             update, prompt, self._DISCLAIMER_KR, model="spark-1-mini",
             fallback_search_query=theme, fallback_analysis_prompt=prompt,

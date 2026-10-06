@@ -1000,8 +1000,12 @@ class StockAnalysisOrchestrator:
             # Include metadata for hybrid selection info in alert message
             all_results["metadata"] = metadata
 
+            # Optional "where money went today" block; "" when unavailable.
+            from prism_core.kr_theme_brief import theme_brief
+            brief = await theme_brief(metadata)
+
             # Generate telegram message
-            message = self._create_trigger_alert_message(mode, all_results, trade_date)
+            message = self._create_trigger_alert_message(mode, all_results, trade_date, theme_brief=brief)
             self._campaign_messages[mode] = message
 
             # Translate message if English is requested
@@ -1098,7 +1102,7 @@ class StockAnalysisOrchestrator:
         except Exception as e:
             logger.error(f"Error in _send_translated_trigger_alert: {str(e)}")
 
-    def _create_trigger_alert_message(self, mode, results, trade_date):
+    def _create_trigger_alert_message(self, mode, results, trade_date, theme_brief=""):
         """
         Generate telegram alert message based on trigger results
         """
@@ -1141,6 +1145,7 @@ class StockAnalysisOrchestrator:
             message += f" | 선정: 탑다운 {topdown_count}종목 + 바텀업 {bottomup_count}종목\n"
 
         message += "\n"
+        message += theme_brief
 
         # Add stock information by trigger
         for trigger_type, stocks in results.items():
