@@ -114,13 +114,24 @@ if [ -d "$PRISM_US_DIR" ]; then
 fi
 
 # =============================================================================
-# 3. logs 디렉토리 내의 누적 로그파일 처리 (일요일에 내용 비우기)
+# 3. logs 디렉토리 내의 누적 로그파일 처리 (일요일에 압축 보관 후 내용 비우기)
 # =============================================================================
+# 배치 로그에는 매도·보유 판단 원문이 남는다(holding_decisions는 종목별 최신 1건만 보관).
+# 근거 누락 감사가 늦게 돌아도 읽을 수 있도록 비우기 전에 logs/archive에 .gz로 보관한다.
+# 보관 기간은 위 압축 로그 규칙(DAYS_TO_KEEP_COMPRESSED, logs 하위 2단계)을 따른다.
 LOGS_DIR="$PROJECT_ROOT/logs"
 if [ -d "$LOGS_DIR" ] && [ $(date +%u) -eq 7 ]; then
     LOG_ACCUMULATING_PATTERN="stock_analysis_*.log"
-    find "$LOGS_DIR" -name "$LOG_ACCUMULATING_PATTERN" -type f -exec sh -c '> {}' \;
-    echo "$(date): logs 디렉토리의 누적 로그파일 내용을 비웠습니다." >> "$PROJECT_ROOT/utils/log_cleanup.log"
+    ARCHIVE_DIR="$LOGS_DIR/archive"
+    mkdir -p "$ARCHIVE_DIR"
+    STAMP=$(date +%Y%m%d)
+    find "$LOGS_DIR" -maxdepth 1 -name "$LOG_ACCUMULATING_PATTERN" -type f | while read -r LOG_FILE; do
+        if [ -s "$LOG_FILE" ]; then
+            # 압축이 성공한 경우에만 비운다(실패하면 원본을 그대로 둔다).
+            gzip -c "$LOG_FILE" > "$ARCHIVE_DIR/$(basename "$LOG_FILE" .log)_until_${STAMP}.log.gz" && : > "$LOG_FILE"
+        fi
+    done
+    echo "$(date): logs 디렉토리의 누적 로그파일을 archive에 압축 보관하고 내용을 비웠습니다." >> "$PROJECT_ROOT/utils/log_cleanup.log"
 fi
 
 # =============================================================================
