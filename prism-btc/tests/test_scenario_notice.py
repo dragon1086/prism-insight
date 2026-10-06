@@ -85,6 +85,17 @@ def test_three_original_plan_targets_remain_visible_without_live_setting_claim()
     assert '해당 물량 예상 손익' not in out
 
 
+def test_third_tp_change_keeps_previous_and_current_final_target_visible():
+    before=position(timestamp=900,take_profits=[dict(price=p,quantity=q) for p,q in
+        ((85200,.02),(85500,.03),(86000,.05))])
+    after=position(take_profits=[dict(price=p,quantity=q) for p,q in
+        ((85200,.02),(85500,.03),(86500,.05))])
+    out=render_notice(dict(kind='PROTECTION',timestamp=1000,protection_confirmed=True,
+                          position_before=before,position_after=after))
+    assert '86,000.00(0.05 BTC)' in out
+    assert '86,500.00 USDT' in out
+
+
 def test_protection_empty_tp_explicit_runner_and_compact_accounting():
     after = position(quantity=.072, average_entry_price=84780, hard_stop=85140,
                      take_profits=[], scenario_realized_net_pnl=24.10042936,

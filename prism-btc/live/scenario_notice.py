@@ -259,10 +259,10 @@ def _position_lines(event, after):
             continue
         if field != "take_profits" and changed and targets == old and not exposure_changed:
             continue
-        if changed and targets != old:
-            previous = " / ".join(f"{_decimal(t['price'])}({t['quantity']:g} BTC)" for t in old[:2]) if old else ("없음" if old == [] else "미확인")
-            lines.append(f"{label} 이전 {previous} → 아래 설정" if targets else f"{label} 이전 {previous} → 없음")
         display_limit = 3 if field == "take_profits" else 2
+        if changed and targets != old:
+            previous = " / ".join(f"{_decimal(t['price'])}({t['quantity']:g} BTC)" for t in old[:display_limit]) if old else ("없음" if old == [] else "미확인")
+            lines.append(f"{label} 이전 {previous} → 아래 설정" if targets else f"{label} 이전 {previous} → 없음")
         for target in targets[:display_limit]:
             icon = "🎯" if field == "take_profits" else "🛡"
             lines.extend(["", f"{icon} {label} {_money(target['price'])} · {target['quantity']/qty*100:g}%({target['quantity']:g} BTC)",
