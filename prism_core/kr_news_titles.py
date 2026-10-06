@@ -11,6 +11,8 @@ import logging
 import re
 from datetime import datetime, timedelta
 
+import pandas as pd
+
 logger = logging.getLogger(__name__)
 
 LOOKBACK_DAYS = 7
@@ -43,6 +45,10 @@ def build_kr_news_listing(ticker, reference_date, language="ko", *, fetch=_fetch
 
     rows = [r for r in frame.to_dict("records")
             if r.get("provider") == "공시" or not _GENERIC_LIST.search(str(r.get("title", "")))]
+    for r in rows:
+        # The remote transport decodes the minute string as a timestamp; keep one display form.
+        stamp = pd.Timestamp(r.get("published_at"))
+        r["published_at"] = "" if pd.isna(stamp) else stamp.strftime("%Y-%m-%d %H:%M")
     if not rows:
         return ""
     rows = sorted(rows, key=lambda r: str(r.get("published_at")), reverse=True)[:MAX_ROWS]
