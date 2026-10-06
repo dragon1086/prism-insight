@@ -228,6 +228,26 @@ def add_news_members(theme, titles, name_to_code, pattern, min_mentions=3, max_n
     return added
 
 
+NEWS_MAGNET_SECTORS = 3
+
+
+def prune_news_magnets(themes):
+    """Drop news memberships of stocks that headline-match themes in many sectors (e.g. 카카오).
+
+    Such a stock is mentioned everywhere, so co-mention says nothing about its theme.
+    Returns the codes removed.
+    """
+    sectors = {}
+    for t in themes:
+        for m in t["members"]:
+            if m["role"] == "news":
+                sectors.setdefault(m["code"], set()).add(t.get("sector", ""))
+    magnets = {code for code, s in sectors.items() if len(s) >= NEWS_MAGNET_SECTORS}
+    for t in themes:
+        t["members"] = [m for m in t["members"] if not (m["role"] == "news" and m["code"] in magnets)]
+    return magnets
+
+
 def add_ai_members(themes, assignments, new_themes, name_to_code, sectors):
     """Apply the model's placement of uncovered large caps; every addition is marked role 'ai'."""
     by_id = {t["id"]: t for t in themes}
