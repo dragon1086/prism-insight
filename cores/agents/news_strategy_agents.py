@@ -33,8 +33,35 @@ def _news_source_contract(reference_date, language):
 """
 
 
-def _news_listing_step(company_name, company_code, reference_date, language, news_listing):
+def _news_listing_step(company_name, company_code, reference_date, language, news_listing, peer_context=""):
     """STEP 1: the KIS headline list replaces the Naver page scrape (iframe list came back empty)."""
+    return _listing_step_body(company_name, company_code, reference_date, language, news_listing) + \
+        _peer_step(language, peer_context)
+
+
+def _peer_step(language, peer_context):
+    """Co-movement evidence: did today's move ride the stock's usual peers or not."""
+    if not peer_context:
+        return ""
+    if language == "en":
+        rule = ("Use the co-movement block below to say whether the reference-date move rode the stock's usual "
+                "peers (a theme move) or was the stock's own move. If no company headline explains the move, say "
+                "which of the two it looks like instead of only 'cause unconfirmed'. Name a theme cause only when a "
+                "headline states it.")
+    else:
+        rule = ("아래 동반 등락 맥락으로 기준일 움직임이 평소 함께 움직이던 종목들과의 동반 상승(테마성)인지, 이 종목만의 "
+                "움직임인지 판단해 '당일 주가 변동 요인'에 쓰세요. 회사 뉴스로 설명되지 않으면 '원인 미확인'에서 멈추지 말고 "
+                "둘 중 어느 쪽으로 보이는지 밝히세요. 테마의 원인은 제목에 적힌 경우에만 말하세요.")
+    return f"""
+                        {rule}
+
+<peer_comovement>
+{peer_context}
+</peer_comovement>
+"""
+
+
+def _listing_step_body(company_name, company_code, reference_date, language, news_listing):
     if language == "en":
         if not news_listing:
             return f"""                        ### STEP 1: Collect Target Stock News
@@ -75,7 +102,7 @@ def _news_listing_step(company_name, company_code, reference_date, language, new
 
 
 def create_news_analysis_agent(company_name, company_code, reference_date, language: str = "ko",
-                               news_listing: str = ""):
+                               news_listing: str = "", peer_context: str = ""):
     """Create news analysis agent
 
     Args:
@@ -84,6 +111,7 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
         reference_date: Analysis reference date (YYYYMMDD)
         language: Language code ("ko" or "en")
         news_listing: Prefetched KIS headline table (prism_core.kr_news_titles); "" if unavailable
+        peer_context: Co-movement block (prism_core.kr_peer_context); "" if unavailable
 
     Returns:
         Agent: News analysis agent
@@ -94,7 +122,7 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
 
                         ## Required Data Collection Order (Must follow this sequence)
                         
-{_news_listing_step(company_name, company_code, reference_date, 'en', news_listing)}
+{_news_listing_step(company_name, company_code, reference_date, 'en', news_listing, peer_context)}
 
 {_news_source_contract(reference_date, 'en')}
 
@@ -152,7 +180,7 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
 
                         ## 필수 데이터 수집 순서 (반드시 이 순서대로 진행)
                         
-{_news_listing_step(company_name, company_code, reference_date, 'ko', news_listing)}
+{_news_listing_step(company_name, company_code, reference_date, 'ko', news_listing, peer_context)}
 
 {_news_source_contract(reference_date, 'ko')}
 

@@ -152,6 +152,14 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             prefetched['news_listing'] = ""
         logger.info("KIS news listing for %s: %s", company_code,
                     "present" if prefetched['news_listing'] else "unavailable")
+        # Co-movement peers from the local headline store (db-server batch path).
+        try:
+            from prism_core.kr_peer_context import build_peer_context
+            prefetched['peer_context'] = await asyncio.to_thread(build_peer_context, company_name, reference_date)
+        except Exception:
+            prefetched['peer_context'] = ""
+        logger.info("Peer context for %s: %s", company_code,
+                    "present" if prefetched['peer_context'] else "unavailable")
 
         # Model-free official filing inputs are on the shared bot/batch path.
         try:
