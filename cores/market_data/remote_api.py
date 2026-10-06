@@ -44,7 +44,8 @@ class BoundedMarketDataRoute(APIRoute):
 class MarketDataRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     capability: Literal["price_history", "index_history", "market_cap_history",
-                        "investor_flows", "fundamentals", "intraday_investor_estimate", "ticker_name", "ticker_market"]
+                        "investor_flows", "fundamentals", "intraday_investor_estimate", "ticker_name", "ticker_market",
+                        "news_titles"]
     ticker: str = Field(pattern=r"^[0-9]{4,6}$", max_length=6)
     start: str | None = Field(default=None, pattern=r"^[0-9]{8}$", max_length=8)
     end: str | None = Field(default=None, pattern=r"^[0-9]{8}$", max_length=8)
@@ -94,6 +95,7 @@ def execute_market_data(request: MarketDataRequest):
             "fundamentals": lambda: _source.fundamentals(request.ticker, request.start, request.end),
             "intraday_investor_estimate": lambda: _source.intraday_investor_estimate(request.ticker, as_of=request.as_of),
             "ticker_name": lambda: _source.ticker_name(request.ticker),
+            "news_titles": lambda: _source.news_titles(request.ticker, request.start, request.end),
         }
         return encode_result(operations[request.capability]())
     except Unsupported:

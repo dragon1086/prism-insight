@@ -29,7 +29,10 @@ def test_kr_news_has_no_competitive_evidence_contract(language):
     agent = _factory("kr")("Example", "TEST", "20260910", language=language)
     prompt = agent.instruction
     assert agent.server_names == ["perplexity", "firecrawl"]
-    assert "maxAge: 7200000" in prompt and "finance.naver.com/item/news.naver?code=TEST" in prompt
+    # The Naver news page (iframe list, robots-disallowed) is no longer the discovery source.
+    assert "finance.naver.com" not in prompt
+    assert ("KIS 뉴스 제목 목록을 받지 못했습니다" if language == "ko"
+            else "KIS headline list could not be retrieved") in prompt
     assert "### 3." in prompt and "#### " in prompt
     for forbidden in ("Competitive Evidence", "SOURCE_CHECKED", "SEARCH_ONLY", "NOT_FOUND", "INCOMPARABLE",
                       "peer_universe", "sector_tailwind", "price_leadership", "business_competitive_position",

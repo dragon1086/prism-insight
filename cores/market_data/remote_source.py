@@ -103,6 +103,9 @@ class RemoteKisSource:
         return self._fetch("intraday_investor_estimate", ticker,
                            as_of=as_of.isoformat() if as_of is not None else None)
 
+    def news_titles(self, ticker, start, end):
+        return self._fetch("news_titles", ticker, start=start, end=end)
+
     def ticker_name(self, ticker):
         return self._fetch("ticker_name", ticker)
 

@@ -68,7 +68,8 @@ def get_agent_directory(company_name, company_code, reference_date, base_section
             peer_table=(pf.get("peer_comparison") or {}).get("model_context", "")
         ),
         "news_analysis": lambda: create_news_analysis_agent(
-            company_name, company_code, reference_date, language
+            company_name, company_code, reference_date, language,
+            news_listing=pf.get("news_listing", "")
         ),
         "market_index_analysis": lambda: create_market_index_analysis_agent(
             reference_date, max_years_ago, max_years, language,
