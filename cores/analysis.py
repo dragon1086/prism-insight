@@ -322,6 +322,11 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         shared_market = market_report_context(macro_context, language)
         if shared_market:
             section_reports["market_index_analysis"] = section_reports.get("market_index_analysis", "") + shared_market
+        # Today's theme flow from the local headline store (db-server batch); "" elsewhere.
+        from prism_core.kr_market_theme_flow import build_theme_flow
+        theme_flow = build_theme_flow(reference_date, language)
+        if theme_flow:
+            section_reports["market_index_analysis"] = section_reports.get("market_index_analysis", "") + theme_flow
 
         # Pre-collected competitor table: published after 2-2 and fed to synthesis/DART.
         peer_context = ''
