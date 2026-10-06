@@ -101,6 +101,55 @@ def build_themes(observations):
     return themes
 
 
+FAMILY_OVERLAP = 0.5   # share of the smaller theme's members that must be shared
+
+
+def assign_families(themes):
+    """Group fine themes into theme families; returns {family_id: [theme, ...]}.
+
+    Two themes join when half of the smaller one's members are shared, or when
+    they carry the same name (after naming). Names "" and "미분류" never join by
+    name. Each theme gets family_id and family_name (most-observed member name).
+    """
+    parent = list(range(len(themes)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    sets = [{m["code"] for m in t["members"]} for t in themes]
+    for i in range(len(themes)):
+        for j in range(i + 1, len(themes)):
+            small = min(len(sets[i]), len(sets[j]))
+            if small and len(sets[i] & sets[j]) / small >= FAMILY_OVERLAP:
+                parent[find(j)] = find(i)
+    by_name = {}
+    for i, t in enumerate(themes):
+        name = t.get("name") or ""
+        if name and name != "미분류":
+            if name in by_name:
+                parent[find(i)] = find(by_name[name])
+            else:
+                by_name[name] = i
+    groups = {}
+    for i in range(len(themes)):
+        groups.setdefault(find(i), []).append(themes[i])
+    families = {}
+    for n, members in enumerate(sorted(groups.values(), key=lambda g: -sum(t["lines"] for t in g)), 1):
+        weights = Counter()
+        for t in members:
+            if t.get("name") and t["name"] != "미분류":
+                weights[t["name"]] += t["lines"]
+        family_id = f"F{n:03d}"
+        family_name = weights.most_common(1)[0][0] if weights else "미분류"
+        for t in members:
+            t["family_id"], t["family_name"] = family_id, family_name
+        families[family_id] = members
+    return families
+
+
 def theme_of(themes, code):
     """Themes a stock belongs to, strongest membership first."""
     hits = [(m["share"], t) for t in themes for m in t["members"] if m["code"] == code]

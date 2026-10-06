@@ -43,3 +43,20 @@ def test_near_duplicate_clusters_merge_and_a_stock_can_sit_in_two_themes():
     assert len(themes) == 2 and themes[0]["lines"] == 6
     assert [t["id"] for t in tm.theme_of(themes, "000150")]  # 두산 belongs to both
     assert len(tm.theme_of(themes, "000150")) == 2
+
+
+def _theme(tid, codes, name, lines=5):
+    return {"id": tid, "name": name, "lines": lines, "members": [{"code": c, "times": 3, "share": 0.5} for c in codes]}
+
+
+def test_families_join_overlapping_and_same_named_themes_only():
+    themes = [_theme("T1", ["a", "b", "c", "d"], "광통신", 20),
+              _theme("T2", ["c", "d", "e"], "통신장비", 5),        # 2/3 of the smaller shared -> joins T1
+              _theme("T3", ["x", "y", "z"], "광통신", 8),          # same name -> joins T1
+              _theme("T4", ["p", "q", "r"], "미분류", 5),          # unnamed never joins by name
+              _theme("T5", ["s", "t", "u"], "미분류", 5)]
+    families = tm.assign_families(themes)
+    assert len(families) == 3
+    first = families["F001"]
+    assert {t["id"] for t in first} == {"T1", "T2", "T3"} and first[0]["family_name"] == "광통신"
+    assert themes[3]["family_id"] != themes[4]["family_id"]

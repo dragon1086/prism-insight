@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import json
 import logging
+from collections import Counter
 import sys
 from contextlib import closing
 from datetime import datetime
@@ -18,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from prism_core import kr_news_store as store  # noqa: E402
-from prism_core.kr_theme_map import build_themes, parse_group  # noqa: E402
+from prism_core.kr_theme_map import assign_families, build_themes, parse_group  # noqa: E402
 
 logger = logging.getLogger("build_kr_theme_map")
 OUT = ROOT / "runtime" / "kr_theme_map_v1.json"
@@ -82,13 +83,28 @@ async def name_themes(themes, code_to_name, conn):
 def review_table(themes, code_to_name, meta):
     lines = [f"# KR 테마 지도 v1 검토표 ({meta['built_at'][:16]})", "",
              f"자료: 인포스탁 동반 등락 묶음 {meta['group_lines']}건 중 {meta['used_lines']}건 사용, "
-             f"기간 {meta['first']} ~ {meta['last']}, 테마 {len(themes)}개", "",
-             "| ID | 이름 | 관측 | 처음 | 마지막 | 핵심 종목(등장 비율) | 최근 움직인 날 |", "|---|---|---|---|---|---|---|"]
+             f"기간 {meta['first']} ~ {meta['last']}, 테마군 {meta.get('families', '-')}개 / 세부 테마 {len(themes)}개", "",
+             "## 테마군", "", "| 테마군 | 이름 | 세부 테마 | 관측 합계 | 대표 종목 |", "|---|---|---|---|---|"]
+    fam = {}
+    for t in themes:
+        fam.setdefault(t.get("family_id", "-"), []).append(t)
+    for fid, members in sorted(fam.items(), key=lambda kv: -sum(t["lines"] for t in kv[1])):
+        counts = Counter()
+        for t in members:
+            for m in t["members"]:
+                counts[m["code"]] += m["times"]
+        top = ", ".join(code_to_name.get(c, c) for c, _ in counts.most_common(8))
+        subs = ", ".join(f"{t['id']} {t.get('name', '')}" for t in members[:6]) + (" …" if len(members) > 6 else "")
+        lines.append(f"| {fid} | {members[0].get('family_name', '')} | {subs} | {sum(t['lines'] for t in members)} | {top} |")
+    lines += ["", "## 세부 테마", "",
+              "| ID | 테마군 | 이름 | 관측 | 처음 | 마지막 | 핵심 종목(등장 비율) | 최근 움직인 날 |",
+              "|---|---|---|---|---|---|---|---|"]
     for t in themes:
         members = ", ".join(f"{code_to_name.get(m['code'], m['code'])}({int(m['share'] * 100)}%)" for m in t["members"][:7])
         recent = ", ".join(f"{d['date'][5:]}{'+' if d['avg_pct'] >= 0 else ''}{d['avg_pct']:.1f}%"
                            for d in t["active_days"][-4:])
-        lines.append(f"| {t['id']} | {t.get('name', '')} | {t['lines']} | {t['first_seen']} | {t['last_seen']} | {members} | {recent} |")
+        lines.append(f"| {t['id']} | {t.get('family_name', '')} | {t.get('name', '')} | {t['lines']} | {t['first_seen']} | "
+                     f"{t['last_seen']} | {members} | {recent} |")
     return "\n".join(lines) + "\n"
 
 
@@ -119,6 +135,8 @@ async def main_async(args):
                     await proxy()
             for t in themes:
                 t["name"] = names.get(t["id"], "미분류")
+    families = assign_families(themes)
+    meta["families"] = len(families)
     for t in themes:
         for m in t["members"]:
             m["name"] = code_to_name.get(m["code"], m["code"])
