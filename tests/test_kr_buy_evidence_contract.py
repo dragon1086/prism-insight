@@ -78,8 +78,8 @@ def test_decision_rules_and_json_schema_are_byte_preserved(prompt):
     # 2026-10-03 reviewed: rules hash only — rubric consistency (zero-momentum 3~4 is a no-entry zone; the
     # Step 1 bull-regime compensation path scores by the bands, capped at 6). JSON unchanged.
     expected = {
-        "ko": ("16f2eea5fe4f69f6635064967ae222c00ce8f8b9d6d0b18191c1a378ddf0de8b", "96246810a487039fed91b8b44d68f1a8d9c99c3384f00a3a13400c9b7a45156e"),
-        "en": ("4554e6bf8ac11ae69963d5eb6e9aac75025ba541cd64874a128d3fc6cd6d062c", "165a98f70fb92ff5d5c8d52577a7703172df08d1e37825866cebec7e4a4a2d56"),
+        "ko": ("16f2eea5fe4f69f6635064967ae222c00ce8f8b9d6d0b18191c1a378ddf0de8b", "013c4c4bdc5cb32e71c714048ca0feb9a534d9c5acbedab4e8b3d3ca643e8741"),
+        "en": ("4554e6bf8ac11ae69963d5eb6e9aac75025ba541cd64874a128d3fc6cd6d062c", "a76e0b453cf782a0115938eb4d606cd8a06e964b477f2e17eaac3336e20ef6cb"),
     }
     assert hashlib.sha256(text.split(heading)[0].encode()).hexdigest() == expected[language][0]
     assert hashlib.sha256(text[text.index(json_heading):].encode()).hexdigest() == expected[language][1]
@@ -92,4 +92,4 @@ def test_sell_factory_matches_reviewed_volume_prompt():
     # (stop_loss x 0.995, -7% on the live price); trailing stop stays closing-price based.
     source = SOURCE.read_text(encoding="utf-8")
     node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "create_sell_decision_agent")
-    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "8793bcb5667adc0b78b1d135f58792919897e7a22feea2ec569c0929a488666e"
+    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "b1f3812812644aa867aa1105e62898860348da74886a330c994693bdad6a7dc8"

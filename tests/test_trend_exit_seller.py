@@ -405,27 +405,9 @@ def _seed_target_hit(db, ma50_strong=False):
                     target_price=120.0, highest_price=132.0)])
 
 
-def test_tier3_target_is_gated_in_close_window_at_streak_0(tmp_db, monkeypatch):
-    """THE FIX: a take-profit gets no urgency discount from the closing bell."""
-    _enable(monkeypatch, live=False, confirm=2, close_window=True)
-    _seed_target_hit(tmp_db)
-    calls = []
-    trader = FakeTrader({"005930": 130.0}, calls=calls)
-    # ma50=0 -> cannot prove strength -> TIER3 fires (rather than holding).
-    _patch(monkeypatch, trader, agent_holder=FakeAgent(calls),
-           ma50=0.0, regime="sideways")
-
-    summary = asyncio.run(lb.run_market("KR", "run1"))
-
-    assert summary["signaled"] == 1, "TIER3 must still be recognised as a signal"
-    assert summary["gated"] == 1
-    assert summary["acted"] == 0, "take-profit must not ride the close-window fast-path"
-    assert calls == []
-    assert _inflight(tmp_db) == 0
-
-
-def test_tier3_target_still_sells_once_properly_confirmed(tmp_db, monkeypatch):
-    """The exclusion must DELAY the take-profit, never disable it."""
+def test_target_hit_is_no_longer_a_signal_in_a_weak_regime(tmp_db, monkeypatch):
+    """2026-10-07: reaching the target never sells (TIER3 retired); TIER2 trailing owns
+    the exit. Even with no 50MA proof of strength, a target hit above the trail holds."""
     _enable(monkeypatch, live=False, confirm=1, close_window=True)
     _seed_target_hit(tmp_db)
     calls = []
@@ -435,7 +417,8 @@ def test_tier3_target_still_sells_once_properly_confirmed(tmp_db, monkeypatch):
 
     summary = asyncio.run(lb.run_market("KR", "run1"))
 
-    assert summary["acted"] == 1 and summary["shadow"] == 1
+    assert summary["signaled"] == 0 and summary["acted"] == 0
+    assert calls == []
 
 
 def test_strong_stock_at_target_never_signals_in_weak_regime(tmp_db, monkeypatch):

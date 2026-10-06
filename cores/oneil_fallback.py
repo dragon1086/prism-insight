@@ -43,8 +43,6 @@ WEAK_REGIMES = {"sideways", "moderate_bear", "strong_bear"}
 # regime 은 지수(S&P500/KOSPI) 기준이라, 시장과 무관하게 치고 나가는 주도주를
 # 상승 초입에 잘라내는 문제가 있었다(2026-07-29 INCY: 목표가 도달 당일 +11%
 # 상승 중 전량 청산, 같은 날 매수 트리거는 oneil_pct=95 최상위 후보로 평가).
-TARGET_HOLD_MA50_MARGIN = 1.03      # 자기 50일선을 +3% 이상 상회 → 상승추세 확인
-TARGET_HOLD_PEAK_PROXIMITY = 0.97   # 진입 후 고점의 97% 이상 → 아직 안 꺾임
 
 
 @dataclass
@@ -77,29 +75,6 @@ def _normalize_regime(raw: str) -> str:
     if "횡보" in r or "side" in r:
         return "sideways"
     return "moderate_bull"   # 정보 없으면 보수적으로 보유 우선(강세 가정)
-
-
-def _stock_is_strong(current_price: float, peak: float, ma_50: float) -> bool:
-    """개별 종목이 '명백한 상승추세'인지 — TIER3 목표가 익절 보류 판정.
-
-    시장 레짐(지수 기준)이 약세/횡보여도, 종목 자신이 아래 두 조건을 모두
-    만족하면 추세가 살아있는 것으로 보고 청산을 TIER2 트레일링에 위임한다.
-
-      1) 자기 50일선을 TARGET_HOLD_MA50_MARGIN 이상 상회   (상승추세 확인)
-      2) 진입 후 고점 대비 TARGET_HOLD_PEAK_PROXIMITY 이상  (아직 안 꺾임)
-
-    ma_50 미주입(0 = fetch 실패/dormant)이면 강도를 판정할 근거가 없으므로
-    False — 기존 동작(약세 레짐에서 목표가 익절)을 그대로 유지한다(보수적).
-
-    ※ 보류 밴드(>=0.97·peak)와 TIER2 트레일링(약세 -5% = 0.95·peak)은 겹치지
-      않는다. 고점 대비 3% 이상 밀리면 강도 판정이 풀려 TIER3 익절이 다시
-      살아나고, 5% 밀리면 그 전에 TIER2 가 청산한다 — 사각지대 없음.
-    """
-    if ma_50 <= 0 or peak <= 0:
-        return False
-    above_ma50 = current_price >= ma_50 * TARGET_HOLD_MA50_MARGIN
-    near_peak = current_price >= peak * TARGET_HOLD_PEAK_PROXIMITY
-    return above_ma50 and near_peak
 
 
 def evaluate_oneil_sell(inp: SellInputs) -> Tuple[bool, str]:
@@ -147,19 +122,11 @@ def evaluate_oneil_sell(inp: SellInputs) -> Tuple[bool, str]:
             return True, (f"TIER2_TRAIL: regime={regime} peak={peak:.4f} "
                           f"trail(-{band}%)={trail_line:.4f} >= price")
 
-    # ── TIER 3: 목표가 = 매도 트리거 아님(강세) / 익절(약세만) ──
-    # O'Neil: 목표가는 강세장에서 '트레일링 전환 마일스톤'이지 자동매도 아님.
+    # ── TIER 3: 목표가 = 어떤 국면에서도 매도 트리거 아님 (2026-10-07) ──
+    # 목표가 매도는 큰 종목을 일찍 잘랐다(실제 매매 +50% 경로 79건 중 17건). 청산은
+    # TIER2 트레일링(강세 -8%, 약세·횡보 -5%)과 손절이 관리한다.
     if inp.target_price > 0 and cp >= inp.target_price:
-        if regime in WEAK_REGIMES:
-            # 지수는 약세/횡보라도 종목 자신이 상승추세면 자동익절 보류 →
-            # 청산은 TIER2 트레일링(약세 밴드 -5%)이 관리한다.
-            if _stock_is_strong(cp, peak, inp.ma_50):
-                return False, (f"HOLD: target hit in {regime} but stock strong "
-                               f"(50MA +{(cp / inp.ma_50 - 1) * 100:.1f}%, "
-                               f"{cp / peak * 100:.1f}% of peak) -> let it run")
-            return True, f"TIER3_TARGET(weak): regime={regime} target reached"
-        # 강세: 목표 도달해도 보유(트레일링이 청산을 관리)
-        return False, f"HOLD: target hit but bull regime({regime}) -> let it run"
+        return False, f"HOLD: target hit ({regime}) -> trailing manages the exit"
 
     # ── 기본: 보유 (추세 유지) ───────────────────────────────
     # 주의: profit>=10% 자동매도 / 시간기반 매도 전부 제거됨(안티-오닐).
