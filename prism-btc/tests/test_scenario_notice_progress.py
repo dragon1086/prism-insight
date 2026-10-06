@@ -1,4 +1,6 @@
 """Read-only progression evidence must not invent settlement or fill deltas."""
+import json
+
 import pytest
 
 from live.scenario_notice_evidence import position_snapshot
@@ -21,6 +23,116 @@ def accounting(**changes):
 def snapshot(account):
     active, children, observed = notice_fixture()
     return position_snapshot(active, children, observed, True, False, account)
+
+
+def pending_entry_notice(broker, *, side="LONG", parent_changes=None, stale=False):
+    active, children, observed = notice_fixture()
+    active.update(side=side, initial_equity=9519.87522273)
+    observed["position"]["side"] = "Buy" if side == "LONG" else "Sell"
+    plan = dict(action="OPEN", action_id="entry-parent", scenario_id=active["scenario_id"],
+                side=side, entries=[dict(id="entry", price=86100, quantity=.043)],
+                take_profits=[dict(id="tp", price=86892.7 if side == "LONG" else 85307.3, fraction=1)])
+    plan.update(parent_changes or {})
+    broker.conn.execute("INSERT INTO llm_scenario_intents VALUES(?,?,?,'PENDING',NULL)",
+                        ("entry-parent", active["scenario_id"], json.dumps(plan)))
+    child = dict(kind="entry", status="TERMINAL", intent_id="entry-parent", local_id="entry",
+                 evidence=dict(order={}, executions=[dict(execId="tp-omission", execQty="0.043",
+                     execPrice="86100", execTime=str(int((observed["captured_at"]-(300 if stale else 0))*1000)))]))
+    children.append(child)
+    return active, children, observed
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_pending_entry_keeps_exact_parent_tp_plan_without_claiming_live_targets(live, side):
+    from live.scenario_notice import render_notice
+    broker, exchange = live
+    active, children, observed = pending_entry_notice(broker, side=side)
+    events = broker._notices(active, children, observed, True, None, pending=True)
+    event = next(e for e in events if e["kind"] == "FILLED")
+    assert "position_after" not in event
+    assert event["take_profits_scope"] == "entry_intent_plan"
+    assert event["plan_action_id"] == "entry-parent"
+    assert event["take_profits"][0]["fraction"] == 1
+    assert event["scenario_initial_equity"] == active["initial_equity"]
+    text = render_notice(event)
+    assert ("86,892.70" if side == "LONG" else "85,307.30") in text
+    assert "진입 당시 TP 계획" in text
+    assert "계획 물량의 100%" in text
+    assert "TP 설정 미확인 · 위 가격은 계획" in text
+    assert "전체 포지션 기준 수익률 미확인" in text
+    assert "+34.09" not in text  # No whole-position PnL from one fill.
+    assert exchange.writes == []
+    # Late complete observations do not resend or mutate the old fill event.
+    again = broker._notices(active, children, observed, True, None)
+    assert next(e for e in again if e["kind"] == "FILLED") == event
+
+
+@pytest.mark.parametrize("changes", [dict(scenario_id="different"), dict(action_id="different"),
+    dict(side="SHORT"), dict(action="EXIT"), dict(entries=[dict(id="other")]),
+    dict(take_profits=None), dict(take_profits=[dict(price=0, fraction=1)]),
+    dict(take_profits=[dict(price=86892.7, fraction=2)])])
+def test_invalid_parent_plan_does_not_borrow_active_plan_or_drop_fill(live, changes):
+    from live.scenario_notice import render_notice
+    broker, exchange = live
+    active, children, observed = pending_entry_notice(broker, parent_changes=changes)
+    active["current_plan"] = dict(take_profits=[dict(price=99999, fraction=1)])
+    event = next(e for e in broker._notices(active, children, observed, True, None, pending=True)
+                 if e["kind"] == "FILLED")
+    assert "take_profits" not in event
+    text = render_notice(event)
+    assert "🎯 TP 계획: 자료 미확인" in text and "99,999" not in text
+    assert "고정 TP 없는 계획" not in text
+    assert exchange.writes == []
+
+
+def test_stale_fill_can_reference_original_plan_but_not_current_position(live):
+    broker, _ = live
+    active, children, observed = pending_entry_notice(broker, stale=True)
+    event = next(e for e in broker._notices(active, children, observed, True, None, pending=True)
+                 if e["kind"] == "FILLED")
+    assert event["take_profits_scope"] == "entry_intent_plan"
+    assert "position_after" not in event and "account_snapshot" not in event
+
+
+def test_explicit_empty_parent_targets_are_not_missing(live):
+    from live.scenario_notice import render_notice
+    broker, _ = live
+    active, children, observed = pending_entry_notice(broker, parent_changes=dict(take_profits=[]))
+    event = next(e for e in broker._notices(active, children, observed, False, None, pending=True)
+                 if e["kind"] == "FILLED")
+    text = render_notice(event)
+    assert "고정 TP 없는 계획" in text
+    assert "TP 계획: 자료 미확인" not in text
+    assert "SL 보호 유지" not in text
+
+
+@pytest.mark.parametrize("damage", ["missing", "bad_json", "missing_table"])
+def test_unavailable_entry_plan_does_not_suppress_fill(live, damage):
+    from live.scenario_notice import render_notice
+    broker, exchange = live
+    active, children, observed = pending_entry_notice(broker)
+    if damage == "missing":
+        broker.conn.execute("DELETE FROM llm_scenario_intents")
+    elif damage == "bad_json":
+        broker.conn.execute("UPDATE llm_scenario_intents SET payload='not JSON'")
+    else:
+        broker.conn.execute("DROP TABLE llm_scenario_intents")
+    event = next(e for e in broker._notices(active, children, observed, True, None, pending=True)
+                 if e["kind"] == "FILLED")
+    assert event["fill_confirmed"] is True
+    assert "🎯 TP 계획: 자료 미확인" in render_notice(event)
+    assert exchange.writes == []
+
+
+def test_confirmed_position_targets_override_original_entry_plan(live):
+    from live.scenario_notice import render_notice
+    broker, _ = live
+    active, children, observed = pending_entry_notice(broker)
+    event = next(e for e in broker._notices(active, children, observed, True, None)
+                 if e["kind"] == "FILLED")
+    text = render_notice(event)
+    assert "🎯 익절 TP 105.00" in text
+    assert "86,892.70" not in text and "진입 당시 TP 계획" not in text
 
 
 def test_confirmed_progress_reuses_net_including_all_recorded_costs():
