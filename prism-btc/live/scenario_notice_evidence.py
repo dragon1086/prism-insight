@@ -2,7 +2,10 @@
 
 This module does not query an exchange or authorize trading actions.
 """
+import json
+import logging
 import math
+import sqlite3
 
 
 def number(value, *, positive=False):
@@ -13,6 +16,42 @@ def number(value, *, positive=False):
     except (ValueError, TypeError, OverflowError):
         return None
     return value if math.isfinite(value) and value >= 0 and (not positive or value > 0) else None
+
+
+def entry_plan_reference(conn, active, child):
+    """Exact entry intent only, never a later plan or proof of live TP orders."""
+    if not child.get("intent_id") or not child.get("local_id"):
+        return {}
+    try:
+        row = conn.execute("SELECT payload FROM llm_scenario_intents WHERE id=? AND scenario_id=?",
+                           (child["intent_id"], active["scenario_id"])).fetchone()
+        plan = json.loads(row[0]) if row else None
+        if (not isinstance(plan, dict) or plan.get("action") not in {"OPEN", "ADJUST"}
+                or plan.get("action_id") != child["intent_id"]
+                or plan.get("scenario_id") != active["scenario_id"] or plan.get("side") != active["side"]
+                or not isinstance(plan.get("entries"), list)
+                or not any(isinstance(e, dict) and e.get("id") == child["local_id"] for e in plan["entries"])):
+            return {}
+        targets = plan.get("take_profits")
+        if not isinstance(targets, list) or len(targets) > 20:
+            return {}
+        normalized = []
+        for target in targets:
+            if not isinstance(target, dict):
+                return {}
+            price = number(target.get("price"), positive=True)
+            fraction = number(target.get("fraction"), positive=True)
+            if price is None or fraction is None or fraction > 1:
+                return {}
+            normalized.append(dict(price=price, fraction=fraction))
+        total = sum(t["fraction"] for t in normalized)
+        if total > 1 and not math.isclose(total, 1, rel_tol=1e-12, abs_tol=0):
+            return {}
+        return dict(take_profits=normalized, take_profits_scope="entry_intent_plan",
+                    plan_action_id=child["intent_id"])
+    except (sqlite3.Error, ValueError, TypeError):
+        logging.getLogger(__name__).warning("NOTICE entry_plan_reference_unavailable")
+        return {}  # Optional detail must never drop a confirmed fill.
 
 
 def position_snapshot(active, children, observed, protected, pending, accounting, *, scenario_risk_fraction=.02):

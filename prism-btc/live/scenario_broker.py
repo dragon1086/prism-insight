@@ -681,7 +681,7 @@ class ScenarioDemoBroker(ScenarioExecution):
     def _notices(self,active,children,observed,protected,settlement,pending=False,accounting=None):
         """Immutable first-observation events; poll time never changes event IDs."""
         from live.scenario_notice import render_notice, closed_account_snapshot
-        from live.scenario_notice_evidence import position_snapshot, economic_fingerprint, number
+        from live.scenario_notice_evidence import position_snapshot, economic_fingerprint, number, entry_plan_reference
         from live.scenario_recovery import risk_fraction
         fraction = risk_fraction(self._recovery_state(), active["scenario_id"])
         snapshot=position_snapshot(active,children,observed,protected,pending,accounting,
@@ -726,7 +726,10 @@ class ScenarioDemoBroker(ScenarioExecution):
                 hard_stop=number(observed["position"].get("stopLoss"),positive=True) if fresh_position else None,
                 protection_confirmed=protected and fresh_position,
                 exchange_leverage=number(observed["position"].get("leverage"),positive=True) if fresh_position else None,
-                scenario_budget=active["initial_equity"]*fraction,settlement_confirmed=False)
+                scenario_budget=active["initial_equity"]*fraction,
+                scenario_initial_equity=active["initial_equity"],settlement_confirmed=False)
+            if child["kind"] == "entry":
+                event.update(entry_plan_reference(self.conn, active, child))
             if (child["kind"]!="entry" and accounting and accounting.get("status")=="confirmed"
                     and accounting.get("accounting_complete") is True):
                 # Exact validated transaction cash flow, not average-entry math

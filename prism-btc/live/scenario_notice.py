@@ -353,7 +353,7 @@ def render_notice(event: dict) -> str:
             qty = _number(event.get("quantity"))
             lines.append(f"이번 체결: {qty:g} BTC" if qty is not None else "체결 수량: 미확인")
         if kind in {"FILLED", "PROTECTION"}:
-            lines.append("전체 포지션 기준 수익률 미확인 · 아래 SL/TP는 전달된 계획 참고값이며 현재 전체 설정 확인과는 별개입니다.")
+            lines.append("전체 포지션 기준 수익률 미확인")
         lines.extend(["", f"🛡 최종 SL: {_money(event.get('hard_stop'))}"])
         tps = event.get("take_profits")
         if isinstance(tps, list) and len(tps) <= 20:
@@ -374,11 +374,18 @@ def render_notice(event: dict) -> str:
             if targets is None:
                 lines.append("분할 TP 계획: 자료 미확인")
             elif targets:
-                lines.append("🎯 분할 TP 계획: " + " / ".join(targets[:2]))
+                label = "진입 당시 TP 계획" if event.get("take_profits_scope") == "entry_intent_plan" else "분할 TP 계획"
+                lines.append(f"🎯 {label}: " + " / ".join(targets[:2]))
                 if len(targets) > 2:
                     lines.append(f"전체 {len(targets)}개 중 나머지 {len(targets)-2}개 상세 생략")
-            if targets is not None and total < 1:
-                lines.append(f"추세 추종 잔여 계획: {(1-total)*100:g}% · SL 보호 유지")
+            elif targets == []:
+                lines.append("🎯 고정 TP 없는 계획 · 남은 전량 추세 추종")
+            if targets is not None and kind in {"FILLED", "PROTECTION"}:
+                lines.append("TP 설정 미확인 · 위 가격은 계획")
+            if targets and total < 1:
+                lines.append(f"추세 추종 잔여 계획: {(1-total)*100:g}%")
+        else:
+            lines.append("🎯 TP 계획: 자료 미확인")
         if kind == "PLAN":
             conditional = event.get("conditional_entries")
             if isinstance(conditional, list) and conditional:
