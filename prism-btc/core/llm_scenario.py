@@ -7,6 +7,7 @@ fills, reserve orders atomically, persist action IDs, and supply trusted context
 from __future__ import annotations
 
 import math
+from decimal import Decimal
 from copy import deepcopy
 
 LEVERAGE = 10
@@ -247,6 +248,21 @@ the caller must first reconcile cancellations before dropping pending risk.
             fraction = 0.0
             for row in rows:
                 expected = {"id", "price", "quantity" if name == "entries" else "fraction"}
+                if name == "entries" and "trigger_price" in row:
+                    expected.add("trigger_price")
+                    if context.get("conditional_entry_version") != 1:
+                        raise ScenarioValidationError("conditional entries not enabled")
+                    trigger = _number(row["trigger_price"], "trigger_price", positive=True)
+                    tick = _number(context.get("price_tick"), "price_tick", positive=True)
+                    if Decimal(str(trigger)) % Decimal(str(tick)):
+                        raise ScenarioValidationError("trigger price off tick")
+                    mark = _number(context.get("mark_price"), "mark_price", positive=True)
+                    limit = _number(row.get("price"), "order.price", positive=True)
+                    if ((side == "LONG" and not stop < mark < trigger <= limit) or
+                            (side == "SHORT" and not stop > mark > trigger >= limit)):
+                        raise ScenarioValidationError("conditional entry price direction")
+                    if expires > (math.floor(captured / 300) + 1) * 300:
+                        raise ScenarioValidationError("conditional entry expiry exceeds next decision")
                 if set(row) != expected:
                     raise ScenarioValidationError("invalid order fields")
                 ident = _text(row["id"], "order.id")
@@ -271,6 +287,8 @@ the caller must first reconcile cancellations before dropping pending risk.
             raise ScenarioValidationError("invalid chase")
         if _number(chase["max_bps"], "max_bps") > 50 or type(chase["max_reprices"]) is not int or not 0 <= chase["max_reprices"] <= 3:
             raise ScenarioValidationError("unbounded chase")
+        if any("trigger_price" in row for row in entries) and (chase["max_bps"] or chase["max_reprices"]):
+            raise ScenarioValidationError("conditional entry chase forbidden")
         risk = risk_snapshot(initial_equity=context["initial_equity"], side=side,
                              hard_stop=stop, positions=positions, pending_entries=pending,
                              entries=entries, **{k: context[k] for k in (

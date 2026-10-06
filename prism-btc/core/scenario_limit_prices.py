@@ -91,6 +91,10 @@ def validate_execution_prices(payload, context):
             price = _decimal(row["price"])
             record = dict(kind=kind, id=row["id"], raw_price=float(price), final_price=float(price), applied=False)
             reason = prerequisites
+            if kind == "entries" and "trigger_price" in row:
+                record["reason"] = "conditional_explicit_limit"
+                audit["rows"].append(record)
+                continue
             # Reject unsupported decimal magnitudes as optional pricing evidence;
             # leave original broker validation/protection behavior unchanged.
             if abs(price.adjusted()) > 15 or (not prerequisites and (

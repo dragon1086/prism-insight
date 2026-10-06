@@ -52,6 +52,10 @@ def response_contract(context):
         contract["review"] = {"conditions": [{"source": "MARK_PRICE", "operator": "ge | le", "price": "positive numeric threshold"}],
                               "acknowledgements": [{"id": "exact review_memory host ID", "disposition": "hold | replace", "reason": "1..240 characters explaining decision"}]}
         contract["rules"].append("review is advisory, nullable, max 3 conditions and 3 acknowledgements. Empty/missing review does not clear prior conditions. A reached condition stays reached; acknowledge its exact host ID and explain hold or replacement, not silent goalpost movement. Only MARK_PRICE ge/le thresholds are executable observations, not candle closes or exchange orders.")
+    if context.get("conditional_entry_version") == 1:
+        contract["entries"][0]["trigger_price"] = "null for ordinary LIMIT; positive MarkPrice crossing for conditional stop-LIMIT"
+        contract["reservation_expires_at"] = (int(context.get("input_captured_at", context["now"])) // 300 + 1) * 300
+        contract["rules"].append("reservation_expires_at is host input only; do not return this field. Conditional LONG trigger must exceed current mark, limit price>=trigger; SHORT trigger below mark, limit price<=trigger. Use expires_at<=reservation_expires_at, chase zero. All conditional risk is reserved before trigger. Deadline never extends; cancellation is asynchronous, not a guaranteed exact expiry. Do not pre-buffer conditional entry limits.")
     return contract
 
 
@@ -105,7 +109,8 @@ def preview(equity, *, snapshot=None, generate=None, clock=time.time):
                scenario_id=None,revision=0,seen_action_ids=[],initial_equity=equity,
                positions=[],pending_entries=[],previous_hard_stop=None,realized_loss=0,
                fees_paid=0,funding_paid=0,estimated_cost_rate=0.0012,slippage_bps=10,
-               new_risk_blocked=False)
+               new_risk_blocked=False,conditional_entry_version=1,
+               mark_price=snapshot.get("timeframes",{}).get("15m",{}).get("forming",{}).get("ohlcv",{}).get("close"))
     payload = propose(snapshot, ctx, response_contract(ctx), generate=generate, clock=clock)
     ctx["now"] = clock()
     validated = validate_scenario(payload, ctx)

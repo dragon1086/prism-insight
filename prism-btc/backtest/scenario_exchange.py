@@ -313,6 +313,7 @@ class ScenarioExchange:
                 if not hit:
                     continue
                 order["_triggered"] = True
+                order["orderStatus"] = "Triggered"
             sign = 1 if order["side"] == "Buy" else -1
             if order["reduceOnly"] and self.position * sign >= 0:
                 order.update(orderStatus="Cancelled", leavesQty="0")
