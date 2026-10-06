@@ -63,6 +63,15 @@ def test_listing_drops_ranking_tables_but_keeps_disclosures_and_subsidiary_news(
     assert "두산로보틱스 / 한국형" in text  # table pipes in titles cannot break the table
 
 
+def test_listing_keeps_minute_form_after_remote_transport():
+    from cores.market_data.remote_source import decode_result, encode_result
+
+    frame = _frame([["2026-10-06 09:43", "헤럴드경제", "두산로보틱스 피지컬 AI", "000150", "두산"]])
+    remote = decode_result(encode_result(frame))
+    text = build_kr_news_listing("000150", "20261006", fetch=lambda *a: remote)
+    assert "| 2026-10-06 09:43 |" in text and "09:43:00" not in text
+
+
 def test_listing_is_empty_when_kis_is_unavailable_or_silent():
     def broken(*_):
         raise RuntimeError("KIS down")
