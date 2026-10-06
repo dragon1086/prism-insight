@@ -59,6 +59,11 @@ _INVESTOR_DAILY_TR = "FHPTJ04160001"
 _INVESTOR_ESTIMATE = "/uapi/domestic-stock/v1/quotations/investor-trend-estimate"
 _INVESTOR_ESTIMATE_TR = "HHPTJ04160200"
 
+_NEWS_TITLES = "/uapi/domestic-stock/v1/quotations/news-title"
+_NEWS_TITLES_TR = "FHKST01011800"
+# One call returns ~40 titles (about a week for an active stock); pages walk back.
+_NEWS_MAX_PAGES = 4
+
 _KST = ZoneInfo("Asia/Seoul")
 
 # KIS publishes five intraday snapshots.  The first contains only the foreign
@@ -432,6 +437,65 @@ class KisSource:
                 ),
             }
         )
+        return frame
+
+    def news_titles(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        """KIS news/disclosure headlines that mention the stock, newest first.
+
+        Titles only — the endpoint gives no article body or URL. KIS matches the
+        stock against the article, so the tagged codes may name another company
+        (a subsidiary or a sector piece); callers must not filter on them.
+        `FID_INPUT_DATE_1`/`FID_INPUT_HOUR_1` are a cursor: each page returns the
+        titles at or before it, so the walk continues from the oldest row seen.
+        """
+        collected: dict[str, dict] = {}
+        cursor_date, cursor_hour = end, ""
+        for _ in range(_NEWS_MAX_PAGES):
+            body = self._fetch(
+                _NEWS_TITLES,
+                _NEWS_TITLES_TR,
+                {
+                    "FID_NEWS_OFER_ENTP_CODE": "",
+                    "FID_COND_MRKT_CLS_CODE": "",
+                    "FID_INPUT_ISCD": ticker,
+                    "FID_TITL_CNTT": "",
+                    "FID_INPUT_DATE_1": cursor_date,
+                    "FID_INPUT_HOUR_1": cursor_hour,
+                    "FID_RANK_SORT_CLS_CODE": "",
+                    "FID_INPUT_SRNO": "",
+                },
+            )
+            rows = list(getattr(body, "output", None) or [])
+            fresh = [r for r in rows if r.get("cntt_usiq_srno") and r["cntt_usiq_srno"] not in collected]
+            if not fresh:
+                break
+            for row in fresh:
+                collected[row["cntt_usiq_srno"]] = row
+            oldest = min(fresh, key=lambda r: (str(r.get("data_dt")), str(r.get("data_tm"))))
+            if str(oldest.get("data_dt")) < start:
+                break
+            cursor_date, cursor_hour = str(oldest.get("data_dt")), str(oldest.get("data_tm"))
+
+        records = []
+        for row in collected.values():
+            day, hour = str(row.get("data_dt") or ""), str(row.get("data_tm") or "").ljust(6, "0")
+            title = str(row.get("hts_pbnt_titl_cntt") or "").strip()
+            if not (len(day) == 8 and day.isdigit() and start <= day <= end and title):
+                continue
+            tags = [(str(row.get(f"iscd{i}") or "").strip(), str(row.get(f"kor_isnm{i}") or "").strip())
+                    for i in range(1, 11)]
+            tags = [(code, name) for code, name in tags if code]
+            records.append({
+                "published_at": f"{day[:4]}-{day[4:6]}-{day[6:]} {hour[:2]}:{hour[2:4]}",
+                "provider": str(row.get("dorg") or "").strip(),
+                "title": title,
+                "tag_codes": ",".join(code for code, _ in tags),
+                "tag_names": ",".join(name for _, name in tags),
+            })
+        records.sort(key=lambda r: r["published_at"], reverse=True)
+        frame = pd.DataFrame(records, columns=["published_at", "provider", "title", "tag_codes", "tag_names"])
+        frame.attrs.update(source="KIS", data_status="headlines_only",
+                           observed_at=datetime.now(_KST).isoformat())
         return frame
 
     def market_cap_history(self, ticker: str, start: str, end: str) -> pd.DataFrame:
