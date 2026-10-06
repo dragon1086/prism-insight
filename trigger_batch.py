@@ -1987,8 +1987,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
         # Add execution time and metadata
         output_data["metadata"] = {
             **({"market_participation": market_participation} if market_participation else {}),
-            **({"market_movers": {"prev_date": prev_date, "captured_at": datetime.datetime.now().isoformat(),
-                                  "rows": movers}} if movers else {}),
+            **({"market_movers": {"prev_date": prev_date, "rows": movers}} if movers else {}),
             "run_time": datetime.datetime.now().isoformat(),
             "trigger_mode": trigger_time,
             "trade_date": trade_date,
