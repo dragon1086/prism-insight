@@ -5,6 +5,7 @@ is copied to other servers several times a day. One row per KIS serial, plus
 the stocks KIS tagged on it. Headlines are evidence, never instructions.
 """
 
+import json
 import os
 import sqlite3
 from contextlib import closing
@@ -78,11 +79,9 @@ def upsert(conn, rows, *, now=None):
 
 
 def known(conn, serials):
-    serials = list(serials)
-    if not serials:
-        return set()
-    marks = ",".join("?" * len(serials))
-    return {r[0] for r in conn.execute(f"SELECT serial FROM news_titles WHERE serial IN ({marks})", serials)}
+    rows = conn.execute("SELECT serial FROM news_titles WHERE serial IN (SELECT value FROM json_each(?))",
+                        (json.dumps([str(s) for s in serials]),))
+    return {r[0] for r in rows}
 
 
 def bounds(conn):
@@ -99,27 +98,33 @@ def prune(conn, keep_days, *, now=None):
     return removed
 
 
-def search(conn, *, keywords=(), ticker=None, since=None, until=None, limit=50):
-    """Headlines newest first. `keywords` match any (title substring); `ticker` matches KIS tags."""
-    where, args = [], []
-    if since:
-        where.append("t.published_at >= ?")
-        args.append(since)
-    if until:
-        where.append("t.published_at <= ?")
-        args.append(until)
-    words = [w for w in (k.strip() for k in keywords) if w]
-    if words:
-        where.append("(" + " OR ".join("t.title LIKE ?" for _ in words) + ")")
-        args.extend(f"%{w}%" for w in words)
-    if ticker:
-        where.append("t.serial IN (SELECT serial FROM news_title_tickers WHERE ticker = ?)")
-        args.append(ticker)
-    sql = ("SELECT t.serial, t.published_at, t.provider, t.title, "
-           "(SELECT group_concat(name, ',') FROM (SELECT name FROM news_title_tickers k "
-           " WHERE k.serial = t.serial ORDER BY rank)) AS tag_names "
-           "FROM news_titles t" + (" WHERE " + " AND ".join(where) if where else "") +
-           " ORDER BY t.published_at DESC LIMIT ?")
-    args.append(int(limit))
-    with closing(conn.execute(sql, args)) as cur:
+# Static SQL: optional filters are parameters, word lists travel as JSON arrays.
+_SEARCH_SQL = """
+SELECT t.serial, t.published_at, t.provider, t.title,
+       (SELECT group_concat(name, ',') FROM
+          (SELECT name FROM news_title_tickers k WHERE k.serial = t.serial ORDER BY rank)) AS tag_names
+FROM news_titles t
+WHERE (:since IS NULL OR t.published_at >= :since)
+  AND (:until IS NULL OR t.published_at <= :until)
+  AND (:any_words = '[]' OR EXISTS (SELECT 1 FROM json_each(:any_words) w
+                                    WHERE t.title LIKE '%' || w.value || '%' ESCAPE '\\'))
+  AND NOT EXISTS (SELECT 1 FROM json_each(:all_words) w
+                  WHERE t.title NOT LIKE '%' || w.value || '%' ESCAPE '\\')
+  AND (:ticker IS NULL OR t.serial IN (SELECT serial FROM news_title_tickers WHERE ticker = :ticker))
+ORDER BY t.published_at DESC
+LIMIT :limit
+"""
+
+
+def _words(words):
+    cleaned = [w.strip() for w in words if w and w.strip()]
+    return json.dumps([w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") for w in cleaned])
+
+
+def search(conn, *, keywords=(), all_keywords=(), ticker=None, since=None, until=None, limit=50):
+    """Headlines newest first. `keywords` match any title substring, `all_keywords` must all
+    appear; `ticker` matches KIS tags."""
+    params = {"since": since, "until": until, "any_words": _words(keywords), "all_words": _words(all_keywords),
+              "ticker": ticker, "limit": int(limit)}
+    with closing(conn.execute(_SEARCH_SQL, params)) as cur:
         return [dict(r) for r in cur.fetchall()]

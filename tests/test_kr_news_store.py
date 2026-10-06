@@ -83,3 +83,12 @@ def test_live_on_an_empty_store_keeps_paging_past_the_repeated_cursor_row(tmp_pa
     feed = FakeFeed([_row(str(i), "20261006", f"{10 + i:02d}0000", f"t{i}") for i in range(6)], size=2)
     calls, new, _ = collector.live(feed, conn, max_calls=10)
     assert new == 6
+
+
+def test_search_treats_like_wildcards_in_words_literally(tmp_path):
+    conn = store.connect(tmp_path / "news.sqlite")
+    store.upsert(conn, [_row("a", "20261006", "100000", "지분 100% 인수"),
+                        _row("b", "20261006", "100100", "지분 1000주 매수")])
+    assert [r["serial"] for r in store.search(conn, keywords=["100%"])] == ["a"]
+    assert [r["serial"] for r in store.search(conn, all_keywords=["지분", "매수"])] == ["b"]
+    assert store.search(conn, keywords=["_"]) == []
