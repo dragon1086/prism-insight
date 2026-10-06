@@ -439,6 +439,44 @@ class KisSource:
         )
         return frame
 
+    def news_title_page(self, ticker: str, date: str, hour: str = "") -> list[dict]:
+        """One page (~40) of KIS headlines at or before `date` `hour` (HHMMSS), newest first.
+
+        `ticker=""` is the whole-market feed. Titles only — no article body or URL.
+        """
+        body = self._fetch(
+            _NEWS_TITLES,
+            _NEWS_TITLES_TR,
+            {
+                "FID_NEWS_OFER_ENTP_CODE": "",
+                "FID_COND_MRKT_CLS_CODE": "",
+                "FID_INPUT_ISCD": ticker,
+                "FID_TITL_CNTT": "",
+                "FID_INPUT_DATE_1": date,
+                "FID_INPUT_HOUR_1": hour,
+                "FID_RANK_SORT_CLS_CODE": "",
+                "FID_INPUT_SRNO": "",
+            },
+        )
+        page = []
+        for row in list(getattr(body, "output", None) or []):
+            serial = str(row.get("cntt_usiq_srno") or "").strip()
+            day = str(row.get("data_dt") or "").strip()
+            clock = str(row.get("data_tm") or "").strip().ljust(6, "0")
+            title = str(row.get("hts_pbnt_titl_cntt") or "").strip()
+            if not (serial and len(day) == 8 and day.isdigit() and clock[:6].isdigit() and title):
+                continue
+            tags = [(str(row.get(f"iscd{i}") or "").strip(), str(row.get(f"kor_isnm{i}") or "").strip())
+                    for i in range(1, 11)]
+            page.append({
+                "serial": serial, "day": day, "time": clock[:6], "title": title,
+                "provider": str(row.get("dorg") or "").strip(),
+                "provider_code": str(row.get("news_ofer_entp_code") or "").strip(),
+                "category": str(row.get("news_lrdv_code") or "").strip(),
+                "tags": [(code, name) for code, name in tags if code],
+            })
+        return page
+
     def news_titles(self, ticker: str, start: str, end: str) -> pd.DataFrame:
         """KIS news/disclosure headlines that mention the stock, newest first.
 
@@ -451,47 +489,24 @@ class KisSource:
         collected: dict[str, dict] = {}
         cursor_date, cursor_hour = end, ""
         for _ in range(_NEWS_MAX_PAGES):
-            body = self._fetch(
-                _NEWS_TITLES,
-                _NEWS_TITLES_TR,
-                {
-                    "FID_NEWS_OFER_ENTP_CODE": "",
-                    "FID_COND_MRKT_CLS_CODE": "",
-                    "FID_INPUT_ISCD": ticker,
-                    "FID_TITL_CNTT": "",
-                    "FID_INPUT_DATE_1": cursor_date,
-                    "FID_INPUT_HOUR_1": cursor_hour,
-                    "FID_RANK_SORT_CLS_CODE": "",
-                    "FID_INPUT_SRNO": "",
-                },
-            )
-            rows = list(getattr(body, "output", None) or [])
-            fresh = [r for r in rows if r.get("cntt_usiq_srno") and r["cntt_usiq_srno"] not in collected]
+            fresh = [r for r in self.news_title_page(ticker, cursor_date, cursor_hour)
+                     if r["serial"] not in collected]
             if not fresh:
                 break
             for row in fresh:
-                collected[row["cntt_usiq_srno"]] = row
-            oldest = min(fresh, key=lambda r: (str(r.get("data_dt")), str(r.get("data_tm"))))
-            if str(oldest.get("data_dt")) < start:
+                collected[row["serial"]] = row
+            oldest = min(fresh, key=lambda r: (r["day"], r["time"]))
+            if oldest["day"] < start:
                 break
-            cursor_date, cursor_hour = str(oldest.get("data_dt")), str(oldest.get("data_tm"))
+            cursor_date, cursor_hour = oldest["day"], oldest["time"]
 
-        records = []
-        for row in collected.values():
-            day, hour = str(row.get("data_dt") or ""), str(row.get("data_tm") or "").ljust(6, "0")
-            title = str(row.get("hts_pbnt_titl_cntt") or "").strip()
-            if not (len(day) == 8 and day.isdigit() and start <= day <= end and title):
-                continue
-            tags = [(str(row.get(f"iscd{i}") or "").strip(), str(row.get(f"kor_isnm{i}") or "").strip())
-                    for i in range(1, 11)]
-            tags = [(code, name) for code, name in tags if code]
-            records.append({
-                "published_at": f"{day[:4]}-{day[4:6]}-{day[6:]} {hour[:2]}:{hour[2:4]}",
-                "provider": str(row.get("dorg") or "").strip(),
-                "title": title,
-                "tag_codes": ",".join(code for code, _ in tags),
-                "tag_names": ",".join(name for _, name in tags),
-            })
+        records = [{
+            "published_at": f"{r['day'][:4]}-{r['day'][4:6]}-{r['day'][6:]} {r['time'][:2]}:{r['time'][2:4]}",
+            "provider": r["provider"],
+            "title": r["title"],
+            "tag_codes": ",".join(code for code, _ in r["tags"]),
+            "tag_names": ",".join(name for _, name in r["tags"]),
+        } for r in collected.values() if start <= r["day"] <= end]
         records.sort(key=lambda r: r["published_at"], reverse=True)
         frame = pd.DataFrame(records, columns=["published_at", "provider", "title", "tag_codes", "tag_names"])
         frame.attrs.update(source="KIS", data_status="headlines_only",

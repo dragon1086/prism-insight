@@ -41,6 +41,18 @@ seed를 직접 수정하지 않으며, 첫 저장부터 지정한 runtime 파일
 - 결측만 최대 10종목/15초 안에서 단일 조회를 시도합니다. 개별 호출 timeout은 5초이며 실제 in-flight 요청 종료까지의 절대 벽시계 상한은 아닙니다. 늦은 응답은 채택하지 않습니다.
 - 영속 캐시는 과거에 저장하지 못한 자료를 만들어내지 않습니다. 최초 운영에서는 저장 축적 전 결측이 계속될 수 있습니다.
 
+## KIS 뉴스 제목 저장소 (KR)
+
+- 기본 경로: `runtime/kr_news_titles.sqlite` (Git ignored). 경로 override: `PRISM_KR_NEWS_DB`.
+- 내용: KIS 국내 종합 시황/공시 제목 피드(`FHKST01011800`) 전체 시장분. 제목·제공처·시각·KIS 태그 종목만 있고 본문·URL은 없습니다.
+- `stock_tracking_db.sqlite`에 넣지 않습니다. 그 DB는 하루 여러 번 다른 서버로 복사됩니다.
+- 수집: `tools/collect_kr_news_titles.py` (db-server cron, 읽기 전용 KIS 호출)
+  - `live`: 5분마다 최신 페이지부터 저장된 시각까지 (보통 1~3회 호출)
+  - `backfill --until YYYYMMDD`: 저장된 가장 오래된 제목에서 과거로. 거래일 하루 약 8천 건, 약 200회 호출·2분
+  - `prune --keep-days 400`: 오래된 제목 삭제 후 VACUUM
+- 규모(2026-10-02 실측): 거래일 하루 약 8천 건, 약 2.3MB. 1년 약 0.6~0.8GB.
+- 조회: `prism_core.kr_news_store.search()` (키워드·태그 종목·기간).
+
 ## 운영 점검 명령
 
 ```bash
