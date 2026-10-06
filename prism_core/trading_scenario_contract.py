@@ -22,10 +22,9 @@ _ONEIL_BREAKOUT_TOLERANCE = 0.01
 # These are the existing BUY prompt's policy template, not model-generated rules.
 # Detailed trailing parameters remain owned by the live SELL instruction/state.
 _SELL_TRIGGERS_KO = (
-    ('익절 마일스톤: 목표가·주요 저항선 도달은 자동 매도 명령이 아닙니다. '
-    'parabolic/strong_bull/moderate_bull에서는 추세가 유지되면 보유하고 '
-    '현재 매도 에이전트의 trailing stop 규율을 적용합니다. '
-    'sideways/moderate_bear/strong_bear에서는 기존 익절 규율을 적용합니다.'),
+    ('익절 마일스톤: 목표가·주요 저항선 도달은 어떤 국면에서도 매도 사유가 아닙니다. '
+    '추세가 유지되면 보유하고, 이익은 현재 매도 에이전트의 trailing stop 규율'
+    '(강세 고점 대비 -8%, 횡보·약세 -3~5%)로 지킵니다.'),
     ('추세 약화: 기존 종가·거래량·섹터/시장 조건에 따른 매도 에이전트의 규율을 적용합니다. '
     '매수 시나리오의 자유서술로 새로운 단독 매도 조건을 만들지 않습니다.'),
     ('하드 스탑: 장중 현재가가 stop_loss×0.995(0.5% 꼬리 버퍼) 이하가 되면 장중 하드스탑이 '
@@ -35,9 +34,9 @@ _SELL_TRIGGERS_KO = (
     '시간 점검: 보유 일수는 추세 점검 시점이지 독립적인 자동 매도 트리거가 아닙니다.',
 )
 _SELL_TRIGGERS_EN = (
-    ('Target/resistance is a milestone, not an unconditional sell order. In '
-    'parabolic/strong_bull/moderate_bull retain intact trends and use the live '
-    'SELL agent trailing policy; otherwise use its existing profit-taking policy.'),
+    ('Target/resistance is never a sell reason in any regime. Retain intact trends '
+    'and protect the gain with the live SELL agent trailing policy (-8% from the '
+    'peak in bull regimes, -3~5% in sideways/bear).'),
     ('Trend weakening follows the existing SELL closing-price, volume and '
     'sector/market rules. BUY free text cannot create a new standalone exit rule.'),
     ('Hard stop is intraday: a live price at or below stop_loss x 0.995 (0.5% wick '

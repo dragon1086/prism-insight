@@ -1,19 +1,10 @@
-"""Tests for the TIER3 target take-profit hold-when-strong exception.
+"""Target reached is never a deterministic sell (2026-10-07).
 
-Regression cover for the 2026-07-29 INCY liquidation:
-  regime (S&P500-derived) was `sideways` -> WEAK_REGIMES -> TIER3_TARGET fired
-  the moment the target was touched, and the position was closed for +16.76%
-  while the stock itself was +11% ON THE DAY and sitting at its post-entry high.
-  The same session's buy-trigger batch had scored INCY oneil_pct=95 / RS=0.80.
-
-The fix: in a weak/sideways regime the target take-profit is HELD while the
-*stock* is demonstrably still trending (above its own 50MA and near its peak);
-the exit is then delegated to the TIER2 trailing stop.
-
-Safety invariants asserted here (these must never regress):
-  - TIER1 hard stops still fire on a "strong" stock.
-  - ma_50 unavailable (0) -> conservative, keeps the ORIGINAL take-profit.
-  - No dead band between the hold window and the TIER2 trail.
+History: 2026-07-29 INCY was sold at target in a `sideways` regime for +16.76% while
+it was still at its post-entry high; a hold-when-strong exception followed. The
+2026-10-07 exit study then showed target-reached sells cut big runners in general
+(17 of 79 real trades that later reached +50%), so TIER3 no longer sells in any
+regime: TIER2 trailing (bull -8%, weak -5%) and the TIER1 stops own every exit.
 
 Pure function, no network, no DB. Run in the KR (root) session.
 """
@@ -27,8 +18,6 @@ sys.path.insert(0, str(_ROOT))
 from cores.oneil_fallback import (  # noqa: E402
     SellInputs,
     evaluate_oneil_sell,
-    TARGET_HOLD_MA50_MARGIN,
-    TARGET_HOLD_PEAK_PROXIMITY,
 )
 
 
@@ -57,95 +46,43 @@ def _incy(current_price=INCY_SELL_PRICE, regime="sideways", ma_50=INCY_MA50,
     )
 
 
-class TestIncyRegression:
-    def test_strong_stock_in_sideways_regime_is_held(self):
-        """THE REGRESSION: INCY must NOT be sold at target while still trending."""
-        should_sell, reason = evaluate_oneil_sell(_incy())
-        assert should_sell is False, f"INCY sold again: {reason}"
-        assert "let it run" in reason
-        assert "stock strong" in reason
+
+class TestTargetIsNeverASell:
+    @pytest.mark.parametrize("regime", ["parabolic", "strong_bull", "moderate_bull",
+                                        "sideways", "moderate_bear", "strong_bear"])
+    def test_target_hit_holds_in_every_regime(self, regime):
+        should_sell, reason = evaluate_oneil_sell(_incy(regime=regime))
+        assert should_sell is False, reason
+        assert reason.startswith("HOLD: target hit") and "trailing manages the exit" in reason
 
     def test_profit_at_sale_matches_the_incident(self):
-        """Sanity-check the fixture against the logged +16.76% so the test
-        genuinely reproduces the incident rather than a nearby scenario."""
         profit = (INCY_SELL_PRICE - INCY_BUY) / INCY_BUY * 100
         assert profit == pytest.approx(16.76, abs=0.01)
 
-    @pytest.mark.parametrize("regime", ["sideways", "moderate_bear", "strong_bear"])
-    def test_hold_applies_across_all_weak_regimes(self, regime):
-        should_sell, _ = evaluate_oneil_sell(_incy(regime=regime))
-        assert should_sell is False
-
-
-class TestOriginalBehaviourPreserved:
-    """The exception must be narrow — everything else keeps the old semantics."""
-
-    def test_rolled_over_stock_still_takes_profit(self):
-        """Pulled >3% off the peak -> no longer 'strong' -> TIER3 fires as before."""
-        rolled = INCY_PEAK * 0.96
-        should_sell, reason = evaluate_oneil_sell(_incy(current_price=rolled))
-        assert should_sell is True
-        assert reason.startswith("TIER3_TARGET(weak)")
-
-    def test_ma50_unavailable_is_conservative(self):
-        """ma_50=0 (fetch failed / dormant) -> cannot prove strength -> sell."""
-        should_sell, reason = evaluate_oneil_sell(_incy(ma_50=0.0))
-        assert should_sell is True
-        assert reason.startswith("TIER3_TARGET(weak)")
-
-    def test_extended_but_below_ma50_margin_still_sells(self):
-        """Near peak but barely above its own 50MA -> not a real uptrend."""
-        weak_ma = INCY_SELL_PRICE / (TARGET_HOLD_MA50_MARGIN * 0.99)
-        should_sell, reason = evaluate_oneil_sell(_incy(ma_50=weak_ma))
-        assert should_sell is True
-        assert reason.startswith("TIER3_TARGET(weak)")
-
-    def test_bull_regime_unchanged(self):
-        should_sell, reason = evaluate_oneil_sell(_incy(regime="moderate_bull"))
-        assert should_sell is False
-        assert "bull regime" in reason
+    @pytest.mark.parametrize("ma_50", [0.0, INCY_SELL_PRICE])
+    def test_strength_no_longer_matters_above_the_trail(self, ma_50):
+        """Rolled 4% off the peak (inside the -5% weak trail) or no 50MA: still a hold."""
+        should_sell, reason = evaluate_oneil_sell(_incy(current_price=INCY_PEAK * 0.96, ma_50=ma_50))
+        assert should_sell is False, reason
 
 
 class TestSafetyInvariants:
-    """Strength must never suppress a loss-cutting tier."""
+    """Removing the target sell must not touch any loss-cutting tier."""
 
-    def test_hard_stop_still_fires_on_a_strong_stock(self):
-        """TIER1 is evaluated before TIER3 and must be untouched."""
-        inp = _incy(current_price=INCY_STOP * 0.98)
-        should_sell, reason = evaluate_oneil_sell(inp)
-        assert should_sell is True
-        assert reason.startswith("TIER1")
+    def test_hard_stop_still_fires(self):
+        should_sell, reason = evaluate_oneil_sell(_incy(current_price=INCY_STOP * 0.98))
+        assert should_sell is True and reason.startswith("TIER1")
 
     def test_abs_7pct_stop_still_fires(self):
-        inp = _incy(current_price=INCY_BUY * 0.92)
-        should_sell, reason = evaluate_oneil_sell(inp)
-        assert should_sell is True
-        assert reason.startswith("TIER1")
+        should_sell, reason = evaluate_oneil_sell(_incy(current_price=INCY_BUY * 0.92))
+        assert should_sell is True and reason.startswith("TIER1")
 
-    def test_trailing_stop_still_fires_below_the_hold_band(self):
-        """TIER2 (-5% weak band) catches the position once it breaks down."""
-        inp = _incy(current_price=INCY_PEAK * 0.94)
-        should_sell, reason = evaluate_oneil_sell(inp)
-        assert should_sell is True
-        assert reason.startswith("TIER2_TRAIL")
-
-    def test_no_dead_band_between_hold_window_and_trail(self):
-        """While the target is still exceeded, every price from the TIER2 trail up
-        to the peak must resolve to a definite decision — hold-because-strong, or
-        an exit — never a silent fall-through to the generic 'trend intact' HOLD.
-
-        (Below the target price TIER3 cannot fire at all by design; that region is
-        owned by TIER2 and is asserted separately.)"""
-        assert TARGET_HOLD_PEAK_PROXIMITY > 0.95, "hold band must sit above the -5% trail"
-        for pct in [0.950, 0.955, 0.960, 0.970, 0.980, 0.990, 1.000]:
-            assert INCY_PEAK * pct >= INCY_TARGET, "fixture: price must still be above target"
-            inp = _incy(current_price=INCY_PEAK * pct)
-            should_sell, reason = evaluate_oneil_sell(inp)
-            if pct >= TARGET_HOLD_PEAK_PROXIMITY:
-                assert should_sell is False, f"{pct}: expected hold, got {reason}"
-            else:
-                assert should_sell is True, f"{pct}: expected an exit, got {reason}"
-                assert reason.startswith(("TIER2_TRAIL", "TIER3_TARGET")), reason
+    @pytest.mark.parametrize("regime,drop", [("sideways", 0.94), ("moderate_bull", 0.91)])
+    def test_trailing_stop_still_fires(self, regime, drop):
+        """TIER2 (weak -5%, bull -8%) still owns the profit-protecting exit."""
+        price = INCY_PEAK * drop
+        should_sell, reason = evaluate_oneil_sell(_incy(current_price=price, regime=regime))
+        assert should_sell is True and reason.startswith("TIER2_TRAIL"), reason
 
 
 class TestKrUsParity:

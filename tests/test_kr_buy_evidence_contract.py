@@ -92,4 +92,4 @@ def test_sell_factory_matches_reviewed_volume_prompt():
     # (stop_loss x 0.995, -7% on the live price); trailing stop stays closing-price based.
     source = SOURCE.read_text(encoding="utf-8")
     node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "create_sell_decision_agent")
-    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "8793bcb5667adc0b78b1d135f58792919897e7a22feea2ec569c0929a488666e"
+    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "5bf3db666a48bd816a23857e83d0a6e2e74f3d0aed8836c1c52397f0750543ac"
