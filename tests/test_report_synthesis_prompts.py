@@ -33,9 +33,9 @@ async def _capture(monkeypatch, call):
 
 
 SUMMARY_LEADS = {
-    "ko": ("**한 줄 결론**", "**지금 무슨 일이 일어나고 있나**", "**숫자 뒤에 숨은 이야기**",
+    "ko": ("**한 줄 결론**", "**지금 무슨 일이 일어나고 있나**", "**재료와 테마 흐름**", "**숫자 뒤에 숨은 이야기**",
            "**경쟁사와 비교하면**", "**공시와 주가·수급의 연결**", "**앞으로 확인할 것**"),
-    "en": ("**Bottom line**", "**What is happening now**", "**The story behind the numbers**",
+    "en": ("**Bottom line**", "**What is happening now**", "**Catalysts and theme**", "**The story behind the numbers**",
            "**Versus peers**", "**Filings vs. price and flows**", "**What to watch next**"),
 }
 
@@ -53,7 +53,7 @@ async def test_summary_prompt_structure_and_guards(monkeypatch, language):
     # Lead-ins are bold paragraph leads, never new headings the renderers would split on.
     assert not re.search(r"(?m)^#{1,4}\s*\*\*", message)
     if language == "ko":
-        for required in ("900~1,400자", "겉으로 보면 …, 하지만 공시를 들여다보면 …", "전환사채(나중에 주식으로 바꿀 수 있는 채권)",
+        for required in ("1,000~1,500자", "뉴스 분석", "지배구조 변경", "동반 움직임", "겉으로 보면 …, 하지만 공시를 들여다보면 …", "전환사채(나중에 주식으로 바꿀 수 있는 채권)",
                          "억원·조원", "통째로 생략", "외국인·기관·개인", "합쇼체",
                          "새로운 가격대나 매매 규칙을 만들지 않습니다", "INVESTMENT_STRATEGY",
                          "내부 라벨, 상태 코드, 영어 필드명", "새로운 ##·### 제목은 만들지 마세요",
@@ -61,7 +61,8 @@ async def test_summary_prompt_structure_and_guards(monkeypatch, language):
             assert required in prompt, required
         assert "500-800자" not in prompt and "3-5개의 핵심 포인트" not in prompt
     else:
-        for required in ("On the surface …, but the filings show …", "convertible bond (a bond that can later",
+        for required in ("On the surface …, but the filings show …", "carrying over the conclusion of the news chapter",
+                         "must appear somewhere in the summary", "convertible bond (a bond that can later",
                          "omit this item entirely", "do not introduce new price levels or trading rules",
                          "INVESTMENT_STRATEGY", "internal labels, status codes or English field names",
                          "Do not create any other ## or ### headings", "official results/guidance",
