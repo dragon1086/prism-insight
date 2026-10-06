@@ -39,6 +39,9 @@ os.environ.setdefault("US_SCREENING_KIS_SHORTLIST", "false")
 # The runner hold rule fetches daily bars (KIS/yfinance) in the sell loops; tests that
 # exercise it opt in explicitly (tests/test_runner_hold*.py).
 os.environ.setdefault("RUNNER_HOLD_ENABLED", "false")
+# Batch integration tests must not write the candidate ledger into the repo DB;
+# tests/test_candidate_ledger.py opts in with a temporary DB.
+os.environ.setdefault("CANDIDATE_LEDGER_ENABLED", "false")
 
 
 # ---------------------------------------------------------------------------

@@ -1751,6 +1751,13 @@ def select_final_tickers(
         selection_diagnostics["trigger_quality"] = trigger_quality.selection_record(
             trigger_candidates, phase2_order, before_guarantee, selected_tickers, fill_picks,
             trigger_weights, score_column, max_selections=max_selections)
+        # Observation only: every scored candidate, not just the picks.
+        try:
+            from observability import candidate_ledger
+            selection_diagnostics["candidate_ledger"] = candidate_ledger.build_rows(
+                trigger_candidates, final_result, score_column=score_column)
+        except Exception as exc:  # noqa: BLE001 - observation must not affect selection
+            logger.warning("Candidate ledger capture unavailable: %s", type(exc).__name__)
 
     # Log selection summary
     bottomup_count = len(selected_tickers) - topdown_filled
@@ -1887,6 +1894,13 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
     selection_record = selection_diagnostics.get("trigger_quality")
     trigger_quality.emit_selection_record(selection_record, market="KR", trade_date=trade_date,
                                           trigger_mode=trigger_time, log=logger)
+    try:
+        from observability import candidate_ledger
+        candidate_ledger.record(selection_diagnostics.get("candidate_ledger"), market="KR",
+                                trade_date=trade_date, mode=trigger_time, log=logger,
+                                market_regime=(macro_context or {}).get("market_regime"))
+    except Exception as exc:  # noqa: BLE001 - observation must not stop screening
+        logger.warning("Candidate ledger unavailable: %s", type(exc).__name__)
 
     # Optional research observes final selection, including an empty candidate set.
     if watch_batch_ref:
