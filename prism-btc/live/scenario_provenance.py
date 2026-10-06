@@ -121,6 +121,7 @@ def _loaded_parity(name, source, selected=None):
 def _manifest():
     root = Path(__file__).resolve().parents[1]
     policy_files = ['live/scenario_llm.py', 'live/scenario_contract.py',
+                    'live/scenario_recovery.py',
                     'live/scenario_review_memory.py',
                     'live/scenario_runner_economics.py',
                     'live/scenario_preview.py', 'engine/scenario_snapshot.py',
@@ -155,6 +156,9 @@ def _manifest():
             judgment_parity[name] = _loaded_parity(name, source, {context_name})
             execution_parity[name] = _loaded_parity(name, source, execution_names)
         parity[name] = _loaded_parity(name, source, selected_names)
+    # Recovery contains both judgment evidence and execution authorization.
+    execution['live/scenario_recovery.py'] = policy['live/scenario_recovery.py']
+    execution_parity['live/scenario_recovery.py'] = judgment_parity['live/scenario_recovery.py']
     try:
         # Fixed absolute executable and literal read-only arguments; no user input.
         revision = subprocess.run(  # nosec B603
@@ -167,8 +171,9 @@ def _manifest():
             'VERIFIED' if set(checks.values()) == {'VERIFIED'} else 'UNKNOWN')
     # Git is an observed checkout, never proof of the code loaded before deploy.
     return dict(schema_version=1, git_revision=revision, source_hashes=sources,
-                policy_hash=digest(policy), execution_hash=digest(execution),
-                hash_basis='OBSERVED_DISK_AST', loaded_code_status=status(parity),
+                policy_hash=digest({name: digest(value) for name, value in policy.items()}),
+                execution_hash=digest({name: digest(value) for name, value in execution.items()}),
+                hash_basis='OBSERVED_DISK_AST_PER_FILE_SHA256', loaded_code_status=status(parity),
                 judgment_loaded_code_status=status(judgment_parity),
                 execution_loaded_code_status=status(execution_parity),
                 judgment_loaded_code_checks=judgment_parity,

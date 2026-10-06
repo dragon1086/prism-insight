@@ -163,6 +163,7 @@ def test_new_exchange_attempt_captures_unknown_not_fill(tmp_path):
     calls = []
     conn = sqlite3.connect(tmp_path / 'test.sqlite')
     executor = Execution()
+    executor.conn = conn
     executor.session = Session()
     with audit.run_capture(conn):
         with pytest.raises(ValueError, match='submission_unknown'):
@@ -188,6 +189,7 @@ def test_optional_audit_clock_failure_never_blocks_exchange_ack(monkeypatch):
     def fail():
         raise RuntimeError('audit clock unavailable')
     executor = Execution()
+    executor.conn = sqlite3.connect(':memory:')
     executor.session = Session()
     monkeypatch.setattr(audit.time, 'time', fail)
     assert executor._write('place_order')['result']['orderId'] == 'ack'

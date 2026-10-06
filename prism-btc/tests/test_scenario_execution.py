@@ -385,6 +385,244 @@ def persist(b, **updates):
     return p
 
 
+def probe_permit(b, payload):
+    from live.scenario_recovery import ensure_schema
+    ensure_schema(b.conn)
+    state = json.loads(b.conn.execute("SELECT body FROM llm_scenario_state WHERE id=1").fetchone()[0])
+    state["breaker"] = dict(blocked=True, reasons=["three_losses"], consecutive_losses=3)
+    state["recovery"] = dict(phase="CONSUMED", scenario_id="s1", action_id=payload["action_id"],
+        side="LONG", initial_equity=10000, budget=50, entry_deadline=1800000300,
+        initial_entries=payload["entries"], permit_id="test-permit")
+    b.conn.execute("UPDATE llm_scenario_state SET body=? WHERE id=1", (json.dumps(state),))
+    b.conn.commit()
+    return state
+
+
+def test_probe_initial_batch_retained_and_original_equity_not_scaled(live):
+    b, e = live
+    p = persist(b, chase=dict(max_bps=0, max_reprices=0), entries=[
+        dict(id="e1", price=100, quantity=.1), dict(id="e2", price=99, quantity=.1)])
+    probe_permit(b, p)
+    b.execute(p, "a1")
+    b.reconcile()
+    assert len([w for w in e.writes if w[0] == "place"]) == 2
+    assert not any(w[0] == "cancel" for w in e.writes)
+    ctx = b.context()
+    assert ctx["initial_equity"] == 10000
+    assert ctx["scenario_risk_fraction"] == .005
+
+
+@pytest.mark.parametrize("reason", ["expiry", "paused", "daily_loss", "wrong_action", "wrong_side"])
+def test_probe_pending_hard_guards_cancel_original(live, reason):
+    b, e = live
+    p = persist(b, chase=dict(max_bps=0, max_reprices=0))
+    state = probe_permit(b, p)
+    b.execute(p, "a1")
+    if reason == "expiry":
+        b.clock = lambda: 1800000301
+    elif reason == "paused":
+        from live.scenario_control import _write
+        _write(b.conn, dict(version=1, state="paused", main_uid="123"))
+    elif reason == "daily_loss":
+        state["breaker"]["reasons"].append("daily_loss")
+    elif reason == "wrong_action":
+        state["recovery"]["action_id"] = "other"
+    else:
+        state["recovery"]["side"] = "SHORT"
+    b.conn.execute("UPDATE llm_scenario_state SET body=? WHERE id=1", (json.dumps(state),))
+    b.conn.commit()
+    b.reconcile()
+    assert any(w[0] == "cancel" for w in e.writes)
+
+
+def test_probe_fresh_preflight_rejects_2percent_sized_order(live):
+    b, e = live
+    p = persist(b, chase=dict(max_bps=0, max_reprices=0),
+                entries=[dict(id="e1", price=100, quantity=25)])
+    probe_permit(b, p)
+    with pytest.raises(BrokerNotReady, match="fresh_risk_budget_exceeded"):
+        b.execute(p, "a1")
+    assert not e.writes
+
+
+def test_probe_new_adjust_entry_and_chase_forbidden(live):
+    b, e = live
+    p = persist(b, chase=dict(max_bps=0, max_reprices=0))
+    probe_permit(b, p)
+    b.execute(p, "a1")
+    with pytest.raises(BrokerNotReady, match="recovery_probe_chase_forbidden"):
+        b.chase("a1", "e1", 100.1)
+    adjust = persist(b, action="ADJUST", action_id="a2", entries=[dict(id="extra", price=99, quantity=.1)])
+    with pytest.raises(BrokerNotReady, match="new_risk_halted"):
+        b.execute(adjust, "a2")
+    assert len([w for w in e.writes if w[0] == "place"]) == 1
+
+
+def test_probe_expired_permit_preserves_management(live):
+    b, e = live
+    p = persist(b, chase=dict(max_bps=0, max_reprices=0))
+    state = probe_permit(b, p)
+    b.execute(p, "a1")
+    e.fill(next(iter(e.orders)), .1)
+    b.reconcile()
+    state["recovery"]["entry_deadline"] = 1799999999
+    b.conn.execute("UPDATE llm_scenario_state SET body=? WHERE id=1", (json.dumps(state),))
+    b.conn.commit()
+    adjust = persist(b, action="ADJUST", action_id="a2", hard_stop=99, entries=[])
+    b.execute(adjust, "a2")
+    assert e.stop == "99"
+    exit_plan = persist(b, action="EXIT", action_id="a3", entries=[])
+    b.execute(exit_plan, "a3")
+    assert any(w[0] == "place" and w[1].get("reduceOnly") is True for w in e.writes)
+
+
+def test_probe_short_initial_reservation_is_symmetric(live):
+    b, e = live
+    p = persist(b, side="SHORT", hard_stop=102, chase=dict(max_bps=0, max_reprices=0))
+    state = probe_permit(b, p)
+    state["active"].update(side="SHORT", hard_stop=102)
+    state["recovery"]["side"] = "SHORT"
+    b.conn.execute("UPDATE llm_scenario_state SET body=? WHERE id=1", (json.dumps(state),))
+    b.conn.commit()
+    b.execute(p, "a1")
+    b.reconcile()
+    assert any(w[0] == "place" and w[1]["side"] == "Sell" for w in e.writes)
+    assert not any(w[0] == "cancel" for w in e.writes)
+
+
+def test_probe_cost_overrun_cancels_remaining_reservation_not_protection(live):
+    b, e = live
+    p = persist(b, chase=dict(max_bps=0, max_reprices=0))
+    probe_permit(b, p)
+    b.execute(p, "a1")
+    e.fill(next(iter(e.orders)), .05)
+    e.fills[-1]["execFee"] = "60"
+    result = b.reconcile()
+    assert any(w[0] == "cancel" for w in e.writes)
+    assert result["protection_confirmed"] is True
+    assert e.orders["native"]["orderStatus"] == "Untriggered"
+
+
+@pytest.mark.parametrize("probe,budget", [(False, 200), (True, 50)])
+def test_fill_notice_uses_host_budget_and_unscaled_initial_equity(live, probe, budget):
+    b, e = live
+    p = persist(b, chase=dict(max_bps=0, max_reprices=0))
+    if probe:
+        probe_permit(b, p)
+    b.execute(p, "a1")
+    e.fill(next(iter(e.orders)), .1)
+    result = b.reconcile()
+    notice = next(n for n in result["notices"] if n["kind"] == "FILLED")
+    assert notice["scenario_budget"] == budget
+    assert notice["position_after"]["scenario_budget"] == budget
+    assert notice["position_after"]["scenario_initial_equity"] == 10000
+    assert notice["position_after"]["account_snapshot"]["equity"] == 10000
+
+
+@pytest.mark.parametrize("fraction", [True, 0, -.005, .03, float("nan")])
+def test_notice_rejects_invalid_host_budget_fraction(fraction):
+    from live.scenario_notice_evidence import position_snapshot
+    active, children, observed = notice_fixture()
+    assert position_snapshot(active, children, observed, True, False, None,
+                             scenario_risk_fraction=fraction) is None
+
+
+def test_probe_required_request_journal_failure_denies_entry(live, monkeypatch):
+    from live import scenario_recovery
+    b, e = live
+    p = persist(b, chase=dict(max_bps=0, max_reprices=0))
+    probe_permit(b, p)
+    def fail(*args, **kwargs):
+        raise ValueError("write failure")
+    monkeypatch.setattr(scenario_recovery, "journal", fail)
+    with pytest.raises(BrokerNotReady, match="recovery_entry_audit_unavailable"):
+        b.execute(p, "a1")
+    assert not e.writes
+    assert b._recovery_state()["recovery"]["phase"] == "CONSUMED"
+
+
+def test_probe_response_journal_failure_never_reposts(live, monkeypatch, caplog):
+    from live import scenario_recovery
+    b, e = live
+    p = persist(b, chase=dict(max_bps=0, max_reprices=0))
+    probe_permit(b, p)
+    original = scenario_recovery.journal
+    def response_failure(conn, kind, *args, **kwargs):
+        if kind == "EXCHANGE_RESPONSE":
+            raise ValueError("response audit unavailable")
+        return original(conn, kind, *args, **kwargs)
+    monkeypatch.setattr(scenario_recovery, "journal", response_failure)
+    b.execute(p, "a1")
+    b.execute(p, "a1")
+    assert len([w for w in e.writes if w[0] == "place"]) == 1
+    assert "AUDIT_GAP" in caplog.text
+    assert b.conn.execute("SELECT count(*) FROM llm_scenario_recovery_events WHERE kind='EXCHANGE_REQUEST'").fetchone()[0] == 1
+
+
+def test_probe_audit_failure_does_not_block_protection(live, monkeypatch, caplog):
+    from live import scenario_recovery
+    b, e = live
+    p = persist(b, chase=dict(max_bps=0, max_reprices=0))
+    probe_permit(b, p)
+    b.execute(p, "a1")
+    e.fill(next(iter(e.orders)), .05)
+    b.reconcile()
+    def fail(*args, **kwargs):
+        raise ValueError("audit unavailable")
+    monkeypatch.setattr(scenario_recovery, "journal", fail)
+    adjust = persist(b, action="ADJUST", action_id="a2", hard_stop=99, entries=[])
+    b.execute(adjust, "a2")
+    assert e.stop == "99"
+    assert any(w[0] == "cancel" for w in e.writes)
+    assert "AUDIT_GAP" in caplog.text
+
+
+@pytest.mark.parametrize("lost_ack", [False, True])
+def test_probe_exchange_audit_links_request_and_result(live, lost_ack):
+    b, e = live
+    p = persist(b, chase=dict(max_bps=0, max_reprices=0))
+    probe_permit(b, p)
+    e.lose_ack = lost_ack
+    if lost_ack:
+        with pytest.raises(BrokerNotReady, match="submission_unknown"):
+            b.execute(p, "a1")
+    else:
+        b.execute(p, "a1")
+    rows = [(kind, json.loads(body)) for kind, body in b.conn.execute(
+        "SELECT kind,body FROM llm_scenario_recovery_events ORDER BY rowid")]
+    assert [kind for kind, _ in rows] == ["EXCHANGE_REQUEST", "EXCHANGE_ERROR" if lost_ack else "EXCHANGE_RESPONSE"]
+    assert rows[0][1]["call_id"] == rows[1][1]["call_id"]
+    assert rows[0][1]["params"] == e.writes[0][1]
+    assert rows[0][1]["permit_id"] == "test-permit"
+    if lost_ack:
+        assert rows[1][1]["error"] == "submission_unknown"
+    else:
+        assert rows[1][1]["response"]["retCode"] == 0
+
+
+def test_exchange_audit_state_read_failure_blocks_entry_only(live, monkeypatch, caplog):
+    b, e = live
+    p = persist(b, chase=dict(max_bps=0, max_reprices=0))
+    probe_permit(b, p)
+    b.execute(p, "a1")
+    link = next(iter(e.orders))
+    e.fill(link, .05)
+    def unavailable():
+        raise sqlite3.OperationalError("read failed")
+    monkeypatch.setattr(b, "_recovery_state", unavailable)
+    before = len(e.writes)
+    with pytest.raises(BrokerNotReady, match="recovery_entry_audit_unavailable"):
+        b._write("place_order", reduceOnly=False)
+    assert len(e.writes) == before
+    b._write("set_trading_stop", stopLoss="99")
+    assert e.stop == "99"
+    b._write("cancel_order", orderLinkId=link)
+    assert e.orders[link]["orderStatus"] == "Cancelled"
+    b._write("place_order", reduceOnly=True, orderLinkId="protective-exit", qty=".05")
+    assert "protective-exit" in e.orders
+    assert "AUDIT_GAP recovery_exchange_state_unavailable" in caplog.text
+
+
 @pytest.mark.parametrize("failure",["snapshot","render","state_sql"])
 def test_optional_notice_failure_rolls_back_only_notices_and_retries(live,monkeypatch,failure):
     import live.scenario_notice as notice

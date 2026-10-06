@@ -119,7 +119,7 @@ def test_closed_producer_refuses_ineligible_optional_snapshot(live, monkeypatch,
         candidate.update(quantity=.1, average_entry_price=100., hard_stop=99.)
     else:
         candidate['account_snapshot']['same_account' if invalid == 'wrong_account' else 'same_event'] = False
-    monkeypatch.setattr(evidence, 'position_snapshot', lambda *args: candidate)
+    monkeypatch.setattr(evidence, 'position_snapshot', lambda *args, **kwargs: candidate)
     event = broker._notices(active, children, observed, True, settlement)[0]
     assert 'position_after' not in event
     assert '종료 후 순자산: 미확인' in render_notice(event)

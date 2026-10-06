@@ -56,6 +56,19 @@ def response_contract(context):
         contract["entries"][0]["trigger_price"] = "null for ordinary LIMIT; positive MarkPrice crossing for conditional stop-LIMIT"
         contract["reservation_expires_at"] = (int(context.get("input_captured_at", context["now"])) // 300 + 1) * 300
         contract["rules"].append("reservation_expires_at is host input only; do not return this field. Conditional LONG trigger must exceed current mark, limit price>=trigger; SHORT trigger below mark, limit price<=trigger. Use expires_at<=reservation_expires_at, chase zero. All conditional risk is reserved before trigger. Deadline never extends; cancellation is asynchronous, not a guaranteed exact expiry. Do not pre-buffer conditional entry limits.")
+    fraction = context.get("scenario_risk_fraction", .02)
+    contract["rules"] = [rule.replace("initial_equity*0.02", f"initial_equity*{fraction:g}") for rule in contract["rules"]]
+    if context.get("recovery_contract_version") == 1:
+        contract["recovery"] = {"decision": "OBSERVE | PROBE", "reason": "1..600 characters",
+            "changed_evidence": ["exact numeric paths from contract_context.recovery.changed_evidence"],
+            "counterevidence": "1..600 characters", "invalidation": "1..600 characters"}
+        info = context.get("recovery") or {}
+        if info.get("phase") == "OBSERVING" and info.get("entry_deadline"):
+            contract["expires_at"] = min(contract["expires_at"], info["entry_deadline"])
+        if info.get("phase") == "OBSERVING":
+            contract["rules"].append("Only while OBSERVING: observation is not order permission. WAIT requires recovery.decision=OBSERVE; OPEN needs PROBE with true changed_evidence paths, reasons, counterevidence and invalidation. First observation is WAIT only. Host may authorize exactly one original OPEN batch, 0.005 of actual initial_equity including all costs/pending, zero chase, expires_at no later than recovery.entry_deadline. No later adds/retries or automatic normal resume.")
+        else:
+            contract["rules"].append("For a CONSUMED holding probe, recovery may be null. WAIT/ADJUST/EXIT response expires_at must remain fresh using current now, even after the original entry deadline. This never renews the original permit or authorizes additional entries. Preserve 0.005 scenario budget; protection/EXIT remain available.")
     return contract
 
 

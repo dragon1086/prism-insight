@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import uuid
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 
 
@@ -73,6 +74,13 @@ class ScenarioExecution:
             return None
         return json.loads(row[0]).get("active") if row else None
 
+    def _recovery_state(self):
+        table = self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_scenario_state'").fetchone()
+        if not table:
+            return {}
+        row = self.conn.execute("SELECT body FROM llm_scenario_state WHERE id=1").fetchone()
+        return json.loads(row[0]) if row else {}
+
     def children(self, scenario_id=None):
         rows = self.conn.execute(
             "SELECT link_id,intent_id,scenario_id,kind,local_id,request,status,order_id,evidence,created_at "
@@ -93,17 +101,60 @@ class ScenarioExecution:
         self._identity()  # Includes endpoint recheck on every mutation.
         if method not in {"place_order", "cancel_order", "set_trading_stop", "amend_order"}:
             self._fail("unsupported_scenario_mutation")
+        try:
+            state = self._recovery_state()
+            permit = state.get("recovery", {})
+            active = state.get("active")
+        except Exception:
+            logging.getLogger(__name__).warning("AUDIT_GAP recovery_exchange_state_unavailable")
+            if method == "place_order" and params.get("reduceOnly") is not True:
+                self._fail("recovery_entry_audit_unavailable")
+            permit, active = {}, None
+        probe = bool(active and permit.get("phase") == "CONSUMED" and
+                     permit.get("scenario_id") == active.get("scenario_id"))
+        audit = dict(call_id=uuid.uuid4().hex, method=method,
+                     permit_id=permit.get("permit_id"), scenario_id=permit.get("scenario_id"))
+        if probe and not self._probe_exchange_journal("EXCHANGE_REQUEST", dict(audit, params=params)):
+            if method == "place_order" and params.get("reduceOnly") is not True:
+                self._fail("recovery_entry_audit_unavailable")
         from live.scenario_provenance import exchange_call, observed_time
         started = observed_time()
         try:
             response = getattr(self.session, method)(**params)
         except Exception:
             exchange_call(method, params, started)
+            if probe:
+                self._probe_exchange_journal("EXCHANGE_ERROR", dict(audit, error="submission_unknown"))
             self._fail("submission_unknown")
         exchange_call(method, params, started, response=response)
+        if probe:
+            # Logging failure after a POST must never turn into a repeated POST.
+            # The durable child UNKNOWN/ACK reconciliation remains authoritative.
+            self._probe_exchange_journal("EXCHANGE_RESPONSE", dict(audit, response=response))
         if not isinstance(response, dict) or response.get("retCode") != 0:
             self._fail("submission_unconfirmed")
         return response
+
+    def _probe_exchange_journal(self, kind, body):
+        from live.scenario_recovery import journal
+        saved = False
+        try:
+            self.conn.execute("SAVEPOINT recovery_exchange_audit")
+            saved = True
+            journal(self.conn, kind, body, self.clock(), scenario_id=body["scenario_id"])
+            self.conn.execute("RELEASE SAVEPOINT recovery_exchange_audit")
+            saved = False
+            self.conn.commit()
+            return True
+        except Exception:
+            if saved:
+                try:
+                    self.conn.execute("ROLLBACK TO SAVEPOINT recovery_exchange_audit")
+                    self.conn.execute("RELEASE SAVEPOINT recovery_exchange_audit")
+                except Exception:
+                    self.conn.rollback()
+            logging.getLogger(__name__).warning("AUDIT_GAP recovery_exchange_journal_failed %s", kind)
+            return False
 
     def _instrument(self):
         rows = self._call("get_instruments_info",category="linear",symbol="BTCUSDT").get("result",{}).get("list")
@@ -353,7 +404,8 @@ class ScenarioExecution:
                 observed["position"].get("side") != ("Buy" if side == "LONG" else "Sell")):
             self._fail("opposite_entry_forbidden")
         state=json.loads(self.conn.execute("SELECT body FROM llm_scenario_state WHERE id=1").fetchone()[0])
-        if not self._new_risk_enabled() or state.get("breaker",{}).get("blocked",False) or not self._daily(observed).get("new_risk_allowed",False):
+        hard_blocked = not self._new_risk_enabled() or not self._daily(observed).get("new_risk_allowed",False)
+        if hard_blocked:
             self._fail("new_risk_halted")
         if (side=="LONG" and stop<decimal(active["hard_stop"])) or (side=="SHORT" and stop>decimal(active["hard_stop"])):
             self._fail("stale_parent_stop")
@@ -368,7 +420,17 @@ class ScenarioExecution:
         accounting=self._risk_accounting(observed,active,children) if (size or any(c["evidence"] and c["evidence"]["executions"] for c in children)) else dict(realized_loss=0,fees_paid=0,funding_paid=0)
         if size:
             positions=accounting["positions"]
+        from live.scenario_recovery import authorize_entry, risk_fraction
+        fraction = risk_fraction(state, active["scenario_id"])
+        if state.get("breaker", {}).get("blocked", False) or fraction < .02:
+            allowed = authorize_entry(state, payload, dict(
+                initial_equity=active["initial_equity"], new_risk_blocked=hard_blocked,
+                protection_ok=not size or self._verify_protection(observed, active["hard_stop"], side),
+                accounting_status="confirmed", legacy_fenced=observed["legacy_fenced"]), self.clock())
+            if not allowed:
+                self._fail("new_risk_halted")
         risk=risk_snapshot(initial_equity=active["initial_equity"],side=side,hard_stop=float(stop),
+            risk_fraction=fraction,
             positions=positions,pending_entries=pending,entries=entries,
             realized_loss=accounting["realized_loss"],fees_paid=accounting["fees_paid"],funding_paid=accounting["funding_paid"],
             estimated_cost_rate=.002,slippage_bps=20)
@@ -566,6 +628,9 @@ class ScenarioExecution:
             if not row:
                 self._fail("chase_parent_missing")
             payload=json.loads(row[0])
+            from live.scenario_recovery import risk_fraction
+            if risk_fraction(self._recovery_state(), payload["scenario_id"]) < .02:
+                self._fail("recovery_probe_chase_forbidden")
             newest=self.conn.execute("SELECT id FROM llm_scenario_intents WHERE scenario_id=? ORDER BY rowid DESC LIMIT 1",(payload["scenario_id"],)).fetchone()
             if not newest or newest[0]!=intent_id:
                 self._fail("chase_stale_revision")

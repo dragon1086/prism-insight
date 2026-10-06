@@ -14,6 +14,7 @@ Unknown submissions are NEVER resubmitted, even after process restart.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import time
 import uuid
@@ -25,6 +26,7 @@ from live.shared_entry_coordinator import database_path, mutation_lock
 from live.entry_reservations import LockBusy
 from live.scenario_llm import ScenarioModelError
 from live.scenario_review_memory import apply_review, observe_review
+from live import scenario_recovery as recovery
 
 REQUIRED_CAPABILITIES = frozenset({"exact_fills", "atomic_protection",
     "exact_settlement", "idempotent_intents", "fresh_risk_context"})
@@ -100,10 +102,12 @@ def _economic_evidence(item):
 
 
 class ScenarioRuntime:
-    def __init__(self, conn, broker, propose, snapshot, *, clock=time.time):
+    def __init__(self, conn, broker, propose, snapshot, *, clock=time.time,
+                 recovery_enabled=False):
         database_path(conn)  # In-memory state cannot provide restart safety.
         self.conn, self.broker = conn, broker
         self.propose, self.snapshot, self.clock = propose, snapshot, clock
+        self.recovery_enabled = recovery_enabled
         with mutation_lock(conn):
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS llm_scenario_state (
@@ -123,6 +127,8 @@ class ScenarioRuntime:
             """)
             conn.execute("INSERT OR IGNORE INTO llm_scenario_state VALUES(1, ?)",
                          (_json({"version": 0, "active": None, "breaker": {}}),))
+            if recovery_enabled:
+                recovery.ensure_schema(conn)
             conn.commit()
 
     def state(self):
@@ -246,9 +252,15 @@ class ScenarioRuntime:
                     return
                 context = self.broker.context()
                 if settlement["execution_ids"]:
+                    old_count = state["breaker"].get("consecutive_losses", 0)
                     state["breaker"] = update_circuit_breaker(state["breaker"],
                         **{k: context[k] for k in ("day", "day_start_equity", "daily_net_pnl")},
                         completed_scenario_id=active["scenario_id"], completed_net_pnl=settlement["net_pnl"])
+                    if state.get("recovery", {}).get("scenario_id") == active["scenario_id"]:
+                        state["breaker"]["consecutive_losses"] = max(
+                            old_count, state["breaker"]["consecutive_losses"])
+                if state.get("recovery", {}).get("scenario_id") == active["scenario_id"]:
+                    recovery.settled(self.conn, state, settlement, self.clock())
                 inserted = self.conn.execute("INSERT OR IGNORE INTO llm_scenario_settlements VALUES(?,?)",
                                   (active["scenario_id"], _json(settlement)))
                 if inserted.rowcount == 1:
@@ -315,7 +327,24 @@ class ScenarioRuntime:
             if len(waits) == 3:
                 break
         ctx["recent_waits"] = list(reversed(waits))
-        ctx["new_risk_blocked"] = bool(ctx["new_risk_blocked"] or state["breaker"].get("blocked"))
+        if self.recovery_enabled:
+            ctx["recovery_hard_blocked"] = ctx["new_risk_blocked"]
+            allowed = recovery.observing_allowed(state, ctx)
+            no_intents = not self.conn.execute("SELECT 1 FROM llm_scenario_intents WHERE status IS NULL OR status!='TERMINAL'").fetchone()
+            if allowed and no_intents:
+                ctx["recovery_observing"] = True
+                ctx["scenario_risk_fraction"] = recovery.RISK_FRACTION
+            elif active and recovery.risk_fraction(state, active["scenario_id"]) == recovery.RISK_FRACTION:
+                ctx["scenario_risk_fraction"] = recovery.RISK_FRACTION
+                permit = state["recovery"]
+                ctx["recovery_contract_version"] = 1
+                ctx["recovery"] = {"phase": permit["phase"], "consumed": True,
+                    "eligible": False, "risk_fraction": recovery.RISK_FRACTION,
+                    "permit_id": permit["permit_id"], "scenario_id": permit["scenario_id"],
+                    "budget": permit["budget"], "entry_deadline": permit["entry_deadline"],
+                    "one_attempt_only": True, "automatic_normal_resume": False}
+        ctx["new_risk_blocked"] = bool(ctx["new_risk_blocked"] or (
+            state["breaker"].get("blocked") and not ctx.get("recovery_observing")))
         if state["breaker"].get("blocked") and not state.get("halt_notified"):
             stamp=state.setdefault("halted_at",self.clock())
             event={"kind":"HALTED","timestamp":stamp,"reason_code":
@@ -366,6 +395,14 @@ class ScenarioRuntime:
                        max_input_age_seconds=120)
             stage = "snapshot_persist"
             with mutation_lock(self.conn):
+                if ctx.get("recovery_observing"):
+                    current = self.state()
+                    if current["version"] != version:
+                        return {"status": "stale_proposal"}
+                    recovery.prepare_input(self.conn, current, ctx, snap, slot, self.clock())
+                    # Baseline, mandatory INPUT and the full decision input must
+                    # share one commit. _save() would commit the baseline early.
+                    self.conn.execute("UPDATE llm_scenario_state SET body=? WHERE id=1", (_json(current),))
                 self.conn.execute("UPDATE llm_scenario_decisions SET snapshot=?, context=? WHERE slot=?",
                                   (_json(snap), _json(ctx), slot))
                 self.conn.commit()
@@ -373,7 +410,11 @@ class ScenarioRuntime:
             from live.scenario_provenance import record_hashed
             record_hashed("decision_input", {"snapshot": snap, "context": ctx, "input_id": input_id},
                           scenario_id=ctx.get("scenario_id"), decision_slot=slot)
-            payload = self.propose(snap, ctx)  # No broker mutation lock held.
+            if self.recovery_enabled:
+                with recovery.capture_wire(self.conn, slot, self.clock):
+                    payload = self.propose(snap, ctx)
+            else:
+                payload = self.propose(snap, ctx)  # No broker mutation lock held.
             if isinstance(payload, dict) and "review" in payload:
                 try:
                     _json(payload["review"])
@@ -391,13 +432,35 @@ class ScenarioRuntime:
                 state = self.state()
                 self._reconcile(state)
                 fresh = self._context(state)
+                if self.recovery_enabled:
+                    stage = "recovery_recheck"
+                    try:
+                        recovery.journal(self.conn, "RECHECK", {
+                            "input_id": input_id, "input_state_version": version,
+                            "current_state_version": state["version"],
+                            "input_account_version": ctx["account_version"],
+                            "context": fresh, "breaker": state["breaker"],
+                            "active": state["active"],
+                            "recovery_observing_requested": bool(ctx.get("recovery_observing"))},
+                            self.clock(), slot=slot, scenario_id=fresh.get("scenario_id"))
+                        self.conn.commit()
+                    except Exception:
+                        self.conn.rollback()
+                        if ctx.get("recovery_observing"):
+                            raise ValueError("recovery_recheck_log_unavailable") from None
                 if (state["version"] != version or fresh["account_version"] != ctx["account_version"]
                         or fresh["legacy_fenced"] or not fresh["protection_ok"]):
                     return {"status": "stale_proposal"}
                 fresh.update(now=self.clock(), input_id=input_id, input_captured_at=captured,
                              max_input_age_seconds=120)
                 stage = "validation"
-                core_payload = {key: value for key, value in payload.items() if key != "review"}
+                probe = False
+                if ctx.get("recovery_observing"):
+                    if not fresh.get("recovery_observing"):
+                        return {"status": "blocked", "reason": "recovery_hard_guard"}
+                    probe = recovery.assess(self.conn, state, ctx, payload, slot, self.clock())
+                    self.conn.commit()
+                core_payload = {key: value for key, value in payload.items() if key not in {"review", "recovery"}}
                 validated = validate_execution_prices(core_payload, fresh)
                 if validated["action"] == "WAIT" and not validated.get("cancel_entry_ids"):
                     apply_review(state["active"], payload.get("review"), validated["action_id"],
@@ -409,6 +472,8 @@ class ScenarioRuntime:
                 if state["active"] is None:
                     if self.conn.execute("SELECT 1 FROM llm_scenario_settlements WHERE scenario_id=?", (validated["scenario_id"],)).fetchone():
                         return {"status": "reused_scenario"}
+                    if probe:
+                        recovery.consume(self.conn, state, validated, fresh, slot, self.clock())
                     state["active"] = {"scenario_id": validated["scenario_id"], "initial_equity": fresh["initial_equity"],
                         "side": validated["side"], "hard_stop": validated["hard_stop"], "revision": 0,
                         "created_at": self.clock(), "expires_at": validated["expires_at"]}
@@ -469,10 +534,27 @@ class ScenarioRuntime:
                 "snapshot_collection": {"empty_public_data", "collection_too_slow",
                     "candle_boundary_crossed_during_collection", "future_public_candle", "public_rate_limited"},
                 "snapshot_validation": {"invalid_market_snapshot", "invalid_snapshot_time"},
+                "snapshot_persist": {"recovery_market_evidence_missing", "recovery_journal_bound"},
+                "recovery_recheck": {"recovery_recheck_log_unavailable"},
+                "validation": {"recovery_metadata_invalid", "recovery_action_mismatch",
+                    "recovery_first_observation", "recovery_no_changed_evidence",
+                    "recovery_missing_raw", "recovery_missing_request", "recovery_chase_forbidden",
+                    "recovery_entry_deadline_invalid", "recovery_mixed_loaded_code"},
+                "execution": {"recovery_probe_risk_invalid"},
             }
             code = exc.args[0] if type(exc) is ValueError and len(exc.args) == 1 else None
             if isinstance(code, str) and code in safe_codes.get(stage, ()):
                 outcome["failure_code"] = code
+            from core.llm_scenario import ScenarioValidationError
+            if stage == "validation" and isinstance(exc, ScenarioValidationError):
+                fixed = {"risk budget exceeded": "scenario_risk_budget_exceeded",
+                         "stop widening forbidden": "scenario_stop_widening_forbidden",
+                         "new risk blocked": "scenario_new_risk_blocked",
+                         "stop crossed market; use EXIT": "scenario_stop_crossed_market",
+                         "stale input or invalid expiry": "scenario_stale_input_or_expiry",
+                         "invalid or opposite side": "scenario_opposite_side",
+                         "conditional entry expiry exceeds next decision": "scenario_entry_expiry_invalid"}
+                outcome["failure_code"] = fixed.get(str(exc), "scenario_contract_invalid")
             return outcome
 
     def tick(self):
@@ -484,5 +566,11 @@ class ScenarioRuntime:
             # mutex a second time while recording an intentional lock_busy skip.
             self.conn.execute("UPDATE llm_scenario_decisions SET outcome=? WHERE slot=? AND outcome IS NULL",
                               (_json(outcome), claimed[0]))
+            if self.recovery_enabled:
+                try:
+                    recovery.journal(self.conn, "OUTCOME", outcome, self.clock(), slot=claimed[0])
+                except Exception:
+                    # Never undo an intent or stop independent protection.
+                    logging.getLogger(__name__).warning("AUDIT_GAP recovery_outcome_journal_failed")
             self.conn.commit()
         return outcome

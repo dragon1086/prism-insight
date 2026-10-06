@@ -15,7 +15,15 @@ def number(value, *, positive=False):
     return value if math.isfinite(value) and value >= 0 and (not positive or value > 0) else None
 
 
-def position_snapshot(active, children, observed, protected, pending, accounting):
+def position_snapshot(active, children, observed, protected, pending, accounting, *, scenario_risk_fraction=.02):
+    from core.llm_scenario import risk_snapshot, ScenarioValidationError
+    try:
+        budget = risk_snapshot(initial_equity=active["initial_equity"], side=active["side"],
+            hard_stop=active["hard_stop"], positions=[], pending_entries=[], entries=[],
+            realized_loss=0, fees_paid=0, funding_paid=0, estimated_cost_rate=0,
+            slippage_bps=0, risk_fraction=scenario_risk_fraction)["budget"]
+    except (ScenarioValidationError, KeyError, TypeError, ValueError):
+        return None
     if not protected or pending or observed.get("legacy_fenced"):
         return None
     if any(not c.get("evidence") or c.get("status") not in {"LIVE", "TERMINAL"} for c in children):
@@ -49,7 +57,7 @@ def position_snapshot(active, children, observed, protected, pending, accounting
         take_profits=targets["tp"], partial_stops=targets["partial_sl"],
         account_snapshot=dict(same_event=True, same_account=True, timestamp=observed["captured_at"],
             position_margin=number(position.get("positionIM")), equity=observed["equity"], margin_mode="REGULAR_MARGIN"),
-        scenario_initial_equity=active["initial_equity"], scenario_budget=active["initial_equity"]*.02)
+        scenario_initial_equity=active["initial_equity"], scenario_budget=budget)
     if accounting and accounting.get("status") == "confirmed" and accounting.get("accounting_complete") is True:
         # Reuse the reconciler's totals, including recorded costs on open lots.
         # This is not a fee allocation or a per-exit settlement calculation.
@@ -61,9 +69,9 @@ def position_snapshot(active, children, observed, protected, pending, accounting
             if math.isclose(gross - fees + funding, net, rel_tol=0, abs_tol=1e-8):
                 snapshot.update(scenario_realized_net_pnl=net, scenario_accounting_confirmed=True)
     if accounting and accounting.get("status") == "confirmed" and stop:
-        from core.llm_scenario import risk_snapshot, ScenarioValidationError
         try:
             risk = risk_snapshot(initial_equity=active["initial_equity"], side=active["side"], hard_stop=stop,
+                risk_fraction=scenario_risk_fraction,
                 positions=accounting["positions"], pending_entries=entries, entries=[],
                 realized_loss=accounting["realized_loss"], fees_paid=accounting["fees_paid"],
                 funding_paid=accounting["funding_paid"], estimated_cost_rate=.002, slippage_bps=20)
