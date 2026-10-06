@@ -125,11 +125,13 @@ def test_buy_prompt_reconciles_evidence_without_new_gate(market, language):
             # (a gated no-entry scores at most 4 with no positive macro bonus; R/R stays out of the score).
             # 2026-10-03 reviewed: rules hash only — rubric consistency (zero-momentum 3~4 is a no-entry zone;
             # the Step 1 bull-regime compensation path scores by the bands, capped at 6).
+            # 2026-10-07 reviewed: JSON tail only — the take-profit sell_trigger says the target is never a
+            # sell in any regime (trailing protects the gain); decision rules unchanged.
             # Unrelated execution rules retain their original hashes.
             "ko": ("21da240f3ebf990ef6071eb2224791af7a87c0cdad432b4fcc2edf2a29f47da7",
-                   "2ebd835f36185c5b6411ea7a600c8549b07cd670e14c85deec71e4918cf931b6"),
+                   "17f5a081b0b15253f680f706a2edc44271c94104d4e4f9ea4d6560221858b5d7"),
             "en": ("987b563c0cc7d939eb28a3abee6b8ad49d5d75a4e066279e5eab83b94efc2a6b",
-                   "da048b5f3c28327f95d7b0e7b7ab11c6db72096d1d203200d364569aec188543"),
+                   "bf093719008980f796ab5219ec36104b1051e009b6717554ac55eaede4e63a8c"),
         }
         tool_heading = "## 도구 사용" if language == "ko" else "## Tool Usage"
         json_heading = "## JSON 응답 형식" if language == "ko" else "## JSON Response Format"

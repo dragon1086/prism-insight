@@ -422,7 +422,7 @@ key_levels의 가격 필드 형식: `170` / `"170"` / `"170~180"` (범위는 중
             "volume_baseline": "평소 거래량 기준 (문자열 가능)"
         },
         "sell_triggers": [
-            "익절 마일스톤: 목표가·주요 저항선 도달은 1차 마일스톤이며 자동 매도 트리거가 아닙니다. parabolic/strong_bull/moderate_bull regime이면 즉시 매도 금지 — trailing stop으로 전환해 추세 지속 시 보유. sideways/moderate_bear/strong_bear regime에서만 도달 즉시 전량 매도",
+            "익절 마일스톤: 목표가·주요 저항선 도달은 어떤 국면에서도 매도 트리거가 아닙니다. trailing stop(parabolic/strong_bull/moderate_bull은 고점 대비 -8%, sideways/moderate_bear/strong_bear는 -3~5%)으로 전환해 추세 지속 시 보유",
             "추세 약화 (multi-condition AND): 종가 기준 ① 20일선 이탈 ② 거래량 평균 이상 동반 ③ 섹터/시장 동반 약세 — 이 중 2개 이상 동시 충족 시 전량 매도",
             "하드 스탑(장중): 현재가가 stop_loss×0.995(0.5% 꼬리 버퍼) 이하가 되면 장중 하드스탑이 즉시 전량 매도. 종가 마감을 기다리지 않으며, 버퍼 안의 일시 터치만으로는 매도하지 않음",
             "오닐 절대 룰: 장중 현재가 기준 매수가 대비 -7% 이상 손실 도달 시 무조건 전량 매도",
@@ -818,7 +818,7 @@ Prohibited: `"$170"`, `"about $170"`, `"minimum 170"`.
             "volume_baseline": "Normal volume baseline (string)"
         },
         "sell_triggers": [
-            "Take-profit milestone: hitting target / major resistance is a milestone, NOT an auto-sell trigger. In parabolic/strong_bull/moderate_bull regimes, switch to trailing stop and keep holding while trend persists. ONLY in sideways/moderate_bear/strong_bear regimes does target-hit trigger immediate full exit",
+            "Take-profit milestone: hitting target / major resistance is a milestone, NOT a sell trigger in any regime. Switch to the trailing stop (-8% from the peak in parabolic/strong_bull/moderate_bull, -3~5% in sideways/moderate_bear/strong_bear) and keep holding while the trend persists",
             "Trend weakness (multi-condition AND): on a closing-price basis, exit fully if 2 or more of these hold simultaneously — (1) close below 20d MA, (2) volume at or above average, (3) sector/market weakness in tandem",
             "Hard stop (intraday): the intraday hard stop exits fully as soon as the live price is at or below stop_loss × 0.995 (0.5% wick buffer). It does not wait for the close; a brief touch inside the buffer is NOT a sell reason",
             "O'Neil absolute rule: a live-price loss of 7% or more from entry triggers automatic full exit, no exceptions",
@@ -987,10 +987,10 @@ Trailing Stop %: 강세장 고점 × 0.92 (-8%), 약세장 고점 × 0.95 (-5%)
 - 매도 조건: 트레일링스탑 이탈 (목표가 달성 자체는 매도 조건이 아님, 고정 관찰 기간·수익률 기준 없음)
 
 **3순위: 시간 관리**
-- 단기(~1개월): 목표가 달성 시 적극 매도
+- 단기(~1개월): 목표가 달성은 매도 사유가 아닙니다. 추세가 살아 있으면 보유하고 trailing stop으로 이익을 지킵니다
 - 중기(1~3개월): 시장 환경에 따라 A(강세장) or B(약세장/횡보장) 모드 적용
 - 장기(3개월~): 펀더멘털 변화 확인 (실적 발표 일정 주시)
-- 투자 기간 만료 근접: 수익/손실 상관없이 전량 정리 고려
+- 투자 기간 만료 근접: 추세를 점검하는 시점일 뿐 자동 정리 사유가 아닙니다 (손절·trailing·추세 약화 조건으로만 매도)
 
 ### ⚠️ 현재 시간 확인 및 데이터 신뢰도 판단
 **time-get_current_time tool을 사용하여 현재 시간을 먼저 확인하세요**
@@ -1213,10 +1213,10 @@ Trailing Stop %: Bull peak × 0.92 (-8%), Bear/Sideways peak × 0.95 (-5%)
 - Trailing Stop: **-3~5%** from peak
 
 **Priority 3: Time Management**
-- Short-term (~1 month): Active sell when target achieved
+- Short-term (~1 month): reaching the target is not a sell reason; hold while the trend is alive and protect the gain with the trailing stop
 - Mid-term (1~3 months): Apply A or B mode based on market
 - Long-term (3 months~): Check fundamental changes (earnings calendar)
-- Near investment period expiry: Consider full exit regardless of profit/loss
+- Near investment period expiry: a trend-review checkpoint, not an automatic exit (sell only on the stop, trailing or trend-weakening conditions)
 
 ### Tool Usage Guide
 

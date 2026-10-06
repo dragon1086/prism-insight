@@ -775,13 +775,12 @@ def buy_prompt_block(market, language="ko"):
             "충족 → 진입. min_score 외의 매트릭스 값, 점수 산정 기준, 스키마는 바뀌지 않습니다.\n"
             "- 미진입 단독 사유 1(지지선이 -10% 이하)은 이번 진입에 적용하지 않습니다. '손절가 설정' 규칙상 지지선이 멀면 "
             "매트릭스 최대 손절폭이 손절가가 되므로 사용 가능한 손절은 항상 있습니다.\n"
-            "- 강세 국면(분산일 Kill Switch 반영 후 parabolic·strong_bull·moderate_bull)에서는 목표 도달이 매도가 아니라 "
-            "trailing 전환이고, 초분할에서는 바로 위 저항 돌파가 증액 조건입니다. 그래서 가장 가까운 확정 주요 저항이 "
+            "- 목표 도달은 어떤 국면에서도 매도가 아니라 trailing 전환이고(2026-10-07 매도 원칙), 초분할에서는 바로 위 저항 돌파가 증액 조건입니다. 그래서 가장 가까운 확정 주요 저항이 "
             "현재가 +3% 이내이면 그 저항은 목표가 아니라 증액 조건입니다. add_plan에 그 저항 돌파(breakout) 시나리오를 "
             "쓰고, target_price는 그 다음 확정 주요 저항까지 거리의 80%로 산정합니다. 다음 저항이 없으면 2a 조건을 확인하고, "
             "둘 다 없으면 기존대로 목표 근거 없음입니다. 이는 손익비를 맞추려는 선택이 아니라 이 규칙에서 나온 목표이므로 "
-            "'먼 저항 금지' 계약의 예외이며, target_provenance.reason에 첫 저항 가격과 '증액 조건'을 쓰십시오. 횡보·약세 "
-            "국면은 목표 도달 시 매도하므로 기존 규칙(가장 가까운 저항)을 유지합니다.\n")
+            "'먼 저항 금지' 계약의 예외이며, target_provenance.reason에 첫 저항 가격과 '증액 조건'을 쓰십시오. 이 규칙은 "
+            "횡보·약세 국면에도 같이 적용합니다.\n")
     return (
         "\n\n### Micro-split entry frame (takes precedence for this new entry)\n"
         "This buy is a scout entry: only 30-80% of one slot is bought first. The system has already sized it down by "
@@ -811,15 +810,15 @@ def buy_prompt_block(market, language="ko"):
         "other matrix value, the scoring rubric and the schema are unchanged.\n"
         "- Standalone no-entry reason 1 (support at -10% or worse) does not apply to this entry: under the stop rules "
         "a distant support makes the matrix maximum stop the stop, so a usable stop always exists.\n"
-        "- In bull regimes (parabolic, strong_bull, moderate_bull after the distribution-day kill switch) reaching the "
-        "target switches to a trailing stop instead of selling, and in a micro-split a break above the next "
+        "- In every regime reaching the target switches to a trailing stop instead of selling (2026-10-07 sell "
+        "policy), and in a micro-split a break above the next "
         "resistance is an add condition. So when the nearest confirmed major resistance is within +3% of the current "
         "price, that resistance is an add condition, not the target: write a breakout add_plan scenario over it and "
         "set target_price at 80% of the distance to the following confirmed major resistance. If there is none, "
         "check the 2a conditions; if neither applies, the target is unsupported as before. This target comes from "
         "this rule, not from fitting the R/R floor, so it is an exception to the no-farther-resistance contract; "
-        "state the first resistance price and 'add condition' in target_provenance.reason. Sideways and bear regimes "
-        "sell at the target, so they keep the nearest-resistance rule.\n")
+        "state the first resistance price and 'add condition' in target_provenance.reason. This rule applies in "
+        "sideways and bear regimes too.\n")
 
 
 def journal_position_line(scenario, profit_rate=None):
