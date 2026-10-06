@@ -136,6 +136,9 @@ def test_cancel_supplier_failure_does_not_suppress_known_share_protection(tmp_pa
 
 def test_unknown_submission_is_never_retried(tmp_path):
     core, cid, args, _ = start(tmp_path, "LIVE")
+    # Both invocations share one logical clock. Re-anchoring a string timestamp
+    # to separate wall-clock runtimes can move the second evaluation backwards.
+    clock = lambda: args["now"]
     class Unknown(Broker):
         async def submit(self, intent, reservation, *, quote_validator):
             self.calls.append(intent.side)
@@ -143,10 +146,10 @@ def test_unknown_submission_is_never_retried(tmp_path):
             self.store.record_result(intent, status="UNKNOWN", accepted=False, response={})
             return dict(success=False)
     asyncio.run(drive(core, cid, capture_current_record(**args), account_name="account",
-                       broker_factory=Unknown, now=args["now"], authorize_add=lambda: True))
+                       broker_factory=Unknown, now=clock, authorize_add=lambda: True))
     args["source"] = "regular"
     result = asyncio.run(drive(core, cid, capture_current_record(**args), account_name="account",
-                               broker_factory=Unknown, now=args["now"], authorize_add=lambda: True))
+                               broker_factory=Unknown, now=clock, authorize_add=lambda: True))
     assert result["status"] == "RECONCILE_REQUIRED"
     assert Broker.instances[-1].calls == []
 
