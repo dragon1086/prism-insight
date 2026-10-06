@@ -41,7 +41,8 @@ DESCRIPTOR_LOOKBACK_DAYS = 400
 # A captured close this far from the provider's adjusted anchor close implies a
 # corporate action; evaluate on the provider basis instead of mixing bases.
 BASIS_RATIO_BOUNDS = (0.55, 1.8)
-DEFAULT_MAX_TICKERS = 400
+# Weekly pass; open rows wait ~6 weeks for 30 sessions, so the backlog spans many batches.
+DEFAULT_MAX_TICKERS = 1500
 DEFAULT_SLEEP_SEC = {"KR": 0.5, "US": 0.2}
 
 _KEY = ("market", "trade_date", "mode", "trigger_type", "ticker")
@@ -93,7 +94,8 @@ def _db_path(db_path) -> Path:
     if db_path:
         return Path(db_path)
     configured = os.getenv("CANDIDATE_LEDGER_DB", "").strip()
-    return Path(configured) if configured else ROOT / "stock_tracking_db.sqlite"
+    # Own file: the main DB is copied to other servers several times a day.
+    return Path(configured) if configured else ROOT / "runtime" / "candidate_ledger.sqlite"
 
 
 def _iso_day(value) -> str:
@@ -207,7 +209,9 @@ def record(rows: Iterable[Mapping[str, Any]] | None, *, market: str, trade_date,
                       "market_regime": market_regime, "anchor_date": day, "outcome_status": "PENDING",
                       "created_at": now, "updated_at": now}
             values.append([merged.get(c) for c in columns])
-        connection = sqlite3.connect(_db_path(db_path), timeout=30)
+        path = _db_path(db_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(path, timeout=30)
         try:
             with connection:
                 ensure_schema(connection)
@@ -387,7 +391,10 @@ def update_candidate_outcomes(market: str, *, db_path=None, fetch_bars=None, tod
                           else os.getenv("CANDIDATE_LEDGER_MAX_TICKERS", DEFAULT_MAX_TICKERS))
         sleep_sec = float(sleep_sec if sleep_sec is not None
                           else os.getenv("CANDIDATE_LEDGER_FETCH_SLEEP_SEC", DEFAULT_SLEEP_SEC.get(market, 0.2)))
-        connection = sqlite3.connect(_db_path(db_path), timeout=30)
+        path = _db_path(db_path)
+        if not path.exists():
+            return stats                    # nothing captured yet
+        connection = sqlite3.connect(path, timeout=30)
         connection.row_factory = sqlite3.Row
     except Exception as exc:  # noqa: BLE001
         target.warning("[CANDIDATE_LEDGER] outcome pass unavailable: %s: %s", type(exc).__name__, exc)
@@ -445,6 +452,9 @@ def update_candidate_outcomes(market: str, *, db_path=None, fetch_bars=None, tod
                     assignments = ", ".join(f"{column}=?" for column in update)
                     connection.execute(f"UPDATE {TABLE} SET {assignments} WHERE id=?",
                                        [*update.values(), row["id"]])
+        stats["open_tickers_left"] = connection.execute(
+            f"SELECT COUNT(DISTINCT ticker) FROM {TABLE} WHERE market=? AND outcome_status IN (?, ?)",
+            (market, *_OPEN_STATUSES)).fetchone()[0]
         target.info("[CANDIDATE_LEDGER] outcome pass market=%s %s", market, stats)
     except Exception as exc:  # noqa: BLE001 - observation must not stop the tracker
         target.warning("[CANDIDATE_LEDGER] outcome pass failed: %s: %s", type(exc).__name__, exc)

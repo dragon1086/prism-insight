@@ -639,7 +639,7 @@ Examples:
         if not args.dry_run:
             try:
                 from observability.candidate_ledger import update_candidate_outcomes
-                update_candidate_outcomes("US", db_path=tracker.db_path, log=logger)
+                update_candidate_outcomes("US", log=logger)
             except Exception as exc:  # noqa: BLE001 - must not affect the tracker
                 logger.warning(f"Candidate ledger outcome pass unavailable: {type(exc).__name__}")
 
