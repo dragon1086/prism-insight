@@ -38,6 +38,10 @@ def response_schema(context):
                                     "price": {"type": "number"},
                                     quantity: {"type": "number"}})
     cancellation_id = {"type": "string"}
+    entry_row = row("quantity")
+    if context.get("conditional_entry_version") == 1:
+        entry_row["properties"]["trigger_price"] = {"type": ["number", "null"]}
+        entry_row["required"].append("trigger_price")
     pending_ids = [row["id"] for row in context.get("pending_entries", [])]
     if pending_ids:
         cancellation_id["enum"] = pending_ids
@@ -46,7 +50,7 @@ def response_schema(context):
                       side={"type": ["string", "null"], "enum": ["LONG", "SHORT", None]},
                       confidence={"type": "number"}, expires_at={"type": "number"},
                       hard_stop={"type": ["number", "null"]},
-                      entries={"type": "array", "items": row("quantity")},
+                      entries={"type": "array", "items": entry_row},
                       take_profits={"type": "array", "items": row("fraction")},
                       partial_stops={"type": "array", "items": row("fraction")},
                       cancel_entry_ids={"type": "array", "items": cancellation_id,
@@ -100,6 +104,11 @@ def validate_wire_proposal(payload, context):
     schema = response_schema(context)
     if not isinstance(payload, dict):
         raise ValueError("response_contract_mismatch")
+    if context.get("conditional_entry_version") == 1 and isinstance(payload.get("entries"), list):
+        # Legacy regular-entry proposals are replayable; new wire schemas still
+        # require an explicit nullable trigger field.
+        payload = dict(payload, entries=[dict(row, trigger_price=row.get("trigger_price"))
+                       if isinstance(row, dict) else row for row in payload["entries"]])
     # Advisory metadata must never veto otherwise valid protective actions.
     # Keep its original value for the decision audit; the runtime ignores invalid
     # metadata and strips it before all economic validation / execution.
@@ -121,6 +130,9 @@ def validate_wire_proposal(payload, context):
     if not _matches(payload, schema):
         raise ValueError("response_contract_mismatch")
     normalized = dict(payload)
+    normalized["entries"] = [{key: value for key, value in row.items()
+                              if key != "trigger_price" or value is not None}
+                             for row in payload["entries"]]
     if payload["action"] in ("WAIT", "EXIT"):
         if any(payload[key] is not None for key in ("side", "hard_stop", "chase")):
             raise ValueError("response_contract_inactive_protection")

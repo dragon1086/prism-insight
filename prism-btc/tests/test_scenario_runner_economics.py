@@ -14,7 +14,7 @@ def view(**kwargs):
     options = dict(accounting=evidence(), side='SHORT', mark_price=84910,
                    hard_stop=85650, observed_at=1000, now=1001,
                    pending_entries=[], initial_equity=9539.78,
-                   estimated_cost_rate=.002, slippage_bps=20)
+                   estimated_cost_rate=.002, slippage_bps=20, price_tick='.1')
     options.update(kwargs)
     return runner_economics(**options)
 
@@ -88,3 +88,84 @@ def test_real_broker_context_passes_confirmed_finance_without_extra_collection()
     assert ctx['runner_economics']==view()
     assert ctx['account_captured_at']==1000
     assert ctx['previous_hard_stop']==85650
+
+
+@pytest.mark.parametrize('side,mark,stop,expected', [
+    ('LONG', 110, 90, 101.1), ('SHORT', 90, 110, 98.9)])
+def test_positive_stop_is_strictly_profitable_tick_not_breakeven(side,mark,stop,expected):
+    a=evidence();a.update(gross_pnl=0,fees=2,funding_net=0,net_pnl=-2,
+                          positions=[dict(price=100,quantity=2)])
+    r=view(accounting=a,side=side,mark_price=mark,hard_stop=stop,
+           estimated_cost_rate=0,slippage_bps=0)['cost_positive_stop']
+    assert r['minimum_positive_stop_price']==expected
+    assert r['estimated_scenario_net_at_minimum_positive_stop']==pytest.approx(.2)
+    assert r['feasible_without_widening'] is True
+
+
+@pytest.mark.parametrize('side', ['LONG','SHORT'])
+def test_positive_stop_cost_equation_with_partial_realization_and_signed_costs(side):
+    from decimal import Decimal
+    a=evidence();a.update(gross_pnl=3,fees=-.2,funding_net=-.7,net_pnl=2.5,
+                          positions=[dict(price=100,quantity=1),dict(price=102,quantity=1)])
+    r=view(accounting=a,side=side,mark_price=120 if side=='LONG' else 80,
+           hard_stop=90 if side=='LONG' else 110)['cost_positive_stop']
+    p=Decimal(str(r['minimum_positive_stop_price']))
+    sign=1 if side=='LONG' else -1
+    def net(price):
+        return Decimal('2.5')+sign*(2*price-202)-2*price*Decimal('.004')
+    assert net(p)>0
+    assert net(p-sign*Decimal('.1'))<=0
+    assert r['estimated_scenario_net_at_minimum_positive_stop']==pytest.approx(float(net(p)))
+
+
+@pytest.mark.parametrize('side,mark,stop', [('LONG',100,90),('SHORT',100,110)])
+def test_positive_stop_never_recommends_crossed_mark(side,mark,stop):
+    r=view(side=side,mark_price=mark,hard_stop=stop,
+           accounting=dict(evidence(),positions=[dict(price=100,quantity=2)],
+                           gross_pnl=0,fees=2,funding_net=0,net_pnl=-2))['cost_positive_stop']
+    assert r['feasible_without_widening'] is False
+    assert r['feasible_stop_price'] is None
+
+
+@pytest.mark.parametrize('side,mark,stop', [('LONG',120,110),('SHORT',80,90)])
+def test_already_tighter_stop_is_not_relaxed(side,mark,stop):
+    a=dict(evidence(),positions=[dict(price=100,quantity=2)])
+    r=view(accounting=a,side=side,mark_price=mark,hard_stop=stop)['cost_positive_stop']
+    assert r['feasible_stop_price']==stop
+
+
+@pytest.mark.parametrize('tick', [None,0,-.1,True,'nan','Infinity'])
+def test_unknown_tick_does_not_invent_positive_stop(tick):
+    assert view(price_tick=tick)['cost_positive_stop']['status']=='unavailable'
+
+
+def test_equality_to_mark_is_not_feasible():
+    a=dict(evidence(),gross_pnl=0,fees=0,funding_net=0,net_pnl=0,
+           positions=[dict(price=100,quantity=1)])
+    r=view(accounting=a,side='LONG',mark_price=100.1,hard_stop=90,
+           estimated_cost_rate=0,slippage_bps=0)['cost_positive_stop']
+    assert r['minimum_positive_stop_price']==100.1
+    assert r['feasible_stop_price'] is None
+
+
+def test_non_power_of_ten_tick_is_respected():
+    a=dict(evidence(),gross_pnl=0,fees=2.2,funding_net=0,net_pnl=-2.2,
+           positions=[dict(price=100,quantity=2)])
+    r=view(accounting=a,side='LONG',mark_price=110,hard_stop=90,
+           estimated_cost_rate=0,slippage_bps=0,price_tick='.25')['cost_positive_stop']
+    assert r['minimum_positive_stop_price']==101.25
+
+
+def test_large_realized_profit_still_preserves_existing_long_stop():
+    a=dict(evidence(),gross_pnl=200,fees=0,funding_net=0,net_pnl=200,
+           positions=[dict(price=100,quantity=1)])
+    r=view(accounting=a,side='LONG',mark_price=110,hard_stop=90)['cost_positive_stop']
+    assert r['minimum_positive_stop_price']==.1
+    assert r['feasible_stop_price']==90
+
+
+@pytest.mark.parametrize('pending', [None,[dict(quantity=1)]])
+def test_positive_stop_not_projected_with_unknown_or_pending_entries(pending):
+    r=view(pending_entries=pending)
+    assert r['status']=='unavailable'
+    assert 'cost_positive_stop' not in r

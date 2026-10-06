@@ -329,7 +329,7 @@ class Exchange(Session):
             return
         if float(self.size)>0 and o.get("reduceOnly") is not True:
             self.orders["native"] = dict(orderId="native-id",orderLinkId="",symbol="BTCUSDT",positionIdx=0,qty=self.size,
-                side="Sell",reduceOnly=True,stopOrderType="StopLoss",triggerBy="MarkPrice",triggerPrice=self.stop,
+                side="Sell",reduceOnly=True,stopOrderType="StopLoss",orderType="Market",triggerBy="MarkPrice",triggerPrice=self.stop,
                 orderStatus="Untriggered",cumExecQty="0",leavesQty=self.size)
         elif float(self.size)>0 and "native" in self.orders and self.orders["native"]["orderStatus"]=="Untriggered":
             self.orders["native"].update(qty=self.size,leavesQty=self.size)

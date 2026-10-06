@@ -160,6 +160,16 @@ class ScenarioExecution:
                 decimal(order.get("stopLoss"))!=decimal(request["stopLoss"]) or
                 order.get("slTriggerBy")!="MarkPrice"):
             self._fail("entry_order_terms_changed")
+        if child["kind"] == "entry" and request.get("triggerPrice") is not None:
+            if (decimal(order.get("triggerPrice")) != decimal(request["triggerPrice"]) or
+                    order.get("triggerBy") != "MarkPrice" or
+                    order.get("triggerDirection") != request["triggerDirection"] or
+                    order.get("positionIdx") != 0 or order.get("timeInForce") != "GTC" or
+                    request.get("slOrderType") != "Market" or
+                    ("slOrderType" in order and order["slOrderType"] != "Market")):
+                self._fail("conditional_entry_terms_changed")
+        elif child["kind"] == "entry" and decimal(order.get("triggerPrice") or 0) != 0:
+            self._fail("unexpected_entry_trigger")
         executions = read_evidence_pages(self._call,"get_executions",category="linear",symbol="BTCUSDT",orderId=order["orderId"])
         qty = Decimal(0)
         for row in executions:
@@ -169,6 +179,11 @@ class ScenarioExecution:
             amount = decimal(row.get("execQty"))
             if amount<=0 or decimal(row.get("execPrice"))<=0:
                 self._fail("execution_value_invalid")
+            if child["kind"] == "entry" and request.get("triggerPrice") is not None:
+                fill_price, limit = decimal(row["execPrice"]), decimal(request["price"])
+                if ((request["side"] == "Buy" and fill_price > limit) or
+                        (request["side"] == "Sell" and fill_price < limit)):
+                    self._fail("conditional_entry_fill_exceeded_limit")
             qty += amount
         if qty!=decimal(order.get("cumExecQty")) or qty>decimal(order["qty"]):
             self._fail("execution_quantity_unreconciled")
@@ -232,6 +247,33 @@ class ScenarioExecution:
             self._fail("cancel_not_confirmed")
         return child
 
+    def _pending_entry(self, child):
+        row = dict(id=child["local_id"], price=float(child["request"]["price"]),
+                   quantity=float(child["evidence"]["order"]["leavesQty"]))
+        if child["request"].get("triggerPrice") is not None:
+            row["trigger_price"] = float(child["request"]["triggerPrice"])
+            row["order_status"] = child["evidence"]["order"]["orderStatus"]
+            parent = self.conn.execute("SELECT payload FROM llm_scenario_intents WHERE id=?",
+                                       (child["intent_id"],)).fetchone()
+            if not parent:
+                self._fail("conditional_parent_missing")
+            row["expires_at"] = json.loads(parent[0])["expires_at"]
+        return row
+
+    def _conditional_invalidated(self, child, observed, active):
+        """Original reservation deadline survives later WAIT/ADJUST revisions."""
+        if child["kind"] != "entry" or child["request"].get("triggerPrice") is None:
+            return False
+        parent = self.conn.execute("SELECT payload FROM llm_scenario_intents WHERE id=?",
+                                   (child["intent_id"],)).fetchone()
+        if not parent:
+            return True
+        payload = json.loads(parent[0])
+        mark, stop = decimal(observed["mark_price"]), decimal(active["hard_stop"])
+        return (self.clock() >= payload["expires_at"] or
+                (active["side"] == "LONG" and mark <= stop) or
+                (active["side"] == "SHORT" and mark >= stop))
+
     def _verify_protection(self, observed, stop, side):
         pos = observed["position"]
         if decimal(pos["size"]) == 0:
@@ -244,6 +286,7 @@ class ScenarioExecution:
             return False
         # Position row alone does not prove trigger source; require native SL.
         return any(o.get("stopOrderType")=="StopLoss" and o.get("triggerBy")=="MarkPrice"
+            and o.get("orderType") == "Market"
             and o.get("reduceOnly") is True and decimal(o.get("triggerPrice",0))==actual
             and decimal(o.get("qty",0))>=decimal(pos["size"])
             and o.get("side")== ("Sell" if expected=="Buy" else "Buy")
@@ -276,21 +319,47 @@ class ScenarioExecution:
         if side not in ("LONG","SHORT") or (side=="LONG" and stop>=mark) or (side=="SHORT" and stop<=mark):
             self._fail("stop_crossed_market")
         entries=payload.get("entries",[])
+        conditionals = [row for row in entries if "trigger_price" in row]
+        if conditionals:
+            if payload.get("chase", {}).get("max_bps") or payload.get("chase", {}).get("max_reprices"):
+                self._fail("conditional_entry_chase_forbidden")
+            if not self.clock() < payload["expires_at"] <= (int(self.clock() // 300) + 1) * 300:
+                self._fail("conditional_entry_expiry_invalid")
+            armed = sum(1 for order in observed["open_orders"] if
+                        order.get("orderStatus") in LIVE and decimal(order.get("triggerPrice") or 0) > 0)
+            native_reserved = 0 if any(order.get("stopOrderType") == "StopLoss" and
+                order.get("orderStatus") in LIVE for order in observed["open_orders"]) else 1
+            # Leave capacity for the mandatory Full SL and the intended partial
+            # stops when an armed entry fills; existing conditional exits remain
+            # counted conservatively until their cancellation is confirmed.
+            if armed + len(conditionals) + native_reserved + len(payload.get("partial_stops", [])) > 10:
+                self._fail("conditional_order_capacity")
         for row in entries:
             self._aligned(row["price"],instrument["tick"])
             self._aligned(row["quantity"],instrument["step"])
             qty,price=decimal(row["quantity"]),decimal(row["price"])
+            if "trigger_price" in row:
+                self._aligned(row["trigger_price"], instrument["tick"])
+                trigger = decimal(row["trigger_price"])
+                if ((side == "LONG" and not mark < trigger <= price) or
+                        (side == "SHORT" and not mark > trigger >= price)):
+                    self._fail("conditional_entry_price_direction")
             if not instrument["minimum"]<=qty<=instrument["maximum"] or qty*price<instrument["notional"]:
                 self._fail("entry_size_invalid")
         active=self._active()
         if not active or active["scenario_id"]!=payload["scenario_id"]:
             self._fail("active_scenario_unconfirmed")
+        if active["side"] != side or (decimal(observed["position"]["size"]) and
+                observed["position"].get("side") != ("Buy" if side == "LONG" else "Sell")):
+            self._fail("opposite_entry_forbidden")
         state=json.loads(self.conn.execute("SELECT body FROM llm_scenario_state WHERE id=1").fetchone()[0])
         if not self._new_risk_enabled() or state.get("breaker",{}).get("blocked",False) or not self._daily(observed).get("new_risk_allowed",False):
             self._fail("new_risk_halted")
         if (side=="LONG" and stop<decimal(active["hard_stop"])) or (side=="SHORT" and stop>decimal(active["hard_stop"])):
             self._fail("stale_parent_stop")
         existing=[c for c in children if c["kind"]=="entry" and c["status"]!="TERMINAL"]
+        if any(c["request"]["side"] != ("Buy" if side == "LONG" else "Sell") for c in existing):
+            self._fail("opposite_pending_entry_forbidden")
         pending=[dict(price=float(c["request"]["price"]),quantity=float(c["evidence"]["order"]["leavesQty"])) for c in existing]
         size=float(observed["position"]["size"])
         positions=[dict(price=float(observed["position"]["avgPrice"]),quantity=size)] if size else []
@@ -423,11 +492,15 @@ class ScenarioExecution:
                 # Validate all not-yet-submitted child risk before each write.
                 remaining=dict(payload,entries=payload["entries"][index:])
                 self._preflight(remaining,observed,instrument,self.children(active["scenario_id"]))
-                self._submit(payload,intent_id,"entry",entry["id"],dict(
+                request = dict(
                     side="Buy" if payload["side"]=="LONG" else "Sell",orderType="Limit",
                     qty=self._aligned(entry["quantity"],instrument["step"]),price=self._aligned(entry["price"],instrument["tick"]),
                     timeInForce="GTC",reduceOnly=False,stopLoss=self._aligned(desired,instrument["tick"]),
-                    tpslMode="Full",slTriggerBy="MarkPrice",slOrderType="Market"))
+                    tpslMode="Full",slTriggerBy="MarkPrice",slOrderType="Market")
+                if "trigger_price" in entry:
+                    request.update(triggerPrice=self._aligned(entry["trigger_price"], instrument["tick"]),
+                                   triggerBy="MarkPrice", triggerDirection=1 if payload["side"] == "LONG" else 2)
+                self._submit(payload,intent_id,"entry",entry["id"],request)
             self._sync_exits(payload,intent_id)
 
     def _sync_exits(self,payload,intent_id):
@@ -501,6 +574,8 @@ class ScenarioExecution:
             original=next((e for e in payload["entries"] if e["id"]==entry_id),None)
             if original is None:
                 self._fail("chase_entry_missing")
+            if "trigger_price" in original:
+                self._fail("conditional_entry_chase_forbidden")
             rows=[c for c in self.children(payload["scenario_id"]) if c["intent_id"]==intent_id and
                 c["kind"]=="entry" and (c["local_id"]==entry_id or c["local_id"].startswith(entry_id+":chase:"))]
             if not rows or len(rows)-1>=payload["chase"]["max_reprices"]:
@@ -542,6 +617,8 @@ class ScenarioExecution:
         price=(decimal(quote)/instrument["tick"]).to_integral_value(rounding=ROUND_UP if active["side"]=="LONG" else ROUND_DOWN)*instrument["tick"]
         children=self.children(active["scenario_id"])
         for entry in plan.get("entries",[]):
+            if "trigger_price" in entry:
+                continue
             related=[c for c in children if c["intent_id"]==ident and c["kind"]=="entry" and
                 (c["local_id"]==entry["id"] or c["local_id"].startswith(entry["id"]+":chase:"))]
             if not related or len(related)-1>=plan["chase"]["max_reprices"]:

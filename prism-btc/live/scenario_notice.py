@@ -327,6 +327,8 @@ def render_notice(event: dict) -> str:
     if kind == "PROTECTION" and event.get("change_type") == "initial_protection":
         title = "🛡 BTC 데모 기존 포지션 확인"
     lines = [title, "🕐 " + _time(at)]
+    if kind == "PLAN" and event.get("conditional_entries"):
+        lines[0] = "⏳ BTC 데모 조건부 예약 계획 · 미체결"
     if kind == "CLOSED" and event.get("recovery_confirmation") is True:
         lines.append("과거에 종료된 매매의 누락된 정산 안내입니다. 새 진입·추가 주문이 아닙니다.")
     if event.get("reason_code") in REASONS:
@@ -378,6 +380,15 @@ def render_notice(event: dict) -> str:
             if targets is not None and total < 1:
                 lines.append(f"추세 추종 잔여 계획: {(1-total)*100:g}% · SL 보호 유지")
         if kind == "PLAN":
+            conditional = event.get("conditional_entries")
+            if isinstance(conditional, list) and conditional:
+                direction = "이상" if event["side"] == "LONG" else "이하"
+                for row in conditional[:2]:
+                    if isinstance(row, dict):
+                        lines.append(f"예약 조건: MarkPrice {_money(row.get('trigger_price'))} {direction} · 체결 한도 {_money(row.get('price'))}")
+                deadline = _number(event.get("reservation_expires_at"))
+                if deadline is not None:
+                    lines.append("예약 마감: " + _time(deadline) + " · 이후 취소 요청, 취소 확인 전 체결 가능")
             action = {"OPEN":"신규 포지션 구축 요청", "ADJUST":"기존 포지션 계획 수정 요청", "EXIT":"전량 청산 요청"}.get(event.get("plan_action"))
             if action:
                 lines.append(action + " · 아직 적용 전")

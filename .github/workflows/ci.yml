@@ -274,6 +274,8 @@ jobs:
             prism-btc/tests/test_scenario_llm.py \
             prism-btc/tests/test_scenario_review_memory.py \
             prism-btc/tests/test_scenario_runner_economics.py \
+            prism-btc/tests/test_scenario_conditional_entries.py \
+            prism-btc/tests/test_scenario_reservation_policy.py \
             prism-btc/tests/test_scenario_prompt_logic.py \
             prism-btc/tests/test_scenario_oauth.py \
             prism-btc/tests/test_scenario_preview.py \

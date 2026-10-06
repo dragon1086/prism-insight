@@ -422,7 +422,7 @@ class ScenarioDemoBroker(ScenarioExecution):
         observed=self.capture_account()
         active=self._active()
         children=self.children(active["scenario_id"]) if active else []
-        pending=[dict(id=c["local_id"],price=float(c["request"]["price"]),quantity=float(c["evidence"]["order"]["leavesQty"]))
+        pending=[self._pending_entry(c)
             for c in children if c["kind"]=="entry" and c["status"]=="LIVE" and c["evidence"]]
         daily=self._daily(observed)
         instrument=self._instrument()
@@ -443,8 +443,8 @@ class ScenarioDemoBroker(ScenarioExecution):
             hard_stop=active["hard_stop"] if active else None,
             observed_at=observed["captured_at"], now=self.clock(), pending_entries=pending,
             initial_equity=active["initial_equity"] if active else observed["equity"],
-            estimated_cost_rate=.002, slippage_bps=20)
-        return dict(account_version=observed["account_version"],legacy_fenced=observed["legacy_fenced"],
+            estimated_cost_rate=.002, slippage_bps=20, price_tick=instrument["tick"])
+        return dict(conditional_entry_version=1, account_version=observed["account_version"],legacy_fenced=observed["legacy_fenced"],
             account_captured_at=observed["captured_at"], runner_economics=review_finance,
             target_status=[dict(target_id=c["local_id"],kind=c["kind"],status=c["status"],
                 intent_id=c["intent_id"],
@@ -504,6 +504,13 @@ class ScenarioDemoBroker(ScenarioExecution):
             halted=True
         expired=self.clock()>=active.get("expires_at",0)
         stop_hit=any(c["kind"]=="native_sl" and c["evidence"] and c["evidence"]["executions"] for c in self.children(active["scenario_id"]))
+        if self.execution_enabled:
+            for child in self.children(active["scenario_id"]):
+                if child["status"] != "TERMINAL" and self._conditional_invalidated(child, observed, active):
+                    try:
+                        self._cancel(child)
+                    except Exception:
+                        unknown = True
         if self.execution_enabled and (halted or expired or not protection or stop_hit):
             for child in self.children(active["scenario_id"]):
                 if child["kind"]=="entry" and child["status"]!="TERMINAL":
@@ -581,7 +588,7 @@ class ScenarioDemoBroker(ScenarioExecution):
                         executions_complete=True,execution_ids=[],filled_quantity=0.,exchange_order_ids=[],open_entries=[]))
                 continue
             execution_ids=[e["execId"] for c in group for e in c["evidence"]["executions"]]
-            open_entries=[dict(id=c["local_id"],price=float(c["request"]["price"]),quantity=float(c["evidence"]["order"]["leavesQty"]))
+            open_entries=[self._pending_entry(c)
                 for c in group if c["kind"]=="entry" and c["status"]=="LIVE"]
             all_children_submitted=all(any(c["kind"]=="entry" and c["local_id"]==r["id"] for c in group) for r in payload.get("entries",[]))
             batch=self.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id=?",(ident,)).fetchone()

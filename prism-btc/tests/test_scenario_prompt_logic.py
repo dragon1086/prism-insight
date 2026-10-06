@@ -246,7 +246,8 @@ def test_prompt_reassesses_zero_fill_without_imaginary_confirmation_orders():
     assert 'zero chase allowance is not a command to keep an obsolete plan forever' in text
     assert 'ADJUST with empty entries cannot enable chase for an older entry' in text
     assert 'touching a limit price is NOT confirmation of a rebound or breakout' in text
-    assert 'If genuine additional confirmation is required, WAIT' in text
+    assert 'If genuine additional candle/volume/retest confirmation is required, WAIT' in text
+    assert 'numeric MarkPrice crossing alone may use the conditional entry contract' in text
     assert 'WAIT + cancel_entry_ids and await exact cancellation; bare WAIT leaves it live' in text
     assert 'marketable LIMIT may be proposed' in text
     assert 'WAIT does not renew existing entry expiry or change chase' in text

@@ -55,6 +55,24 @@ def _finite(value):
     return type(value) in (int, float) and math.isfinite(value)
 
 
+def _valid_open_entry(row):
+    if not isinstance(row, dict):
+        return False
+    regular = {"id", "price", "quantity"}
+    conditional = regular | {"trigger_price", "order_status", "expires_at"}
+    if set(row) not in (regular, conditional):
+        return False
+    if (not isinstance(row["id"], str) or not row["id"] or
+            not _finite(row["price"]) or row["price"] <= 0 or
+            not _finite(row["quantity"]) or row["quantity"] <= 0):
+        return False
+    if set(row) == conditional:
+        from live.scenario_execution import LIVE
+        return (isinstance(row["order_status"], str) and row["order_status"] in LIVE and _finite(row["trigger_price"]) and
+                row["trigger_price"] > 0 and _finite(row["expires_at"]) and row["expires_at"] > 0)
+    return True
+
+
 def snapshot_input_time(snapshot):
     """Use the oldest primary observation, not the end of a sequential fetch."""
     times = [snapshot.get("as_of_ms")]
@@ -191,10 +209,7 @@ class ScenarioRuntime:
                 if (not isinstance(ids, list) or not ids or
                         any(not isinstance(x, str) or not x for x in ids) or
                         len(set(ids)) != len(ids) or not isinstance(orders, list) or
-                        any(not isinstance(o, dict) or set(o) != {"id", "price", "quantity"} or
-                            not isinstance(o["id"], str) or not o["id"] or
-                            not _finite(o["price"]) or o["price"] <= 0 or
-                            not _finite(o["quantity"]) or o["quantity"] <= 0 for o in orders)):
+                        any(not _valid_open_entry(o) for o in orders)):
                     continue
                 seen_live.add(ident)
                 encoded = _json(item)
@@ -420,6 +435,8 @@ class ScenarioRuntime:
                     held_average=(sum(p["price"]*p["quantity"] for p in fresh["positions"])/held_quantity
                                   if held_quantity else None)
                     self._notice("plan:"+ident,dict(kind="PLAN",timestamp=self.clock(),side=validated["side"],
+                        conditional_entries=[e for e in entries if e.get("trigger_price") is not None],
+                        reservation_expires_at=validated["expires_at"],
                         price=price,hard_stop=validated["hard_stop"],take_profits=validated.get("take_profits",[]),
                         plan_action=validated["action"],quantity=quantity,before_quantity=held_quantity,
                         before_hard_stop=fresh.get("previous_hard_stop"),reference_entry_price=held_average,

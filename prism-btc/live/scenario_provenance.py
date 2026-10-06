@@ -143,7 +143,7 @@ def _manifest():
             execution_parity[name] = _loaded_parity(name, source)
         else:
             context_name = '_context' if 'runtime' in name else 'context'
-            execution_names = ({'_tick', '_reconcile', '_enabled'} if 'runtime' in name else
+            execution_names = ({'_tick', '_reconcile', '_enabled', '_valid_open_entry'} if 'runtime' in name else
                 {'_accounting', '_funding_schedule', 'capture_financial_evidence',
                  '_risk_accounting', '_daily', 'reconcile', 'capture_account'})
             selected_names = {context_name} | execution_names
