@@ -14,7 +14,6 @@ import logging
 import os
 import re
 import sys
-from collections import Counter
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
