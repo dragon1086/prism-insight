@@ -152,3 +152,15 @@ def test_new_ai_themes_with_the_same_name_from_two_batches_become_one():
            {"name": "인터넷 플랫폼", "sector": "기타", "stocks": ["NHN", "다우기술", "더존비즈온"]}]
     added, created = tm.add_ai_members(themes, {}, new, n2c, ("기타",))
     assert len(created) == 1 and len(created[0]["members"]) == 5 and added == 2
+
+
+def test_stocks_headline_matched_in_three_sectors_lose_news_membership():
+    def theme(sector, roles):
+        return {"sector": sector, "members": [{"code": c, "role": r} for c, r in roles]}
+    themes = [theme("자동차·모빌리티", [("hyundai", "core"), ("kakao", "news")]),
+              theme("그룹주·지주", [("samsung", "core"), ("kakao", "news"), ("sl", "news")]),
+              theme("소비재·유통", [("shinsegae", "core"), ("kakao", "news")]),
+              theme("자동차·모빌리티", [("kia", "core"), ("sl", "news")])]
+    assert tm.prune_news_magnets(themes) == {"kakao"}
+    assert all(m["code"] != "kakao" for t in themes for m in t["members"])
+    assert sum(m["code"] == "sl" for t in themes for m in t["members"]) == 2
