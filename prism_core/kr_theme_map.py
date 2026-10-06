@@ -145,6 +145,8 @@ def merge_by_name(themes):
 
 # Market roundups name many stocks without a shared theme ("외국인 순매수 상위 …").
 ROUNDUP = re.compile(r"순매수|순매도|상위|하위|외국인|기관|코스피|코스닥|마감|시황|증시|급등락주")
+# Broker research headlines carry the broker's name ("LS증권 '현대건설 목표가…'").
+REPORT_TITLE = re.compile(r"목표가|목표주가|투자의견|리포트|브리핑|커버리지|Buy|매수 유지|중립")
 SIMILAR_OVERLAP = 0.5   # same-sector themes sharing half of the smaller one's stocks are one theme
 
 
@@ -206,11 +208,16 @@ def add_news_members(theme, titles, name_to_code, pattern, min_mentions=3, max_n
     for title in titles:
         found = {name_to_code[n] for n in set(pattern.findall(title))} if pattern else set()
         # Market roundups ("순매수 상위: A, B, C, D…") name many stocks and no shared theme.
-        if found & have and len(found) <= max_names and not ROUNDUP.search(title):
+        if (found & have and len(found) <= max_names and not ROUNDUP.search(title)
+                and not REPORT_TITLE.search(title)):
             mentions.update(found - have)
     home_sectors = home_sectors or {}
 
+    brokers = {code for name, code in name_to_code.items() if "증권" in name}
+
     def belongs_elsewhere(code):
+        if code in brokers:  # brokers are named in their own research headlines
+            return True
         # A stock that is core only in other sectors (삼성전자 in 반도체) is an incidental mention here.
         homes = home_sectors.get(code)
         return bool(homes) and theme.get("sector") not in homes
@@ -250,6 +257,7 @@ def add_ai_members(themes, assignments, new_themes, name_to_code, sectors):
         same = existing.get(theme["name"])
         if same is None:
             fresh.append(theme)
+            existing[theme["name"]] = theme  # a later batch may propose the same new theme
             continue
         have = {m["code"] for m in same["members"]}
         for m in theme["members"]:

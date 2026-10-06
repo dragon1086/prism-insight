@@ -125,6 +125,18 @@ async def place_uncovered(themes, uncovered, code_to_name, name_to_code, ask=Non
     ask = ask or ask_model
     theme_rows = [f"{t['id']} {t['name']} ({t.get('sector', '')}): "
                   + ", ".join(code_to_name.get(m['code'], m['code']) for m in t['members'][:6]) for t in themes]
+    assign, new = {}, []
+    for i in range(0, len(uncovered), PLACE_BATCH):
+        a, n = await _place_batch(theme_rows, uncovered[i:i + PLACE_BATCH], code_to_name, ask)
+        assign.update(a)
+        new += n
+    return add_ai_members(themes, assign, new, name_to_code, SECTORS)
+
+
+PLACE_BATCH = 40
+
+
+async def _place_batch(theme_rows, uncovered, code_to_name, ask):
     stocks = [code_to_name.get(c, c) for c in uncovered]
     prompt = ("아래는 한국 증시 테마 목록과, 아직 어느 테마에도 들어가지 않은 시가총액 상위 종목입니다.\n"
               "종목마다 사업 내용에 비춰 분명히 속하는 기존 테마 ID를 0~2개 고르세요. 애매하면 고르지 마세요.\n"
@@ -143,7 +155,7 @@ async def place_uncovered(themes, uncovered, code_to_name, name_to_code, ask=Non
     allowed = {code_to_name.get(c, c) for c in uncovered}
     assign = {k: v for k, v in assign.items() if k in allowed and isinstance(v, list)}
     new = [dict(item, stocks=[n for n in item.get("stocks", []) if n in allowed]) for item in new if isinstance(item, dict)]
-    return add_ai_members(themes, assign, new, name_to_code, SECTORS)
+    return assign, new
 
 
 def enrich_with_news(themes, conn, name_to_code):

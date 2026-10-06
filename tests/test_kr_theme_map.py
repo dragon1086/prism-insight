@@ -135,3 +135,20 @@ def test_an_ai_theme_named_like_an_existing_one_folds_into_it():
     added, created = tm.add_ai_members(themes, {}, [{"name": "게임주", "sector": "엔터·미디어·게임",
                                                       "stocks": ["넷마블", "크래프톤", "엔씨소프트"]}], n2c, ("엔터·미디어·게임",))
     assert created == [] and added == 3 and len(themes[0]["members"]) == 4
+
+
+def test_broker_report_headlines_and_broker_names_add_nobody():
+    n2c = {"현대건설": "000720", "LS증권": "078020", "대우건설": "047040", "상지건설": "042940"}
+    theme = {"sector": "건설·건자재", "members": [{"code": "000720", "times": 5, "share": 0.9, "role": "core"}]}
+    titles = ["LS증권 \"현대건설 목표가 상향\""] * 4 + ["현대건설·상지건설 해외 수주"] * 3 + ["LS증권·현대건설 맞손"] * 4
+    added = tm.add_news_members(theme, titles, n2c, tm.stock_name_pattern(n2c))
+    assert [m["code"] for m in added] == ["042940"]
+
+
+def test_new_ai_themes_with_the_same_name_from_two_batches_become_one():
+    themes = [{"id": "T001", "name": "건설주", "members": [{"code": "a", "role": "core"}]}]
+    n2c = {"NAVER": "035420", "카카오": "035720", "NHN": "181710", "다우기술": "023590", "더존비즈온": "012510"}
+    new = [{"name": "인터넷 플랫폼", "sector": "기타", "stocks": ["NAVER", "카카오", "NHN"]},
+           {"name": "인터넷 플랫폼", "sector": "기타", "stocks": ["NHN", "다우기술", "더존비즈온"]}]
+    added, created = tm.add_ai_members(themes, {}, new, n2c, ("기타",))
+    assert len(created) == 1 and len(created[0]["members"]) == 5 and added == 2
