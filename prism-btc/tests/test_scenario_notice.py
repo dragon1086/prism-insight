@@ -65,6 +65,37 @@ def test_protection_always_shows_unchanged_holdings_and_tp():
         assert text in out
 
 
+@pytest.mark.parametrize('side,prices', [('LONG', [85200,85500,86000]), ('SHORT',[84300,84000,83500])])
+def test_three_tp_tiers_are_all_visible_with_quantities_and_pnl(side,prices):
+    after=position(side=side,take_profits=[dict(price=p,quantity=q) for p,q in zip(prices,[.02,.03,.05])])
+    out=render_notice(filled(after,side=side))
+    for p in prices:assert f'{p:,.2f}' in out
+    for q in ('0.02 BTC','0.03 BTC','0.05 BTC'):assert q in out
+    assert out.count('해당 물량 예상 손익')==3
+    assert '나머지 1개 상세 생략' not in out
+    assert len(out.encode('utf-16-le'))//2<4096
+
+
+def test_three_original_plan_targets_remain_visible_without_live_setting_claim():
+    event=filled(position(timestamp=1),take_profits=[dict(price=p,fraction=f) for p,f in
+        ((85200,.2),(85500,.3),(86000,.5))],take_profits_scope='entry_intent_plan')
+    out=render_notice(event)
+    assert '86,000.00' in out and '계획 물량의 50%' in out
+    assert 'TP 설정 미확인' in out
+    assert '해당 물량 예상 손익' not in out
+
+
+def test_third_tp_change_keeps_previous_and_current_final_target_visible():
+    before=position(timestamp=900,take_profits=[dict(price=p,quantity=q) for p,q in
+        ((85200,.02),(85500,.03),(86000,.05))])
+    after=position(take_profits=[dict(price=p,quantity=q) for p,q in
+        ((85200,.02),(85500,.03),(86500,.05))])
+    out=render_notice(dict(kind='PROTECTION',timestamp=1000,protection_confirmed=True,
+                          position_before=before,position_after=after))
+    assert '86,000.00(0.05 BTC)' in out
+    assert '86,500.00 USDT' in out
+
+
 def test_protection_empty_tp_explicit_runner_and_compact_accounting():
     after = position(quantity=.072, average_entry_price=84780, hard_stop=85140,
                      take_profits=[], scenario_realized_net_pnl=24.10042936,
@@ -345,7 +376,8 @@ def test_twenty_targets_are_valid_and_message_is_bounded_without_wrong_runner(ma
     for event in events:
         out = render_notice(event)
         assert out.count("총 20개") == 2
-        assert out.count("나머지 18개 상세 생략") == 2
+        assert out.count("나머지 17개 상세 생략") == 1  # three TPs remain visible
+        assert out.count("나머지 18개 상세 생략") == 1  # partial SL remains compact
         assert "익절 후" not in out  # all quantity is assigned across the full 20 targets
         assert len(out.encode("utf-16-le")) // 2 < 4096
         assert "실제 손실은 목표 초과 가능" in out
