@@ -14,6 +14,7 @@ Unknown submissions are NEVER resubmitted, even after process restart.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import time
 import uuid
@@ -569,6 +570,7 @@ class ScenarioRuntime:
                 try:
                     recovery.journal(self.conn, "OUTCOME", outcome, self.clock(), slot=claimed[0])
                 except Exception:
-                    pass  # Never undo an intent or stop independent protection.
+                    # Never undo an intent or stop independent protection.
+                    logging.getLogger(__name__).warning("AUDIT_GAP recovery_outcome_journal_failed")
             self.conn.commit()
         return outcome
