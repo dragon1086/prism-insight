@@ -33,7 +33,49 @@ def _news_source_contract(reference_date, language):
 """
 
 
-def create_news_analysis_agent(company_name, company_code, reference_date, language: str = "ko"):
+def _news_listing_step(company_name, company_code, reference_date, language, news_listing):
+    """STEP 1: the KIS headline list replaces the Naver page scrape (iframe list came back empty)."""
+    if language == "en":
+        if not news_listing:
+            return f"""                        ### STEP 1: Collect Target Stock News
+                        The KIS headline list could not be retrieved. First use one consolidated perplexity_ask query for
+                        {company_name} ({company_code}) news and disclosures on {reference_date} and the past week.
+"""
+        return f"""                        ### STEP 1: Use the KIS headline list first
+                        1. The table below is the primary news list. Explain the price move on {reference_date} from that
+                           day's headlines first (subsidiary or sector headlines can be the cause; say so when they are).
+                        2. Headlines have no body or URL. For a material headline, use perplexity_ask (within the query
+                           limit) with the headline text to find the original article, and firecrawl_scrape only a URL
+                           that search actually returned. If the body is not confirmed, say it is headline-only.
+                        3. Cite a headline you could not open as "KIS news headline — provider, YYYY-MM-DD HH:MM
+                           (body not confirmed)". This is the only allowed citation without a URL; never invent URLs.
+
+<kis_news_headlines>
+{news_listing}
+</kis_news_headlines>
+"""
+    if not news_listing:
+        return f"""                        ### STEP 1: 해당 종목 뉴스 수집
+                        KIS 뉴스 제목 목록을 받지 못했습니다. perplexity_ask 통합 질의 1회로 {company_name}({company_code})의
+                        기준일({reference_date})과 최근 1주일 뉴스·공시를 먼저 찾으세요.
+"""
+    return f"""                        ### STEP 1: KIS 뉴스 제목 목록을 먼저 사용
+                        1. 아래 표가 1차 뉴스 목록입니다. 기준일({reference_date}) 당일 제목으로 당일 주가 변동 요인을 먼저
+                           설명하세요. 계열사·업종 기사가 원인일 수 있으며, 그런 경우 그렇다고 밝히세요.
+                        2. 제목에는 본문과 URL이 없습니다. 중요한 제목은 제목 문구로 perplexity_ask(횟수 제한 안에서)를 써서
+                           원문 기사를 찾고, 검색 결과로 실제 받은 URL만 firecrawl_scrape로 확인하세요. 본문을 확인하지 못했으면
+                           제목만 확인했다고 밝히세요.
+                        3. 원문을 열지 못한 제목은 참고 자료에 "KIS 뉴스 제목 — 제공처, YYYY-MM-DD HH:MM (본문 미확인)"으로
+                           표기하세요. 이것이 URL 표기 규칙의 유일한 예외이며, URL을 만들어 내지 마세요.
+
+<kis_news_headlines>
+{news_listing}
+</kis_news_headlines>
+"""
+
+
+def create_news_analysis_agent(company_name, company_code, reference_date, language: str = "ko",
+                               news_listing: str = ""):
     """Create news analysis agent
 
     Args:
@@ -41,6 +83,7 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
         company_code: Stock code
         reference_date: Analysis reference date (YYYYMMDD)
         language: Language code ("ko" or "en")
+        news_listing: Prefetched KIS headline table (prism_core.kr_news_titles); "" if unavailable
 
     Returns:
         Agent: News analysis agent
@@ -51,15 +94,7 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
 
                         ## Required Data Collection Order (Must follow this sequence)
                         
-                        ### STEP 1: Collect Target Stock News (firecrawl)
-                        
-                        1. **firecrawl_scrape** to access Naver Finance news page:
-                           - URL: https://finance.naver.com/item/news.naver?code={company_code}
-                           - formats: ["markdown"], onlyMainContent: true, maxAge: 7200000 (2-hour cache)
-                           - If no news from target date ({reference_date}), collect news from past week
-                        
-                        2. Start with news list page titles and summaries; confirm material claims under the rules below.
-                        
+{_news_listing_step(company_name, company_code, reference_date, 'en', news_listing)}
 
 {_news_source_contract(reference_date, 'en')}
 
@@ -117,15 +152,7 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
 
                         ## 필수 데이터 수집 순서 (반드시 이 순서대로 진행)
                         
-                        ### STEP 1: 해당 종목 뉴스 수집 (firecrawl)
-                        
-                        1. **firecrawl_scrape**로 네이버 금융 뉴스 페이지 접속:
-                           - URL: https://finance.naver.com/item/news.naver?code={company_code}
-                           - formats: ["markdown"], onlyMainContent: true, maxAge: 7200000 (2시간 캐시)
-                           - 당일({reference_date}) 뉴스가 없으면 최근 1주일 이내 뉴스 수집
-                        
-                        2. 뉴스 목록의 제목과 요약을 우선 활용하되, 중요한 주장은 아래 규칙에 따라 원문을 확인합니다.
-                        
+{_news_listing_step(company_name, company_code, reference_date, 'ko', news_listing)}
 
 {_news_source_contract(reference_date, 'ko')}
 

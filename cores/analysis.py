@@ -143,6 +143,16 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         except Exception:
             logger.warning("Optional report research unavailable; retaining existing sources")
 
+        # KIS headlines replace the Naver news-page scrape, whose iframe list came back empty.
+        try:
+            from prism_core.kr_news_titles import build_kr_news_listing
+            prefetched['news_listing'] = await asyncio.to_thread(
+                build_kr_news_listing, company_code, reference_date, language)
+        except Exception:
+            prefetched['news_listing'] = ""
+        logger.info("KIS news listing for %s: %s", company_code,
+                    "present" if prefetched['news_listing'] else "unavailable")
+
         # Model-free official filing inputs are on the shared bot/batch path.
         try:
             from prism_core.kr_official_report_inputs import collect_kr_official_report_inputs

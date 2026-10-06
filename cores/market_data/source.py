@@ -72,6 +72,9 @@ class MarketDataSource(Protocol):
     def fundamentals(self, ticker: str, start: str, end: str) -> pd.DataFrame:
         """PER/PBR/dividend yield over time."""
 
+    def news_titles(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        """News/disclosure headlines mentioning the stock, newest first."""
+
     def ticker_name(self, ticker: str) -> str:
         """Company name for a ticker."""
 
