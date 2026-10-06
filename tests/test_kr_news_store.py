@@ -92,3 +92,22 @@ def test_search_treats_like_wildcards_in_words_literally(tmp_path):
     assert [r["serial"] for r in store.search(conn, keywords=["100%"])] == ["a"]
     assert [r["serial"] for r in store.search(conn, all_keywords=["지분", "매수"])] == ["b"]
     assert store.search(conn, keywords=["_"]) == []
+
+
+class MidnightBlindFeed(FakeFeed):
+    """KIS treats HOUR '000000' as no hour: it answers with the day's newest page."""
+
+    def news_title_page(self, ticker, day, clock=""):
+        return super().news_title_page(ticker, day, "" if clock == "000000" else clock)
+
+
+def test_backfill_resumes_past_a_headline_stamped_at_midnight(tmp_path):
+    conn = store.connect(tmp_path / "news.sqlite")
+    stored_day = [_row(f"d{h}", "20260930", f"{h:02d}0000", f"t{h}") for h in range(1, 23)]
+    stored_day.append(_row("b", "20260930", "000000", "midnight"))
+    rows = stored_day + [_row("c", "20260929", "180000", "previous day")]
+    store.upsert(conn, stored_day)  # an earlier run stored the whole day, ending exactly at midnight
+    feed = MidnightBlindFeed(rows, size=2)
+    calls, new, _ = collector.backfill(feed, conn, "20260929", max_calls=10)
+    assert store.known(conn, ["c"]) == {"c"} and new == 1
+    assert feed.calls[0] == ("20260929", "235959")

@@ -42,6 +42,12 @@ def _step_back(day, clock):
     return moment.strftime("%Y%m%d"), moment.strftime("%H%M%S")
 
 
+def _cursor(day, clock):
+    """KIS reads HOUR '000000' as 'no hour' and answers with the day's newest page,
+    so a cursor at midnight moves to the previous day's last second instead."""
+    return _step_back(day, clock) if clock == "000000" else (day, clock)
+
+
 def walk(source, conn, *, start_day, start_clock, stop, max_calls, pause=PAUSE):
     """Page backwards from the cursor until `stop(page, new)` or the call budget ends."""
     day, clock = start_day, start_clock
@@ -66,7 +72,7 @@ def walk(source, conn, *, start_day, start_clock, stop, max_calls, pause=PAUSE):
             next_cursor = (oldest["day"], oldest["time"])
         if next_cursor == (day, clock):
             next_cursor = _step_back(day, clock)
-        day, clock = next_cursor
+        day, clock = _cursor(*next_cursor)
         time.sleep(pause)
     return calls, new_total, (day, clock)
 
@@ -86,7 +92,8 @@ def live(source, conn, max_calls):
 def backfill(source, conn, until, max_calls):
     oldest = store.bounds(conn)[0]
     if oldest:
-        day, clock = oldest[:10].replace("-", ""), oldest[11:].replace(":", "")
+        # Resume one second before the oldest stored headline.
+        day, clock = _cursor(*_step_back(oldest[:10].replace("-", ""), oldest[11:].replace(":", "")))
     else:
         day, clock = datetime.now().strftime("%Y%m%d"), ""
 
