@@ -18,6 +18,25 @@ def context(active=False):
                 slippage_bps=10,new_risk_blocked=False,side='LONG',mark_price=60500)
 
 
+def test_assembled_flexible_tp_policy_preserves_safety_and_no_fixed_allocations():
+    from live.scenario_preview import response_contract
+    ctx=context(True);calls=[]
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(wire(ctx)))
+    propose({'valid':True,'as_of_ms':1000000},ctx,response_contract(ctx),
+            generate=generate,clock=lambda:1000)
+    policy=' '.join(calls[0]['system_prompt'].split())
+    for clause in ('near, intermediate and extension TP', 'not fixed percentages',
+                   'two or three meaningful tiers', 'one target or an SL-protected runner',
+                   'never restore already filled target quotas', 'rounding remainder stays protected',
+                   'not permission to widen SL', 'not a ban on structurally justified risk reduction'):
+        assert clause in policy
+    user=json.loads(calls[0]['user_prompt'])
+    rules=' '.join(user['response_contract']['rules'])
+    assert '1–3' in rules and 'no fixed allocation' in rules
+
+
 def wire(ctx, action='WAIT'):
     p=dict(**identity_fields(ctx),action=action,confidence=.5,expires_at=1100,
            rationale='관측 근거와 무효화 조건',leverage=10,entries=[],take_profits=[],

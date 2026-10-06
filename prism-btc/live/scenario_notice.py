@@ -262,12 +262,13 @@ def _position_lines(event, after):
         if changed and targets != old:
             previous = " / ".join(f"{_decimal(t['price'])}({t['quantity']:g} BTC)" for t in old[:2]) if old else ("없음" if old == [] else "미확인")
             lines.append(f"{label} 이전 {previous} → 아래 설정" if targets else f"{label} 이전 {previous} → 없음")
-        for target in targets[:2]:
+        display_limit = 3 if field == "take_profits" else 2
+        for target in targets[:display_limit]:
             icon = "🎯" if field == "take_profits" else "🛡"
             lines.extend(["", f"{icon} {label} {_money(target['price'])} · {target['quantity']/qty*100:g}%({target['quantity']:g} BTC)",
                           "• 해당 물량 예상 손익: " + _target_text(after, target["price"], target["quantity"], equity)])
-        if len(targets) > 2:
-            lines.append(f"{label} 총 {len(targets)}개 · 나머지 {len(targets)-2}개 상세 생략")
+        if len(targets) > display_limit:
+            lines.append(f"{label} 총 {len(targets)}개 · 나머지 {len(targets)-display_limit}개 상세 생략")
         if field == "take_profits":
             if not targets:
                 lines.extend(["", "🎯 고정 TP 없음"])
@@ -375,9 +376,9 @@ def render_notice(event: dict) -> str:
                 lines.append("분할 TP 계획: 자료 미확인")
             elif targets:
                 label = "진입 당시 TP 계획" if event.get("take_profits_scope") == "entry_intent_plan" else "분할 TP 계획"
-                lines.append(f"🎯 {label}: " + " / ".join(targets[:2]))
-                if len(targets) > 2:
-                    lines.append(f"전체 {len(targets)}개 중 나머지 {len(targets)-2}개 상세 생략")
+                lines.append(f"🎯 {label}: " + " / ".join(targets[:3]))
+                if len(targets) > 3:
+                    lines.append(f"전체 {len(targets)}개 중 나머지 {len(targets)-3}개 상세 생략")
             elif targets == []:
                 lines.append("🎯 고정 TP 없는 계획 · 남은 전량 추세 추종")
             if targets is not None and kind in {"FILLED", "PROTECTION"}:
