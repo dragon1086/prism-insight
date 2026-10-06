@@ -132,16 +132,17 @@ def _scalar(value):
 def ensure_schema(connection: sqlite3.Connection) -> None:
     """Create the table if missing and add any column a newer version introduced."""
     connection.execute(
-        f"CREATE TABLE IF NOT EXISTS {TABLE} (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "CREATE TABLE IF NOT EXISTS candidate_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, "
         "market TEXT NOT NULL, trade_date TEXT NOT NULL, mode TEXT NOT NULL, "
         "trigger_type TEXT NOT NULL, ticker TEXT NOT NULL, "
         "UNIQUE(market, trade_date, mode, trigger_type, ticker))")
-    existing = {row[1] for row in connection.execute(f"PRAGMA table_info({TABLE})")}
+    existing = {row[1] for row in connection.execute("PRAGMA table_info(candidate_ledger)")}
     for column, kind in _ALL_COLUMNS:
         if column not in existing:
-            connection.execute(f"ALTER TABLE {TABLE} ADD COLUMN {column} {kind}")
+            # Identifiers come from the module constants above, never from input.
+            connection.execute(f"ALTER TABLE candidate_ledger ADD COLUMN {column} {kind}")  # nosec B608  # nosemgrep
     connection.execute(
-        f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_status ON {TABLE}(market, outcome_status, ticker)")
+        "CREATE INDEX IF NOT EXISTS idx_candidate_ledger_status ON candidate_ledger(market, outcome_status, ticker)")
 
 
 # --- capture -----------------------------------------------------------------
@@ -201,7 +202,9 @@ def record(rows: Iterable[Mapping[str, Any]] | None, *, market: str, trade_date,
         updates = ", ".join([f"{c}=excluded.{c}" for c in capture + ["anchor_date", "updated_at"]]
                             + [f"{c}=NULL" for c in reset if c != "anchor_date"]
                             + ["outcome_status='PENDING'"])
-        sql = (f"INSERT INTO {TABLE} ({', '.join(columns)}) VALUES ({', '.join('?' * len(columns))}) "
+        # Column names come from the module constants; values are bound parameters.
+        sql = (f"INSERT INTO candidate_ledger ({', '.join(columns)}) "  # nosec B608  # nosemgrep
+               f"VALUES ({', '.join('?' * len(columns))}) "
                f"ON CONFLICT({', '.join(_KEY)}) DO UPDATE SET {updates}")
         values = []
         for row in rows:
@@ -364,16 +367,16 @@ def _default_fetcher(market: str) -> Callable[[str, str, str], pd.DataFrame]:
     if market == "KR":
         from cores.market_data import get_market_ohlcv_by_date
 
-        def fetch(ticker, start, end):
+        def fetch_kr(ticker, start, end):
             return get_market_ohlcv_by_date(start.replace("-", ""), end.replace("-", ""), ticker)
-        return fetch
+        return fetch_kr
 
     import yfinance as yf
 
-    def fetch(ticker, start, end):
+    def fetch_us(ticker, start, end):
         stop = (date.fromisoformat(end) + timedelta(days=1)).isoformat()
         return yf.Ticker(ticker).history(start=start, end=stop, auto_adjust=True)
-    return fetch
+    return fetch_us
 
 
 def update_candidate_outcomes(market: str, *, db_path=None, fetch_bars=None, today: str | None = None,
@@ -403,8 +406,8 @@ def update_candidate_outcomes(market: str, *, db_path=None, fetch_bars=None, tod
         with connection:
             ensure_schema(connection)
         tickers = [row["ticker"] for row in connection.execute(
-            f"SELECT ticker, MIN(COALESCE(last_attempt_at, '')) AS attempted, MIN(anchor_date) AS first "
-            f"FROM {TABLE} WHERE market=? AND COALESCE(outcome_status, 'PENDING') IN (?, ?) "
+            "SELECT ticker, MIN(COALESCE(last_attempt_at, '')) AS attempted, MIN(anchor_date) AS first "
+            "FROM candidate_ledger WHERE market=? AND COALESCE(outcome_status, 'PENDING') IN (?, ?) "
             "AND anchor_date < ? GROUP BY ticker ORDER BY attempted, first, ticker LIMIT ?",
             (market, *_OPEN_STATUSES, today, max_tickers))]
         fetch = fetch_bars or _default_fetcher(market)
@@ -413,7 +416,7 @@ def update_candidate_outcomes(market: str, *, db_path=None, fetch_bars=None, tod
             if position and sleep_sec > 0:
                 time.sleep(sleep_sec)
             rows = [dict(r) for r in connection.execute(
-                f"SELECT * FROM {TABLE} WHERE market=? AND ticker=? AND anchor_date < ? "
+                "SELECT * FROM candidate_ledger WHERE market=? AND ticker=? AND anchor_date < ? "
                 "AND COALESCE(outcome_status, 'PENDING') IN (?, ?)", (market, ticker, today, *_OPEN_STATUSES))]
             if not rows:
                 continue
@@ -450,10 +453,11 @@ def update_candidate_outcomes(market: str, *, db_path=None, fetch_bars=None, tod
                     stats["complete"] += int(update.get("outcome_status") == "COMPLETE")
                     stats["rows"] += 1
                     assignments = ", ".join(f"{column}=?" for column in update)
-                    connection.execute(f"UPDATE {TABLE} SET {assignments} WHERE id=?",
+                    # Column names come from the module constants; values are bound parameters.
+                    connection.execute(f"UPDATE candidate_ledger SET {assignments} WHERE id=?",  # nosec B608  # nosemgrep
                                        [*update.values(), row["id"]])
         stats["open_tickers_left"] = connection.execute(
-            f"SELECT COUNT(DISTINCT ticker) FROM {TABLE} WHERE market=? AND outcome_status IN (?, ?)",
+            "SELECT COUNT(DISTINCT ticker) FROM candidate_ledger WHERE market=? AND outcome_status IN (?, ?)",
             (market, *_OPEN_STATUSES)).fetchone()[0]
         target.info("[CANDIDATE_LEDGER] outcome pass market=%s %s", market, stats)
     except Exception as exc:  # noqa: BLE001 - observation must not stop the tracker
