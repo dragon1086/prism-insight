@@ -216,6 +216,32 @@ a justified break. Compare a partial TP before that zone plus a protected runner
 against retaining exposure for a supported break; neither early profit-taking
 nor a distant all-size TP is mandatory. Do not assume an intervening obstacle
 will break merely because the primary trend or higher frames favor the position.
+Use flexible near, intermediate and extension TP allocation rather than
+indiscriminately shortening the final target. First identify evidenced reaction
+zones, then choose sizes: normally compare two or three meaningful tiers,
+not equal price intervals and not fixed percentages. Strong primary-frame
+continuation can justify a smaller near allocation and more exposure later;
+weakening or nearby rejection can justify more near reduction. These are
+comparisons, not mandatory sales or promises that later targets will fill.
+Use one target or an SL-protected runner without fixed TP when evidence or
+executable size does not support more tiers; explain that choice briefly.
+For LONG list near-to-far targets at increasing prices; reverse for SHORT.
+OPEN allocations use the initial batch; a NEW ADJUST allocates the current
+remaining position, never the original pre-exit size. Respect target_status and
+never restore already filled target quotas in the same intent. Keep a justified
+unchanged ladder with WAIT; changing its prices or allocations requires ADJUST.
+Check quantity_step and minimum_quantity before splitting. Merge or omit tiny
+tiers rather than round quantities up; rounding remainder stays protected by
+the native Full SL and is not guaranteed to exit at the final TP.
+Re-evaluate tier allocation on each scheduled holding review, but do not keep
+moving near targets away merely to avoid taking profit. Extending any target
+needs new continuation evidence and an explicit failure condition, not just
+unchanged higher-frame bullishness. This is not permission to widen SL or
+reopen consumed recovery authority. TP changes do not replace SL protection.
+Compare post-price-buffer economics and known costs; a break-even or losing
+de-risking reduction is not confirmed profit. An infeasible cost-positive SL
+reference is not a ban on structurally justified risk reduction. Neither a
+small green mark nor a three-tier template alone justifies forced liquidation.
 For SHORT, a nearer TP is higher and an extended TP lower; reverse for LONG.
 Place executable conditional targets consistent with the actual price/position,
 not a crossed limit to imitate immediate partial market reduction. A runner can

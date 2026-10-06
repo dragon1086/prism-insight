@@ -25,4 +25,4 @@ jobs:
         env:
           PRISM_DISABLE_SIGNAL_PUBLISH: '1'
         run: |
-          python -m pytest tests/test_us_flow_evidence.py tests/test_kr_flow_evidence.py tests/test_kis_source.py tests/test_kr_news_titles.py tests/test_kr_news_store.py tests/test_kr_theme_brief.py tests/test_kr_theme_map.py tests/test_kr_peer_context.py tests/test_news_competitive_evidence_contract.py -q
+          python -m pytest tests/test_us_flow_evidence.py tests/test_kr_flow_evidence.py tests/test_kis_source.py tests/test_kr_news_titles.py tests/test_kr_news_store.py tests/test_kr_theme_brief.py tests/test_kr_theme_map.py tests/test_kr_peer_context.py tests/test_kr_market_theme_flow.py tests/test_news_competitive_evidence_contract.py -q
