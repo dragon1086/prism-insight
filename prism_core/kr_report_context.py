@@ -31,6 +31,37 @@ def render_calendar_reference(context, language='ko'):
             'Session status does not certify daily price-bar finality.')
 
 
+def render_observation_time(observed_at, reference_date, language='ko'):
+    """When prices were fetched, so writers state the time once instead of repeating caveats.
+
+    Only for a same-day report; a past reference date says nothing. It never certifies a
+    final close: KRX regular trading runs until 15:30 KST.
+    """
+    if not isinstance(observed_at, str) or len(str(reference_date)) != 8:
+        return ''
+    try:
+        from datetime import datetime
+        moment = datetime.fromisoformat(observed_at)
+    except ValueError:
+        return ''
+    if moment.strftime('%Y%m%d') != str(reference_date):
+        return ''
+    intraday = (moment.hour, moment.minute) < (15, 30)
+    if language == 'ko':
+        stamp = f"{moment.month}월 {moment.day}일 {moment.hour}시 {moment.minute:02d}분"
+        state = ('정규장 진행 중의 장중 값입니다' if intraday else
+                 '정규장 종료(15:30) 뒤 조회한 값이지만 최종 확정 여부는 따로 확인되지 않았습니다')
+        return (f"가격 조회 시각: {stamp}(한국시간). 당일 가격·거래량은 {state}. "
+                f"본문에서는 '{stamp} 장중 기준'처럼 기준 시각을 한 번 밝히고, 같은 단서(마감 확정 미확인 등)를 "
+                "문단마다 반복하지 마세요. 장중 값을 종가·마감으로 부르지 않는 규칙은 그대로입니다.")
+    stamp = moment.strftime('%b %d %H:%M KST')
+    state = ('an intraday value while the regular session is open' if intraday else
+             'fetched after the 15:30 regular close, but finality is not separately verified')
+    return (f"Price fetch time: {stamp}. Same-day price and volume are {state}. State this time once "
+            f"(e.g. 'as of {stamp}, intraday') instead of repeating finality caveats in every paragraph. "
+            "Never call an intraday value a close.")
+
+
 def reference_context(prefetched, language='ko', *, market_only=False):
     from prism_core.report_presentation import report_narrative_contract
     from prism_core.report_evidence_contract import financial_evidence_contract
@@ -62,6 +93,9 @@ def reference_context(prefetched, language='ko', *, market_only=False):
     lens = sector_lens(dart.get('sector_profile'), language) if isinstance(dart, dict) and not market_only else ''
     return (report_narrative_contract(language) + financial_evidence_contract(language)
             + '\n' + rules + lens + '\n' + render_calendar_reference(prefetched.get('report_calendar_context'), language)
+            + '\n' + render_observation_time(prefetched.get('price_observed_at'),
+                                              (prefetched.get('report_calendar_context') or {}).get('reference_date', '').replace('-', ''),
+                                              language)
             + '\n' + reference + '\n' + receipt)
 
 

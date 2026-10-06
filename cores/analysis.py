@@ -1,6 +1,7 @@
 import os
 import asyncio
 import re
+from zoneinfo import ZoneInfo
 from collections.abc import Mapping
 from datetime import datetime
 from dotenv import load_dotenv
@@ -119,6 +120,8 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
 
         # 4. Prefetch data to reduce MCP tool call overhead
         from cores.data_prefetch import prefetch_kr_analysis_data
+        # When prices were fetched: writers state it once instead of repeating finality caveats.
+        price_observed_at = datetime.now(ZoneInfo("Asia/Seoul")).replace(tzinfo=None).isoformat(timespec="minutes")
         try:
             from datetime import timedelta
             ref_date_obj = datetime.strptime(reference_date, "%Y%m%d")
@@ -129,6 +132,8 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         except Exception as e:
             logger.warning(f"Data prefetch failed, falling back to MCP: {e}")
             prefetched = {}
+
+        prefetched['price_observed_at'] = price_observed_at
 
         # Writers and synthesis share the same local calendar fact.
         from cores.report_calendar import calendar_context
