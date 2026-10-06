@@ -69,7 +69,8 @@ def _run_once(conn, broker, *, execute=False, protect_only=False,
     if not execute:
         return {"status":"execution_disabled","reason":"explicit_activation_required"}
     runtime=ScenarioRuntime(conn,broker,
-        lambda snap,ctx:proposal(snap,ctx,response_contract(ctx)),snapshot)
+        lambda snap,ctx:proposal(snap,ctx,response_contract(ctx)),snapshot,
+        recovery_enabled=True)
     return runtime.tick()
 
 

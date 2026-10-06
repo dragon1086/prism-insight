@@ -70,7 +70,7 @@ def quantity_for_risk(*, available_risk, allocation_fraction, entry_price,
 
 def risk_snapshot(*, initial_equity, side, hard_stop, positions, pending_entries,
                   entries, realized_loss, fees_paid, funding_paid,
-                  estimated_cost_rate, slippage_bps):
+                  estimated_cost_rate, slippage_bps, risk_fraction=RISK_FRACTION):
     """No netting profitable lots or realized profits against losing lots.
 
 realized_loss must be cumulative gross losing reductions (not net PnL).
@@ -78,6 +78,9 @@ fees_paid/funding_paid are cumulative debits; credits do not replenish budget.
 estimated_cost_rate conservatively reserves remaining entry+exit fees/funding.
 """
     equity = _number(initial_equity, "initial_equity", positive=True)
+    fraction = _number(risk_fraction, "risk_fraction", positive=True)
+    if fraction > RISK_FRACTION:
+        raise ScenarioValidationError("risk fraction exceeds maximum")
     stop = _number(hard_stop, "hard_stop", positive=True)
     if side not in ("LONG", "SHORT"):
         raise ScenarioValidationError("invalid side")
@@ -108,7 +111,7 @@ estimated_cost_rate conservatively reserves remaining entry+exit fees/funding.
     total = consumed + remaining
     if not all(math.isfinite(x) for x in (total, notional, proposed)):
         raise ScenarioValidationError("risk overflow")
-    budget = equity * RISK_FRACTION
+    budget = equity * fraction
     return {"budget": budget, "consumed": consumed, "remaining_risk": remaining,
             "proposed_risk": proposed, "total_risk": total,
             "available": max(0.0, budget - total), "notional": notional,
@@ -290,6 +293,7 @@ the caller must first reconcile cancellations before dropping pending risk.
         if any("trigger_price" in row for row in entries) and (chase["max_bps"] or chase["max_reprices"]):
             raise ScenarioValidationError("conditional entry chase forbidden")
         risk = risk_snapshot(initial_equity=context["initial_equity"], side=side,
+                             risk_fraction=context.get("scenario_risk_fraction", RISK_FRACTION),
                              hard_stop=stop, positions=positions, pending_entries=pending,
                              entries=entries, **{k: context[k] for k in (
                                  "realized_loss", "fees_paid", "funding_paid",

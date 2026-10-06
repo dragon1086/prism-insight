@@ -65,8 +65,10 @@ def test_input_not_mutated_and_fee_rebate_is_signed():
 
 
 def test_real_broker_context_passes_confirmed_finance_without_extra_collection():
+    import sqlite3
     from live.scenario_broker import ScenarioDemoBroker
     broker=object.__new__(ScenarioDemoBroker)
+    broker.conn=sqlite3.connect(':memory:')
     calls=[]
     def capture():
         calls.append('capture')

@@ -421,6 +421,8 @@ class ScenarioDemoBroker(ScenarioExecution):
     def context(self):
         observed=self.capture_account()
         active=self._active()
+        from live.scenario_recovery import risk_fraction
+        fraction = risk_fraction(self._recovery_state(), active["scenario_id"] if active else None)
         children=self.children(active["scenario_id"]) if active else []
         pending=[self._pending_entry(c)
             for c in children if c["kind"]=="entry" and c["status"]=="LIVE" and c["evidence"]]
@@ -444,7 +446,7 @@ class ScenarioDemoBroker(ScenarioExecution):
             observed_at=observed["captured_at"], now=self.clock(), pending_entries=pending,
             initial_equity=active["initial_equity"] if active else observed["equity"],
             estimated_cost_rate=.002, slippage_bps=20, price_tick=instrument["tick"])
-        return dict(conditional_entry_version=1, account_version=observed["account_version"],legacy_fenced=observed["legacy_fenced"],
+        return dict(scenario_risk_fraction=fraction, conditional_entry_version=1, account_version=observed["account_version"],legacy_fenced=observed["legacy_fenced"],
             account_captured_at=observed["captured_at"], runner_economics=review_finance,
             target_status=[dict(target_id=c["local_id"],kind=c["kind"],status=c["status"],
                 intent_id=c["intent_id"],
@@ -499,7 +501,40 @@ class ScenarioDemoBroker(ScenarioExecution):
         try:
             daily=self._daily(observed)
             state=json.loads(self.conn.execute("SELECT body FROM llm_scenario_state WHERE id=1").fetchone()[0])
-            halted=not self._new_risk_enabled() or state.get("breaker",{}).get("blocked",False) or not daily.get("new_risk_allowed",False)
+            from live.scenario_recovery import authorize_pending, risk_fraction
+            recovery_pending = authorize_pending(state, active, self.clock())
+            halted=not self._new_risk_enabled() or (state.get("breaker",{}).get("blocked",False) and not recovery_pending) or not daily.get("new_risk_allowed",False)
+            if risk_fraction(state, active["scenario_id"]) < .02:
+                # A probe can retain only its original reserved batch, never a
+                # subsequent entry intent or a reservation past its deadline.
+                permit = state.get("recovery", {})
+                if observed["legacy_fenced"] or unknown:
+                    recovery_pending = False
+                probe_children = self.children(active["scenario_id"])
+                probe_accounting = dict(positions=[], realized_loss=0, fees_paid=0, funding_paid=0)
+                if float(observed["position"]["size"]) or any(c["evidence"] and c["evidence"]["executions"] for c in probe_children):
+                    probe_accounting = self._risk_accounting(observed, active, probe_children)
+                from core.llm_scenario import risk_snapshot
+                pending_risk = risk_snapshot(initial_equity=active["initial_equity"],
+                    risk_fraction=.005, side=active["side"], hard_stop=active["hard_stop"],
+                    positions=probe_accounting["positions"],
+                    pending_entries=[self._pending_entry(c) for c in probe_children
+                        if c["kind"] == "entry" and c["status"] == "LIVE" and c["evidence"]],
+                    entries=[], realized_loss=probe_accounting["realized_loss"],
+                    fees_paid=probe_accounting["fees_paid"], funding_paid=probe_accounting["funding_paid"],
+                    estimated_cost_rate=.002, slippage_bps=20)
+                if not pending_risk["within_budget"]:
+                    recovery_pending = False
+                originals = {r["id"]: r for r in permit.get("initial_entries", [])}
+                for child in probe_children:
+                    if child["kind"] != "entry" or child["status"] == "TERMINAL":
+                        continue
+                    original = originals.get(child["local_id"])
+                    if (not original or child["intent_id"] != permit.get("action_id") or
+                            decimal(child["request"]["price"]) != decimal(original["price"]) or
+                            decimal(child["request"]["qty"]) > decimal(original["quantity"])):
+                        recovery_pending = False
+                halted = halted or not recovery_pending
         except Exception:
             halted=True
         expired=self.clock()>=active.get("expires_at",0)
@@ -647,7 +682,10 @@ class ScenarioDemoBroker(ScenarioExecution):
         """Immutable first-observation events; poll time never changes event IDs."""
         from live.scenario_notice import render_notice, closed_account_snapshot
         from live.scenario_notice_evidence import position_snapshot, economic_fingerprint, number
-        snapshot=position_snapshot(active,children,observed,protected,pending,accounting)
+        from live.scenario_recovery import risk_fraction
+        fraction = risk_fraction(self._recovery_state(), active["scenario_id"])
+        snapshot=position_snapshot(active,children,observed,protected,pending,accounting,
+                                   scenario_risk_fraction=fraction)
         if snapshot and snapshot["quantity"] == 0 and closed_account_snapshot(snapshot, observed["captured_at"]) is None:
             snapshot=None  # Invalid optional flat account data must not block settlement notices.
         previous=self.conn.execute("SELECT revision,body FROM llm_scenario_notice_positions WHERE scenario_id=?",(active["scenario_id"],)).fetchone()
@@ -688,7 +726,7 @@ class ScenarioDemoBroker(ScenarioExecution):
                 hard_stop=number(observed["position"].get("stopLoss"),positive=True) if fresh_position else None,
                 protection_confirmed=protected and fresh_position,
                 exchange_leverage=number(observed["position"].get("leverage"),positive=True) if fresh_position else None,
-                scenario_budget=active["initial_equity"]*.02,settlement_confirmed=False)
+                scenario_budget=active["initial_equity"]*fraction,settlement_confirmed=False)
             if (child["kind"]!="entry" and accounting and accounting.get("status")=="confirmed"
                     and accounting.get("accounting_complete") is True):
                 # Exact validated transaction cash flow, not average-entry math

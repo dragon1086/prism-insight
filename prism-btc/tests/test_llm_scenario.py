@@ -42,6 +42,36 @@ def test_valid_open_is_pure():
     assert (p, c) == before
 
 
+def test_host_probe_budget_uses_actual_equity_and_keeps_default():
+    p, c = sample()
+    c["scenario_risk_fraction"] = .005
+    with pytest.raises(ScenarioValidationError, match="risk budget exceeded"):
+        validate_scenario(p, c)
+    p["entries"][0]["quantity"] = .01
+    out = validate_scenario(p, c)
+    assert out["risk"]["budget"] == 50
+    assert c["initial_equity"] == 10000
+    p["scenario_risk_fraction"] = .02
+    with pytest.raises(ScenarioValidationError, match="unknown scenario fields"):
+        validate_scenario(p, c)
+
+
+@pytest.mark.parametrize("fraction", [0, -.005, .021, True, float("nan"), "0.005"])
+def test_invalid_host_risk_fraction(fraction):
+    p, c = sample()
+    c["scenario_risk_fraction"] = fraction
+    with pytest.raises(ScenarioValidationError):
+        validate_scenario(p, c)
+
+
+def test_probe_pure_protection_survives_overrun():
+    p, c = active()
+    c.update(scenario_risk_fraction=.005, new_risk_blocked=True, realized_loss=60)
+    out = validate_scenario(p, c)
+    assert out["risk"]["budget"] == 50
+    assert not out["risk"]["within_budget"]
+
+
 @pytest.mark.parametrize("field,value", [("confidence", True), ("confidence", float("nan")),
     ("confidence", 2), ("revision", True), ("schema_version", True),
     ("hard_stop", float("inf")), ("hard_stop", 100001), ("expires_at", 999),

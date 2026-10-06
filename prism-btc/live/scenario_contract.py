@@ -69,6 +69,16 @@ def response_schema(context):
                 "id": {"type": "string"},
                 "disposition": {"type": "string", "enum": ["hold", "replace"]},
                 "reason": {"type": "string"}})}}), {"type": "null"}]}
+    if context.get("recovery_contract_version") == 1:
+        properties["recovery"] = {"anyOf": [_object({
+            "decision": {"type": "string", "enum": ["OBSERVE", "PROBE"]},
+            "reason": {"type": "string"},
+            "changed_evidence": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
+            "counterevidence": {"type": "string"},
+            "invalidation": {"type": "string"}}), {"type": "null"}]}
+        recovery = context.get("recovery") or {}
+        if recovery.get("phase") == "OBSERVING" and recovery.get("first_observation") is True:
+            properties["action"]["enum"] = ["WAIT"]
     return _object(properties)
 
 
@@ -118,6 +128,12 @@ def validate_wire_proposal(payload, context):
         payload = {key: value for key, value in payload.items() if key != "review"}
         schema = dict(schema, properties={key: value for key, value in schema["properties"].items() if key != "review"},
                       required=[key for key in schema["required"] if key != "review"])
+    has_recovery = context.get("recovery_contract_version") == 1
+    recovery = payload.get("recovery") if has_recovery else None
+    if has_recovery:
+        payload = {key: value for key, value in payload.items() if key != "recovery"}
+        schema = dict(schema, properties={key: value for key, value in schema["properties"].items() if key != "recovery"},
+                      required=[key for key in schema["required"] if key != "recovery"])
     if set(payload) - set(schema["properties"]):
         raise ValueError("response_unknown_fields")
     if payload.get("scenario_id") is None:
@@ -144,4 +160,6 @@ def validate_wire_proposal(payload, context):
         raise ValueError("response_contract_missing_protection")
     if has_review:
         normalized["review"] = review
+    if has_recovery:
+        normalized["recovery"] = recovery
     return normalized
