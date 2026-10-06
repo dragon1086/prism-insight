@@ -235,6 +235,28 @@ async def search(
         raise HTTPException(status_code=500, detail="internal server error")
 
 
+@app.get("/news_headlines")
+def news_headlines(query: str, days: int = 14, limit: int = 25, _key: str = Depends(_verify_key)):
+    """KIS headline evidence for the bot's /theme and /signal (read-only, bounded)."""
+    from contextlib import closing
+
+    from prism_core import kr_news_context
+    from prism_core import kr_news_store
+
+    query = query.strip()
+    if not query or len(query) > kr_news_context.MAX_QUERY:
+        raise HTTPException(status_code=400, detail="query must be 1-40 characters")
+    if not (1 <= days <= kr_news_context.MAX_DAYS and 1 <= limit <= kr_news_context.MAX_LIMIT):
+        raise HTTPException(status_code=400, detail="days 1-30, limit 1-40")
+    try:
+        with closing(kr_news_store.connect(readonly=True)) as conn:
+            rows = kr_news_context.find(conn, query, days=days, limit=limit)
+    except Exception as e:
+        logger.warning(f"/news_headlines unavailable: {type(e).__name__}")
+        raise HTTPException(status_code=503, detail="headline store unavailable")
+    return {"rows": [{k: r[k] for k in ("published_at", "provider", "title", "tag_names")} for r in rows]}
+
+
 @app.post("/query", response_model=QueryResponse)
 async def query(req: QueryRequest, _key: str = Depends(_verify_key)):
     """Natural language query with LLM synthesis."""
