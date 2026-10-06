@@ -134,6 +134,15 @@ Avoid broad production-like runs unless the task requires them.
 - Agentmemory is a pointer/reminder, not the authoritative roadmap or status ledger.
 - Roadmap review is development-time only; do not add it to the live trading loop.
 
+### News/theme roadmap governance
+
+- Before work on KIS news headlines, the headline stores, theme maps, the signal-alert
+  theme brief, `/theme`·`/signal` evidence, or research that uses news/theme data (KR or US),
+  read `docs/THEME_NEWS_ROADMAP_ko.md`, identify the step ID (R*/U*) and its prerequisites,
+  and follow the listed order unless the user changes it.
+- Update its status table only with verified evidence (implementation, tests, deployment,
+  first scheduled run, and outcome proof are separate states).
+
 ### Entry-quality analysis
 
 - Route requests such as “매수품질 데이터 분석해줘”, entry-quality validation,
