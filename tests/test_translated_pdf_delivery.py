@@ -15,7 +15,7 @@ from stock_analysis_orchestrator import (
 
 
 def test_translated_pdf_limits_are_bounded_and_configurable() -> None:
-    assert _translated_pdf_limits({}) == (3, 360, 1800, 2)
+    assert _translated_pdf_limits({}) == (3, 600, 2400, 2)
     assert _translated_pdf_limits({
         "PRISM_TRANSLATED_PDF_MAX_CONCURRENCY": "2",
         "PRISM_TRANSLATED_PDF_ITEM_TIMEOUT_SECONDS": "90",
@@ -26,7 +26,7 @@ def test_translated_pdf_limits_are_bounded_and_configurable() -> None:
         "PRISM_TRANSLATED_PDF_MAX_CONCURRENCY": "invalid",
         "PRISM_TRANSLATED_PDF_ITEM_TIMEOUT_SECONDS": "0",
         "PRISM_TRANSLATED_PDF_MAX_ATTEMPTS": "0",
-    }) == (3, 1, 1800, 1)
+    }) == (3, 1, 2400, 1)
 
 
 def test_translator_strict_mode_does_not_return_source_on_failure(monkeypatch) -> None:
