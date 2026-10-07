@@ -372,3 +372,34 @@ def test_us_volume_surge_and_closing_strength_exclude_gap_down_bounce():
         selected = [t for t in lines[name].split(",") if t]
         assert "GAPDOWN" not in selected, name
         assert "BULL" in selected, name
+
+
+def test_kr_macro_sector_leader_excludes_gap_down_bounce_below_previous_close(caplog):
+    """갭 하락 뒤 양봉이어도 전일 종가 아래면 그날의 주도주가 아니다 (US MU 2026-10-07과 같은 구조)."""
+    macro_context = {
+        "leading_sectors": [{"sector": "반도체", "confidence": 0.9}],
+        "sector_map": {"UP": "반도체", "GAPDOWN": "반도체"},
+    }
+    snapshot = _frame(
+        {
+            "UP": {"Open": 99.0, "Close": 103.0, "Volume": 1_000_000, "Amount": KR_AMOUNT},
+            # 시가 94 → 종가 97: 양봉이지만 전일 종가 100 대비 -3%
+            "GAPDOWN": {"Open": 94.0, "Close": 97.0, "Volume": 1_000_000, "Amount": KR_AMOUNT},
+        }
+    )
+    prev = _frame(
+        {
+            "UP": {"Open": 100.0, "Close": 100.0, "Volume": 1_000_000, "Amount": KR_AMOUNT},
+            "GAPDOWN": {"Open": 100.0, "Close": 100.0, "Volume": 1_000_000, "Amount": KR_AMOUNT},
+        }
+    )
+    cap = pd.DataFrame({"시가총액": {"UP": KR_CAP_FLOOR * 2, "GAPDOWN": KR_CAP_FLOOR * 2}})
+
+    with caplog.at_level("INFO", logger="trigger_batch"):
+        result = trigger_batch.trigger_macro_sector_leader(
+            "20261007", snapshot, prev, cap, macro_context=macro_context
+        )
+
+    assert "GAPDOWN" not in result.index
+    assert "UP" in result.index
+    assert "trigger=macro_sector_leader" in caplog.text and "sample=GAPDOWN" in caplog.text
