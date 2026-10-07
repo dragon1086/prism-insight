@@ -1850,6 +1850,9 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         mcp_profile="kr_trading",
                         require_mcp_calls=True,
                     )
+                    from prism_core.tool_evidence_log import record as record_tool_evidence
+                    record_tool_evidence(market="KR", ticker=ticker, decision="sell",
+                                         result=codex_result, model=settings.model)
                     if parse_llm_json(
                         codex_result.text,
                         context=f"{ticker} KR Codex Fast sell decision",

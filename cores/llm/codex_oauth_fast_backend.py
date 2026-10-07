@@ -43,6 +43,27 @@ class CodexMcpCall:
     arguments: dict
     status: str | None
     error: object | None
+    # Text of the tool's reply (content blocks, else structured content), kept so
+    # decisions can be audited later; trimmed when written by tool_evidence_log.
+    result_text: str = ""
+
+
+def _result_text(result: object) -> str:
+    if isinstance(result, str):
+        return result
+    if not isinstance(result, dict):
+        return ""
+    parts = [block.get("text") for block in result.get("content") or []
+             if isinstance(block, dict) and isinstance(block.get("text"), str)]
+    if parts:
+        return "\n".join(parts)
+    structured = result.get("structured_content")
+    if structured is None:
+        return ""
+    try:
+        return json.dumps(structured, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return ""
 
 
 @dataclass(frozen=True)
@@ -377,6 +398,7 @@ def _parse_stream(
                     arguments=item.get("arguments") or {},
                     status=item.get("status"),
                     error=item.get("error"),
+                    result_text=_result_text(item.get("result")),
                 )
             )
     return final, usage, tuple(mcp_calls)
