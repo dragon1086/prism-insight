@@ -64,15 +64,15 @@ def sample_headlines(conn, names, limit=3):
     return [r["title"] for r in picked[:limit]]
 
 
-async def ask_model(prompt):
+async def ask_model(prompt, *, name="kr_theme_namer",
+                    instruction="You name Korean stock themes and answer in JSON only."):
     from mcp_agent.agents.agent import Agent
     from mcp_agent.workflows.llm.augmented_llm import RequestParams
 
     from cores.llm.openai_responses_llm import OpenAIResponsesLLM
     from report_model_config import REPORT_AUX_EFFORT, REPORT_AUX_MODEL
 
-    agent = Agent(name="kr_theme_namer", server_names=[],
-                  instruction="You name Korean stock themes and answer in JSON only.")
+    agent = Agent(name=name, server_names=[], instruction=instruction)
     llm = await agent.attach_llm(OpenAIResponsesLLM)
     return await llm.generate_str(message=prompt, request_params=RequestParams(
         model=REPORT_AUX_MODEL, reasoning_effort=REPORT_AUX_EFFORT, maxTokens=32000, max_iterations=1))

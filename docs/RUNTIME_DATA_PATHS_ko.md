@@ -62,6 +62,13 @@ seed를 직접 수정하지 않으며, 첫 저장부터 지정한 runtime 파일
 - 수집: `tools/collect_kr_news_titles.py --market us live|backfill|prune` (KR과 같은 수집기, 읽기 전용 KIS 호출)
 - 조회: `prism_core.kr_news_store.search(store.connect(store.db_path("US")), ...)`.
 
+## US 세부 테마 지도 (참고 자료)
+
+- 경로: `runtime/us_theme_map_v1.json`(KR `runtime/kr_theme_map_v1.json`과 같은 `{meta, themes}` 모양), 검토표 `runtime/us_theme_map_v1_review.md` (Git ignored).
+- 만들기: `tools/build_us_theme_map.py` (시총 상위 500 → 1년 일간 종가의 SPY 제거 잔차 상관 → 평균 연결 군집 → AI 이름·배정 → US 뉴스 제목 근거). 중간 파일과 이어하기 파일은 `--workdir`에 둡니다.
+- 테마 필드: `lines` = 묶음이 시장과 따로 함께 움직인 날 수, `active_days` = 그날들과 평균 등락률, `mean_corr` = 평균 잔차 상관, 종목 `corr`·`share`·`role`(core = 가격 묶음, ai, news), `evidence` = 관련 제목 수와 표본.
+- 설명 자료로만 씁니다. 스크리닝·점수·매매 판단에 넣지 않습니다.
+
 ## 운영 점검 명령
 
 ```bash
