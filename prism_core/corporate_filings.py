@@ -137,8 +137,8 @@ def us_event_filings(ticker: str, today: date, *, fetch=_fetch_sec) -> list[Even
                 role_lookups += 1
                 try:
                     _role_cache[accession] = _subject_cik(cik, accession, fetch)
-                except Exception:  # noqa: BLE001 — unknown role stays an event to check
-                    pass
+                except Exception as exc:  # noqa: BLE001 — unknown role stays an event to check
+                    logger.info("[CORP_FILINGS] role lookup failed accession=%s: %s", accession, type(exc).__name__)
             subject = _role_cache.get(accession)
             if subject is not None and subject != cik:
                 found.append(EventFiling(filed, "not_event", raw_form,
