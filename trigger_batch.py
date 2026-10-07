@@ -1090,6 +1090,11 @@ def trigger_macro_sector_leader(trade_date: str, snapshot: pd.DataFrame,
     # A "sector leader" that closes below its own open is not showing leadership today;
     # relative strength alone can stay positive in a falling market.
     snap_filtered = snap_filtered[snap_filtered["Close"] > snap_filtered["Open"]]
+    # A gap-down leader can close above its open while still below the previous close
+    # (MU on 2026-10-07, picked here after the volume-surge trigger had rejected it).
+    # Leadership means rising today, the same rule as the volume-surge/closing-strength triggers.
+    _drop_below_previous_close(snap_filtered, trade_date, "macro_sector_leader", "DailyChange")
+    snap_filtered = snap_filtered[snap_filtered["DailyChange"] >= 0.0]
     if snap_filtered.empty:
         logger.debug("trigger_macro_sector_leader: No leaders with a bullish candle")
         return pd.DataFrame()

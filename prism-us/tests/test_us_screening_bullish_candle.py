@@ -104,6 +104,21 @@ def _run_checks():
     finally:
         u.get_us_sector_map = _orig_map
 
+    print("\n[Test 2b] macro_sector_leader — 갭 하락 뒤 양봉이어도 전일 종가 아래면 배제 (MU 2026-10-07)")
+    gap_snap, gap_prev = snap.copy(), prev.copy()
+    # BEAR 행을 갭 하락 반등으로 바꾼다: 시가 760 → 종가 770(양봉), 전일 종가 780 대비 -1.3%
+    gap_snap.loc["BEAR", ["Open", "Low", "Close"]] = [760.0, 755.0, 770.0]
+    try:
+        u.get_us_sector_map = lambda tickers: {t: "Technology" for t in tickers}
+        res3 = u.trigger_macro_sector_leader("20261007", gap_snap, gap_prev, cap, macro_context=macro)
+        names3 = list(res3.index) if res3 is not None and not res3.empty else []
+        check(f"BULL 유지됨 (결과: {names3})", "BULL" in names3)
+        check(f"갭 하락 반등(전일 종가 아래) 제외됨 (결과: {names3})", "BEAR" not in names3)
+    except Exception as e:
+        check(f"실행 예외 없음 ({type(e).__name__}: {e})", False)
+    finally:
+        u.get_us_sector_map = _orig_map
+
     print("\n[Test 3] 의도적 제외 트리거는 건드리지 않았다")
     import inspect
     check("contrarian_value 에 양봉 필터 없음(역발상 트리거)",
