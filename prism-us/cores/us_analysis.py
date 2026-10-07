@@ -420,6 +420,10 @@ async def analyze_us_stock(
             prefetched.get('analysis_estimates_status'), language)
         section_reports['company_status'] += '\n\n' + render_public_source_receipt(
             prefetched.get('official_company'), 'company', language)
+        from prism_core.us_quarterly_facts import render_us_quarterly_facts
+        quarterly_table = render_us_quarterly_facts(prefetched.get('quarterly_results') or [], language)
+        if quarterly_table:
+            section_reports['company_status'] += '\n\n' + quarterly_table
         if prefetched['report_technical_reference']:
             section_reports['price_volume_analysis'] = section_reports.get('price_volume_analysis', '') + '\n\n' + prefetched['report_technical_reference']
         section_reports['shared_reference'] = shared_reference
