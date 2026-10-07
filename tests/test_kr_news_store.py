@@ -111,3 +111,47 @@ def test_backfill_resumes_past_a_headline_stamped_at_midnight(tmp_path):
     calls, new, _ = collector.backfill(feed, conn, "20260929", max_calls=10)
     assert store.known(conn, ["c"]) == {"c"} and new == 1
     assert feed.calls[0] == ("20260929", "235959")
+
+
+class FakeUsFeed(FakeFeed):
+    """The overseas feed is a different method; the KR one must not be called for --market us."""
+
+    def us_news_title_page(self, ticker, day, clock="", exchange=""):
+        return FakeFeed.news_title_page(self, ticker, day, clock)
+
+    def news_title_page(self, ticker, day, clock=""):
+        raise AssertionError("KR feed called for the US store")
+
+
+def test_us_store_uses_its_own_file_and_feed(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRISM_US_NEWS_DB", str(tmp_path / "us.sqlite"))
+    assert store.db_path("US") == tmp_path / "us.sqlite" and store.db_path("KR") != store.db_path("US")
+    conn = store.connect(store.db_path("US"))
+    feed = FakeUsFeed([{"serial": f"ICH{i}", "day": "20261007", "time": f"1{i}0000", "title": f"엔비디아 {i}",
+                        "provider": "연합미국", "provider_code": "US", "category": "특징주",
+                        "tags": [("NVDA", "엔비디아")]} for i in range(3)], size=2)
+    calls, new, _ = collector.backfill(feed, conn, "20261007", 10, fetch_page=feed.us_news_title_page)
+    assert new == 3 and store.search(conn, ticker="NVDA")[0]["tag_names"] == "엔비디아"
+
+
+def test_kis_us_page_maps_the_overseas_fields():
+    from cores.market_data.kis_source import KisSource
+
+    class Body:
+        outblock1 = [
+            {"news_key": "ICH805227", "data_dt": "20261008", "data_tm": "071538", "class_name": "종목리포트",
+             "nation_cd": "US", "exchange_cd": "NAS", "symb": "MRVL", "symb_name": "마벨 테크놀로지 그룹",
+             "title": "마벨, 가이던스 이상의 성장세도 기대할 수 있어 씨티", "source": "연합미국"},
+            {"news_key": "AKR1", "data_dt": "20261008", "data_tm": "074446", "class_name": "시황", "nation_cd": "US",
+             "symb": "", "symb_name": "", "title": "[뉴욕 마켓 브리핑](8일)", "source": "연합미국"},
+            {"news_key": "", "data_dt": "20261008", "data_tm": "070000", "title": "no key"},
+        ]
+
+    source = KisSource.__new__(KisSource)
+    seen = {}
+    source._fetch = lambda url, tr, params: seen.update(tr=tr, params=params) or Body()
+    page = source.us_news_title_page("NVDA", "20261008", "235959", exchange="NAS")
+    assert seen["tr"] == "HHPSTH60100C1" and seen["params"]["SYMB"] == "NVDA" and seen["params"]["EXCHANGE_CD"] == "NAS"
+    assert [r["serial"] for r in page] == ["ICH805227", "AKR1"]
+    assert page[0]["tags"] == [("MRVL", "마벨 테크놀로지 그룹")] and page[1]["tags"] == []
+    assert page[0]["provider"] == "연합미국" and page[0]["provider_code"] == "US" and page[0]["category"] == "종목리포트"
