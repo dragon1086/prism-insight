@@ -11,7 +11,7 @@ from us_stock_analysis_orchestrator import (
 
 
 def test_us_translated_pdf_limits_match_kr_contract() -> None:
-    assert _translated_pdf_limits({}) == (3, 360, 1800, 2)
+    assert _translated_pdf_limits({}) == (3, 600, 2400, 2)
     assert _translated_pdf_limits({
         "PRISM_TRANSLATED_PDF_MAX_CONCURRENCY": "2",
         "PRISM_TRANSLATED_PDF_ITEM_TIMEOUT_SECONDS": "90",
