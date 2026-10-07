@@ -53,6 +53,15 @@ seed를 직접 수정하지 않으며, 첫 저장부터 지정한 runtime 파일
 - 규모(2026-10-02 실측): 거래일 하루 약 8천 건, 약 2.3MB. 1년 약 0.6~0.8GB.
 - 조회: `prism_core.kr_news_store.search()` (키워드·태그 종목·기간).
 
+## KIS 뉴스 제목 저장소 (US)
+
+- 기본 경로: `runtime/us_news_titles.sqlite` (Git ignored). 경로 override: `PRISM_US_NEWS_DB`. 스키마는 KR과 같습니다.
+- 내용: KIS 해외뉴스종합(제목) 피드(`HHPSTH60100C1`). 연합미국·글로벌ETF·한국투자증권·연합차이나 등 한국어 제목,
+  기사당 태그 종목 1개(심볼·한글 종목명), `provider_code` = 국가 코드(US, CN 등), `category` = 분류(종목리포트·특징주·시황·ETF 등).
+- 과거 조회는 약 2025-10부터 가능합니다. 한 번에 약 10건, 하루 약 90~160건(10~18회 호출).
+- 수집: `tools/collect_kr_news_titles.py --market us live|backfill|prune` (KR과 같은 수집기, 읽기 전용 KIS 호출)
+- 조회: `prism_core.kr_news_store.search(store.connect(store.db_path("US")), ...)`.
+
 ## 운영 점검 명령
 
 ```bash
