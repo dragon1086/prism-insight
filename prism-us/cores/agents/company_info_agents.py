@@ -20,7 +20,8 @@ def create_us_company_status_agent(
     reference_date: str,
     urls: Dict[str, str],
     language: str = "ko",
-    prefetched_data: dict = None
+    prefetched_data: dict = None,
+    quarterly_facts: str = ""
 ):
     """Create US company status analysis agent
 
@@ -350,6 +351,29 @@ Key Statistics, Financials 페이지 스크랩 금지. yahoo_finance MCP 도구 
                     '전체 성장·유기적 성장·인수 효과를 분리하고, 원문에 없는 구성은 추정하지 마세요.\n'
                     'Distinguish company guidance from analyst consensus. When disclosed, separate total, '
                     'organic and acquisition-driven growth; do not invent missing components.\n')
+
+    if quarterly_facts:
+        # The same table is appended to this section by code (us_analysis); keep the prose consistent with it.
+        if language == "ko":
+            instruction += f"""
+## 사전 수집된 데이터 (분기 실적 표)
+아래 표는 분기 손익계산서에서 코드로 계산한 확정 분기 실적이며, 이 섹션 끝에 그대로 자동 첨부됩니다.
+- 분기 매출·영업이익·순이익·EPS는 이 표의 수치를 기준으로 쓰고, 다른 자료와 다르면 이 표를 우선하세요.
+- 최근 2개 분기 영업이익과 흑자·적자 여부를 본문에서 빠뜨리거나 '확인 불가'로 쓰지 마세요. 표의 N/A만 UNKNOWN입니다.
+
+{quarterly_facts}
+"""
+        else:
+            instruction += f"""
+## Pre-collected Data (Quarterly Results Table)
+The table below is computed by code from the quarterly income statement and is appended to the end of this
+section automatically.
+- Use its quarterly revenue, operating income, net income and EPS; prefer it when other data disagrees.
+- Do not omit, or call unverifiable, the latest two quarters' operating income and profit/loss. Only N/A cells
+  are UNKNOWN.
+
+{quarterly_facts}
+"""
 
     # Server selection based on prefetch status
     if has_prefetch and has_analysis:

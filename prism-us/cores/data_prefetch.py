@@ -609,7 +609,8 @@ def prefetch_company_profile(ticker: str) -> str:
         return ""
 
 
-def prefetch_financial_statements(ticker: str, metadata: dict | None = None) -> str:
+def prefetch_financial_statements(ticker: str, metadata: dict | None = None,
+                                  quarterly_out: dict | None = None) -> str:
     """Prefetch financial statements (income statement, balance sheet, cash flow) via yfinance.
 
     Replaces SEC EDGAR get_financials/get_key_metrics calls.
@@ -657,6 +658,14 @@ def prefetch_financial_statements(ticker: str, metadata: dict | None = None) -> 
         # Quarterly income statement (latest 4 quarters)
         try:
             q_income = stock.quarterly_income_stmt
+            if quarterly_out is not None:
+                # Deterministic quarterly table for report 2-1 (BUY F1 needs the latest two quarters'
+                # operating income; the writer omitted it from the raw statements).
+                try:
+                    from prism_core.us_quarterly_facts import quarterly_rows
+                    quarterly_out['quarterly_results'] = quarterly_rows(q_income)
+                except Exception:
+                    logger.warning('Optional quarterly results table unavailable')
             if metadata is not None:
                 try:
                     from prism_core.oneil_batch_setup import financial_source
@@ -1008,8 +1017,8 @@ def prefetch_us_analysis_data(ticker: str) -> dict:
 
     # 8. Financial statements (for company_status - replaces SEC EDGAR financials)
     from prism_core.oneil_batch_setup import enabled
-    financial_statements = (prefetch_financial_statements(ticker, metadata=result)
-                            if enabled() else prefetch_financial_statements(ticker))
+    financial_statements = (prefetch_financial_statements(ticker, metadata=result, quarterly_out=result)
+                            if enabled() else prefetch_financial_statements(ticker, quarterly_out=result))
     if financial_statements:
         result["financial_statements"] = financial_statements
     if enabled():
