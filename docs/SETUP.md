@@ -215,6 +215,18 @@ npm install -g @perplexity-ai/mcp-server
 # The mcp_agent.config.yaml.example already uses npx
 ```
 
+**No Perplexity subscription? Use Tavily instead.** Uncomment the
+`# Web Search` lines in `.env.example` (copied to `.env`):
+
+```bash
+PRISM_WEB_SEARCH_PROVIDER=tavily
+TAVILY_API_KEY=tvly-...
+```
+
+The in-repo `cores/llm/tavily_mcp_server.py` then runs in place of the
+Perplexity server under the same `perplexity_ask` tool, so no prompt changes
+are needed.
+
 ### Step 8: Install Korean Fonts (Linux Only)
 
 Required for Korean text in charts. See [Platform-Specific Setup](#platform-specific-setup).
