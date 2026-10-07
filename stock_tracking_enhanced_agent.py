@@ -677,10 +677,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     if not sector_diverse:
                         from prism_core.sector_cap import sector_cap_note
                         from prism_core.sector_names import sectors_overlap
-                        cap_note = sector_cap_note(
-                            self.cursor, "stock_holdings", sector, max_same=self.MAX_SAME_SECTOR,
-                            ratio=self.SECTOR_CONCENTRATION_RATIO, account_key=self._account_scope()[0],
-                            same_sector=sectors_overlap)
+                        cap_note = sector_cap_note(self, "stock_holdings", sector, same_sector=sectors_overlap)
                         reason_parts.append(f"섹터 집중 ({cap_note or sector})")
                     if decision == "Enter" and not _buy_gate.get("allowed", False):
                         reason_parts.append(

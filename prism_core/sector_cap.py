@@ -17,13 +17,18 @@ logger = logging.getLogger(__name__)
 MIN_HOLDINGS_FOR_RATIO_CHECK = 4
 
 
-def sector_cap_note(cursor, table: str, sector: str, *, max_same: int, ratio: float,
-                    account_key: str | None = None, same_sector=None) -> str:
-    """'Technology 2/4종목(50%) 보유, 한 업종 30% 한도' — '' when unknown or not capped."""
+def sector_cap_note(agent, table: str, sector: str, *, same_sector=None) -> str:
+    """'Technology 2/4종목(50%) 보유, 한 업종 30% 한도' — '' when unknown or not capped.
+
+    Reads the agent's cursor, account scope and cap constants; any failure gives ''.
+    """
     if table not in ("stock_holdings", "us_stock_holdings") or not sector:
         return ""
     same_sector = same_sector or (lambda held, new: held.lower() == new.lower())
     try:
+        cursor = agent.cursor
+        max_same, ratio = agent.MAX_SAME_SECTOR, agent.SECTOR_CONCENTRATION_RATIO
+        account_key = agent._account_scope()[0]
         if account_key:
             cursor.execute(f"SELECT scenario FROM {table} WHERE account_key = ?", (account_key,))  # nosec B608  # nosemgrep
         else:

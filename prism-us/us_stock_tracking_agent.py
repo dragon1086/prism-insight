@@ -4593,9 +4593,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             )
                         if not sector_diverse:
                             from prism_core.sector_cap import sector_cap_note
-                            cap_note = sector_cap_note(
-                                self.cursor, "us_stock_holdings", sector, max_same=self.MAX_SAME_SECTOR,
-                                ratio=self.SECTOR_CONCENTRATION_RATIO, account_key=self._account_scope()[0])
+                            cap_note = sector_cap_note(self, "us_stock_holdings", sector)
                             reason_parts.append(f"Sector concentration ({cap_note or sector})")
                         if normalized_decision == "entry" and not _buy_gate.get("allowed", False):
                             reason_parts.append(
