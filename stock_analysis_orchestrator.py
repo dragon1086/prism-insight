@@ -89,8 +89,10 @@ def _translated_pdf_limits(environ=None) -> tuple[int, int, int, int]:
 
     return (
         positive_int("PRISM_TRANSLATED_PDF_MAX_CONCURRENCY", 3),
-        positive_int("PRISM_TRANSLATED_PDF_ITEM_TIMEOUT_SECONDS", 360),
-        positive_int("PRISM_TRANSLATED_PDF_BATCH_TIMEOUT_SECONDS", 1800),
+        # Japanese output is token-heavy: whole-report requests took up to ~300s and
+        # 23 of ~100 ja items hit 360s twice (KR/US 8/28-10/7), other languages none.
+        positive_int("PRISM_TRANSLATED_PDF_ITEM_TIMEOUT_SECONDS", 600),
+        positive_int("PRISM_TRANSLATED_PDF_BATCH_TIMEOUT_SECONDS", 2400),
         positive_int("PRISM_TRANSLATED_PDF_MAX_ATTEMPTS", 2),
     )
 

@@ -61,8 +61,9 @@ def _configured_user_agent(config_path=None):
 
 def _validate_url(url: str, company_domains=()):
     parsed = urlsplit(url)
-    paths = {'data.sec.gov': '/submissions/CIK', 'www.sec.gov': '/Archives/edgar/data/',
-             'cdn.yahoofinance.com': '/prod/sec-filings/'}
+    paths = {'data.sec.gov': ('/submissions/CIK',),
+             'www.sec.gov': ('/Archives/edgar/data/', '/files/company_tickers.json'),
+             'cdn.yahoofinance.com': ('/prod/sec-filings/',)}
     company_host = bool(parsed.hostname and any(parsed.hostname == domain or parsed.hostname.endswith('.' + domain)
                                                 for domain in company_domains))
     if (parsed.scheme != 'https' or (parsed.hostname not in paths and not company_host) or parsed.username

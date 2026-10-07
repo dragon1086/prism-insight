@@ -474,7 +474,12 @@ def render_notice(event: dict) -> str:
     if kind == "HALTED":
         if event.get("reason_code") not in {"THREE_LOSSES", "DAILY_LOSS"}:
             lines.append("3개 시나리오 연속 순손실 또는 하루 손실 한도 도달")
-        lines.append("기존 포지션 보호는 유지합니다. 검토·명시적 승인 전 자동 재개하지 않습니다.")
+        if event.get("automatic_normalization") is True and event.get("reason_code") == "THREE_LOSSES":
+            lines[0]="⏸ BTC 데모 신규 진입 대기 · 자동 재평가"
+            lines.append("5분마다 롱·숏을 재평가합니다. 근거·안전 조건을 통과하면 0.5% 한도로 재개합니다.")
+            lines.append("확정 성과에 따라 1%·2%로 단계 복귀 · 기존 보유 보호 유지")
+        else:
+            lines.append("기존 포지션 보호는 유지합니다. 검토·명시적 승인 전 자동 재개하지 않습니다.")
     if kind == "PENDING":
         lines.append("체결·취소·보호·정산의 불명확 상태를 확인 중입니다. 재주문하지 않습니다.")
     if kind == "MODEL_ERROR":

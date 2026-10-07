@@ -190,7 +190,8 @@ def test_real_aggregate_prefetch_opt_in_only(monkeypatch, active):
     output = mod.prefetch_us_analysis_data("TEST")
     assert output["financial_statements"] == "same-finance"
     assert ("_oneil_batch_source" in output) is active
-    assert bool(calls[0]) is active
+    # metadata (the oneil sidecar) is passed only when opted in; quarterly_out is always passed.
+    assert ("metadata" in calls[0]) is active
 
 
 def test_sidecar_pdf_binding_and_same_source_replay(tmp_path):

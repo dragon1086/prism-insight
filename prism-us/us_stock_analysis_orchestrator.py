@@ -214,8 +214,10 @@ def _translated_pdf_limits(environ=None) -> tuple[int, int, int, int]:
 
     return (
         positive_int("PRISM_TRANSLATED_PDF_MAX_CONCURRENCY", 3),
-        positive_int("PRISM_TRANSLATED_PDF_ITEM_TIMEOUT_SECONDS", 360),
-        positive_int("PRISM_TRANSLATED_PDF_BATCH_TIMEOUT_SECONDS", 1800),
+        # Japanese output is token-heavy: whole-report requests took up to ~300s and
+        # 23 of ~100 ja items hit 360s twice (KR/US 8/28-10/7), other languages none.
+        positive_int("PRISM_TRANSLATED_PDF_ITEM_TIMEOUT_SECONDS", 600),
+        positive_int("PRISM_TRANSLATED_PDF_BATCH_TIMEOUT_SECONDS", 2400),
         positive_int("PRISM_TRANSLATED_PDF_MAX_ATTEMPTS", 2),
     )
 
@@ -1106,8 +1108,12 @@ class USStockAnalysisOrchestrator:
             # Include metadata for hybrid selection info in alert message
             all_results["metadata"] = metadata
 
+            # Today's strong industries (industry ETFs; "" when unavailable, the alert still goes out)
+            from prism_core.us_sector_brief import sector_brief
+            brief = await asyncio.to_thread(sector_brief, trade_date, language)
+
             # Generate message based on language (no translation needed - direct templates)
-            message = self._create_trigger_alert_message(mode, all_results, trade_date, language)
+            message = self._create_trigger_alert_message(mode, all_results, trade_date, language, sector_brief=brief)
             if language == "ko":
                 self._campaign_messages[mode] = message
 
@@ -1190,7 +1196,8 @@ class USStockAnalysisOrchestrator:
         except Exception as e:
             logger.error(f"Error in _send_translated_trigger_alert: {str(e)}")
 
-    def _create_trigger_alert_message(self, mode: str, results: dict, trade_date: str, language: str = "ko") -> str:
+    def _create_trigger_alert_message(self, mode: str, results: dict, trade_date: str, language: str = "ko",
+                                      sector_brief: str = "") -> str:
         """
         Generate telegram alert message based on US trigger results
 
@@ -1279,6 +1286,7 @@ class USStockAnalysisOrchestrator:
                 message += f" | Selection: Top-Down {topdown_count} + Bottom-Up {bottomup_count}\n"
 
         message += "\n"
+        message += sector_brief
 
         for trigger_type, stocks in results.items():
             if trigger_type == "metadata":

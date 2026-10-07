@@ -1090,6 +1090,11 @@ def trigger_macro_sector_leader(trade_date: str, snapshot: pd.DataFrame,
     # A "sector leader" that closes below its own open is not showing leadership today;
     # relative strength alone can stay positive in a falling market.
     snap_filtered = snap_filtered[snap_filtered["Close"] > snap_filtered["Open"]]
+    # A gap-down leader can close above its open while still below the previous close
+    # (MU on 2026-10-07, picked here after the volume-surge trigger had rejected it).
+    # Leadership means rising today, the same rule as the volume-surge/closing-strength triggers.
+    _drop_below_previous_close(snap_filtered, trade_date, "macro_sector_leader", "DailyChange")
+    snap_filtered = snap_filtered[snap_filtered["DailyChange"] >= 0.0]
     if snap_filtered.empty:
         logger.debug("trigger_macro_sector_leader: No leaders with a bullish candle")
         return pd.DataFrame()
@@ -1276,14 +1281,15 @@ def _get_regime_slots(market_regime: str) -> tuple:
     except Exception as _pe:
         logger.debug("[PULSE_PILOT] slot-cap fail-open: %s", _pe)
     # 약세·횡보장 모멘텀추격(top-down) 억제 옵션 (env-gated, 기본 off = 현행 유지).
-    # ON 시 sideways/moderate_bear의 top-down 슬롯을 0으로 → 급락 휩쏘장에서 momentum chase
-    # 매수를 접고 가치형 bottom-up만 남긴다(총 슬롯도 감소 = 매수 절제). strong_bear는 이미 (0,3).
+    # ON 시 sideways/moderate_bear의 top-down 슬롯을 0으로 하고 그 자리를 다음 순위 bottom-up
+    # 후보로 채운다(총 3종목 유지, strong_bear (0,3)과 같은 형태). 2026-10-07: KR 세 번째 자리
+    # 섀도(26배치, 9/7~10/2)에서 세 번째 후보가 실제 2종목보다 10거래일 평균·승률 모두 나았다.
     if (td > 0 and market_regime in ("sideways", "moderate_bear")
             and os.getenv("REGIME_WEAK_NO_TOPDOWN", "false").strip().lower()
             in ("1", "true", "yes", "on")):
         logger.info("[REGIME_SLOTS] weak-regime top-down 억제: %s (%d,%d)->(0,%d)",
-                    market_regime, td, bu, bu)
-        return (0, bu)
+                    market_regime, td, bu, td + bu)
+        return (0, td + bu)
     return (td, bu)
 
 

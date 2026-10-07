@@ -1813,6 +1813,10 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 **Important**: If stop loss/target price adjustment is needed, return it via portfolio_adjustment JSON only. Do NOT directly UPDATE the DB.
                 """
 
+            # Official disclosures (KIS 공시 titles) are the primary Core-0 evidence, read every check.
+            from prism_core.corporate_filings import official_event_block_async
+            prompt_message += await official_event_block_async(
+                "KR", ticker, buy_date=buy_date, language=self.language, purpose="sell")
             # Micro-split holdings: next-session add plan request; '' unless micro-split LIVE is on.
             from prism_core.micro_split_live import review_prompt_block
             prompt_message += review_prompt_block(scenario_str, market="KR", language=self.language,
@@ -1850,6 +1854,9 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         mcp_profile="kr_trading",
                         require_mcp_calls=True,
                     )
+                    from prism_core.tool_evidence_log import record as record_tool_evidence
+                    record_tool_evidence(market="KR", ticker=ticker, decision="sell",
+                                         result=codex_result, model=settings.model)
                     if parse_llm_json(
                         codex_result.text,
                         context=f"{ticker} KR Codex Fast sell decision",

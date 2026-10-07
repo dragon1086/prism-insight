@@ -30,8 +30,8 @@ def test_default_off_preserves_current():
 
 
 def test_on_suppresses_topdown_in_weak_regimes():
-    assert _slots("sideways", "true") == (0, 2)
-    assert _slots("moderate_bear", "true") == (0, 2)
+    assert _slots("sideways", "true") == (0, 3)
+    assert _slots("moderate_bear", "true") == (0, 3)
 
 
 def test_on_does_not_touch_bull_or_strong_bear():

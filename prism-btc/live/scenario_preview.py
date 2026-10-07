@@ -59,14 +59,20 @@ def response_contract(context):
         contract["rules"].append("reservation_expires_at is host input only; do not return this field. Conditional LONG trigger must exceed current mark, limit price>=trigger; SHORT trigger below mark, limit price<=trigger. Use expires_at<=reservation_expires_at, chase zero. All conditional risk is reserved before trigger. Deadline never extends; cancellation is asynchronous, not a guaranteed exact expiry. Do not pre-buffer conditional entry limits.")
     fraction = context.get("scenario_risk_fraction", .02)
     contract["rules"] = [rule.replace("initial_equity*0.02", f"initial_equity*{fraction:g}") for rule in contract["rules"]]
-    if context.get("recovery_contract_version") == 1:
+    if context.get("recovery_contract_version") in (1, 2):
         contract["recovery"] = {"decision": "OBSERVE | PROBE", "reason": "1..600 characters",
             "changed_evidence": ["exact numeric paths from contract_context.recovery.changed_evidence"],
             "counterevidence": "1..600 characters", "invalidation": "1..600 characters"}
         info = context.get("recovery") or {}
         if info.get("phase") == "OBSERVING" and info.get("entry_deadline"):
             contract["expires_at"] = min(contract["expires_at"], info["entry_deadline"])
-        if info.get("phase") == "OBSERVING":
+        if context.get("recovery_contract_version") == 2:
+            contract["rules"].append("Automatic normalization v2: use only the host-offered scenario_risk_fraction (0.005/0.01/0.02), never return a risk or stage override. During OBSERVING, first baseline is WAIT only; later WAIT uses OBSERVE, OPEN uses PROBE with exact changed_evidence paths and reasons/counterevidence/invalidation. OPEN expiry stays within recovery.entry_deadline. The host commits a step-up only with validated OPEN, not WAIT. Closed confirmed scenarios return to fresh observation; UNKNOWN never permits retry. Daily loss and other hard safety flags remain binding.")
+            if info.get("phase") == "OBSERVING":
+                contract["rules"].append("Below offered_stage=2 use only the original OPEN batch, zero chase. Offered NORMAL stage2 permits the existing bounded chase. One permit belongs to one scenario, not one lifetime attempt. Do not invent evidence or force a trade to normalize risk.")
+            else:
+                contract["rules"].append("For a CONSUMED v2 holding scenario, recovery may be null. Keep the granted risk_fraction immutable; response expiry stays fresh and does not extend existing orders. Only host-authorized NORMAL stage2 permits same-scenario additions and bounded chase, subject to all risk/expiry/direction guards; stages0/1 cannot add or chase. Protection, reductions and EXIT remain available at every stage.")
+        elif info.get("phase") == "OBSERVING":
             contract["rules"].append("Only while OBSERVING: observation is not order permission. WAIT requires recovery.decision=OBSERVE; OPEN needs PROBE with true changed_evidence paths, reasons, counterevidence and invalidation. First observation is WAIT only. Host may authorize exactly one original OPEN batch, 0.005 of actual initial_equity including all costs/pending, zero chase, expires_at no later than recovery.entry_deadline. No later adds/retries or automatic normal resume.")
         else:
             contract["rules"].append("For a CONSUMED holding probe, recovery may be null. WAIT/ADJUST/EXIT response expires_at must remain fresh using current now, even after the original entry deadline. This never renews the original permit or authorizes additional entries. Preserve 0.005 scenario budget; protection/EXIT remain available.")

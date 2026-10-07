@@ -100,6 +100,7 @@ def get_us_agent_directory(
     # Combine all index data into one string for the market agent
     combined_indices = "\n\n".join(market_indices.values()) if market_indices else None
     from prism_core.us_report_public_inputs import has_macro_evidence
+    from prism_core.us_quarterly_facts import render_us_quarterly_facts
     official_macro_data = None
     if has_macro_evidence(pf.get('official_macro')):
         from prism_core.us_official_macro_sources import render_us_official_macro_sources
@@ -116,7 +117,8 @@ def get_us_agent_directory(
         ),
         "company_status": lambda: create_us_company_status_agent(
             company_name, ticker, reference_date, urls, language,
-            prefetched_data={"stock_info": pf.get("stock_info", ""), "recommendations": pf.get("recommendations", ""), "analysis_estimates": pf.get("analysis_estimates", ""), "financial_statements": pf.get("financial_statements", "")} if pf.get("stock_info") else None
+            prefetched_data={"stock_info": pf.get("stock_info", ""), "recommendations": pf.get("recommendations", ""), "analysis_estimates": pf.get("analysis_estimates", ""), "financial_statements": pf.get("financial_statements", "")} if pf.get("stock_info") else None,
+            quarterly_facts=render_us_quarterly_facts(pf.get("quarterly_results") or [], language)
         ),
         "company_overview": lambda: create_us_company_overview_agent(
             company_name, ticker, reference_date, urls, language,

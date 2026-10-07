@@ -1,7 +1,8 @@
-"""One-shot demo recovery authority and mandatory, local evidence journal.
+"""Host-owned demo recovery permits and mandatory local evidence journal.
 
-This never clears the circuit breaker. A consumed attempt cannot be retried,
-including a zero-fill cancellation, unknown submit, restart, or profitable exit.
+Legacy one-shot permits remain unchanged. Opt-in policy v2 re-observes only
+after exact settlement and grades bounded stage evidence without clearing the
+breaker. Unknown submission is never a new opportunity or a retry permit.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from pathlib import Path
 import uuid
 
 RISK_FRACTION = .005
+STAGE_FRACTIONS = (.005, .01, .02)
 _wire = ContextVar("recovery_wire", default=None)
 TIMEFRAMES = ("15m", "30m", "1h", "4h", "12h", "1d", "1w")
 
@@ -125,6 +127,91 @@ def observing_allowed(state, ctx):
             and recovery.get("phase", "OBSERVING") == "OBSERVING")
 
 
+def _confirmed(settlement, scenario_id):
+    fields = ("gross_pnl", "fees", "funding_net", "net_pnl")
+    ids = settlement.get("execution_ids")
+    return (settlement.get("scenario_id") == scenario_id
+            and all(settlement.get(k) is True for k in (
+                "flat_confirmed", "orders_terminal", "executions_complete", "fees_complete", "funding_complete"))
+            and all(_number(settlement.get(k)) for k in fields)
+            and isinstance(ids, list) and all(isinstance(i, str) and i for i in ids)
+            and len(ids) == len(set(ids))
+            and (bool(ids) or (settlement.get("no_fills_confirmed") is True
+                              and all(settlement[k] == 0 for k in fields)))
+            and math.isclose(settlement["net_pnl"], settlement["gross_pnl"] - settlement["fees"]
+                             + settlement["funding_net"], abs_tol=1e-8))
+
+
+def _stage_evidence(equity):
+    return {"filled_count": 0, "net_pnl": 0., "peak_net_pnl": 0.,
+            "max_realized_drawdown": 0., "stage_start_equity": equity}
+
+
+def migrate(conn, state, ctx, now):
+    """Called under runtime mutation lock; never resets the breaker or financials."""
+    old = state.get("recovery", {})
+    if (old.get("policy_version", 1) not in (1,) or state.get("active") is not None
+            or not hard_guards(state, ctx) or ctx.get("positions") != []
+            or ctx.get("pending_entries") != []
+            or old.get("phase", "OBSERVING") not in {"OBSERVING", "DONE_REVIEW_REQUIRED"}
+            or conn.execute("SELECT 1 FROM llm_scenario_intents WHERE status IS NULL OR status!='TERMINAL'").fetchone()):
+        return False
+    equity = ctx.get("initial_equity")
+    if not _number(equity) or equity <= 0:
+        return False
+    previous = None
+    if old.get("phase") == "DONE_REVIEW_REQUIRED":
+        row = conn.execute("SELECT evidence FROM llm_scenario_settlements WHERE scenario_id=?",
+                           (old.get("scenario_id"),)).fetchone()
+        if not row:
+            return False
+        try:
+            previous = json.loads(row[0])
+            if not _confirmed(previous, old.get("scenario_id")) or not old.get("permit_id"):
+                return False
+        except (TypeError, ValueError):
+            return False
+    new = {"policy_version": 2, "epoch_id": str(uuid.uuid4()), "stage": 0,
+           "phase": "OBSERVING", "started_at": now, "epoch_start_equity": equity,
+           "stage_evidence": _stage_evidence(equity),
+           "previous_permit_id": old.get("permit_id"),
+           "previous_scenario_id": old.get("scenario_id")}
+    journal(conn, "MIGRATION", {"before": old, "after": new,
+            "prior_settlement_hash": digest(previous) if previous else None}, now)
+    state["recovery"] = new
+    state["version"] += 1
+    return True
+
+
+def offered_stage(recovery):
+    stage = recovery.get("stage", 0)
+    evidence = recovery.get("stage_evidence", {})
+    if recovery.get("policy_version") == 2:
+        fields = ("net_pnl", "peak_net_pnl", "max_realized_drawdown")
+        if (type(stage) is not int or stage not in range(3) or not isinstance(evidence, dict)
+                or type(evidence.get("filled_count")) is not int or evidence["filled_count"] < 0
+                or any(not _number(evidence.get(key)) or evidence[key] < 0 for key in fields)
+                or evidence["peak_net_pnl"] < evidence["net_pnl"]):
+            raise ValueError("normalization_state_invalid")
+        empty = evidence["filled_count"] == 0 and all(evidence[key] == 0 for key in fields)
+        equity = evidence.get("stage_start_equity")
+        if ((equity is None and not empty) or (equity is not None and
+                (not _number(equity) or equity <= 0))
+                or (evidence["filled_count"] == 0 and not empty)):
+            raise ValueError("normalization_state_invalid")
+    if (recovery.get("policy_version") == 2 and stage < 2
+            and evidence.get("filled_count", 0) >= 3 and evidence.get("net_pnl", 0) > 0
+            and evidence.get("max_realized_drawdown", float("inf")) <=
+                STAGE_FRACTIONS[stage] * evidence.get("stage_start_equity", 0)):
+        return stage + 1
+    return stage
+
+
+def offered_fraction(state):
+    recovery = state.get("recovery", {})
+    return STAGE_FRACTIONS[offered_stage(recovery)] if recovery.get("policy_version") == 2 else RISK_FRACTION
+
+
 def numeric_market(snapshot):
     """Compact stable market fields only; time/progress counters cannot qualify."""
     accepted = {"open", "high", "low", "close", "ma10", "ma35", "ma10_slope",
@@ -215,9 +302,14 @@ def prepare_input(conn, state, context, snapshot, slot, now):
                 "baseline_slot": recovery["baseline_slot"], "first_observation": first,
                 "baseline": baseline, "current": values, "changed_evidence": changes,
                 "one_attempt_only": True, "automatic_normal_resume": False}
+    if recovery.get("policy_version") == 2:
+        metadata.update(current_stage=recovery["stage"], offered_stage=offered_stage(recovery),
+                        promotion_evidence=recovery["stage_evidence"],
+                        risk_fraction=offered_fraction(state), one_attempt_only=False,
+                        automatic_normal_resume=True, policy_version=2)
     context["recovery"] = metadata
-    context["recovery_contract_version"] = 1
-    context["scenario_risk_fraction"] = RISK_FRACTION
+    context["recovery_contract_version"] = recovery.get("policy_version", 1)
+    context["scenario_risk_fraction"] = metadata["risk_fraction"]
     journal(conn, "INPUT", {"input_id": context["input_id"],
             "snapshot_hash": digest(snapshot), "context_hash": digest(context),
             "decision_slot": slot, "versions": version_evidence, "recovery": metadata}, now, slot=slot)
@@ -264,7 +356,7 @@ def assess(conn, state, context, payload, slot, now):
         raise ValueError("recovery_missing_request")
     if data.get("loaded_code_status") == "MIXED":
         raise ValueError("recovery_mixed_loaded_code")
-    if payload.get("chase") != {"max_bps": 0, "max_reprices": 0}:
+    if data.get("offered_stage") != 2 and payload.get("chase") != {"max_bps": 0, "max_reprices": 0}:
         raise ValueError("recovery_chase_forbidden")
     expiry = payload.get("expires_at")
     if not _number(expiry) or not now < expiry <= data["entry_deadline"]:
@@ -274,11 +366,23 @@ def assess(conn, state, context, payload, slot, now):
 
 def consume(conn, state, payload, context, slot, now):
     recovery = state["recovery"]
-    budget = context["initial_equity"] * RISK_FRACTION
+    fraction = offered_fraction(state)
+    budget = context["initial_equity"] * fraction
     risk = payload["risk"]["total_risk"]
     if (recovery["phase"] != "OBSERVING" or not _number(risk) or risk > budget
             or not payload.get("entries") or now >= (slot + 1) * 300):
         raise ValueError("recovery_probe_risk_invalid")
+    if recovery.get("policy_version") == 2:
+        if recovery["stage_evidence"].get("stage_start_equity") is None:
+            recovery["stage_evidence"]["stage_start_equity"] = context["initial_equity"]
+        offered = offered_stage(recovery)
+        if offered != recovery["stage"]:
+            journal(conn, "STAGE_TRANSITION", {"before": recovery["stage"], "after": offered,
+                    "reason": "confirmed_stage_performance_and_fresh_probe",
+                    "evidence": recovery["stage_evidence"], "input_id": context["input_id"]},
+                    now, slot=slot, scenario_id=payload["scenario_id"])
+            recovery.update(stage=offered, stage_evidence=_stage_evidence(context["initial_equity"]))
+        recovery["risk_fraction"] = fraction
     recovery.update(phase="CONSUMED", scenario_id=payload["scenario_id"],
                     action_id=payload["action_id"], side=payload["side"],
                     initial_equity=context["initial_equity"], budget=budget,
@@ -291,26 +395,77 @@ def consume(conn, state, payload, context, slot, now):
 
 def risk_fraction(state, scenario_id):
     recovery = state.get("recovery", {})
-    return RISK_FRACTION if (scenario_id and recovery.get("scenario_id") == scenario_id
+    if (scenario_id and recovery.get("scenario_id") == scenario_id
+            and recovery.get("policy_version", 1) == 1
+            and recovery.get("phase") in {"CONSUMED", "DONE_REVIEW_REQUIRED"}):
+        return RISK_FRACTION
+    if scenario_id and recovery.get("scenario_id") == scenario_id and recovery.get("policy_version") == 2:
+        if not managed_permit(state, state.get("active")):
+            # Conservative valuation remains available for protective operations;
+            # permission helpers deny all new risk for a corrupt managed permit.
+            return RISK_FRACTION
+    return recovery.get("risk_fraction", RISK_FRACTION) if (scenario_id and recovery.get("scenario_id") == scenario_id
                             and recovery.get("phase") in {"CONSUMED", "DONE_REVIEW_REQUIRED"}) else .02
 
 
-def authorize_pending(state, active, now):
+def managed_permit(state, active):
     permit = state.get("recovery", {})
+    if (not active or permit.get("phase") != "CONSUMED" or not permit.get("permit_id")
+            or permit.get("scenario_id") != active.get("scenario_id")
+            or permit.get("side") != active.get("side")
+            or permit.get("initial_equity") != active.get("initial_equity")):
+        return None
+    fraction = permit.get("risk_fraction", RISK_FRACTION)
+    equity = permit.get("initial_equity")
+    if (not _number(equity) or equity <= 0 or fraction not in STAGE_FRACTIONS
+            or not _number(permit.get("budget"))
+            or not math.isclose(permit["budget"], equity * fraction, abs_tol=1e-8)):
+        return None
+    if permit.get("policy_version", 1) not in (1, 2):
+        return None
+    if permit.get("policy_version", 1) == 1 and fraction != RISK_FRACTION:
+        return None
+    if permit.get("policy_version") == 2 and (
+            type(permit.get("stage")) is not int or permit["stage"] not in range(3)
+            or fraction != STAGE_FRACTIONS[permit["stage"]]):
+        return None
+    return permit
+
+
+def normal_permission(state, active, ctx):
+    permit = managed_permit(state, active)
+    return bool(permit and permit.get("policy_version") == 2
+                and permit.get("stage") == 2 and hard_guards(state, ctx))
+
+
+def authorize_pending(state, active, now):
+    permit = managed_permit(state, active)
     breaker = state.get("breaker", {})
-    return bool(active and permit.get("phase") == "CONSUMED"
+    deadline = (active.get("expires_at") if permit and permit.get("policy_version") == 2
+                and permit.get("stage") == 2 else (permit or {}).get("entry_deadline"))
+    return bool(permit
                 and breaker.get("blocked") is True
                 and set(breaker.get("reasons", [])) == {"three_losses"}
                 and permit.get("scenario_id") == active.get("scenario_id")
                 and permit.get("side") == active.get("side")
                 and permit.get("initial_equity") == active.get("initial_equity")
-                and _number(permit.get("entry_deadline")) and now < permit["entry_deadline"])
+                and _number(deadline) and now < deadline)
 
 
 def authorize_entry(state, payload, ctx, now):
     permit = state.get("recovery", {})
+    if normal_permission(state, state.get("active"), ctx):
+        return bool(authorize_pending(state, state.get("active"), now)
+                    and payload.get("action") in {"OPEN", "ADJUST"}
+                    and (payload.get("action") != "OPEN"
+                         or payload.get("action_id") == permit.get("action_id"))
+                    and payload.get("scenario_id") == permit["scenario_id"]
+                    and payload.get("side") == permit["side"]
+                    and ctx.get("initial_equity") == permit["initial_equity"]
+                    and _number(payload.get("expires_at")) and now < payload["expires_at"])
     if (not authorize_pending(state, state.get("active"), now)
             or not hard_guards(state, ctx) or payload.get("action") != "OPEN"
+            or payload.get("chase") != {"max_bps": 0, "max_reprices": 0}
             or ctx.get("initial_equity") != permit.get("initial_equity")
             or payload.get("action_id") != permit.get("action_id")
             or payload.get("scenario_id") != permit.get("scenario_id")
@@ -332,6 +487,43 @@ def authorize_entry(state, payload, ctx, now):
 def settled(conn, state, settlement, now):
     recovery = state.get("recovery", {})
     if recovery.get("scenario_id") != settlement["scenario_id"]:
+        return
+    if recovery.get("policy_version") == 2:
+        if recovery.get("phase") != "CONSUMED" or not _confirmed(settlement, recovery["scenario_id"]):
+            return
+        if conn.execute("SELECT 1 FROM llm_scenario_settlements WHERE scenario_id=?", (settlement["scenario_id"],)).fetchone():
+            return
+        evidence = recovery["stage_evidence"]
+        old_stage = recovery["stage"]
+        if settlement["execution_ids"]:
+            pnl = settlement["net_pnl"]
+            if pnl < 0:
+                # A loss ends this checkpoint immediately. Consequently the
+                # surviving stage aggregates describe non-loss settlements,
+                # not an intratrade or account-equity drawdown backtest.
+                recovery["stage"] = max(0, old_stage - 1)
+                # Do not invent account NAV from scenario PnL. The next accepted
+                # OPEN supplies fresh, actual account equity for this stage.
+                recovery["stage_evidence"] = _stage_evidence(None)
+                journal(conn, "STAGE_TRANSITION", {"before": old_stage, "after": recovery["stage"],
+                        "reason": "net_loss", "settlement": settlement, "previous_evidence": evidence},
+                        now, scenario_id=settlement["scenario_id"])
+            else:
+                evidence["filled_count"] += 1
+                evidence["net_pnl"] += pnl
+                evidence["peak_net_pnl"] = max(evidence["peak_net_pnl"], evidence["net_pnl"])
+                evidence["max_realized_drawdown"] = max(evidence["max_realized_drawdown"],
+                    evidence["peak_net_pnl"] - evidence["net_pnl"])
+        journal(conn, "SETTLEMENT", {"permit_id": recovery["permit_id"], "settlement": settlement,
+                "automatic_normal_resume": True, "stage_evidence": recovery["stage_evidence"]},
+                now, scenario_id=settlement["scenario_id"])
+        previous = {"permit_id": recovery["permit_id"], "scenario_id": recovery["scenario_id"]}
+        keep = {key: recovery[key] for key in ("policy_version", "epoch_id", "stage", "stage_evidence", "started_at", "epoch_start_equity")}
+        keep.update(phase="OBSERVING", previous_permit_id=previous["permit_id"],
+                    previous_scenario_id=previous["scenario_id"], settled_at=now)
+        journal(conn, "REARM", {"previous": previous, "after": keep,
+                "settlement_hash": digest(settlement)}, now, scenario_id=settlement["scenario_id"])
+        state["recovery"] = keep
         return
     recovery.update(phase="DONE_REVIEW_REQUIRED", settled_at=now)
     journal(conn, "SETTLEMENT", {"permit_id": recovery["permit_id"],
