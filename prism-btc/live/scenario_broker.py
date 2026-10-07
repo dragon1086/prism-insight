@@ -501,13 +501,13 @@ class ScenarioDemoBroker(ScenarioExecution):
         try:
             daily=self._daily(observed)
             state=json.loads(self.conn.execute("SELECT body FROM llm_scenario_state WHERE id=1").fetchone()[0])
-            from live.scenario_recovery import authorize_pending, risk_fraction
+            from live.scenario_recovery import authorize_pending, managed_permit, normal_permission, risk_fraction
             recovery_pending = authorize_pending(state, active, self.clock())
             halted=not self._new_risk_enabled() or (state.get("breaker",{}).get("blocked",False) and not recovery_pending) or not daily.get("new_risk_allowed",False)
-            if risk_fraction(state, active["scenario_id"]) < .02:
-                # A probe can retain only its original reserved batch, never a
-                # subsequent entry intent or a reservation past its deadline.
-                permit = state.get("recovery", {})
+            permit = managed_permit(state, active)
+            if permit:
+                # Every managed stage retains its immutable scenario budget.
+                # Only a verified NORMAL permit can retain later entry batches.
                 if observed["legacy_fenced"] or unknown:
                     recovery_pending = False
                 probe_children = self.children(active["scenario_id"])
@@ -516,7 +516,7 @@ class ScenarioDemoBroker(ScenarioExecution):
                     probe_accounting = self._risk_accounting(observed, active, probe_children)
                 from core.llm_scenario import risk_snapshot
                 pending_risk = risk_snapshot(initial_equity=active["initial_equity"],
-                    risk_fraction=.005, side=active["side"], hard_stop=active["hard_stop"],
+                    risk_fraction=risk_fraction(state, active["scenario_id"]), side=active["side"], hard_stop=active["hard_stop"],
                     positions=probe_accounting["positions"],
                     pending_entries=[self._pending_entry(c) for c in probe_children
                         if c["kind"] == "entry" and c["status"] == "LIVE" and c["evidence"]],
@@ -526,8 +526,14 @@ class ScenarioDemoBroker(ScenarioExecution):
                 if not pending_risk["within_budget"]:
                     recovery_pending = False
                 originals = {r["id"]: r for r in permit.get("initial_entries", [])}
+                normal = normal_permission(state, active, dict(
+                    initial_equity=active["initial_equity"], legacy_fenced=observed["legacy_fenced"],
+                    protection_ok=protection, accounting_status="confirmed",
+                    new_risk_blocked=halted, recovery_hard_blocked=halted))
                 for child in probe_children:
                     if child["kind"] != "entry" or child["status"] == "TERMINAL":
+                        continue
+                    if normal:
                         continue
                     original = originals.get(child["local_id"])
                     if (not original or child["intent_id"] != permit.get("action_id") or
