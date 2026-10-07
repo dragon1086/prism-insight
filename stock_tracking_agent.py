@@ -1295,6 +1295,10 @@ class StockTrackingAgent:
             # Micro-split add scenarios (add_plan); '' unless micro-split LIVE is on for KR.
             from prism_core.micro_split_live import add_plan_buy_block
             prompt_message += add_plan_buy_block(self, market="KR", ticker=ticker, language=self.language)
+            # Official disclosures: do not enter a stock under a control tender offer or delisting.
+            from prism_core.corporate_filings import official_event_block_async
+            prompt_message += await official_event_block_async(
+                "KR", ticker, language=self.language, purpose="buy")
             logger.info(
                 "[SECTOR_BUY][KR] ticker=%s kind=%s subtype=%s basis=%s mode=%s f2_rule=%s f4_rule=%s",
                 ticker or "?", sector_stamp["kind"], sector_stamp["subtype"], sector_stamp["basis"],

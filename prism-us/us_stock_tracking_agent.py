@@ -1568,6 +1568,9 @@ class USStockTrackingAgent:
             from prism_core.micro_split_live import add_plan_buy_block
             prompt_message += add_plan_buy_block(self, market="US", ticker=ticker, language="en")
             prompt_message += neg_equity_block
+            # Official SEC filings: do not enter a stock under a control tender offer or delisting.
+            from prism_core.corporate_filings import official_event_block_async
+            prompt_message += await official_event_block_async("US", ticker, language="en", purpose="buy")
             from prism_core.buy_report_depth_evidence import report_depth_evidence_active
             depth_on = report_depth_evidence_active(getattr(self.trading_agent, "instruction", ""))
             logger.info(f"[BUY_REPORT_DEPTH] enabled={str(depth_on).lower()} ticker={ticker_tag}")
@@ -2456,6 +2459,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 **Market regime**: Treat the "Current Market Regime (LIVE)" above as the authoritative market environment for step-0 분석 (강세장/약세장 판단). It is system-computed from S&P500/VIX this cycle; prefer it over the stored buy-time scenario. Only if it shows "unavailable", fall back to fetching ^GSPC/^VIX via yahoo_finance yourself.
 **Important**: If stop loss/target price adjustment is needed, return it via portfolio_adjustment JSON only. Do NOT directly UPDATE the DB.
 """
+            # Official SEC filings are the primary Core-0 evidence, read every check.
+            from prism_core.corporate_filings import official_event_block_async
+            prompt_message += await official_event_block_async(
+                "US", ticker, buy_date=buy_date, language="en", purpose="sell")
             # Micro-split holdings: next-session add plan request; '' unless micro-split LIVE is on.
             from prism_core.micro_split_live import review_prompt_block
             prompt_message += review_prompt_block(scenario_str, market="US", language="en", stop_loss=stop_loss)

@@ -1813,6 +1813,10 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 **Important**: If stop loss/target price adjustment is needed, return it via portfolio_adjustment JSON only. Do NOT directly UPDATE the DB.
                 """
 
+            # Official disclosures (KIS 공시 titles) are the primary Core-0 evidence, read every check.
+            from prism_core.corporate_filings import official_event_block_async
+            prompt_message += await official_event_block_async(
+                "KR", ticker, buy_date=buy_date, language=self.language, purpose="sell")
             # Micro-split holdings: next-session add plan request; '' unless micro-split LIVE is on.
             from prism_core.micro_split_live import review_prompt_block
             prompt_message += review_prompt_block(scenario_str, market="KR", language=self.language,
