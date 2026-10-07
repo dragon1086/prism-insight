@@ -42,6 +42,9 @@ os.environ.setdefault("RUNNER_HOLD_ENABLED", "false")
 # Batch integration tests must not write the candidate ledger into the repo DB;
 # tests/test_candidate_ledger.py opts in with a temporary DB.
 os.environ.setdefault("CANDIDATE_LEDGER_ENABLED", "false")
+# BUY/SELL prompts read official filings (SEC / KIS 공시) on every decision; hermetic
+# prompt tests must not reach the network. tests/test_corporate_filings.py opts in.
+os.environ.setdefault("CORP_FILINGS_ENABLED", "false")
 
 
 # ---------------------------------------------------------------------------

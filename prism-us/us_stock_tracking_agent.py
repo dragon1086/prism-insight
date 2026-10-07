@@ -2238,10 +2238,13 @@ class USStockTrackingAgent:
 
             # Generate no-entry message (same format as Korean enhanced version)
             from messaging.korean_trading_message import hold_reason_display
+            from prism_core.sector_cap import deferred_decision_line
+            # The AI may have chosen entry while a rule (sector cap, gate) deferred it.
+            decision_display = deferred_decision_line(str(decision).strip().lower() in ("entry", "enter"), "Skip")
             skip_message = f"⚠️ 매수 보류: {company_name}({ticker})\n" \
                            f"현재가: ${current_price:,.2f}\n" \
                            f"매수 Score: {buy_score}/10\n" \
-                           f"결정: Skip\n" \
+                           f"결정: {decision_display}\n" \
                            f"시장 상황: {market_condition_display}\n" \
                            f"산업군: {sector}\n" \
                            f"보류 사유: {hold_reason_display(skip_reason, scenario)}\n" \
@@ -4589,7 +4592,11 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 f"Insufficient score ({adjusted_score:g}/{min_score:g})"
                             )
                         if not sector_diverse:
-                            reason_parts.append(f"Sector concentration ({sector})")
+                            from prism_core.sector_cap import sector_cap_note
+                            cap_note = sector_cap_note(
+                                self.cursor, "us_stock_holdings", sector, max_same=self.MAX_SAME_SECTOR,
+                                ratio=self.SECTOR_CONCENTRATION_RATIO, account_key=self._account_scope()[0])
+                            reason_parts.append(f"Sector concentration ({cap_note or sector})")
                         if normalized_decision == "entry" and not _buy_gate.get("allowed", False):
                             reason_parts.append(
                                 f"Deterministic gate: {_buy_gate.get('reason', 'blocked')}"

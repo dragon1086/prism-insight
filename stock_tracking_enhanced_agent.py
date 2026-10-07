@@ -675,7 +675,13 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     if buy_score < min_score and not rebound_pilot:
                         reason_parts.append(f"점수 부족 ({buy_score}/{min_score})")
                     if not sector_diverse:
-                        reason_parts.append(f"섹터 집중 ({sector})")
+                        from prism_core.sector_cap import sector_cap_note
+                        from prism_core.sector_names import sectors_overlap
+                        cap_note = sector_cap_note(
+                            self.cursor, "stock_holdings", sector, max_same=self.MAX_SAME_SECTOR,
+                            ratio=self.SECTOR_CONCENTRATION_RATIO, account_key=self._account_scope()[0],
+                            same_sector=sectors_overlap)
+                        reason_parts.append(f"섹터 집중 ({cap_note or sector})")
                     if decision == "Enter" and not _buy_gate.get("allowed", False):
                         reason_parts.append(
                             f"결정론적 게이트: {_buy_gate.get('reason', '차단')}"
@@ -697,14 +703,11 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                             market_condition_text = market_condition_text.replace(eng, ko, 1)
                             break
 
-                    # When the AI decided "Enter" but the trade was still deferred
-                    # (e.g., sector concentration cap), surface the contradiction on the
-                    # decision line itself. The standalone "보류 사유" line several rows
-                    # below is easy to miss, which made an Enter+hold look like a bug.
-                    if decision == "Enter":
-                        decision_display = f"Enter (실제 보류 — 사유: {display_reason})"
-                    else:
-                        decision_display = decision
+                    # When the AI decided "Enter" but a rule still deferred the trade
+                    # (e.g., sector concentration cap), say so on the decision line; the
+                    # "보류 사유" line below names the rule and its counts.
+                    from prism_core.sector_cap import deferred_decision_line
+                    decision_display = deferred_decision_line(decision == "Enter", decision)
 
                     # Generate skip message
                     skip_message = f"⚠️ 매수 보류: {company_name}({ticker})\n" \

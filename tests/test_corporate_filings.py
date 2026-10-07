@@ -3,6 +3,7 @@ import json
 from datetime import date
 
 import pandas as pd
+import pytest
 
 from prism_core import corporate_filings as cf
 
@@ -28,7 +29,10 @@ def _sec(filings, subjects=None):
     return fetch
 
 
-def setup_function():
+@pytest.fixture(autouse=True)
+def _enabled(monkeypatch):
+    # The repo conftest turns the lookup off for hermetic prompt tests.
+    monkeypatch.setenv("CORP_FILINGS_ENABLED", "true")
     cf._ticker_map_cache.clear()
     cf._role_cache.clear()
 
