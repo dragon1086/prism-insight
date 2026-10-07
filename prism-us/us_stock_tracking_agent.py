@@ -1592,6 +1592,9 @@ class USStockTrackingAgent:
                         mcp_profile="us_trading",
                         require_mcp_calls=True,
                     )
+                    from prism_core.tool_evidence_log import record as record_tool_evidence
+                    record_tool_evidence(market="US", ticker=ticker, decision="buy",
+                                         result=codex_result, model=settings.model)
                     scenario_json = parse_llm_json(
                         codex_result.text,
                         context="US Codex Fast trading scenario",
@@ -2489,6 +2492,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         mcp_profile="us_trading",
                         require_mcp_calls=True,
                     )
+                    from prism_core.tool_evidence_log import record as record_tool_evidence
+                    record_tool_evidence(market="US", ticker=ticker, decision="sell",
+                                         result=codex_result, model=settings.model)
                     if parse_llm_json(
                         codex_result.text,
                         context=f"{ticker} US Codex Fast sell decision",
