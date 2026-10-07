@@ -213,6 +213,7 @@ def load_mcp_registry(
             )
 
     raw = yaml.safe_load(resolved.read_text()) or {}
+    raw = _apply_web_search_provider(raw)
     if legacy_env_fallback is not None:
         raw = _merge_missing_env_from_legacy(raw, Path(legacy_env_fallback))
     raw = _interpolate_obj(raw)
@@ -226,6 +227,32 @@ def load_mcp_registry(
         normalised = raw
 
     return McpServerRegistry.from_yaml_dict(normalised)
+
+
+def _apply_web_search_provider(raw: dict) -> dict:
+    """Swap the ``perplexity`` server for an alternative web-search backend.
+
+    ``PRISM_WEB_SEARCH_PROVIDER`` (default ``perplexity``) selects an entry from
+    the YAML ``search_providers`` block.  The replacement keeps the server name
+    ``perplexity`` and its ``perplexity_ask`` tool, so prompts and tool
+    allowlists stay unchanged.  An unknown provider fails loudly rather than
+    silently running reports without web search.
+    """
+    provider = os.environ.get("PRISM_WEB_SEARCH_PROVIDER", "").strip().lower()
+    if provider in ("", "perplexity"):
+        return raw
+    alternatives = raw.get("search_providers") or {}
+    if provider not in alternatives:
+        raise ValueError(
+            f"PRISM_WEB_SEARCH_PROVIDER={provider!r} is not defined under "
+            f"search_providers (available: perplexity, {', '.join(sorted(alternatives)) or 'none'})"
+        )
+    servers = _server_entries(raw)
+    if "perplexity" not in servers:
+        raise ValueError("PRISM_WEB_SEARCH_PROVIDER requires a 'perplexity' server entry to replace")
+    servers["perplexity"] = alternatives[provider]
+    logger.info("web search provider: %s (served as 'perplexity')", provider)
+    return raw
 
 
 def _server_entries(raw: dict) -> dict:
