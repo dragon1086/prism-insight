@@ -1,4 +1,5 @@
-"""Collect the KIS whole-market headline feed into runtime/kr_news_titles.sqlite.
+"""Collect the KIS whole-market headline feed into runtime/kr_news_titles.sqlite
+(`--market us`: the KIS overseas feed into runtime/us_news_titles.sqlite, same schema).
 
 Read-only KIS calls; no orders, no channel sends.
 
@@ -24,8 +25,8 @@ PAUSE = 0.35
 MAX_EMPTY_STEPS = 5
 
 
-def _lock(name):
-    path = store.db_path().with_name(f".kr_news_{name}.lock")
+def _lock(name, market="KR"):
+    path = store.db_path(market).with_name(f".{market.lower()}_news_{name}.lock")
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(path, "w")
     try:
@@ -48,12 +49,13 @@ def _cursor(day, clock):
     return _step_back(day, clock) if clock == "000000" else (day, clock)
 
 
-def walk(source, conn, *, start_day, start_clock, stop, max_calls, pause=PAUSE):
+def walk(source, conn, *, start_day, start_clock, stop, max_calls, pause=PAUSE, fetch_page=None):
     """Page backwards from the cursor until `stop(page, new)` or the call budget ends."""
+    fetch_page = fetch_page or source.news_title_page
     day, clock = start_day, start_clock
     calls = new_total = empty = 0
     while calls < max_calls:
-        page = source.news_title_page("", day, clock)
+        page = fetch_page("", day, clock)
         calls += 1
         new = store.upsert(conn, page)
         new_total += new
@@ -77,7 +79,7 @@ def walk(source, conn, *, start_day, start_clock, stop, max_calls, pause=PAUSE):
     return calls, new_total, (day, clock)
 
 
-def live(source, conn, max_calls):
+def live(source, conn, max_calls, fetch_page=None):
     newest = store.bounds(conn)[1]
 
     def stop(page, new, oldest):
@@ -86,10 +88,10 @@ def live(source, conn, max_calls):
         return newest is not None and store.stamp(oldest) <= newest
 
     return walk(source, conn, start_day=datetime.now().strftime("%Y%m%d"), start_clock="",
-                stop=stop, max_calls=max_calls)
+                stop=stop, max_calls=max_calls, fetch_page=fetch_page)
 
 
-def backfill(source, conn, until, max_calls):
+def backfill(source, conn, until, max_calls, fetch_page=None):
     oldest = store.bounds(conn)[0]
     if oldest:
         # Resume one second before the oldest stored headline.
@@ -100,11 +102,13 @@ def backfill(source, conn, until, max_calls):
     def stop(page, new, row):
         return row["day"] < until
 
-    return walk(source, conn, start_day=day, start_clock=clock, stop=stop, max_calls=max_calls)
+    return walk(source, conn, start_day=day, start_clock=clock, stop=stop, max_calls=max_calls,
+                fetch_page=fetch_page)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--market", choices=["kr", "us"], default="kr")
     sub = parser.add_subparsers(dest="mode", required=True)
     p_live = sub.add_parser("live")
     p_live.add_argument("--max-calls", type=int, default=60)
@@ -116,11 +120,12 @@ def main():
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    handle = _lock(args.mode)
+    market = args.market.upper()
+    handle = _lock(args.mode, market)
     if handle is None:
-        logger.info("%s already running; skipped", args.mode)
+        logger.info("%s %s already running; skipped", market, args.mode)
         return
-    with handle, store.connect() as conn:
+    with handle, store.connect(store.db_path(market)) as conn:
         started = time.monotonic()
         if args.mode == "prune":
             removed = store.prune(conn, args.keep_days)
@@ -129,11 +134,12 @@ def main():
         from cores.market_data.kis_source import KisSource
 
         source = KisSource()
+        fetch_page = source.us_news_title_page if market == "US" else None
         if args.mode == "live":
-            calls, new, cursor = live(source, conn, args.max_calls)
+            calls, new, cursor = live(source, conn, args.max_calls, fetch_page)
         else:
-            calls, new, cursor = backfill(source, conn, args.until, args.max_calls)
-        logger.info("%s calls=%d new=%d cursor=%s bounds=%s %.0fs", args.mode, calls, new, cursor,
+            calls, new, cursor = backfill(source, conn, args.until, args.max_calls, fetch_page)
+        logger.info("%s %s calls=%d new=%d cursor=%s bounds=%s %.0fs", market, args.mode, calls, new, cursor,
                     store.bounds(conn), time.monotonic() - started)
 
 

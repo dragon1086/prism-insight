@@ -1,4 +1,4 @@
-"""Local store of the KIS whole-market headline feed (titles only).
+"""Local store of the KIS whole-market headline feeds (titles only): KR, and US in its own file.
 
 Kept in its own SQLite file under `runtime/` — not in stock_tracking_db, which
 is copied to other servers several times a day. One row per KIS serial, plus
@@ -14,6 +14,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PATH = ROOT / "runtime" / "kr_news_titles.sqlite"
+# The KIS overseas feed uses the same row shape and schema in its own file (provider_code = nation code).
+US_DEFAULT_PATH = ROOT / "runtime" / "us_news_titles.sqlite"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS news_titles (
@@ -37,7 +39,9 @@ CREATE INDEX IF NOT EXISTS idx_news_title_tickers_ticker ON news_title_tickers(t
 """
 
 
-def db_path():
+def db_path(market="KR"):
+    if market == "US":
+        return Path(os.getenv("PRISM_US_NEWS_DB") or US_DEFAULT_PATH)
     return Path(os.getenv("PRISM_KR_NEWS_DB") or DEFAULT_PATH)
 
 

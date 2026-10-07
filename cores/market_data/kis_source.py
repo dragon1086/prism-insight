@@ -61,6 +61,10 @@ _INVESTOR_ESTIMATE_TR = "HHPTJ04160200"
 
 _NEWS_TITLES = "/uapi/domestic-stock/v1/quotations/news-title"
 _NEWS_TITLES_TR = "FHKST01011800"
+# Overseas headline feed (연합미국·글로벌ETF·한국투자증권 등, Korean titles). ~10 titles per call, history from
+# about 2025-10; one tagged symbol per article; the date/time pair is the cursor (the CTS key does not page).
+_US_NEWS_TITLES = "/uapi/overseas-price/v1/quotations/news-title"
+_US_NEWS_TITLES_TR = "HHPSTH60100C1"
 # One call returns ~40 titles (about a week for an active stock); pages walk back.
 _NEWS_MAX_PAGES = 4
 
@@ -474,6 +478,37 @@ class KisSource:
                 "provider_code": str(row.get("news_ofer_entp_code") or "").strip(),
                 "category": str(row.get("news_lrdv_code") or "").strip(),
                 "tags": [(code, name) for code, name in tags if code],
+            })
+        return page
+
+    def us_news_title_page(self, ticker: str, date: str, hour: str = "", exchange: str = "") -> list[dict]:
+        """One page (~10) of KIS overseas headlines at or before `date` `hour` (HHMMSS), newest first.
+
+        Same row shape as `news_title_page` so the headline store and collector are shared. A symbol query needs
+        its 3-letter exchange (NAS/NYS/AMS); `ticker=""` is the whole feed. `provider_code` carries the nation code
+        (US, CN, ...) and the tag name is the Korean company name. Titles only — no article body or URL.
+        """
+        body = self._fetch(
+            _US_NEWS_TITLES,
+            _US_NEWS_TITLES_TR,
+            {"INFO_GB": "", "CLASS_CD": "", "NATION_CD": "", "EXCHANGE_CD": exchange, "SYMB": ticker,
+             "DATA_DT": date, "DATA_TM": hour, "CTS": ""},
+        )
+        page = []
+        for row in list(getattr(body, "outblock1", None) or []):
+            serial = str(row.get("news_key") or "").strip()
+            day = str(row.get("data_dt") or "").strip()
+            clock = str(row.get("data_tm") or "").strip().ljust(6, "0")
+            title = str(row.get("title") or "").strip()
+            if not (serial and len(day) == 8 and day.isdigit() and clock[:6].isdigit() and title):
+                continue
+            symbol = str(row.get("symb") or "").strip()
+            page.append({
+                "serial": serial, "day": day, "time": clock[:6], "title": title,
+                "provider": str(row.get("source") or "").strip(),
+                "provider_code": str(row.get("nation_cd") or "").strip(),
+                "category": str(row.get("class_name") or "").strip(),
+                "tags": [(symbol, str(row.get("symb_name") or "").strip())] if symbol else [],
             })
         return page
 
