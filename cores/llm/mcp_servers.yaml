@@ -83,3 +83,19 @@ servers:
     # outside the repo prevents an unrelated protected .env from aborting it.
     cwd: ${PRISM_MCP_WORKDIR:-/tmp}
     read_timeout_seconds: 45
+
+# Optional replacements for the `perplexity` server, selected with
+# PRISM_WEB_SEARCH_PROVIDER=<name> in .env (default: perplexity).  The chosen
+# entry is served under the name `perplexity` and exposes `perplexity_ask`,
+# so prompts and tool allowlists do not change.  Not listed under `servers`,
+# so it is never launched unless selected.
+search_providers:
+  tavily:
+    command: ${PRISM_MCP_PYTHON:-python3}
+    args:
+    - -m
+    - cores.llm.tavily_mcp_server
+    env:
+      PYTHONPATH: ${PRISM_REPO_ROOT:-.}
+      TAVILY_API_KEY: ${TAVILY_API_KEY}
+    read_timeout_seconds: 75
