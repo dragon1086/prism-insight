@@ -248,7 +248,10 @@ def test_real_batch_priority_reorders_only_when_enabled(tmp_path, market, mode):
 
     # Evidence for the two-week review: the legacy pick that lost its slot, with a reference price.
     selection = quality["selection"]
-    assert sorted((c["ticker"], c["trigger"]) for c in selection["displaced"]) == sorted(set(legacy) - set(weighted))
+    # A legacy name still picked under another trigger kept its slot, so it is not displaced.
+    weighted_tickers = {ticker for ticker, _ in weighted}
+    assert sorted((c["ticker"], c["trigger"]) for c in selection["displaced"]) == sorted(
+        pick for pick in set(legacy) - set(weighted) if pick[0] not in weighted_tickers)
     assert all(c["reference_price"] for c in selection["displaced"] + selection["fill_picks"])
     assert "selection" not in disabled["metadata"]["trigger_quality"]
     assert "[TRIGGER_QUALITY] displaced ticker=" in log
@@ -257,16 +260,22 @@ def test_real_batch_priority_reorders_only_when_enabled(tmp_path, market, mode):
     assert recorded and recorded[-1]["attributes"]["trigger_mode"] == mode
 
 
-# Legacy: the weak trigger takes the second slot through the per-trigger
-# guarantee. Weighted: it loses only that guarantee and the strong trigger's
-# runner-up wins the weighted fill.
+# Weak regime picks three bottom-up names (0,3). Legacy: weak triggers win slots
+# through the per-trigger guarantee. Weighted: they lose only that guarantee and
+# the strong trigger's runners-up win the weighted fill.
 EXPECTED = {
-    ("KR", "morning"): ([("100001", "거래량 급증 상위주"), ("100003", "갭 상승 모멘텀 상위주")],
-                        [("100002", "갭 상승 모멘텀 상위주"), ("100003", "갭 상승 모멘텀 상위주")]),
-    ("KR", "afternoon"): ([("100002", "마감 강도 상위주"), ("100003", "일중 상승률 상위주")],
-                          [("100003", "일중 상승률 상위주"), ("100012", "일중 상승률 상위주")]),
-    ("US", "morning"): ([("DDD", "Volume Surge Top"), ("III", "Gap Up Momentum Top")],
-                        [("CCC", "Gap Up Momentum Top"), ("III", "Gap Up Momentum Top")]),
-    ("US", "afternoon"): ([("BBB", "Intraday Rise Top"), ("CCC", "Closing Strength Top")],
-                          [("BBB", "Intraday Rise Top"), ("III", "Intraday Rise Top")]),
+    ("KR", "morning"): ([("100001", "거래량 급증 상위주"), ("100003", "갭 상승 모멘텀 상위주"),
+                         ("100007", "시총 대비 집중 자금 유입 상위주")],
+                        [("100002", "갭 상승 모멘텀 상위주"), ("100003", "갭 상승 모멘텀 상위주"),
+                         ("100011", "갭 상승 모멘텀 상위주")]),
+    ("KR", "afternoon"): ([("100002", "마감 강도 상위주"), ("100003", "일중 상승률 상위주"),
+                           ("100006", "거래량 증가 상위 횡보주")],
+                          [("100003", "일중 상승률 상위주"), ("100007", "일중 상승률 상위주"),
+                           ("100012", "일중 상승률 상위주")]),
+    ("US", "morning"): ([("CCC", "Volume Surge Top"), ("DDD", "Volume Surge Top"), ("III", "Gap Up Momentum Top")],
+                        [("BBB", "Gap Up Momentum Top"), ("CCC", "Gap Up Momentum Top"),
+                         ("III", "Gap Up Momentum Top")]),
+    ("US", "afternoon"): ([("BBB", "Intraday Rise Top"), ("CCC", "Closing Strength Top"),
+                           ("DDD", "Volume Surge Sideways")],
+                          [("BBB", "Intraday Rise Top"), ("EEE", "Intraday Rise Top"), ("III", "Intraday Rise Top")]),
 }
