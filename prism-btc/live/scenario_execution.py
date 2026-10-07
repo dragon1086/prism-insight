@@ -420,9 +420,9 @@ class ScenarioExecution:
         accounting=self._risk_accounting(observed,active,children) if (size or any(c["evidence"] and c["evidence"]["executions"] for c in children)) else dict(realized_loss=0,fees_paid=0,funding_paid=0)
         if size:
             positions=accounting["positions"]
-        from live.scenario_recovery import authorize_entry, risk_fraction
+        from live.scenario_recovery import authorize_entry, managed_permit, risk_fraction
         fraction = risk_fraction(state, active["scenario_id"])
-        if state.get("breaker", {}).get("blocked", False) or fraction < .02:
+        if state.get("breaker", {}).get("blocked", False) or managed_permit(state, active) or fraction < .02:
             allowed = authorize_entry(state, payload, dict(
                 initial_equity=active["initial_equity"], new_risk_blocked=hard_blocked,
                 protection_ok=not size or self._verify_protection(observed, active["hard_stop"], side),
@@ -628,9 +628,19 @@ class ScenarioExecution:
             if not row:
                 self._fail("chase_parent_missing")
             payload=json.loads(row[0])
-            from live.scenario_recovery import risk_fraction
-            if risk_fraction(self._recovery_state(), payload["scenario_id"]) < .02:
-                self._fail("recovery_probe_chase_forbidden")
+            from live.scenario_recovery import managed_permit, normal_permission
+            state = self._recovery_state()
+            active = state.get("active")
+            if managed_permit(state, active) or state.get("breaker", {}).get("blocked", False):
+                observed = self.capture_account()
+                ctx = dict(initial_equity=active.get("initial_equity") if active else None,
+                    legacy_fenced=observed["legacy_fenced"], accounting_status="confirmed",
+                    protection_ok=not float(observed["position"]["size"]) or
+                        self._verify_protection(observed, active["hard_stop"], active["side"]),
+                    recovery_hard_blocked=not self._new_risk_enabled() or
+                        not self._daily(observed).get("new_risk_allowed", False))
+                if not normal_permission(state, active, ctx):
+                    self._fail("recovery_probe_chase_forbidden")
             newest=self.conn.execute("SELECT id FROM llm_scenario_intents WHERE scenario_id=? ORDER BY rowid DESC LIMIT 1",(payload["scenario_id"],)).fetchone()
             if not newest or newest[0]!=intent_id:
                 self._fail("chase_stale_revision")

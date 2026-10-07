@@ -19,6 +19,51 @@ def recovery_context():
     return c
 
 
+@pytest.mark.parametrize('stage,fraction',[(0,.005),(1,.01),(2,.02)])
+def test_automatic_normalization_contract_uses_host_offered_cap(stage,fraction):
+    c=recovery_context()
+    c.update(recovery_contract_version=2,scenario_risk_fraction=fraction)
+    c['recovery'].update(current_stage=max(0,stage-1),offered_stage=stage,automatic_normal_resume=True)
+    schema=response_schema(c)
+    assert 'recovery' in schema['properties']
+    contract=response_contract(c);rules=' '.join(contract['rules'])
+    assert 'No later adds/retries or automatic normal resume' not in rules
+    assert f'initial_equity*{fraction:g}' in rules
+    assert 'host-offered' in rules
+    p=wire(c);p['recovery']=dict(decision='OBSERVE',reason='관찰',changed_evidence=[],
+                               counterevidence='변화 부족',invalidation='근거 훼손')
+    assert validate_wire_proposal(p,c)['recovery']==p['recovery']
+    c['recovery']['first_observation']=True
+    assert response_schema(c)['properties']['action']['enum']==['WAIT']
+
+
+def test_normal_stage_holding_contract_does_not_keep_one_shot_add_ban():
+    c=context(True)
+    c.update(recovery_contract_version=2,scenario_risk_fraction=.02,
+             recovery={'phase':'CONSUMED','current_stage':2,'entry_deadline':900})
+    contract=response_contract(c);rules=' '.join(contract['rules'])
+    assert contract['expires_at']==c['now']+300
+    assert 'same-scenario additions' in rules
+    assert 'Preserve 0.005 scenario budget' not in rules
+    p=wire(c,'EXIT');p['recovery']={'bad':'optional holding metadata'}
+    assert validate_wire_proposal(p,c)['action']=='EXIT'
+
+
+def test_assembled_v2_policy_separates_stage_authority_and_market_proposal():
+    c=recovery_context();c['recovery_contract_version']=2;calls=[]
+    def generate(**kwargs):
+        calls.append(kwargs)
+        p=wire(c);p['recovery']=dict(decision='OBSERVE',reason='관찰',changed_evidence=[],
+                                   counterevidence='추세 미확인',invalidation='근거 훼손')
+        return SimpleNamespace(text=json.dumps(p))
+    propose({'valid':True,'as_of_ms':1000000},c,response_contract(c),generate=generate,clock=lambda:1000)
+    policy=' '.join(calls[0]['system_prompt'].split())
+    for text in ('When recovery_contract_version=2','host-offered scenario_risk_fraction',
+                 'does not expire the entire recovery program','NORMAL stage 2',
+                 'not a statistical proof','never raises the risk budget of an active scenario'):
+        assert text in policy
+
+
 def test_recovery_contract_budget_and_deadline_are_host_owned():
     c=recovery_context();contract=response_contract(c)
     assert contract['expires_at']==1200

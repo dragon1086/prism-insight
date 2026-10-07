@@ -2,6 +2,17 @@ import pytest
 from live.scenario_notice import render_notice
 
 
+def test_auto_recovery_halt_notice_does_not_claim_permanent_manual_stop():
+    out=render_notice(dict(kind='HALTED',timestamp=1000,reason_code='THREE_LOSSES',
+                           automatic_normalization=True))
+    assert '자동 재평가' in out and '0.5%' in out and '1%·2%' in out
+    assert '승인 전 자동 재개하지 않습니다' not in out
+    hard=render_notice(dict(kind='HALTED',timestamp=1000,reason_code='DAILY_LOSS',
+                            automatic_normalization=True))
+    assert '승인 전 자동 재개하지 않습니다' in hard
+    assert '0.5% 한도로 재개' not in hard
+
+
 def position(**updates):
     value = dict(verified=True, timestamp=1000, side="LONG", quantity=.1,
         average_entry_price=84750, hard_stop=84500, exchange_leverage=10,

@@ -278,6 +278,8 @@ jobs:
             prism-btc/tests/test_scenario_reservation_policy.py \
             prism-btc/tests/test_scenario_recovery.py \
             prism-btc/tests/test_scenario_recovery_protocol.py \
+            prism-btc/tests/test_scenario_normalization.py \
+            prism-btc/tests/test_scenario_normalization_execution.py \
             prism-btc/tests/test_scenario_tp_ladder.py \
             prism-btc/tests/test_scenario_prompt_logic.py \
             prism-btc/tests/test_scenario_oauth.py \

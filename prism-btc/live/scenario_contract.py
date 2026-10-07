@@ -69,7 +69,7 @@ def response_schema(context):
                 "id": {"type": "string"},
                 "disposition": {"type": "string", "enum": ["hold", "replace"]},
                 "reason": {"type": "string"}})}}), {"type": "null"}]}
-    if context.get("recovery_contract_version") == 1:
+    if context.get("recovery_contract_version") in (1, 2):
         properties["recovery"] = {"anyOf": [_object({
             "decision": {"type": "string", "enum": ["OBSERVE", "PROBE"]},
             "reason": {"type": "string"},
@@ -128,7 +128,7 @@ def validate_wire_proposal(payload, context):
         payload = {key: value for key, value in payload.items() if key != "review"}
         schema = dict(schema, properties={key: value for key, value in schema["properties"].items() if key != "review"},
                       required=[key for key in schema["required"] if key != "review"])
-    has_recovery = context.get("recovery_contract_version") == 1
+    has_recovery = context.get("recovery_contract_version") in (1, 2)
     recovery = payload.get("recovery") if has_recovery else None
     if has_recovery:
         payload = {key: value for key, value in payload.items() if key != "recovery"}

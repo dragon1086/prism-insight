@@ -103,11 +103,12 @@ def _economic_evidence(item):
 
 class ScenarioRuntime:
     def __init__(self, conn, broker, propose, snapshot, *, clock=time.time,
-                 recovery_enabled=False):
+                 recovery_enabled=False, automatic_normalization_enabled=False):
         database_path(conn)  # In-memory state cannot provide restart safety.
         self.conn, self.broker = conn, broker
         self.propose, self.snapshot, self.clock = propose, snapshot, clock
-        self.recovery_enabled = recovery_enabled
+        self.recovery_enabled = recovery_enabled or automatic_normalization_enabled
+        self.automatic_normalization_enabled = automatic_normalization_enabled
         with mutation_lock(conn):
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS llm_scenario_state (
@@ -127,7 +128,7 @@ class ScenarioRuntime:
             """)
             conn.execute("INSERT OR IGNORE INTO llm_scenario_state VALUES(1, ?)",
                          (_json({"version": 0, "active": None, "breaker": {}}),))
-            if recovery_enabled:
+            if self.recovery_enabled:
                 recovery.ensure_schema(conn)
             conn.commit()
 
@@ -256,7 +257,8 @@ class ScenarioRuntime:
                     state["breaker"] = update_circuit_breaker(state["breaker"],
                         **{k: context[k] for k in ("day", "day_start_equity", "daily_net_pnl")},
                         completed_scenario_id=active["scenario_id"], completed_net_pnl=settlement["net_pnl"])
-                    if state.get("recovery", {}).get("scenario_id") == active["scenario_id"]:
+                    if (state.get("recovery", {}).get("scenario_id") == active["scenario_id"]
+                            and state["recovery"].get("policy_version") != 2):
                         state["breaker"]["consecutive_losses"] = max(
                             old_count, state["breaker"]["consecutive_losses"])
                 if state.get("recovery", {}).get("scenario_id") == active["scenario_id"]:
@@ -329,26 +331,36 @@ class ScenarioRuntime:
         ctx["recent_waits"] = list(reversed(waits))
         if self.recovery_enabled:
             ctx["recovery_hard_blocked"] = ctx["new_risk_blocked"]
+            if self.automatic_normalization_enabled:
+                recovery.migrate(self.conn, state, ctx, self.clock())
             allowed = recovery.observing_allowed(state, ctx)
             no_intents = not self.conn.execute("SELECT 1 FROM llm_scenario_intents WHERE status IS NULL OR status!='TERMINAL'").fetchone()
             if allowed and no_intents:
                 ctx["recovery_observing"] = True
-                ctx["scenario_risk_fraction"] = recovery.RISK_FRACTION
-            elif active and recovery.risk_fraction(state, active["scenario_id"]) == recovery.RISK_FRACTION:
-                ctx["scenario_risk_fraction"] = recovery.RISK_FRACTION
-                permit = state["recovery"]
-                ctx["recovery_contract_version"] = 1
+                ctx["scenario_risk_fraction"] = recovery.offered_fraction(state)
+            elif active and recovery.managed_permit(state, active):
+                permit = recovery.managed_permit(state, active)
+                ctx["scenario_risk_fraction"] = recovery.risk_fraction(state, active["scenario_id"])
+                ctx["recovery_contract_version"] = permit.get("policy_version", 1)
                 ctx["recovery"] = {"phase": permit["phase"], "consumed": True,
-                    "eligible": False, "risk_fraction": recovery.RISK_FRACTION,
+                    "eligible": False, "risk_fraction": ctx["scenario_risk_fraction"],
                     "permit_id": permit["permit_id"], "scenario_id": permit["scenario_id"],
                     "budget": permit["budget"], "entry_deadline": permit["entry_deadline"],
                     "one_attempt_only": True, "automatic_normal_resume": False}
+                if permit.get("policy_version") == 2:
+                    ctx["recovery"].update(current_stage=permit["stage"], offered_stage=permit["stage"],
+                        policy_version=2, one_attempt_only=False, automatic_normal_resume=True,
+                        promotion_evidence=permit["stage_evidence"])
+                ctx["recovery_normal_permission"] = recovery.normal_permission(state, active, ctx)
         ctx["new_risk_blocked"] = bool(ctx["new_risk_blocked"] or (
-            state["breaker"].get("blocked") and not ctx.get("recovery_observing")))
+            state["breaker"].get("blocked") and not ctx.get("recovery_observing")
+            and not ctx.get("recovery_normal_permission")))
         if state["breaker"].get("blocked") and not state.get("halt_notified"):
             stamp=state.setdefault("halted_at",self.clock())
+            reasons=set(state["breaker"].get("reasons",[]))
             event={"kind":"HALTED","timestamp":stamp,"reason_code":
-                   "THREE_LOSSES" if "three_losses" in state["breaker"].get("reasons",[]) else "DAILY_LOSS"}
+                   "DAILY_LOSS" if "daily_loss" in reasons else "THREE_LOSSES",
+                   "automatic_normalization":self.automatic_normalization_enabled and reasons=={"three_losses"}}
             state["halt_notified"]=self._notice(f"halt:{stamp}",event)
         self._save(state)
         return ctx
@@ -531,16 +543,18 @@ class ScenarioRuntime:
             outcome = {"status": "blocked", "reason": "reconciliation_or_proposal_failed",
                        "failure_stage": stage}
             safe_codes = {
+                "initial_reconcile": {"normalization_state_invalid"},
+                "post_model_reconcile": {"normalization_state_invalid"},
                 "snapshot_collection": {"empty_public_data", "collection_too_slow",
                     "candle_boundary_crossed_during_collection", "future_public_candle", "public_rate_limited"},
                 "snapshot_validation": {"invalid_market_snapshot", "invalid_snapshot_time"},
-                "snapshot_persist": {"recovery_market_evidence_missing", "recovery_journal_bound"},
+                "snapshot_persist": {"recovery_market_evidence_missing", "recovery_journal_bound", "normalization_state_invalid"},
                 "recovery_recheck": {"recovery_recheck_log_unavailable"},
                 "validation": {"recovery_metadata_invalid", "recovery_action_mismatch",
                     "recovery_first_observation", "recovery_no_changed_evidence",
                     "recovery_missing_raw", "recovery_missing_request", "recovery_chase_forbidden",
                     "recovery_entry_deadline_invalid", "recovery_mixed_loaded_code"},
-                "execution": {"recovery_probe_risk_invalid"},
+                "execution": {"recovery_probe_risk_invalid", "normalization_state_invalid"},
             }
             code = exc.args[0] if type(exc) is ValueError and len(exc.args) == 1 else None
             if isinstance(code, str) and code in safe_codes.get(stage, ()):
