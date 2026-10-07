@@ -215,9 +215,8 @@ npm install -g @perplexity-ai/mcp-server
 # The mcp_agent.config.yaml.example already uses npx
 ```
 
-**No Perplexity subscription? Use Tavily instead.** Add these to `.env`
-(free tier: 1,000 credits/month at [tavily.com](https://www.tavily.com/); one
-search uses 2 credits):
+**No Perplexity subscription? Use Tavily instead.** Uncomment the
+`# Web Search` lines in `.env.example` (copied to `.env`):
 
 ```bash
 PRISM_WEB_SEARCH_PROVIDER=tavily
@@ -226,8 +225,7 @@ TAVILY_API_KEY=tvly-...
 
 The in-repo `cores/llm/tavily_mcp_server.py` then runs in place of the
 Perplexity server under the same `perplexity_ask` tool, so no prompt changes
-are needed. US peer comparison calls the Perplexity API directly and is skipped
-without `PERPLEXITY_API_KEY`.
+are needed.
 
 ### Step 8: Install Korean Fonts (Linux Only)
 

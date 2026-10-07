@@ -221,9 +221,8 @@ npm install -g @perplexity-ai/mcp-server@1.2.0
 # mcp_agent.config.yaml.example에서 이미 npx 방식을 사용합니다
 ```
 
-**Perplexity 구독이 없다면 Tavily로 대체할 수 있습니다.** `.env`에 아래 두 줄을
-추가하세요 ([tavily.com](https://www.tavily.com/) 무료 플랜 월 1,000 크레딧, 검색
-1회에 2크레딧 사용):
+**Perplexity 구독이 없다면 Tavily로 대체할 수 있습니다.** `.env.example`의
+`# Web Search` 항목을 참고해 `.env`에 아래 두 줄을 넣으세요:
 
 ```bash
 PRISM_WEB_SEARCH_PROVIDER=tavily
@@ -231,9 +230,7 @@ TAVILY_API_KEY=tvly-...
 ```
 
 그러면 리포 안의 `cores/llm/tavily_mcp_server.py`가 같은 `perplexity_ask` 도구
-이름으로 Perplexity 서버를 대신 실행하므로 프롬프트를 고칠 필요가 없습니다. 미국
-피어 비교는 Perplexity API를 직접 호출하므로 `PERPLEXITY_API_KEY`가 없으면
-생략됩니다.
+이름으로 Perplexity 서버를 대신 실행하므로 프롬프트를 고칠 필요가 없습니다.
 
 ### 8단계: 한글 폰트 설치 (Linux만 해당)
 
