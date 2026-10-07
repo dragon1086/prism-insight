@@ -90,6 +90,9 @@ def test_sell_factory_matches_reviewed_volume_prompt():
     # 2026-09-28 reviewed: only appends the wording-only Korean rationale style rule.
     # 2026-10-01 reviewed: Core-1 / tier-1 wording matches the executed intraday hard stop
     # (stop_loss x 0.995, -7% on the live price); trailing stop stays closing-price based.
+    # 2026-10-08 reviewed: Core-0 counts only control/delisting tender offers confirmed by an
+    # official filing (Official filing check block); buybacks, debt tenders and mini-tenders are
+    # not corporate events (MRVL sold on a 0.06% press-release mini-tender, 2026-10-07).
     source = SOURCE.read_text(encoding="utf-8")
     node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "create_sell_decision_agent")
-    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "b1f3812812644aa867aa1105e62898860348da74886a330c994693bdad6a7dc8"
+    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "7686f185e659135717f6a4dc8b664a2ce030f39fd646a6169dc9e255670b3898"

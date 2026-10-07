@@ -903,7 +903,7 @@ def create_us_sell_decision_agent(language: str = "ko"):
   `"<company> tender offer OR going private"`, `"<company> delisting"`,
   `"<company> bankruptcy OR Chapter 11 OR SEC deregistration"` (회사명 + 티커 + 2026). 최소 2개 쿼리.
 - **다음 중 하나라도 공식 확인되면 = 매도 트리거(최종 상폐일 미정이어도 매도):**
-  ① **공개매수/비공개전환(tender offer / going-private) 공식 발표·진행** (인수자·가격 명시)
+  ① **경영권 인수·비공개전환 목적의 공개매수(tender offer / going-private) 공식 제출·진행** (SEC Schedule TO-T·14D-9·13E-3 등, 인수자·가격 명시)
   ② 거래소 상장요건 미달 퇴출(NYSE/Nasdaq compliance delisting) / SEC 등록취소(Form 25)
   ③ 파산(Chapter 11) / 합병·피인수 완료로 인한 상장폐지 / 거래정지
   → **should_sell = true (전량 매도)**, sell_reason 맨 앞에 `[법인이벤트]` + 유형·근거(출처/날짜).
@@ -911,6 +911,11 @@ def create_us_sell_decision_agent(language: str = "ko"):
   않으면 비상장 전환으로 자금이 묶인다. 공식 발표된 건은 '루머'가 아니라 확정 이벤트다.**
 - **보류(보유)는 오직 회사가 부인했거나 '인수설/합병설' 수준의 미확인 단일 추측 기사뿐일 때만.**
   공식 발표된 tender offer/going-private를 "최종 상폐일 미확정"을 이유로 미루지 말 것 — 이미 확정 사유다.
+- **법인이벤트가 아닌 것(매도 사유 아님):** 회사의 자사주 공개매수(SC TO-I)·자사주 매입, 회사채 매입, 이 회사가 다른 회사를
+  인수하는 쪽인 공개매수, 제3자의 소량 공개매수(mini-tender: 발행주식 일부만 사겠다는 보도자료성 제안, SEC Schedule TO 없음).
+  주가를 인수가에 묶거나 상장폐지로 이어지지 않으므로 기록만 하고 아래 기술적 판단을 계속하십시오.
+- 사용자 메시지의 `Official filing check` 블록(시스템이 SEC 공시 목록을 자동 조회)이 1차 근거입니다. 검색 결과는 보조이며,
+  블록에 공식 제출이 없고 뉴스·보도자료로만 보이는 공개매수는 미확인으로 봅니다. 매도 시 공시일을 함께 적으십시오.
 - 이벤트가 없으면 아래 핵심-1~4의 기술적 판단을 정상 진행하십시오.
 
 **핵심-1) 손절은 장중, trailing stop은 종가 기준:**
@@ -1128,7 +1133,7 @@ You are a professional analyst specializing in sell timing decisions for US stoc
   `"<company> tender offer OR going private"`, `"<company> delisting"`,
   `"<company> bankruptcy OR Chapter 11 OR SEC deregistration"` (company + ticker + 2026). Run 2+ queries.
 - **If ANY of these is officially confirmed = SELL trigger (even if the final delisting DATE is not set):**
-  (1) **tender offer / going-private announced or ongoing** (acquirer & price stated)
+  (1) **tender offer for control / going-private, officially filed or ongoing** (SEC Schedule TO-T, 14D-9, 13E-3; acquirer & price stated)
   (2) exchange compliance delisting (NYSE/Nasdaq) / SEC deregistration (Form 25)
   (3) bankruptcy (Chapter 11) / merger-driven delisting / trading halt
   → set **should_sell = true (full exit)**, prefix sell_reason with `[CORP_EVENT]` + type & evidence.
@@ -1138,6 +1143,13 @@ You are a professional analyst specializing in sell timing decisions for US stoc
 - **Hold ONLY when it is just an unconfirmed single-source 'acquisition/merger rumor' or the company denied
   it.** Do NOT defer an officially announced tender offer / going-private because "the final delisting date
   is unconfirmed" — that already qualifies as confirmed.
+- **NOT corporate events (never a sell reason):** an issuer tender offer (SC TO-I) or buyback, a debt tender offer, a
+  tender offer in which this company is the bidder, and a small third-party offer for a fraction of the shares
+  announced only by press release with no SEC Schedule TO (mini-tender). They neither pin the price nor delist the
+  stock: note them and continue with the technical judgement.
+- The `Official filing check` block in the user message (system lookup of the SEC filing list) is the primary
+  evidence. Search results are secondary; a tender offer seen only in news or a press release, with no filing in that
+  block, is unconfirmed. Quote the filing date when you sell.
 - If no event, proceed normally with Core-1~4 technical judgement below.
 
 **Core-1) Stop loss is intraday; trailing stop is closing-price based:**

@@ -888,7 +888,7 @@ def create_sell_decision_agent(language: str = "ko"):
           `"<company> tender offer"`, `"<company> delisting OR voluntary delisting"`,
           `"<company> liquidation trading OR trading halt"` (company + ticker + 2026). Run 2+ queries for recall.
         - **If ANY of these is officially confirmed = SELL trigger (even if the final delisting DATE is not set):**
-          (1) **public tender offer announced/ongoing** (acquirer & offer price stated)
+          (1) **tender offer for control, all shares or delisting, officially filed/ongoing** (tender offer statement / target opinion filing; acquirer & offer price stated)
           (2) **voluntary delisting in progress** (delisting criteria met / board resolution / going-private)
           (3) liquidation-trading schedule / trading halt / exchange delisting decision / eligibility review
           (4) administrative-issue designation / audit-opinion refusal / merger-driven delisting
@@ -899,6 +899,13 @@ def create_sell_decision_agent(language: str = "ko"):
         - **Hold ONLY when it is just an unconfirmed single-source 'acquisition/merger rumor' or the company
           denied it.** Do NOT defer an officially announced tender offer / voluntary delisting on the grounds
           that "the final delisting date is unconfirmed" — that already qualifies as confirmed.
+        - **NOT corporate events (never a sell reason):** the company buying back its own shares (including by tender
+          offer), debt tender offers, and small third-party offers for a fraction of the shares announced only by press
+          release with no official filing (mini-tenders). They neither pin the price nor delist the stock: note them and
+          continue with the technical judgement.
+        - The `Official filing check` block in the user message (system lookup) is the primary evidence. Search results
+          are secondary; a tender offer seen only in news or a press release, with no filing in that block, is
+          unconfirmed. Quote the filing date when you sell.
         - If no event, proceed normally with Core-1~4 technical judgement below.
 
         **Core-1) Stop loss is intraday; trailing stop is closing-price based:**
@@ -1111,7 +1118,7 @@ def create_sell_decision_agent(language: str = "ko"):
           `"<회사명> 공개매수"`, `"<회사명> 자진상장폐지 OR 상장폐지"`, `"<회사명> 정리매매 OR 거래정지"`
           (회사명 + 종목코드 + 2026). 최소 2개 쿼리 이상 시도해 recall을 확보할 것.
         - **다음 중 하나라도 공식 확인되면 = 매도 트리거(최종 상폐일이 미정이어도 매도):**
-          ① **공개매수(tender offer) 공식 발표/진행** (인수자·공개매수가 명시)
+          ① **경영권 인수·지분 전량 취득·상장폐지 목적의 공개매수 공식 공시/진행** (공개매수신고서·의견표명서 등, 인수자·공개매수가 명시)
           ② **자진상장폐지 추진** (자진상폐 요건 충족·이사회 결의·완전자회사화 등)
           ③ 정리매매 일정 공시 / 매매거래정지 / 거래소 상장폐지 결정·상장적격성 실질심사
           ④ 관리종목 지정 / 감사의견 거절·한정 / 합병·주식교환으로 인한 상장폐지
@@ -1121,6 +1128,11 @@ def create_sell_decision_agent(language: str = "ko"):
         - **보류(보유)는 오직 회사가 부인했거나 '인수설/합병설' 수준의 미확인 단일 추측 기사뿐일 때만.**
           공식 발표된 공개매수·자진상폐를 "최종 상폐일 미확정"이라는 이유로 미루지 말 것 — 그건 이미 확정 사유다.
           (단순 추측만 있으면 "이벤트 의심(미확정)"으로 기록하고 보유.)
+        - **법인이벤트가 아닌 것(매도 사유 아님):** 회사의 자기주식 공개매수·자사주 매입, 회사채 매입, 제3자의 소량 공개매수
+          (발행주식 일부만 사겠다는 보도자료성 제안, 공식 공시 없음). 주가를 공개매수가에 묶거나 상장폐지로 이어지지 않으므로
+          기록만 하고 아래 기술적 판단을 계속하십시오.
+        - 사용자 메시지의 `공식 공시 점검` 블록(시스템 자동 조회)이 1차 근거입니다. 검색 결과는 보조이며, 블록에 공식 공시가 없고
+          뉴스·보도자료로만 보이는 공개매수는 미확인으로 봅니다. 매도 시 공시일을 함께 적으십시오.
         - 이벤트가 없으면 아래 핵심-1~4의 기술적 판단을 정상 진행하십시오.
 
         **핵심-1) 손절은 장중, trailing stop은 종가 기준:**
