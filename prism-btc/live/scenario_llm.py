@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from collections.abc import Callable
 
@@ -374,8 +375,78 @@ Use the supplied response_contract for exact field names and allowed actions.
 """
 
 
+FLAT_ENTRY_PROMPT = """
+Flat-entry comparison only; all preceding host safety/lifecycle rules prevail.
+Recovery baseline and changed_evidence audit change/authorization, not present
+momentum: an hours-old baseline price alone is not a momentum veto for either
+LONG or SHORT. Still cite required exact changed paths and assess their meaning;
+first observation remains WAIT and a numeric change alone never grants an edge.
+Judge current 30m/1h structure, MA slopes, observed forming progress and recent
+confirmed 15m bars. Ground price/MA claims in current_primary_frame_facts, derived
+from the same forming observations: bearish MA order is NOT price below both MAs;
+BETWEEN is not BELOW. Missing facts stay unknown, not an entry veto. Mixed price
+position can still support a trade with other concrete evidence, not fabricated alignment.
+Higher-frame direction alone is not a veto; concrete current
+4h/longer-frame obstacles still matter through achievable TP/SL and costs and
+can justify WAIT when no executable net-of-cost opportunity remains.
+Compare a capped marketable LIMIT now, a numeric conditional crossing sufficient
+for entry before the ORIGINAL next-decision deadline, and WAIT, symmetrically.
+If current evidence already justifies entry, do not demand a new low/high or retest
+by habit. Smaller quantity may express uncertainty in a valid setup, never repair
+an invalid setup. Neither immediate entry nor conditional entry is compulsory.
+Existing sizing cap: sum(new-entry risk) <= min(original_budget*confidence,
+budget remaining after consumed/reserved risk). Per-BTC risk is positive entry-to-SL
+distance + entry*estimated_cost_rate + hard_stop*slippage_bps/10000; round quantity
+DOWN to quantity_step. Never raise confidence or widen SL merely to fit quantity.
+For WAIT, name the specific current missing evidence or invalid risk. Recheck any
+prior waiting condition actually supplied as structured evidence; if met, do not
+move its goalposts without fresh counterevidence. Never invent an omitted prior condition.
+Keep recovery's first-observation WAIT, immutable host risk, 10x and original expiry.
+Recovery stages0/1 keep original-batch-only scope and zero chase; conditional entries
+also keep zero chase. Preserve host-authorized NORMAL ordinary-entry chase rules
+and all protection/accounting guards. No new fields,
+fabricated reward/risk or probabilities; summarize the choice in existing rationale.
+"""
+
+
 class ScenarioModelError(ValueError):
     """Sanitized model failure; never embeds response or account payload."""
+
+
+def _current_primary_frame_facts(snapshot: dict) -> dict:
+    """Arithmetic projection only: no new indicator, market observation or gate."""
+    facts = {}
+    frames = snapshot.get("timeframes")
+    for frame in ("15m", "30m", "1h"):
+        source = "timeframes." + frame + ".forming"
+        facts[frame] = {"status": "unavailable", "source": source}
+        item = frames.get(frame) if isinstance(frames, dict) else None
+        forming = item.get("forming") if isinstance(item, dict) else None
+        if not isinstance(forming, dict) or forming.get("observation_kind") == "synthetic_boundary":
+            continue
+        ohlcv = forming.get("ohlcv")
+        if not isinstance(ohlcv, dict):
+            continue
+        values = {"close": ohlcv.get("close"), "ma10": forming.get("ma10"), "ma35": forming.get("ma35")}
+        observed, as_of = forming.get("observed_at_ms"), snapshot.get("as_of_ms")
+        if (any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0 for v in values.values())
+                or any(type(v) not in (int, float) or not math.isfinite(v) for v in (observed, as_of))
+                or not 0 <= observed <= as_of):
+            continue
+        close, ma10, ma35 = values["close"], values["ma10"], values["ma35"]
+        if close == ma10 == ma35:
+            position = "AT_BOTH"
+        elif close == ma10 or close == ma35:
+            position = "AT_MA10" if close == ma10 else "AT_MA35"
+        else:
+            position = "ABOVE" if close > max(ma10, ma35) else "BELOW" if close < min(ma10, ma35) else "BETWEEN"
+        groups = [" = ".join(k for k, v in values.items() if v == price) for price in sorted(set(values.values()))]
+        facts[frame] = {"status": "available", "source": source, **values,
+                        "price_basis": "FORMING_LAST_CLOSE",
+                        "observed_at_ms": observed, "price_position": position,
+                        "ma_order": "BULLISH" if ma10 > ma35 else "BEARISH" if ma10 < ma35 else "EQUAL",
+                        "ordered_comparison": " < ".join(groups)}
+    return facts
 
 
 def _unique_pairs(pairs):
@@ -430,6 +501,9 @@ def propose(snapshot: dict, context: dict, response_contract: dict, *,
     # Do not recycle retired-timeframe narratives into new-policy judgments.
     # Preserve the original audit context and all structured order/risk evidence.
     model_context = dict(context)
+    flat_entry = context.get("scenario_id") is None and not context.get("positions") and not context.get("pending_entries")
+    if flat_entry:
+        model_context["current_primary_frame_facts"] = _current_primary_frame_facts(snapshot)
     if isinstance(context.get("current_plan"), dict):
         model_context["current_plan"] = {key: value for key, value in context["current_plan"].items()
                                          if key != "rationale"}
@@ -446,11 +520,14 @@ def propose(snapshot: dict, context: dict, response_contract: dict, *,
     if len(prompt.encode("utf-8")) > 100_000:
         raise ScenarioModelError("input_size")
     started = clock()
+    system_prompt = SYSTEM_PROMPT
+    if flat_entry:
+        system_prompt += FLAT_ENTRY_PROMPT
     from live.scenario_recovery import record_model_request, record_model_wire, record_model_error
-    record_model_request(system_prompt=SYSTEM_PROMPT, user_prompt=prompt,
+    record_model_request(system_prompt=system_prompt, user_prompt=prompt,
                          response_schema=schema, model=MODEL, effort=EFFORT, fast=True)
     try:
-        result = generate(system_prompt=SYSTEM_PROMPT, user_prompt=prompt,
+        result = generate(system_prompt=system_prompt, user_prompt=prompt,
                           model=MODEL, reasoning_effort=EFFORT, fast_tier=True,
                           timeout=TIMEOUT_SECONDS, mcp_profile=None,
                           response_schema=schema)

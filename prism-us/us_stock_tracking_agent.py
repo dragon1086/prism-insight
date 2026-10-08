@@ -2238,10 +2238,13 @@ class USStockTrackingAgent:
 
             # Generate no-entry message (same format as Korean enhanced version)
             from messaging.korean_trading_message import hold_reason_display
+            from prism_core.sector_cap import deferred_decision_line
+            # The AI may have chosen entry while a rule (sector cap, gate) deferred it.
+            decision_display = deferred_decision_line(str(decision).strip().lower() in ("entry", "enter"), "Skip")
             skip_message = f"⚠️ 매수 보류: {company_name}({ticker})\n" \
                            f"현재가: ${current_price:,.2f}\n" \
                            f"매수 Score: {buy_score}/10\n" \
-                           f"결정: Skip\n" \
+                           f"결정: {decision_display}\n" \
                            f"시장 상황: {market_condition_display}\n" \
                            f"산업군: {sector}\n" \
                            f"보류 사유: {hold_reason_display(skip_reason, scenario)}\n" \
@@ -3494,27 +3497,19 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 )
 
             # Keep stored whole days unchanged; show sub-day elapsed time in notices.
-            if holding_days == 0:
-                holding_minutes = int(holding_period.total_seconds() // 60)
-                hours, minutes = divmod(holding_minutes, 60)
-                holding_period_text = f"{hours}시간 {minutes}분" if holding_minutes else "1분 미만"
-            else:
-                holding_period_text = f"{holding_days}일"
-
             # This simulator record does not confirm broker fills or realized P&L.
-            arrow = "⬆️" if profit_rate > 0 else "⬇️" if profit_rate < 0 else "➖"
             from prism_core.runner_hold import public_reason, sell_message_line
+            from prism_core.sell_message import allocation_after_adds, holding_text, plain_reason, return_line
             message = f"📉 매도: {company_name}({ticker})\n" \
                       f"매수가: ${buy_price:,.2f}\n" \
                       f"매도가: ${current_price:,.2f}\n" \
-                      f"수익률(전략 기준): {arrow} {abs(profit_rate):.2f}%\n" \
+                      f"{return_line(profit_rate, scenario_json, label='수익률(전략 기준)')}\n" \
                       "시뮬레이터 가격 기준이며 증권사 확정 실현손익이 아닙니다\n" \
-                      f"보유기간: {holding_period_text}\n" \
-                      f"매도이유: {public_reason(sell_reason)}"
-            from prism_core.micro_split_live import allocation_line
-            _alloc = allocation_line(scenario_json, profit_rate=profit_rate, market="US", language="ko")
+                      f"보유기간: {holding_text(holding_period)}\n" \
+                      f"매도이유: {plain_reason(public_reason(sell_reason), sell_price=current_price, market='US')}"
+            _alloc = allocation_after_adds(scenario_json, profit_rate=profit_rate, market="US")
             if _alloc:
-                message += "\n" + _alloc.rstrip("\n")
+                message += "\n" + _alloc
             _runner_line = sell_message_line(scenario_json, language="ko")
             if _runner_line:
                 message += "\n" + _runner_line
@@ -4589,7 +4584,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 f"Insufficient score ({adjusted_score:g}/{min_score:g})"
                             )
                         if not sector_diverse:
-                            reason_parts.append(f"Sector concentration ({sector})")
+                            from prism_core.sector_cap import sector_cap_note
+                            cap_note = sector_cap_note(self, "us_stock_holdings", sector)
+                            reason_parts.append(f"Sector concentration ({cap_note or sector})")
                         if normalized_decision == "entry" and not _buy_gate.get("allowed", False):
                             reason_parts.append(
                                 f"Deterministic gate: {_buy_gate.get('reason', 'blocked')}"

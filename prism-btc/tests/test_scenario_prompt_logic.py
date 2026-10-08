@@ -1,9 +1,12 @@
 """Prompt specification regressions against the actual economic validator."""
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from core.llm_scenario import risk_snapshot, validate_scenario
 from live.scenario_contract import response_schema, validate_wire_proposal
-from live.scenario_llm import SYSTEM_PROMPT
+from live.scenario_llm import SYSTEM_PROMPT, propose, _current_primary_frame_facts
 from live.scenario_preview import response_contract
 from live.scenario_contract import identity_fields
 
@@ -349,3 +352,197 @@ def test_empty_entry_adjust_does_not_activate_chase_on_older_pending_order(tmp_p
     observed['ticker']['ask1Price'] = '100.1'
     broker._autochase(broker._active(), observed)
     assert [kind for kind, _ in exchange.writes] == ['place']
+
+
+@pytest.mark.parametrize('active', [False, True])
+def test_assembled_entry_framing_is_flat_only_and_preserves_inputs(active, monkeypatch):
+    ctx = context(active)
+    ctx['recovery'] = {'baseline': {'mark_price': 59000}, 'changed_evidence': []}
+    original = json.loads(json.dumps(ctx))
+    calls = []
+    journal = []
+    from live import scenario_recovery
+    monkeypatch.setattr(scenario_recovery, 'record_model_request', lambda **kw: journal.append(kw))
+    p = exposure_proposal(ctx, 'WAIT')
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(p))
+    result = propose({'valid': True, 'as_of_ms': 1000000}, ctx,
+                     response_contract(ctx), generate=generate, clock=lambda: 1000)
+    policy = calls[0]['system_prompt']
+    if active:
+        assert policy == SYSTEM_PROMPT  # Holding policy is byte-identical.
+        assert json.loads(calls[0]['user_prompt'])['contract_context'] == ctx
+    else:
+        text = ' '.join(policy.split())
+        assert 'Flat-entry comparison only' in text
+        assert 'baseline and changed_evidence audit change/authorization' in text
+        assert 'hours-old baseline price alone is not a momentum veto' in text
+        assert 'capped marketable LIMIT now' in text
+        assert 'new low/high or retest by habit' in text
+        assert 'never repair an invalid setup' in text
+        assert 'do not move its goalposts without fresh counterevidence' in text
+        assert 'Never invent an omitted prior condition' in text
+        assert "Keep recovery's first-observation WAIT" in text
+        assert 'Preserve host-authorized NORMAL ordinary-entry chase rules' in text
+        assert 'original_budget*confidence' in text
+        assert 'hard_stop*slippage_bps/10000' in text
+        assert 'Never raise confidence or widen SL merely to fit quantity' in text
+        assert 'bearish MA order is NOT price below both MAs' in text
+        assert 'Mixed price position can still support a trade' in text
+        assert json.loads(calls[0]['user_prompt'])['contract_context']['current_primary_frame_facts']['30m']['status'] == 'unavailable'
+    assert result['action'] == 'WAIT'
+    assert journal[0]['system_prompt'] == calls[0]['system_prompt']
+    assert journal[0]['user_prompt'] == calls[0]['user_prompt']
+    assert json.loads(calls[0]['user_prompt'])['contract_context']['recovery'] == ctx['recovery']
+    assert ctx == original
+
+
+@pytest.mark.parametrize('exposure', ['positions', 'pending_entries'])
+def test_flat_addendum_never_applies_to_unscoped_exposure(exposure):
+    ctx = context()
+    ctx[exposure] = [dict(id='unresolved', price=60000, quantity=.001)]
+    calls = []
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(exposure_proposal(ctx, 'WAIT')))
+    propose({'valid': True, 'as_of_ms': 1000000}, ctx, response_contract(ctx),
+            generate=generate, clock=lambda: 1000)
+    assert calls[0]['system_prompt'] == SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('blocked', [False, True])
+def test_assembled_flat_comparison_preserves_real_open_and_halt_guards(side, blocked):
+    ctx = context()
+    ctx['new_risk_blocked'] = blocked
+    p = wire(ctx, 'OPEN')
+    p.update(side=side, entries=[dict(id='now-entry', price=60000, quantity=.001)])
+    if side == 'SHORT':
+        p.update(hard_stop=61000, take_profits=[dict(id='tp', price=59000, fraction=.5)])
+    parsed = propose({'valid': True, 'as_of_ms': 1000000}, ctx,
+                     response_contract(ctx), clock=lambda: 1000,
+                     generate=lambda **kwargs: SimpleNamespace(text=json.dumps(p)))
+    if blocked:
+        with pytest.raises(ValueError):
+            validate_scenario(parsed, ctx)
+    else:
+        accepted = validate_scenario(parsed, ctx)
+        assert accepted['side'] == side
+        assert accepted['risk']['budget'] == 200
+        assert accepted['leverage'] == 10
+
+
+@pytest.mark.parametrize('quantity,accepted', [(.027, False), (.024, True)])
+def test_recovery_quantity_obeys_existing_confidence_cap(quantity, accepted):
+    ctx = context()
+    ctx.update(initial_equity=9522.20868271, scenario_risk_fraction=.005,
+               estimated_cost_rate=.002, slippage_bps=20, mark_price=82650)
+    p = wire(ctx, 'OPEN')
+    p.update(side='SHORT', confidence=.55, hard_stop=83400,
+             entries=[dict(id='entry', price=82650, quantity=quantity)],
+             take_profits=[dict(id='tp', price=82000, fraction=1)])
+    parsed = propose({'valid': True, 'as_of_ms': 1000000}, ctx, response_contract(ctx),
+                     clock=lambda: 1000,
+                     generate=lambda **kwargs: SimpleNamespace(text=json.dumps(p)))
+    budget = ctx['initial_equity'] * .005
+    proposed_risk = quantity * (750 + 82650*.002 + 83400*20/10000)
+    assert proposed_risk < budget  # The full budget alone does not authorize size.
+    if accepted:
+        result = validate_scenario(parsed, ctx)
+        assert result['risk']['proposed_risk'] == pytest.approx(25.9704)
+        assert result['risk']['budget'] == pytest.approx(budget)
+        assert result['confidence'] == .55
+        assert result['hard_stop'] == 83400
+        assert proposed_risk <= budget*.55
+    else:
+        assert proposed_risk == pytest.approx(29.2167)
+        assert proposed_risk > budget*.55
+        with pytest.raises(ValueError, match='risk budget exceeded'):
+            validate_scenario(parsed, ctx)
+
+
+def primary_snapshot():
+    return {'valid': True, 'as_of_ms': 1000000, 'timeframes': {
+        frame: {'forming': {'ohlcv': {'close': close}, 'ma10': ma10, 'ma35': ma35,
+                            'observed_at_ms': 999000, 'observation_kind': 'observed',
+                            'price_position': 'below'}}  # A bad label must not override arithmetic.
+        for frame, close, ma10, ma35 in (
+            ('15m', 83342.2, 83285.59, 83475.06),
+            ('30m', 83342.2, 83254.76999999999, 83879.15142857142),
+            ('1h', 83342.1, 83476.42000000001, 84801.81714285715))}}
+
+
+def test_exact_oct8_mixed_price_positions_not_fabricated_bearish_alignment():
+    snapshot = primary_snapshot()
+    original = json.loads(json.dumps(snapshot))
+    facts = _current_primary_frame_facts(snapshot)
+    assert facts['15m']['price_position'] == 'BETWEEN'
+    assert facts['30m']['price_position'] == 'BETWEEN'
+    assert facts['1h']['price_position'] == 'BELOW'
+    assert facts['30m']['ma_order'] == 'BEARISH'
+    assert facts['30m']['ordered_comparison'] == 'ma10 < close < ma35'
+    assert facts['30m']['price_basis'] == 'FORMING_LAST_CLOSE'
+    assert facts['30m']['source'] == 'timeframes.30m.forming'
+    assert snapshot == original
+
+
+@pytest.mark.parametrize('close,ma10,ma35,position,order,comparison', [
+    (110, 105, 100, 'ABOVE', 'BULLISH', 'ma35 < ma10 < close'),
+    (103, 105, 100, 'BETWEEN', 'BULLISH', 'ma35 < close < ma10'),
+    (100, 100, 110, 'AT_MA10', 'BEARISH', 'close = ma10 < ma35'),
+    (110, 100, 110, 'AT_MA35', 'BEARISH', 'ma10 < close = ma35'),
+    (100, 100, 100, 'AT_BOTH', 'EQUAL', 'close = ma10 = ma35'),
+    (101, 100, 100, 'ABOVE', 'EQUAL', 'ma10 = ma35 < close'),
+])
+def test_primary_facts_symmetric_arithmetic_and_equality(close, ma10, ma35, position, order, comparison):
+    snapshot = primary_snapshot()
+    snapshot['timeframes']['30m']['forming'].update(ohlcv={'close': close}, ma10=ma10, ma35=ma35)
+    facts = _current_primary_frame_facts(snapshot)['30m']
+    assert (facts['price_position'], facts['ma_order'], facts['ordered_comparison']) == (position, order, comparison)
+
+
+@pytest.mark.parametrize('bad', [None, True, float('nan'), float('inf'), 0, -1, '83342.2'])
+@pytest.mark.parametrize('field', ['close', 'ma10', 'ma35'])
+def test_primary_facts_invalid_numbers_unavailable(field, bad):
+    snapshot = primary_snapshot()
+    forming = snapshot['timeframes']['30m']['forming']
+    (forming['ohlcv'] if field == 'close' else forming)[field] = bad
+    facts = _current_primary_frame_facts(snapshot)['30m']
+    assert facts == {'status': 'unavailable', 'source': 'timeframes.30m.forming'}
+
+
+@pytest.mark.parametrize('fault', ['missing_frame', 'missing_ohlcv', 'missing_time', 'future', 'boolean_time', 'synthetic'])
+def test_primary_facts_do_not_create_missing_or_future_observations(fault):
+    snapshot = primary_snapshot()
+    forming = snapshot['timeframes']['30m']['forming']
+    if fault == 'missing_frame':
+        del snapshot['timeframes']['30m']
+    elif fault == 'missing_ohlcv':
+        del forming['ohlcv']
+    elif fault == 'missing_time':
+        del forming['observed_at_ms']
+    elif fault == 'future':
+        forming['observed_at_ms'] = 1000001
+    elif fault == 'boolean_time':
+        forming['observed_at_ms'] = True
+    else:
+        forming['observation_kind'] = 'synthetic_boundary'
+    assert _current_primary_frame_facts(snapshot)['30m']['status'] == 'unavailable'
+
+
+def test_actual_model_payload_gets_same_primary_facts_as_request_record(monkeypatch):
+    from live import scenario_recovery
+    ctx, snapshot, calls, journal = context(), primary_snapshot(), [], []
+    original = json.dumps([ctx, snapshot], sort_keys=True)
+    monkeypatch.setattr(scenario_recovery, 'record_model_request', lambda **kw: journal.append(kw))
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(exposure_proposal(ctx, 'WAIT')))
+    propose(snapshot, ctx, response_contract(ctx), generate=generate, clock=lambda: 1000)
+    assert journal[0]['user_prompt'] == calls[0]['user_prompt']
+    assert journal[0]['system_prompt'] == calls[0]['system_prompt']
+    payload = json.loads(calls[0]['user_prompt'])
+    assert payload['contract_context']['current_primary_frame_facts'] == _current_primary_frame_facts(snapshot)
+    assert payload['market_snapshot'] == snapshot
+    assert json.dumps([ctx, snapshot], sort_keys=True) == original

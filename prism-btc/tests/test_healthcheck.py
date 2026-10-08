@@ -45,6 +45,49 @@ def test_intentional_flat_halt_does_not_forge_market_freshness():
     assert tracking.get_meta(conn, "scenario_input_asof_ms", "demo") == before
 
 
+def test_verified_flat_halt_warns_decision_stopped_read_only():
+    conn = _halted_scenario_conn()
+    conn.execute("UPDATE llm_scenario_state SET body=?", (json.dumps({
+        "active": None, "recovery": {"phase": "DONE_REVIEW_REQUIRED"}}),))
+    before = list(conn.iterdump())
+    issues = healthcheck.run_healthcheck(conn, "demo", now=_NOW)
+    issue = next(i for i in issues if i["code"] == "decision_halted")
+    assert issue["level"] == "warn"
+    assert "시험매매 종료 후 검토 대기" in issue["msg"]
+    assert "시장 관망 판단과 다릅니다" in issue["msg"]
+    assert "[판단중단]" in healthcheck._build_alert_message([issue], "demo", now=_NOW)
+    assert not any(i["code"] == "price_stale" for i in issues)
+    assert list(conn.iterdump()) == before
+
+
+@pytest.mark.parametrize("mode", ["shadow", "live"])
+def test_decision_halt_warning_demo_only(mode):
+    assert healthcheck._check_scenario_decision_halted(_halted_scenario_conn(), mode, _NOW) is None
+
+
+def test_decision_halt_unknown_reason_stays_generic():
+    issue = healthcheck._check_scenario_decision_halted(_halted_scenario_conn(), "demo", _NOW)
+    assert issue["code"] == "decision_halted"
+    assert "검토 대기" not in issue["msg"]
+
+
+@pytest.mark.parametrize("status", ["wait", "recovery_observing"])
+def test_active_recovery_not_halted_despite_historical_breaker(status):
+    conn = _halted_scenario_conn()
+    conn.execute("UPDATE llm_scenario_state SET body=?", (json.dumps({
+        "active": None, "breaker": {"blocked": True}, "recovery": {"phase": "OBSERVING"}}),))
+    tracking.set_meta(conn, "scenario_health_decision", json.dumps({
+        "at": _NOW.timestamp()-30, "status": status, "verified_flat_halt": False}), "demo")
+    assert healthcheck._check_scenario_decision_halted(conn, "demo", _NOW) is None
+
+
+def test_operator_pause_does_not_emit_decision_halt_warning():
+    conn = _halted_scenario_conn()
+    conn.execute("UPDATE llm_scenario_control SET body=?", (json.dumps({
+        "version": 1, "state": "paused", "main_uid": "123"}),))
+    assert healthcheck._check_scenario_decision_halted(conn, "demo", _NOW) is None
+
+
 @pytest.mark.parametrize("lane", ["decision", "protection"])
 @pytest.mark.parametrize("fault", ["missing", "malformed", "future", "stale", "failed", "unproven"])
 def test_halt_does_not_hide_missing_or_failed_loop(lane, fault):
@@ -62,6 +105,7 @@ def test_halt_does_not_hide_missing_or_failed_loop(lane, fault):
             value["verified_flat_halt" if lane == "decision" else "verified_flat"] = "true"
         tracking.set_meta(conn, key, "invalid" if fault == "malformed" else json.dumps(value), "demo")
     assert healthcheck._check_price_stale(conn, "demo", _NOW)["code"] == "price_stale"
+    assert healthcheck._check_scenario_decision_halted(conn, "demo", _NOW) is None
 
 
 @pytest.mark.parametrize("fault", ["active", "pending", "live", "unknown_order", "null_order", "bad_state", "bad_market", "future_market", "missing_market"])
