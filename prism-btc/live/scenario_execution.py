@@ -205,6 +205,12 @@ class ScenarioExecution:
             self._fail("exact_order_identity_conflict")
         if order.get("orderStatus") not in TERMINAL | LIVE:
             self._fail("order_state_unknown")
+        if native and request.get("parentOrderLinkId"):
+            if (order.get("parentOrderLinkId")!=request["parentOrderLinkId"] or
+                    order.get("positionIdx")!=0 or order.get("stopOrderType")!="StopLoss" or
+                    order.get("triggerBy")!="MarkPrice" or order.get("orderType")!="Market" or
+                    order.get("reduceOnly") is not True):
+                self._fail("native_parent_identity_conflict")
         if child["kind"]=="entry" and (
                 decimal(order.get("price"))!=decimal(request["price"]) or
                 order.get("orderType")!="Limit" or order.get("reduceOnly") is not False or
@@ -261,6 +267,56 @@ class ScenarioExecution:
             self.conn.executemany("INSERT OR IGNORE INTO llm_scenario_children VALUES(?,?,?,?,?,?,'UNKNOWN',?,NULL,?)",
                 [(link,entries[0]["intent_id"],active["scenario_id"],"native_sl",oid,encoded(request),oid,self.clock())])
         self.conn.commit()
+
+    def _recover_parent_linked_native(self, active):
+        """Recover unseen attached SL only from Bybit's exact parent order link.
+
+        parentOrderLinkId survives futures trading-stop updates. Price/time
+        resemblance is NOT ownership evidence. Missing links remain fenced.
+        """
+        from live.scenario_broker import read_evidence_pages
+        children=self.children(active["scenario_id"])
+        parents={c["link_id"]:c for c in children if c["kind"]=="entry" and
+                 c["evidence"] and c["evidence"]["executions"] and c["status"]!="UNKNOWN"}
+        if not parents:
+            return
+        start=int(active["created_at"]*1000)
+        end=int(self.clock()*1000)
+        if not 0<=end-start<=7*86400*1000:
+            self._fail("native_parent_history_window_unavailable")
+        rows=read_evidence_pages(self._call,"get_order_history",category="linear",symbol="BTCUSDT",
+                                 startTime=start,endTime=end,limit=50)
+        known={c["order_id"] for c in self.children() if c["order_id"]}
+        for order in rows:
+            parent=parents.get(order.get("parentOrderLinkId"))
+            oid=order.get("orderId")
+            if not parent or oid in known:
+                continue
+            # All linked descendants must identify themselves as the attached
+            # native stop, not an unrelated TP or an inconsistent exchange row.
+            if order.get("stopOrderType")!="StopLoss":
+                continue
+            if (order.get("symbol")!="BTCUSDT" or order.get("positionIdx")!=0 or
+                    order.get("side")!=("Sell" if active["side"]=="LONG" else "Buy") or
+                    order.get("reduceOnly") is not True or order.get("triggerBy")!="MarkPrice" or
+                    order.get("orderType")!="Market" or not start<=decimal(order.get("createdTime"))<=end):
+                self._fail("native_parent_identity_conflict")
+            link="native_"+hashlib.sha256(oid.encode()).hexdigest()[:28]
+            request=dict(qty=order["qty"],side=order["side"],parentOrderLinkId=parent["link_id"])
+            child=dict(link_id=link,intent_id=parent["intent_id"],scenario_id=active["scenario_id"],
+                       kind="native_sl",local_id=oid,request=request,status="UNKNOWN",order_id=oid,
+                       evidence=None,created_at=self.clock())
+            verified=self._query_child(child)
+            first_fill=min(decimal(e["execTime"]) for e in parent["evidence"]["executions"])
+            if any(not first_fill<=decimal(e.get("execTime"))<=end for e in verified["evidence"]["executions"]):
+                self._fail("native_parent_execution_time_conflict")
+            self.conn.execute("INSERT INTO llm_scenario_children VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (link,parent["intent_id"],active["scenario_id"],"native_sl",oid,encoded(request),
+                 verified["status"],oid,encoded(verified["evidence"]),self.clock()))
+            self.conn.commit()
+            self._save("native_parent_recovery",dict(scenario_id=active["scenario_id"],order_id=oid,
+                parent_order_link_id=parent["link_id"],execution_ids=[e["execId"] for e in verified["evidence"]["executions"]]))
+            known.add(oid)
 
     def _submit(self, payload, intent_id, kind, local_id, request):
         link = stable_link(intent_id,kind,local_id)
@@ -523,6 +579,8 @@ class ScenarioExecution:
                 observed=self.capture_account()
                 size=decimal(observed["position"]["size"])
                 if size:
+                    if observed["legacy_fenced"] or observed["position"].get("side") != ("Buy" if active["side"]=="LONG" else "Sell"):
+                        self._fail("exit_exposure_unreconciled")
                     instrument=self._instrument()
                     if size>instrument["market_maximum"]:
                         self._fail("exit_quantity_requires_split")
@@ -564,6 +622,38 @@ class ScenarioExecution:
                                    triggerBy="MarkPrice", triggerDirection=1 if payload["side"] == "LONG" else 2)
                 self._submit(payload,intent_id,"entry",entry["id"],request)
             self._sync_exits(payload,intent_id)
+
+    def _continue_unsubmitted_exit(self, active):
+        """Finish cancellation-first EXIT, never replay an ambiguous market POST.
+
+        The child record is committed before every POST. Absence of that child
+        plus a persisted interrupted/aborted batch proves the market leg has
+        not been attempted. This only resumes the latest committed close intent;
+        no entry batch, superseded decision or existing exit child is retried.
+        Caller holds the shared mutation lock and has reconciled all children.
+        """
+        row=self.conn.execute("SELECT id,payload,status FROM llm_scenario_intents WHERE scenario_id=? ORDER BY rowid DESC LIMIT 1",
+                              (active["scenario_id"],)).fetchone()
+        if not row or row[2]=="TERMINAL":
+            return False
+        ident,body,_=row
+        payload=json.loads(body)
+        if payload["action"]!="EXIT":
+            return False
+        batch=self.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id=?",(ident,)).fetchone()
+        if not batch or batch[0] not in {"ABORTED","INTERRUPTED"}:
+            return False
+        if any(c["intent_id"]==ident for c in self.children(active["scenario_id"])):
+            return False
+        observed=self.capture_account()
+        if observed["legacy_fenced"]:
+            self._fail("exit_exposure_unreconciled")
+        self._save("exit_continuation",dict(intent_id=ident,scenario_id=active["scenario_id"],
+            basis="durable_batch_without_submitted_child",previous_batch_status=batch[0]))
+        self._execute(payload,ident)
+        self.conn.execute("UPDATE llm_scenario_execution_batches SET status='COMPLETE' WHERE intent_id=?",(ident,))
+        self.conn.commit()
+        return True
 
     def _sync_exits(self,payload,intent_id):
         """Rebuild partial exits against confirmed current size; Full SL stays."""

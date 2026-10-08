@@ -187,7 +187,7 @@ class ScenarioExchange:
         self.writes.append((self.ts_ms, "set_trading_stop", copy.deepcopy(params)))
         return _reply()
 
-    def _sync_native(self):
+    def _sync_native(self, parent_order_link_id=None):
         native = self.orders.get(self._native_id)
         if not self.position:
             if native and native["orderStatus"] in self.LIVE:
@@ -199,6 +199,7 @@ class ScenarioExchange:
         if not native or native["orderStatus"] not in self.LIVE:
             ident = self._id()
             native = dict(orderId=ident, orderLinkId="", symbol="BTCUSDT", positionIdx=0,
+                parentOrderLinkId=parent_order_link_id or "",
                 side="Sell" if self.position > 0 else "Buy", reduceOnly=True,
                 stopOrderType="StopLoss", triggerBy="MarkPrice", orderType="Market",
                 triggerDirection=2 if self.position > 0 else 1,
@@ -244,7 +245,7 @@ class ScenarioExchange:
             change=_s(gross - fee), transactionTime=str(self.ts_ms)))
         if not order["reduceOnly"] and order.get("stopLoss"):
             self.stop = _d(order["stopLoss"])
-        self._sync_native()
+        self._sync_native(order["orderLinkId"] if not order["reduceOnly"] else None)
 
     def advance(self, ts_ms, price, mark_price=None, capacity_lots=0, *, _match=True):
         """Process one forward point event; return lots consumed from shared capacity.

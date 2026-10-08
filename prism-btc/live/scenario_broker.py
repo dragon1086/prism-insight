@@ -498,6 +498,19 @@ class ScenarioDemoBroker(ScenarioExecution):
                 self._query_child(child)
             except Exception:
                 unknown=True
+        observed=self.capture_account()
+        if observed["legacy_fenced"] and not unknown:
+            try:
+                self._recover_parent_linked_native(active)
+                observed=self.capture_account()
+                if observed["legacy_fenced"]:
+                    unknown=True
+                    self._save("native_parent_recovery_blocked",dict(scenario_id=active["scenario_id"],
+                        reason="position_change_without_exact_parent_evidence"))
+            except Exception:
+                unknown=True
+                self._save("native_parent_recovery_blocked",dict(scenario_id=active["scenario_id"],
+                    reason="native_parent_evidence_unverified"))
         try:
             daily=self._daily(observed)
             state=json.loads(self.conn.execute("SELECT body FROM llm_scenario_state WHERE id=1").fetchone()[0])
@@ -559,7 +572,9 @@ class ScenarioDemoBroker(ScenarioExecution):
                         self._cancel(child)
                     except Exception:
                         unknown=True
-        if self.execution_enabled and not (halted or expired or not protection or stop_hit or unknown):
+        latest=self.conn.execute("SELECT payload FROM llm_scenario_intents WHERE scenario_id=? ORDER BY rowid DESC LIMIT 1",(active["scenario_id"],)).fetchone()
+        exiting=bool(latest and json.loads(latest[0])["action"]=="EXIT")
+        if self.execution_enabled and not exiting and not (halted or expired or not protection or stop_hit or unknown):
             try:
                 self._autochase(active,self.capture_account())
             except Exception:
@@ -572,6 +587,13 @@ class ScenarioDemoBroker(ScenarioExecution):
                 except Exception:
                     unknown=True
         protection=self._verify_protection(observed,active["hard_stop"],active["side"])
+        if exiting and self.execution_enabled and not stop_hit and not unknown and not observed["legacy_fenced"]:
+            try:
+                if self._continue_unsubmitted_exit(active):
+                    observed=self.capture_account()
+                    protection=self._verify_protection(observed,active["hard_stop"],active["side"])
+            except Exception:
+                unknown=True
         children=self.children(active["scenario_id"])
         if (stop_hit or not protection) and self.execution_enabled and not unknown and not observed["exchange_flat"] and not observed["legacy_fenced"]:
             # A fill racing the terminal hard stop must not restart the thesis.
@@ -583,7 +605,9 @@ class ScenarioDemoBroker(ScenarioExecution):
                 emergency=[c for c in self.children(active["scenario_id"]) if c["kind"]=="exit" and c["local_id"].startswith("hard-stop-race:")]
                 # One bounded residual attempt per reconciliation. Never issue
                 # another until the prior IOC has exact terminal fill proof.
-                if not emergency or emergency[-1]["status"]=="TERMINAL":
+                pending_exit=any(c["kind"]=="exit" and c["status"]!="TERMINAL"
+                                 for c in self.children(active["scenario_id"]))
+                if not pending_exit and (not emergency or emergency[-1]["status"]=="TERMINAL"):
                     self._submit(json.loads(parent[1]),parent[0],"exit","hard-stop-race:"+str(len(emergency)),
                         dict(side="Sell" if active["side"]=="LONG" else "Buy",orderType="Market",
                             qty=str(size),reduceOnly=True,closeOnTrigger=True))
