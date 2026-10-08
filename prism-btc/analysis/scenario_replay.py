@@ -45,6 +45,17 @@ INPUT_PREPARATION_CODES = {"snapshot_unavailable", "snapshot_stale", "invalid_co
                            "invalid_input", "input_size"}
 
 
+def _replay_uuid_factory(name):
+    counts = Counter()
+
+    def deterministic_uuid():
+        caller = sys._getframe(1).f_code.co_name
+        counts[caller] += 1
+        return uuid.uuid5(uuid.NAMESPACE_URL, f"prism-isolated-replay:{name}:{caller}:{counts[caller]}")
+
+    return deterministic_uuid
+
+
 @contextmanager
 def replay_identity_scope():
     """Replay-only IDs, not authority: restore module adapters even after failure.
@@ -60,13 +71,8 @@ def replay_identity_scope():
     try:
         from live import scenario_runtime, scenario_recovery
         for module in (scenario_runtime, scenario_recovery):
-            counts = Counter()
-            def deterministic_uuid(*, name=module.__name__, counts=counts):
-                caller = sys._getframe(1).f_code.co_name
-                counts[caller] += 1
-                return uuid.uuid5(uuid.NAMESPACE_URL, f"prism-isolated-replay:{name}:{caller}:{counts[caller]}")
             originals.append((module, module.uuid))
-            module.uuid = SimpleNamespace(uuid4=deterministic_uuid)
+            module.uuid = SimpleNamespace(uuid4=_replay_uuid_factory(module.__name__))
         yield
     finally:
         for module, original in originals:
