@@ -62,6 +62,14 @@ seed를 직접 수정하지 않으며, 첫 저장부터 지정한 runtime 파일
 - 수집: `tools/collect_kr_news_titles.py --market us live|backfill|prune` (KR과 같은 수집기, 읽기 전용 KIS 호출)
 - 조회: `prism_core.kr_news_store.search(store.connect(store.db_path("US")), ...)`.
 
+## US 세부 테마 지도 (참고 자료)
+
+- 경로: `runtime/us_theme_map_v3.json`(시총 상위 1000 ∪ 거래대금 상위 500, 현재본), `runtime/us_theme_map_v2.json`(시총 상위 1000), `runtime/us_theme_map_v1.json`(상위 500, 첫 빌드). KR `runtime/kr_theme_map_v1.json`과 같은 `{meta, themes}` 모양이고, 검토표는 `runtime/us_theme_map_<버전>_review.md`입니다 (Git ignored).
+- 만들기: `tools/build_us_theme_map.py --top 1000 --top-value 500 --map-version v3` (시총 상위 N ∪ 60거래일 평균 거래대금 상위 M(시총 10억 달러 이상) → 1년 일간 종가의 SPY 제거 잔차 상관 → 평균 연결 군집 → AI 이름·배정 → 기사 종목 → 사용자 수정 → US 뉴스 제목 근거). 중간 파일과 이어하기 파일은 `--workdir`에 둡니다. 모델 단계 캐시가 있으면 다시 돌려도 모델을 부르지 않습니다.
+- 사용자 수정: `prism_core/data/us_theme_overrides.json`(Git 추적). 매 빌드의 마지막 단계로 적용합니다. `themes`는 대상 테마 정의(`anchor` 종목이 든 테마 → 같은 이름 테마 → 새로 만듦), `assign`은 종목의 테마를 목록으로 바꾸고, `add`는 테마를 더합니다. 수정된 소속은 종목당 3개 제한에서 빠지지 않고 자동 소속이 대신 빠집니다. 목록 밖 종목은 건너뛰고 `meta.overrides`에 기록합니다. `--overrides ''`로 끌 수 있습니다.
+- 테마 필드: `lines` = 묶음이 시장과 따로 함께 움직인 날 수, `active_days` = 그날들과 평균 등락률, `mean_corr` = 평균 잔차 상관, 종목 `corr`·`share`·`role`(core = 가격 묶음, ai, news, override = 사용자 수정), `evidence` = 관련 제목 수와 표본.
+- 설명 자료로만 씁니다. 스크리닝·점수·매매 판단에 넣지 않습니다.
+
 ## 운영 점검 명령
 
 ```bash
