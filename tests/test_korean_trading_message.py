@@ -154,3 +154,14 @@ def test_hold_message_codes_render_in_korean():
     assert "'Closing Strength Top' 트리거 실제 승률 낮음 30%(표본 12건)" in out
     assert "최근 손절 3.5시간 전(-6.1%) — 잦은 재진입 방지" in out
     assert "moderate_bullish" in render_korean_trading_message("moderate_bullish")  # whole codes only
+
+
+def test_stored_skip_reason_keeps_the_ai_reason():
+    from messaging.korean_trading_message import stored_skip_reason
+    scenario = {"rejection_reason": "52주 고점보다 5% 넘게 높고\n위 저항이 없어 목표가 산정 불가"}
+    assert stored_skip_reason("AI 판단: Skip", scenario) == (
+        "AI 판단: Skip — AI 사유: 52주 고점보다 5% 넘게 높고 위 저항이 없어 목표가 산정 불가")
+    assert stored_skip_reason("AI judgment: no_entry", {"rejection_reason": "x" * 400}).endswith("…")
+    assert stored_skip_reason("점수 부족 (5/6)", {}) == "점수 부족 (5/6)"
+    assert stored_skip_reason("점수 부족 (5/6)", None) == "점수 부족 (5/6)"
+    assert stored_skip_reason(None, {"rejection_reason": " "}) == "기타"

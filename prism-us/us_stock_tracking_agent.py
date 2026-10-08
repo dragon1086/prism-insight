@@ -4621,6 +4621,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 analysis_result = state["analysis"]
                 scenario = analysis_result.get("scenario", {})
                 decision = analysis_result.get("decision", "no_entry")
+                from messaging.korean_trading_message import stored_skip_reason
                 await self._save_watchlist_item(
                     ticker=analysis_result.get("ticker"),
                     company_name=analysis_result.get("company_name"),
@@ -4628,7 +4629,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     buy_score=scenario.get("buy_score", 0),
                     min_score=scenario.get("min_score", 0),
                     decision=decision if decision != "entry" else "Skip",
-                    skip_reason=state["skip_reason"] or "Trade not executed",
+                    skip_reason=stored_skip_reason(state["skip_reason"] or "Trade not executed", scenario),
                     scenario=scenario,
                     sector=analysis_result.get("sector", "Unknown"),
                     was_traded=False
