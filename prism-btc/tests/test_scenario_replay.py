@@ -468,3 +468,70 @@ def test_measured_late_model_reply_keeps_live_error_classification(tmp_path,monk
     assert first['runtime_outcome_reasons']=={'blocked:llm_call_failed':2}
     assert first['input_preparation_failures']==0 and first['model_failures']==2
     assert all(json.loads(row)['error']=='ScenarioModelError:late_response' for row in tape.read_text().splitlines()[1:])
+
+
+def test_actual_winning_cycles_offer_then_commit_both_normalization_promotions(tmp_path):
+    """Synthetic rising tape; actual fills/costs/settlement, never injected PnL."""
+    import json
+    import math
+    import sqlite3
+    b,m=inputs(2*60*60*1000)
+    for minute in range(120):
+        stamp=pd.Timestamp(b['start_ms']+minute*60000,unit='ms',tz='UTC')
+        opening=round(100+minute*.2,1)
+        for frame in (m.source,m.mark):
+            frame.loc[stamp,['open','high','low','close']]=[
+                opening,round(opening+.3,1),round(opening-.1,1),round(opening+.2,1)]
+    b['data_hash']=digest(m.manifest())
+    calls=[]
+    def policy(snapshot,c):
+        calls.append(c)
+        p=dict(wait_policy(snapshot,c),scenario_id=c['scenario_id'] or 'win-'+str(int(c['now'])),
+               expires_at=c['now']+120)
+        if c['scenario_id']:
+            return dict(p,action='EXIT')
+        rec=c['recovery'];first=rec['first_observation']
+        p['recovery']=dict(decision='OBSERVE' if first else 'PROBE',reason='synthetic rising path',
+            changed_evidence=[] if first else list(rec['changed_evidence'])[:1],
+            counterevidence='synthetic pullback risk',invalidation='native hard stop')
+        if first:return p
+        price=math.ceil((c['mark_price']+.3)*10)/10
+        return dict(p,action='OPEN',side='LONG',leverage=10,confidence=.5,hard_stop=round(price-2,1),
+                    entries=[dict(id='entry-'+str(int(c['now'])),price=price,quantity=.1)],
+                    take_profits=[],partial_stops=[],chase=dict(max_bps=0,max_reprices=0))
+    tape=tmp_path/'winning-stage-tape'
+    with network_boundary('frozen') as blocked:
+        first=run_replay(b,m,tmp_path/'record',mode='fixture',tape_path=tape,policy=policy,
+                         initial_state='recovery-stage0')
+        frozen=run_replay(b,m,tmp_path/'frozen',mode='frozen',tape_path=tape,
+                          initial_state='recovery-stage0')
+    assert blocked==[]
+    assert first['result_hash']==frozen['result_hash']
+    assert first['economic']['wins']==first['economic']['completed_scenarios']==8
+    assert first['economic']['losses']==0 and first['economic']['fees']>0
+    assert first['economic']['open_quantity']==0 and first['economic']['pending_intents']==0
+    assert first['recovery_state']['stage']==2
+    offered=[c for c in calls if c['recovery'].get('first_observation')
+             and c['recovery']['offered_stage']>c['recovery']['current_stage']]
+    assert [(c['recovery']['current_stage'],c['recovery']['offered_stage']) for c in offered]==[(0,1),(1,2)]
+    assert [c['scenario_risk_fraction'] for c in offered]==[.01,.02]
+    with sqlite3.connect(tmp_path/'record'/'replay.sqlite') as conn:
+        decisions={slot:json.loads(p) for slot,p in conn.execute('SELECT slot,proposal FROM llm_scenario_decisions')}
+        transitions=[json.loads(body) for body, in conn.execute(
+            "SELECT body FROM llm_scenario_recovery_events WHERE kind='STAGE_TRANSITION' ORDER BY rowid")]
+        plans=[json.loads(p) for p, in conn.execute('SELECT payload FROM llm_scenario_intents ORDER BY rowid')]
+        settlements=[json.loads(e) for e, in conn.execute('SELECT evidence FROM llm_scenario_settlements ORDER BY rowid')]
+    assert [(e['before'],e['after']) for e in transitions]==[(0,1),(1,2)]
+    for c in offered:
+        assert decisions[int(c['now']//300)]['action']=='WAIT'
+        assert decisions[int(c['now']//300)+1]['action']=='OPEN'
+    opened=[p for p in plans if p['action']=='OPEN']
+    for index,p in enumerate(opened):
+        fraction=(.005,.01,.02)[min(index//3,2)]
+        matching=next(c for c in calls if c['input_id']==p['input_id'])
+        assert p['risk']['budget']==pytest.approx(matching['initial_equity']*fraction)
+        held=next(c for c in calls if c['scenario_id']==p['scenario_id'])
+        assert held['initial_equity']==matching['initial_equity']
+        assert held['recovery']['budget']==p['risk']['budget']
+    assert all(e['execution_ids'] and e['net_pnl']>0 for e in settlements)
+    assert sum(e['fees'] for e in settlements)==pytest.approx(first['economic']['fees'])
