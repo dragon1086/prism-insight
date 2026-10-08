@@ -70,6 +70,13 @@ seed를 직접 수정하지 않으며, 첫 저장부터 지정한 runtime 파일
 - 테마 필드: `lines` = 묶음이 시장과 따로 함께 움직인 날 수, `active_days` = 그날들과 평균 등락률, `mean_corr` = 평균 잔차 상관, 종목 `corr`·`share`·`role`(core = 가격 묶음, ai, news, override = 사용자 수정), `evidence` = 관련 제목 수와 표본.
 - 설명 자료로만 씁니다. 스크리닝·점수·매매 판단에 넣지 않습니다.
 
+## US 테마 흐름 (얼럿용)
+
+- 경로: `runtime/us_theme_flow.json` (Git ignored). `tools/build_us_theme_flow.py --mode morning|afternoon`이 US 배치 몇 분 전
+  (db-server cron, 뉴욕 시간 10:09·14:24) 테마 지도(`runtime/us_theme_map_vN.json` 최신판) 구성 종목 시세를 yfinance로 받아
+  테마별 중앙값 등락·상승 비율·대표 종목·관련 제목 1건을 저장합니다(약 3분, 모델 호출 없음).
+- US 시그널 얼럿은 이 파일이 같은 거래일·30분 이내면 "오늘 테마 흐름"을 붙이고, 아니면 업종 ETF 한 줄로 대신합니다.
+
 ## 운영 점검 명령
 
 ```bash
