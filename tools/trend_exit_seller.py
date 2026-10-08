@@ -88,6 +88,7 @@ import logging
 import os
 import sqlite3
 import sys
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1103,9 +1104,21 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
         release_lock(conn, ticker, market, run_id, new_state="HOLDING")
 
 
+def _record_run(market, mode, run_id, status, started, summary=None, error=None) -> None:
+    """Run heartbeat for the ledger timeline (observability.job_runs); fail-open."""
+    try:
+        from observability.job_runs import emit_job_run
+        emit_job_run("trend-exit", market=market, mode=mode, run_id=run_id, status=status,
+                     started=started, summary=summary, error=error)
+    except Exception:  # noqa: BLE001 - observation must never affect the loop
+        logger.debug("job run event skipped")
+
+
 async def main_async(markets: List[str]) -> int:
     if not TREND_EXIT_ENABLED:
         logger.info("TREND_EXIT_ENABLED=false -> loop disabled, exiting.")
+        for market in markets:
+            _record_run(market, "DISABLED", None, "DISABLED", None)
         return 0
     run_id = uuid.uuid4().hex[:12]
     mode = "LIVE" if TREND_EXIT_LIVE else "SHADOW"
@@ -1113,7 +1126,13 @@ async def main_async(markets: List[str]) -> int:
                 run_id, mode, markets, TREND_EXIT_CONFIRM_CHECKS, TREND_EXIT_CLOSE_WINDOW, DB_PATH)
     totals: Dict[str, int] = {}
     for market in markets:
-        s = await run_market(market, run_id)
+        started = time.monotonic()
+        try:
+            s = await run_market(market, run_id)
+        except Exception as exc:
+            _record_run(market, mode, run_id, "ERROR", started, error=exc)
+            raise
+        _record_run(market, mode, run_id, "OK", started, summary=s)
         for k, v in s.items():
             if isinstance(v, int):
                 totals[k] = totals.get(k, 0) + v

@@ -3640,6 +3640,13 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     if effects is None:
                         should_sell, sell_reason = runner_hold_live.guard_result(
                             self, "US", stock, should_sell, sell_reason, logger=logger)
+                if effects is None:  # observation only: every review, hold or sell, in time order
+                    try:
+                        from observability.holding_decisions import emit_holding_evaluation
+                        emit_holding_evaluation("US", stock, should_sell, sell_reason,
+                                                source="runner_exit" if runner_exit else "sell_review")
+                    except Exception:  # noqa: BLE001 - observation must never affect a sell decision
+                        logger.debug("holding evaluation event skipped")
 
                 if should_sell:
                     acct_key = stock.get("account_key")

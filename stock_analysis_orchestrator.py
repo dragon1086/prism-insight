@@ -1635,6 +1635,7 @@ async def main():
                         status=SKIPPED,
                         skip_reason=_mp_pol.reason,
                     )
+                    _JOB_RUN_SKIPS.append(f"{args.mode}:{_mp_pol.reason}")
                     return
                 else:
                     logger.info("[MARKET_PULSE][SHADOW] WOULD_SKIP this batch "
@@ -1700,13 +1701,48 @@ async def main():
         except Exception:
             pass
 
+
+# Run heartbeat (observability.job_runs): Market Pulse rests recorded during main().
+_JOB_RUN_SKIPS: list = []
+
+
+def _record_job_run(market, started, status, *, reason=None, error=None):
+    """One job.run_completed event per batch invocation; fail-open."""
+    try:
+        from observability.job_runs import emit_job_run
+        mode = "both"
+        if "--mode" in sys.argv[:-1]:
+            mode = sys.argv[sys.argv.index("--mode") + 1]
+        emit_job_run("analysis-batch", market=market, mode=mode, status=status,
+                     started=started, reason=reason, error=error)
+    except Exception:  # noqa: BLE001 - observation must never affect the batch
+        pass
+
+
+def _run_main_with_heartbeat(market, started):
+    try:
+        asyncio.run(main())
+    except SystemExit as exc:
+        clean = exc.code in (0, None)
+        _record_job_run(market, started, "OK" if clean else "ERROR",
+                        error=None if clean else f"SystemExit({exc.code})")
+        raise
+    except BaseException as exc:
+        _record_job_run(market, started, "ERROR", error=exc)
+        raise
+    _record_job_run(market, started, "SKIPPED" if _JOB_RUN_SKIPS else "OK",
+                    reason="; ".join(_JOB_RUN_SKIPS) or None)
+
+
 if __name__ == "__main__":
+    _job_started = time.monotonic()
     # Check market holiday
     from check_market_day import is_market_day
 
     if not is_market_day():
         current_date = datetime.now().date()  # Use datetime.now()
         logger.info(f"Today ({current_date}) is a stock market holiday. Not executing batch job.")
+        _record_job_run("KR", _job_started, "HOLIDAY")
         sys.exit(0)
 
     # Start timer thread and execute main function only on business days
@@ -1719,10 +1755,11 @@ if __name__ == "__main__":
         import signal
         time.sleep(7200)  # Wait 120 minutes
         logger.warning("120-minute timeout reached: forcefully terminating process")
+        _record_job_run("KR", _job_started, "TIMEOUT")
         os.kill(os.getpid(), signal.SIGTERM)
 
     # Start timer as background thread
     timer_thread = threading.Thread(target=exit_after_timeout, daemon=True)
     timer_thread.start()
 
-    asyncio.run(main())
+    _run_main_with_heartbeat("KR", _job_started)

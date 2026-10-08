@@ -1384,11 +1384,19 @@ def _url_fetch(
         print(f"<header>\n{headers}")
         print(f"<body>\n{params}")
 
+    started = time.monotonic()
+    try:
+        if postFlag:
+            # if (hashFlag): set_order_hash_key(headers, params)
+            res = requests.post(url, headers=headers, data=json.dumps(params), timeout=30)
+        else:
+            res = requests.get(url, headers=headers, params=params, timeout=30)
+    except Exception as exc:
+        if postFlag:
+            _note_order_request(tr_id, params, error=exc, started=started)
+        raise
     if postFlag:
-        # if (hashFlag): set_order_hash_key(headers, params)
-        res = requests.post(url, headers=headers, data=json.dumps(params), timeout=30)
-    else:
-        res = requests.get(url, headers=headers, params=params, timeout=30)
+        _note_order_request(tr_id, params, response=res, started=started)
 
     if res.status_code == 200:
         ar = APIResp(res)
@@ -1399,6 +1407,26 @@ def _url_fetch(
         print("Error Code : " + str(res.status_code) + " | " + res.text)
         _note_rate_limit(url, res.status_code, res.text)
         return APIRespError(res.status_code, res.text)
+
+
+def _note_order_request(tr_id, params, *, response=None, error=None, started=None):
+    """Ledger evidence of every order TR and the broker's answer; fail-open."""
+    try:
+        from observability.broker_orders import note_order_request
+
+        env = getTREnv()
+        note_order_request(
+            tr_id,
+            params,
+            paper=isPaperTrading(),
+            account=getattr(env, "my_acct", None),
+            product=getattr(env, "my_prod", None),
+            response=response,
+            error=error,
+            latency_s=(time.monotonic() - started) if started is not None else None,
+        )
+    except Exception:  # noqa: BLE001 - observation must never affect an order
+        logging.getLogger(__name__).debug("observability unavailable; order event skipped")
 
 
 def _note_rate_limit(url, status_code, body):

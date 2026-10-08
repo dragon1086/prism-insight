@@ -657,7 +657,8 @@ def _run_rechecks(state, market, completed, p, reports_root, archive_db, llm, on
                  "latency_s": record.get("latency_s"), "attempt": attempts,
                  "micro_split_appendix": bool(item.get("appendix_text")),
                  "decision_price": item.get("decision_price"), "level": item["level"]["L"],
-                 "rejection_reason": str(record.get("rejection_reason") or "")[:300] or None}
+                 "rejection_reason": str(record.get("rejection_reason") or "")[:300] or None,
+                 "error": str(record.get("error") or "")[:300] or None}
         emit_event("reentry_v3.shadow_recheck", service=_service(market),
                    event_id=_hash(event_id, "recheck", attempts), market=market, ticker=watch["ticker"],
                    attributes=attrs, event_time=datetime.now(timezone.utc))
