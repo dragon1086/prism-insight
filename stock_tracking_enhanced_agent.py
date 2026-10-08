@@ -177,8 +177,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
         else:
             await self._analyze_simple_market_condition()
 
-        # Clean up old watchlist data (older than 1 month)
-        await self._cleanup_old_watchlist()
+        # Buy-decision records are kept (no 30-day cleanup), like the US table: the AI's skip
+        # reasons are the only record of why a later runner was passed over (2026-10-08).
 
         return True
 
@@ -271,22 +271,6 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
         except Exception as e:
             logger.error(f"Error migrating watchlist_history columns: {str(e)}")
-
-    async def _cleanup_old_watchlist(self):
-        """Delete watchlist data older than 1 month"""
-        try:
-            one_month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-            deleted = self.cursor.execute(
-                "DELETE FROM watchlist_history WHERE date(analyzed_date) < ?",
-                (one_month_ago,)
-            ).rowcount
-            self.conn.commit()
-
-            if deleted > 0:
-                logger.info(f"Deleted {deleted} old watchlist entries")
-
-        except Exception as e:
-            logger.error(f"Error cleaning watchlist: {str(e)}")
 
     def _calculate_trend(self, price_series):
         """Analyze price series trend (positive: uptrend, negative: downtrend)"""
@@ -685,7 +669,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         )
 
                     reason = " / ".join(reason_parts) if reason_parts else "기타"
-                    from messaging.korean_trading_message import hold_reason_display
+                    from messaging.korean_trading_message import hold_reason_display, stored_skip_reason
                     display_reason = hold_reason_display(reason, scenario)
 
                     # Market condition info — translate regime label to Korean for display
@@ -748,7 +732,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         buy_score=buy_score,
                         min_score=min_score,
                         decision=decision,
-                        skip_reason=reason,
+                        skip_reason=stored_skip_reason(reason, scenario),
                         scenario=scenario,
                         sector=sector
                     )

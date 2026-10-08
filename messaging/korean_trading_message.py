@@ -168,3 +168,20 @@ def hold_reason_display(reason, scenario=None, limit=100):
     if _AI_PART.search(text):
         return _AI_PART.sub(lambda m: f'{m[1].rstrip()} — {short}{m[2]}', text, count=1)
     return f'{text} / AI 차단 사유: {short}'
+
+
+def stored_skip_reason(reason, scenario=None, limit=300):
+    """skip_reason saved with a hold: the system reason plus the AI's own rejection_reason.
+
+    The tracker row kept only "AI 판단: Skip", so the AI's actual reason was lost once the
+    watchlist row (full scenario) was gone; KR deleted those after 30 days (2026-10-08).
+    Prefix-matching readers ('AI 판단', '점수 부족', 'Sector concentration') are unaffected.
+    """
+    text = str(reason or "기타")
+    rejection = (scenario or {}).get("rejection_reason") if isinstance(scenario, dict) else None
+    if not isinstance(rejection, str) or not rejection.strip() or rejection.strip() in text:
+        return text
+    rejection = re.sub(r"\s+", " ", rejection).strip()
+    if len(rejection) > limit:
+        rejection = rejection[:limit - 1].rstrip() + "…"
+    return f"{text} — AI 사유: {rejection}"
