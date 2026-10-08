@@ -172,7 +172,7 @@ def test_independent_protection_queues_broker_alarm_without_model(tmp_path):
     c.close()
 
 
-@pytest.mark.parametrize('reason', ['llm_output_contract_failed', 'llm_call_failed'])
+@pytest.mark.parametrize('reason', ['llm_output_contract_failed', 'llm_call_failed', 'llm_input_preparation_failed'])
 @pytest.mark.parametrize('recovery', [
     {'status':'wait'}, {'status':'intent_pending','reason':'awaiting_exact_evidence'}])
 def test_model_incident_only_validated_model_outcome_recovers(tmp_path, reason, recovery):

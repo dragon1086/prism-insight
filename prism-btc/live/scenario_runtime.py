@@ -530,6 +530,20 @@ class ScenarioRuntime:
         except ScenarioModelError as exc:
             self.conn.rollback()
             # Fixed codes only: never expose a response, account or transport error.
+            code = str(exc)
+            if code in {"snapshot_unavailable", "snapshot_stale", "invalid_contract_context",
+                        "invalid_input", "input_size"}:
+                if self.recovery_enabled and claimed:
+                    try:
+                        recovery.journal(self.conn, "MODEL_INPUT_ERROR", {
+                            "input_id": ctx.get("input_id"), "code": code,
+                            "model_called": False}, self.clock(), slot=slot)
+                        self.conn.commit()
+                    except Exception:
+                        self.conn.rollback()
+                return {"status": "blocked", "reason": "llm_input_preparation_failed",
+                        "failure_stage": "model_input_preparation", "failure_code": code,
+                        "model_called": False}
             reason = ("llm_call_failed" if str(exc) in {"oauth_model_failed", "late_response"}
                       else "llm_output_contract_failed")
             return {"status": "blocked", "reason": reason}
