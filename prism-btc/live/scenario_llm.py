@@ -389,6 +389,10 @@ for entry before the ORIGINAL next-decision deadline, and WAIT, symmetrically.
 If current evidence already justifies entry, do not demand a new low/high or retest
 by habit. Smaller quantity may express uncertainty in a valid setup, never repair
 an invalid setup. Neither immediate entry nor conditional entry is compulsory.
+Existing sizing cap: sum(new-entry risk) <= min(original_budget*confidence,
+budget remaining after consumed/reserved risk). Per-BTC risk is positive entry-to-SL
+distance + entry*estimated_cost_rate + hard_stop*slippage_bps/10000; round quantity
+DOWN to quantity_step. Never raise confidence or widen SL merely to fit quantity.
 For WAIT, name the specific current missing evidence or invalid risk. Recheck any
 prior waiting condition actually supplied as structured evidence; if met, do not
 move its goalposts without fresh counterevidence. Never invent an omitted prior condition.

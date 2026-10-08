@@ -384,6 +384,9 @@ def test_assembled_entry_framing_is_flat_only_and_preserves_inputs(active, monke
         assert 'Never invent an omitted prior condition' in text
         assert "Keep recovery's first-observation WAIT" in text
         assert 'Preserve host-authorized NORMAL ordinary-entry chase rules' in text
+        assert 'original_budget*confidence' in text
+        assert 'hard_stop*slippage_bps/10000' in text
+        assert 'Never raise confidence or widen SL merely to fit quantity' in text
     assert result['action'] == 'WAIT'
     assert journal[0]['system_prompt'] == calls[0]['system_prompt']
     assert journal[0]['user_prompt'] == calls[0]['user_prompt']
@@ -424,3 +427,32 @@ def test_assembled_flat_comparison_preserves_real_open_and_halt_guards(side, blo
         assert accepted['side'] == side
         assert accepted['risk']['budget'] == 200
         assert accepted['leverage'] == 10
+
+
+@pytest.mark.parametrize('quantity,accepted', [(.027, False), (.024, True)])
+def test_recovery_quantity_obeys_existing_confidence_cap(quantity, accepted):
+    ctx = context()
+    ctx.update(initial_equity=9522.20868271, scenario_risk_fraction=.005,
+               estimated_cost_rate=.002, slippage_bps=20, mark_price=82650)
+    p = wire(ctx, 'OPEN')
+    p.update(side='SHORT', confidence=.55, hard_stop=83400,
+             entries=[dict(id='entry', price=82650, quantity=quantity)],
+             take_profits=[dict(id='tp', price=82000, fraction=1)])
+    parsed = propose({'valid': True, 'as_of_ms': 1000000}, ctx, response_contract(ctx),
+                     clock=lambda: 1000,
+                     generate=lambda **kwargs: SimpleNamespace(text=json.dumps(p)))
+    budget = ctx['initial_equity'] * .005
+    proposed_risk = quantity * (750 + 82650*.002 + 83400*20/10000)
+    assert proposed_risk < budget  # The full budget alone does not authorize size.
+    if accepted:
+        result = validate_scenario(parsed, ctx)
+        assert result['risk']['proposed_risk'] == pytest.approx(25.9704)
+        assert result['risk']['budget'] == pytest.approx(budget)
+        assert result['confidence'] == .55
+        assert result['hard_stop'] == 83400
+        assert proposed_risk <= budget*.55
+    else:
+        assert proposed_risk == pytest.approx(29.2167)
+        assert proposed_risk > budget*.55
+        with pytest.raises(ValueError, match='risk budget exceeded'):
+            validate_scenario(parsed, ctx)
