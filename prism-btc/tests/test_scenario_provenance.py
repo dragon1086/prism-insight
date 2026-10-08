@@ -115,6 +115,21 @@ def test_policy_manifest_loaded_parity_detects_stale_and_prompt_changes(monkeypa
     assert audit._loaded_parity('live/scenario_llm.py', source) == 'MIXED'
 
 
+def test_ma_structure_context_source_is_part_of_policy_manifest():
+    import hashlib
+    from pathlib import Path
+    from engine import scenario_ma_context
+
+    name = 'engine/scenario_ma_context.py'
+    source = Path(scenario_ma_context.__file__).read_text()
+    manifest = audit._manifest()
+    assert manifest['source_hashes'][name] == hashlib.sha256(source.encode()).hexdigest()
+    assert audit._loaded_parity(name, source) == 'VERIFIED'
+    changed = source.replace('"AT_BOTH"', '"CHANGED_AT_BOTH"')
+    assert changed != source
+    assert audit._loaded_parity(name, changed) == 'MIXED'
+
+
 def test_bytecode_parity_ignores_paths_and_line_numbers():
     a = compile('def sample(x):\n return x + 1\n', 'before.py', 'exec').co_consts[0]
     b = compile('\n\ndef sample(x):\n return x + 1\n', 'after.py', 'exec').co_consts[0]

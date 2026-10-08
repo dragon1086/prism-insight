@@ -6,7 +6,7 @@ import pytest
 
 from core.llm_scenario import risk_snapshot, validate_scenario
 from live.scenario_contract import response_schema, validate_wire_proposal
-from live.scenario_llm import SYSTEM_PROMPT, propose, _current_primary_frame_facts
+from live.scenario_llm import SYSTEM_PROMPT, MA_STRUCTURE_PROMPT, propose, _current_primary_frame_facts
 from live.scenario_preview import response_contract
 from live.scenario_contract import identity_fields
 
@@ -371,8 +371,10 @@ def test_assembled_entry_framing_is_flat_only_and_preserves_inputs(active, monke
                      response_contract(ctx), generate=generate, clock=lambda: 1000)
     policy = calls[0]['system_prompt']
     if active:
-        assert policy == SYSTEM_PROMPT  # Holding policy is byte-identical.
-        assert json.loads(calls[0]['user_prompt'])['contract_context'] == ctx
+        assert policy == SYSTEM_PROMPT + MA_STRUCTURE_PROMPT
+        delivered = json.loads(calls[0]['user_prompt'])['contract_context']
+        assert delivered.pop('ma_structure')['status'] == 'unavailable'
+        assert delivered == ctx
     else:
         text = ' '.join(policy.split())
         assert 'Flat-entry comparison only' in text
@@ -408,7 +410,7 @@ def test_flat_addendum_never_applies_to_unscoped_exposure(exposure):
         return SimpleNamespace(text=json.dumps(exposure_proposal(ctx, 'WAIT')))
     propose({'valid': True, 'as_of_ms': 1000000}, ctx, response_contract(ctx),
             generate=generate, clock=lambda: 1000)
-    assert calls[0]['system_prompt'] == SYSTEM_PROMPT
+    assert calls[0]['system_prompt'] == SYSTEM_PROMPT + MA_STRUCTURE_PROMPT
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -546,3 +548,31 @@ def test_actual_model_payload_gets_same_primary_facts_as_request_record(monkeypa
     assert payload['contract_context']['current_primary_frame_facts'] == _current_primary_frame_facts(snapshot)
     assert payload['market_snapshot'] == snapshot
     assert json.dumps([ctx, snapshot], sort_keys=True) == original
+
+
+@pytest.mark.parametrize('mode', ['flat', 'pending', 'holding'])
+def test_ma_structure_actual_request_all_contexts_bounded_and_audited(mode, monkeypatch):
+    from tests.test_scenario_snapshot import snapshot as real_snapshot
+    from live import scenario_recovery
+    snapshot = real_snapshot()
+    ctx = context(mode != 'flat')
+    ctx.update(now=snapshot['as_of_ms'] / 1000, input_captured_at=snapshot['as_of_ms'] / 1000)
+    if mode == 'pending':
+        ctx['positions'] = []
+        ctx['pending_entries'] = [dict(id='pending', price=60000, quantity=.001)]
+    p = exposure_proposal(ctx, 'WAIT')
+    p['expires_at'] = ctx['now'] + 100
+    calls, journal = [], []
+    monkeypatch.setattr(scenario_recovery, 'record_model_request', lambda **kw: journal.append(kw))
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(p))
+    result = propose(snapshot, ctx, response_contract(ctx), generate=generate, clock=lambda: ctx['now'])
+    assert result['action'] == 'WAIT'
+    assert journal[0]['system_prompt'] == calls[0]['system_prompt']
+    assert journal[0]['user_prompt'] == calls[0]['user_prompt']
+    assert MA_STRUCTURE_PROMPT in calls[0]['system_prompt']
+    assert len(calls[0]['user_prompt'].encode()) < 100000
+    payload = json.loads(calls[0]['user_prompt'])
+    assert len(payload['contract_context']['ma_structure']['primary']['30m']['points']) == 4
+    assert ('current_primary_frame_facts' in payload['contract_context']) == (mode == 'flat')

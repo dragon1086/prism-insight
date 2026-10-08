@@ -125,6 +125,7 @@ def _manifest():
                     'live/scenario_review_memory.py',
                     'live/scenario_runner_economics.py',
                     'live/scenario_preview.py', 'engine/scenario_snapshot.py',
+                    'engine/scenario_ma_context.py',
                     'engine/indicators.py']
     execution_files = ['live/scenario_execution.py', 'live/scenario_accounting.py',
                        'core/scenario_limit_prices.py', 'core/llm_scenario.py']

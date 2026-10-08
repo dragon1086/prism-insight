@@ -103,6 +103,79 @@ def _features(frame, duration):
     }
 
 
+def _ma_path(history, forming, duration, as_of_ms):
+    """Bounded contemporaneous MA history; raw-price gap is not normalized convergence."""
+    fast, slow = sma(history.close, 10), sma(history.close, 35)
+    gaps = (fast-slow).abs()
+    changes = gaps.diff()
+
+    def trailing_count(values, predicate):
+        count = 0
+        for value in reversed(values.tolist()):
+            if pd.isna(value) or not predicate(value):
+                break
+            count += 1
+        return count
+
+    def point(timestamp, row, ma10, ma35, confirmed):
+        price = float(row.close)
+        if price == ma10 == ma35:
+            position = "AT_BOTH"
+        elif price == ma10 or price == ma35:
+            position = "AT_MA10" if price == ma10 else "AT_MA35"
+        else:
+            position = "ABOVE" if price > max(ma10, ma35) else "BELOW" if price < min(ma10, ma35) else "BETWEEN"
+        return {"open_time_ms": int(timestamp.value//1_000_000), "is_confirmed": confirmed,
+                **({"close_time_ms": int(timestamp.value//1_000_000)+duration} if confirmed else {}),
+                **{key: float(row[key]) for key in ("open", "high", "low", "close")},
+                "ma10": float(ma10), "ma35": float(ma35), "price_position": position,
+                "ma_order": "BULLISH" if ma10 > ma35 else "BEARISH" if ma10 < ma35 else "EQUAL"}
+
+    def gap_fact(absolute, close, change):
+        return {"absolute_price": float(absolute), "normalized_fraction": float(absolute/close),
+                "change_price": float(change),
+                "state": "WIDENING" if change > 0 else "NARROWING" if change < 0 else "UNCHANGED"}
+
+    narrowing = trailing_count(changes, lambda x: x < 0)
+    preceding = trailing_count(changes.iloc[:-1], lambda x: x < 0)
+    compressed = trailing_count(gaps/history.close, lambda x: x <= COMPRESSION_GAP_FRACTION)
+    preceding_compressed = trailing_count((gaps/history.close).iloc[:-1], lambda x: x <= COMPRESSION_GAP_FRACTION)
+    result = {"version": 1, "status": "available", "confirmed_points": [],
+              "as_of_ms": as_of_ms, "duration_ms": duration,
+              "source_history_count": len(history), "valid_confirmed_ma_points": int(gaps.notna().sum()),
+              "available_components": ["confirmed"],
+              "forming_point": None, "forming_gap": None,
+              "confirmed_gap": {**gap_fact(gaps.iloc[-1], history.close.iloc[-1], changes.iloc[-1]),
+                  "consecutive_narrowing_bars": narrowing,
+                  "preceding_narrowing_bars": preceding,
+                  "compression_bars": compressed, "preceding_compression_bars": preceding_compressed,
+                  "compression_threshold": COMPRESSION_GAP_FRACTION,
+                  "count_lower_bounds": {
+                      "consecutive_narrowing_bars": narrowing == int(changes.notna().sum()),
+                      "preceding_narrowing_bars": preceding == int(changes.iloc[:-1].notna().sum()),
+                      "compression_bars": compressed == int(gaps.notna().sum()),
+                      "preceding_compression_bars": preceding_compressed == int(gaps.iloc[:-1].notna().sum())}}}
+    for timestamp, row in history.tail(3).iterrows():
+        if pd.notna(fast.loc[timestamp]) and pd.notna(slow.loc[timestamp]):
+            result["confirmed_points"].append(point(timestamp, row, fast.loc[timestamp], slow.loc[timestamp], True))
+    if forming is not None:
+        result["available_components"].append("forming")
+        current = pd.Series(forming["ohlcv"])
+        ma10, ma35 = forming["ma10"], forming["ma35"]
+        timestamp = pd.Timestamp(forming["open_time_ms"], unit="ms", tz="UTC")
+        result["forming_point"] = {**point(timestamp, current, ma10, ma35, False),
+                                   "observed_at_ms": forming["observed_at_ms"],
+                                   "remaining_ms": forming["remaining_ms"]}
+        raw_gap = abs(ma10-ma35)
+        result["forming_gap"] = {**gap_fact(raw_gap, current.close, raw_gap-gaps.iloc[-1]),
+                                 "preceding_confirmed_narrowing_bars": narrowing,
+                                 "preceding_confirmed_compression_bars": compressed, "provisional": True,
+                                 "count_lower_bounds": {
+                                     "preceding_confirmed_narrowing_bars": result["confirmed_gap"]["count_lower_bounds"]["consecutive_narrowing_bars"],
+                                     "preceding_confirmed_compression_bars": result["confirmed_gap"]["count_lower_bounds"]["compression_bars"]}}
+    return result
+
+
 def _intrabar_volume(history, available_at):
     """Only fully elapsed 15m buckets at the oldest primary observation."""
     unavailable = dict(status="unavailable", reason="confirmed_15m_history_unavailable",
@@ -197,7 +270,10 @@ def build_scenario_snapshot(
                        else observed_at_ms)
         issues = []
         fact = {"role": "primary" if tf in ("30m", "1h") else "timing" if tf == "15m" else "context",
-                "status": "unavailable", "issues": issues, "confirmed": None, "forming": None}
+                "status": "unavailable", "issues": issues, "confirmed": None, "forming": None,
+                "ma_path": {"version": 1, "status": "unavailable", "confirmed_points": [],
+                            "as_of_ms": current_ms, "duration_ms": duration, "available_components": [],
+                            "forming_point": None, "confirmed_gap": None, "forming_gap": None}}
         output["timeframes"][tf] = fact
         try:
             history = _frame(tf_data.get(tf), duration)
@@ -265,6 +341,9 @@ def build_scenario_snapshot(
                             "same_progress_profile": _same_progress_profile(intrabar, duration, current_start, available_at),
                         },
                     }
+            if len(history) >= 36 and not any(issue in issues for issue in (
+                    "stale_confirmed_history", "gapped_confirmed_history")):
+                fact["ma_path"] = _ma_path(history, fact["forming"], duration, current_ms)
             fact["status"] = "ok" if not issues else "incomplete"
         except (ValueError, TypeError, OverflowError) as exc:
             issues.append(str(exc))
