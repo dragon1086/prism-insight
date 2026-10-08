@@ -374,6 +374,32 @@ Use the supplied response_contract for exact field names and allowed actions.
 """
 
 
+FLAT_ENTRY_PROMPT = """
+Flat-entry comparison only; all preceding host safety/lifecycle rules prevail.
+Recovery baseline and changed_evidence audit change/authorization, not present
+momentum: an hours-old baseline price alone is not a momentum veto for either
+LONG or SHORT. Still cite required exact changed paths and assess their meaning;
+first observation remains WAIT and a numeric change alone never grants an edge.
+Judge current 30m/1h structure, MA slopes, observed forming progress and recent
+confirmed 15m bars. Higher-frame direction alone is not a veto; concrete current
+4h/longer-frame obstacles still matter through achievable TP/SL and costs and
+can justify WAIT when no executable net-of-cost opportunity remains.
+Compare a capped marketable LIMIT now, a numeric conditional crossing sufficient
+for entry before the ORIGINAL next-decision deadline, and WAIT, symmetrically.
+If current evidence already justifies entry, do not demand a new low/high or retest
+by habit. Smaller quantity may express uncertainty in a valid setup, never repair
+an invalid setup. Neither immediate entry nor conditional entry is compulsory.
+For WAIT, name the specific current missing evidence or invalid risk. Recheck any
+prior waiting condition actually supplied as structured evidence; if met, do not
+move its goalposts without fresh counterevidence. Never invent an omitted prior condition.
+Keep recovery's first-observation WAIT, immutable host risk, 10x and original expiry.
+Recovery stages0/1 keep original-batch-only scope and zero chase; conditional entries
+also keep zero chase. Preserve host-authorized NORMAL ordinary-entry chase rules
+and all protection/accounting guards. No new fields,
+fabricated reward/risk or probabilities; summarize the choice in existing rationale.
+"""
+
+
 class ScenarioModelError(ValueError):
     """Sanitized model failure; never embeds response or account payload."""
 
@@ -446,11 +472,14 @@ def propose(snapshot: dict, context: dict, response_contract: dict, *,
     if len(prompt.encode("utf-8")) > 100_000:
         raise ScenarioModelError("input_size")
     started = clock()
+    system_prompt = SYSTEM_PROMPT
+    if context.get("scenario_id") is None and not context.get("positions") and not context.get("pending_entries"):
+        system_prompt += FLAT_ENTRY_PROMPT
     from live.scenario_recovery import record_model_request, record_model_wire, record_model_error
-    record_model_request(system_prompt=SYSTEM_PROMPT, user_prompt=prompt,
+    record_model_request(system_prompt=system_prompt, user_prompt=prompt,
                          response_schema=schema, model=MODEL, effort=EFFORT, fast=True)
     try:
-        result = generate(system_prompt=SYSTEM_PROMPT, user_prompt=prompt,
+        result = generate(system_prompt=system_prompt, user_prompt=prompt,
                           model=MODEL, reasoning_effort=EFFORT, fast_tier=True,
                           timeout=TIMEOUT_SECONDS, mcp_profile=None,
                           response_schema=schema)

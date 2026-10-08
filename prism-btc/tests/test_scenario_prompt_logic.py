@@ -1,9 +1,12 @@
 """Prompt specification regressions against the actual economic validator."""
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from core.llm_scenario import risk_snapshot, validate_scenario
 from live.scenario_contract import response_schema, validate_wire_proposal
-from live.scenario_llm import SYSTEM_PROMPT
+from live.scenario_llm import SYSTEM_PROMPT, propose
 from live.scenario_preview import response_contract
 from live.scenario_contract import identity_fields
 
@@ -349,3 +352,75 @@ def test_empty_entry_adjust_does_not_activate_chase_on_older_pending_order(tmp_p
     observed['ticker']['ask1Price'] = '100.1'
     broker._autochase(broker._active(), observed)
     assert [kind for kind, _ in exchange.writes] == ['place']
+
+
+@pytest.mark.parametrize('active', [False, True])
+def test_assembled_entry_framing_is_flat_only_and_preserves_inputs(active, monkeypatch):
+    ctx = context(active)
+    ctx['recovery'] = {'baseline': {'mark_price': 59000}, 'changed_evidence': []}
+    original = json.loads(json.dumps(ctx))
+    calls = []
+    journal = []
+    from live import scenario_recovery
+    monkeypatch.setattr(scenario_recovery, 'record_model_request', lambda **kw: journal.append(kw))
+    p = exposure_proposal(ctx, 'WAIT')
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(p))
+    result = propose({'valid': True, 'as_of_ms': 1000000}, ctx,
+                     response_contract(ctx), generate=generate, clock=lambda: 1000)
+    policy = calls[0]['system_prompt']
+    if active:
+        assert policy == SYSTEM_PROMPT  # Holding policy is byte-identical.
+    else:
+        text = ' '.join(policy.split())
+        assert 'Flat-entry comparison only' in text
+        assert 'baseline and changed_evidence audit change/authorization' in text
+        assert 'hours-old baseline price alone is not a momentum veto' in text
+        assert 'capped marketable LIMIT now' in text
+        assert 'new low/high or retest by habit' in text
+        assert 'never repair an invalid setup' in text
+        assert 'do not move its goalposts without fresh counterevidence' in text
+        assert 'Never invent an omitted prior condition' in text
+        assert "Keep recovery's first-observation WAIT" in text
+        assert 'Preserve host-authorized NORMAL ordinary-entry chase rules' in text
+    assert result['action'] == 'WAIT'
+    assert journal[0]['system_prompt'] == calls[0]['system_prompt']
+    assert journal[0]['user_prompt'] == calls[0]['user_prompt']
+    assert json.loads(calls[0]['user_prompt'])['contract_context']['recovery'] == ctx['recovery']
+    assert ctx == original
+
+
+@pytest.mark.parametrize('exposure', ['positions', 'pending_entries'])
+def test_flat_addendum_never_applies_to_unscoped_exposure(exposure):
+    ctx = context()
+    ctx[exposure] = [dict(id='unresolved', price=60000, quantity=.001)]
+    calls = []
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(exposure_proposal(ctx, 'WAIT')))
+    propose({'valid': True, 'as_of_ms': 1000000}, ctx, response_contract(ctx),
+            generate=generate, clock=lambda: 1000)
+    assert calls[0]['system_prompt'] == SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('blocked', [False, True])
+def test_assembled_flat_comparison_preserves_real_open_and_halt_guards(side, blocked):
+    ctx = context()
+    ctx['new_risk_blocked'] = blocked
+    p = wire(ctx, 'OPEN')
+    p.update(side=side, entries=[dict(id='now-entry', price=60000, quantity=.001)])
+    if side == 'SHORT':
+        p.update(hard_stop=61000, take_profits=[dict(id='tp', price=59000, fraction=.5)])
+    parsed = propose({'valid': True, 'as_of_ms': 1000000}, ctx,
+                     response_contract(ctx), clock=lambda: 1000,
+                     generate=lambda **kwargs: SimpleNamespace(text=json.dumps(p)))
+    if blocked:
+        with pytest.raises(ValueError):
+            validate_scenario(parsed, ctx)
+    else:
+        accepted = validate_scenario(parsed, ctx)
+        assert accepted['side'] == side
+        assert accepted['risk']['budget'] == 200
+        assert accepted['leverage'] == 10
