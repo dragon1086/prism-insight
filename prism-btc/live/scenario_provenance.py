@@ -247,6 +247,7 @@ def exchange_call(method, request, started_at, *, response=None):
 
 
 def _flush(capture):
+    written = []
     with sqlite3.connect(capture['path'], timeout=0) as conn:
         conn.execute('CREATE TABLE IF NOT EXISTS llm_scenario_audit_manifests (manifest_id TEXT PRIMARY KEY, body TEXT)')
         conn.execute('CREATE TABLE IF NOT EXISTS llm_scenario_audit_events (event_id TEXT PRIMARY KEY, run_id TEXT, kind TEXT, observed_at REAL, scenario_id TEXT, intent_id TEXT, decision_slot INTEGER, manifest_id TEXT, body TEXT)')
@@ -261,6 +262,14 @@ def _flush(capture):
                     _gap()
                     continue
             conn.execute('INSERT OR IGNORE INTO llm_scenario_audit_events VALUES (?,?,?,?,?,?,?,?,?)', event)
+            written.append(event)
+    # Committed rows only; the ClickStack copy is a bounded, ID-free summary.
+    try:
+        from live.scenario_ledger import forward_audit
+        for event in written:
+            forward_audit(event)
+    except Exception:
+        pass
 
 
 @contextmanager

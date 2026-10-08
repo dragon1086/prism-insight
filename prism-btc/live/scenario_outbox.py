@@ -31,6 +31,12 @@ def enqueue(conn, event_id, event):
         raise ValueError("conflicting_notice_identity")
     conn.execute("INSERT OR IGNORE INTO llm_scenario_outbox(event_id,kind,body) VALUES(?,?,?)",
                  (event_id,event["kind"],body))
+    if not existing:
+        try:
+            from live.scenario_ledger import forward_notice
+            forward_notice(event_id,event,body)
+        except Exception:
+            pass
 
 
 def _destination(kind):

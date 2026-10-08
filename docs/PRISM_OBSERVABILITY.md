@@ -79,6 +79,12 @@ ClickHouse process (mode `0644`).
   acceptance is not a fill)
 - `job.run_completed` (run heartbeat for the analysis batches, hard-stop, trend-exit,
   fill-chaser and US pending orders, so a missing run shows up as a time gap)
+- `btc.scenario.decision_input` / `intent_committed` / `exchange_call` /
+  `settlement_recorded` (bounded summaries of committed `llm_scenario_audit_events`; raw
+  exchange order IDs and response bodies stay in SQLite, only `order_id_hash` ships),
+  `btc.scenario.notice` (HALTED, MODEL_ERROR, fills… as queued) and
+  `job.run_completed` with `job=btc-scenario` (one per runner invocation; the runner's
+  stdout status lines carry no timestamp)
 
 `candidate.evaluated`, `entry.executed`, and `exit.executed` use context schema
 version 1. The entry scenario keeps the authoritative deterministic market
