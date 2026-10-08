@@ -225,6 +225,27 @@ def _intentional_flat_halt(conn, now: datetime) -> bool:
         return False
 
 
+def _check_scenario_decision_halted(conn, mode: str, now: datetime) -> dict | None:
+    """Distinguish a proven pre-model halt from an actual market WAIT decision."""
+    if mode != "demo" or not _intentional_flat_halt(conn, now):
+        return None
+    try:
+        from live.scenario_control import read_control
+        if read_control(conn)["state"] == "paused":
+            return None  # An explicit operator pause is not an unexpected halt.
+        state = json.loads(conn.execute(
+            "SELECT body FROM llm_scenario_state WHERE id=1").fetchone()[0])
+        recovery = state.get("recovery")
+        reason = ("시험매매 종료 후 검토 대기 · "
+                  if isinstance(recovery, dict) and recovery.get("phase") == "DONE_REVIEW_REQUIRED"
+                  else "")
+        return {"level": "warn", "code": "decision_halted",
+                "msg": (reason + "보호 점검은 정상이나 LLM 시장 판단 호출 전 신규 진입이 차단되어 있습니다. "
+                        "시장 관망 판단과 다릅니다.")}
+    except Exception:  # noqa: BLE001 — unavailable evidence must not invent a halt
+        return None
+
+
 def _check_price_stale(conn, mode: str, now: datetime) -> dict | None:
     """3) 시세 갱신 정지: last_processed_30m_ns 나이 > 90분 → alert (없으면 warn)."""
     try:
@@ -361,6 +382,7 @@ _CHECKS = (
     _check_daemon,
     _check_error_burst,
     _check_price_stale,
+    _check_scenario_decision_halted,
     _check_equity,
     _check_stale_positions,
     _check_shadow_divergence,
@@ -405,6 +427,7 @@ _CODE_TAG = {
     "daemon_down": "데몬정지",
     "error_burst": "에러폭주",
     "price_stale": "시세정지",
+    "decision_halted": "판단중단",
     "equity_missing": "자산없음",
     "equity_zero": "자산이상",
     "stale_position": "포지션고착",
