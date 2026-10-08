@@ -6,7 +6,7 @@ import pytest
 
 from core.llm_scenario import risk_snapshot, validate_scenario
 from live.scenario_contract import response_schema, validate_wire_proposal
-from live.scenario_llm import SYSTEM_PROMPT, propose, _current_primary_frame_facts
+from live.scenario_llm import SYSTEM_PROMPT, MA_STRUCTURE_PROMPT, propose, _current_primary_frame_facts
 from live.scenario_preview import response_contract
 from live.scenario_contract import identity_fields
 
@@ -371,8 +371,10 @@ def test_assembled_entry_framing_is_flat_only_and_preserves_inputs(active, monke
                      response_contract(ctx), generate=generate, clock=lambda: 1000)
     policy = calls[0]['system_prompt']
     if active:
-        assert policy == SYSTEM_PROMPT  # Holding policy is byte-identical.
-        assert json.loads(calls[0]['user_prompt'])['contract_context'] == ctx
+        assert policy == SYSTEM_PROMPT + MA_STRUCTURE_PROMPT
+        delivered = json.loads(calls[0]['user_prompt'])['contract_context']
+        assert delivered.pop('ma_structure')['status'] == 'unavailable'
+        assert delivered == ctx
     else:
         text = ' '.join(policy.split())
         assert 'Flat-entry comparison only' in text
@@ -408,7 +410,7 @@ def test_flat_addendum_never_applies_to_unscoped_exposure(exposure):
         return SimpleNamespace(text=json.dumps(exposure_proposal(ctx, 'WAIT')))
     propose({'valid': True, 'as_of_ms': 1000000}, ctx, response_contract(ctx),
             generate=generate, clock=lambda: 1000)
-    assert calls[0]['system_prompt'] == SYSTEM_PROMPT
+    assert calls[0]['system_prompt'] == SYSTEM_PROMPT + MA_STRUCTURE_PROMPT
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -546,3 +548,73 @@ def test_actual_model_payload_gets_same_primary_facts_as_request_record(monkeypa
     assert payload['contract_context']['current_primary_frame_facts'] == _current_primary_frame_facts(snapshot)
     assert payload['market_snapshot'] == snapshot
     assert json.dumps([ctx, snapshot], sort_keys=True) == original
+
+
+@pytest.mark.parametrize('mode', ['flat', 'pending', 'holding'])
+def test_ma_structure_actual_request_all_contexts_bounded_and_audited(mode, monkeypatch):
+    from tests.test_scenario_snapshot import snapshot as real_snapshot
+    from live import scenario_recovery
+    snapshot = real_snapshot()
+    ctx = context(mode != 'flat')
+    ctx.update(now=snapshot['as_of_ms'] / 1000, input_captured_at=snapshot['as_of_ms'] / 1000)
+    if mode == 'pending':
+        ctx['positions'] = []
+        ctx['pending_entries'] = [dict(id='pending', price=60000, quantity=.001)]
+    p = exposure_proposal(ctx, 'WAIT')
+    p['expires_at'] = ctx['now'] + 100
+    calls, journal = [], []
+    monkeypatch.setattr(scenario_recovery, 'record_model_request', lambda **kw: journal.append(kw))
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(p))
+    result = propose(snapshot, ctx, response_contract(ctx), generate=generate, clock=lambda: ctx['now'])
+    assert result['action'] == 'WAIT'
+    assert journal[0]['system_prompt'] == calls[0]['system_prompt']
+    assert journal[0]['user_prompt'] == calls[0]['user_prompt']
+    assert MA_STRUCTURE_PROMPT in calls[0]['system_prompt']
+    assert len(calls[0]['user_prompt'].encode()) < 100000
+    payload = json.loads(calls[0]['user_prompt'])
+    assert len(payload['contract_context']['ma_structure']['primary']['30m']['points']) == 4
+    assert ('current_primary_frame_facts' in payload['contract_context']) == (mode == 'flat')
+
+
+def test_full_recovery_payload_with_seven_frames_preserves_headroom():
+    from tests.test_scenario_snapshot import frames, snapshot as real_snapshot, NOW
+    history, provisional = frames(NOW + 300000)
+    # Variable tick-aligned prices generate long-decimal MA/gap facts, with a
+    # complete 63-path recovery comparison rather than a minimal empty context.
+    for frame, rows in history.items():
+        for index, stamp in enumerate(rows.index):
+            close = round(83000.1 + index * 11.123456789, 1)
+            rows.loc[stamp, ['open', 'high', 'low', 'close', 'volume']] = [round(close-5.3, 1), round(close+20.7, 1), round(close-10.2, 1), close, 1234.123456789]
+        provisional[frame].loc[:, ['open', 'high', 'low', 'close', 'volume']] = [83500.1, 83800.1, 83490.1, 83700.1, 987.123456789]
+    snapshot = real_snapshot(history, provisional)
+    ctx = context()
+    ctx.update(now=snapshot['as_of_ms']/1000, input_captured_at=snapshot['as_of_ms']/1000)
+    current = {}
+    for frame, item in snapshot['timeframes'].items():
+        for phase in ('confirmed', 'forming'):
+            for ma in ('ma10', 'ma35'):
+                current[f'timeframes.{frame}.{phase}.{ma}'] = item[phase][ma]
+        for name, value in item['forming']['ohlcv'].items():
+            current[f'timeframes.{frame}.forming.ohlcv.{name}'] = value
+    baseline = {key: value-1.123456789 for key, value in current.items()}
+    ctx['recovery'] = dict(phase='OBSERVING', baseline=baseline, current=current,
+                          changed_evidence={key: {'before': baseline[key], 'now': value} for key, value in current.items()},
+                          historical_outcomes=[{'scenario_id': f's_{n:024d}', 'net_pnl': -10.123456789} for n in range(3)],
+                          first_observation=False, eligible=True, current_stage=0, offered_stage=0)
+    ctx['recent_waits'] = [dict(slot=ctx['now']-n*300, confidence=.5123456789, action='WAIT') for n in range(30)]
+    ctx['seen_action_ids'] = [f'action_{n:025d}' for n in range(50)]
+    p = exposure_proposal(ctx, 'WAIT')
+    p['expires_at'] = ctx['now'] + 100
+    calls = []
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(p))
+    propose(snapshot, ctx, response_contract(ctx), generate=generate, clock=lambda: ctx['now'])
+    encoded = calls[0]['user_prompt']
+    assert len(encoded.encode()) < 95000
+    delivered = json.loads(encoded)
+    assert delivered['market_snapshot'] == snapshot
+    assert delivered['contract_context']['recovery'] == ctx['recovery']
+    assert len(delivered['contract_context']['ma_structure']['levels']) == 16

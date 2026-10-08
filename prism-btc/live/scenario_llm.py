@@ -6,6 +6,8 @@ import math
 import time
 from collections.abc import Callable
 
+from engine.scenario_ma_context import build_ma_structure_context
+
 MODEL = "gpt-6-luna"
 EFFORT = "high"
 TIMEOUT_SECONDS = 75
@@ -409,6 +411,59 @@ fabricated reward/risk or probabilities; summarize the choice in existing ration
 """
 
 
+MA_STRUCTURE_PROMPT = """
+MA structure review applies to flat, pending and holding contexts; all earlier
+host safety, accounting, lifecycle and protection restrictions retain priority.
+Use ma_structure.primary own-time close/MA points and numeric transitions, not current
+MAs projected onto older candles. MA order, price position, price movement and
+MA movement are different facts: a stationary price can change band position
+because the MAs moved. Do not label that a price breakout or a successful retest.
+When primary frames differ, name each frame's actual position; do not collapse
+BETWEEN and BELOW into a collective claim that price is below both MAs on all frames.
+OHLCV volume is total volume, not buyer- or seller-initiated order flow. A down
+candle and increased total volume are separate facts, not measured selling volume.
+Compare LONG and SHORT symmetrically: crossover, existing MA-order gap expansion,
+contraction after expansion, compression then renewed expansion, repeated crosses
+and price/MA disagreement. Crosses lag price; expanding abs(MA10-MA35) is
+divergence, shrinking is convergence, not automatically a long-duration trend.
+Use raw price gap changes separately from normalized fractions; a changing price
+denominator is not raw-gap expansion. Confirmed run counts exclude the forming
+candle. count_lower_bounds marks runs reaching the available history edge: those
+counts are minimum observed lengths, not exact total durations. Long compression
+followed by new directional expansion with price moving
+in that direction is a candidate to evaluate, not an entry command. Compare late
+overextension and failed-break/reversal counterexamples rather than chase by habit.
+Below-to-between recovery weakens a SHORT differently from above-to-between
+deterioration of a LONG. Between is mixed, neither automatic range nor trade ban.
+A touch alone is not support, rejection, a held retest or confirmed reversal.
+Observe forming progress/remaining time and OHLC reactions in the original
+snapshot; provisional moves can reverse. Limited history means unknown prior
+compression duration or recross history, not invented confirmation or a veto.
+30m/1h drive direction and 15m refines timing. Inspect 4h/12h/1d/1w MA10/35
+levels on each proposed entry-to-TP or current-mark-to-TP profit path. Supplied
+obstacles are sorted from CONTEXT_MARK_PRICE, not from the proposed entry;
+obstacle lists and higher_frames.level_ids reference the single levels dictionary
+by stable timeframe.MA.confirmed/forming IDs. Look up each ID there; repeated
+references are not extra levels. Re-evaluate which levels lie on that actual path.
+Last-trade SMA and MarkPrice
+are different bases, not basis-adjusted execution evidence. Confirmed/forming
+versions sharing same_line_group are one evolving line, not independent votes.
+Identify confirmed or forming when citing a decisive higher-frame level. If its
+two versions straddle MarkPrice, acknowledge the evolving-line uncertainty; never
+describe the confirmed version as the current observed forming value.
+Higher-frame direction alone never vetoes a valid short-term trade, but nearby
+potential reactions can change cost-net reward, partial TP allocation, runner
+retention, protection or WAIT. Do not declare a line strong support/resistance
+without observed reactions, require a break/retest for every trade, or auto-exit
+at every touch. Missing levels remain unknown, not proof of a clear path.
+For holdings compare intact-thesis pullbacks with actual deterioration, using
+existing WAIT/ADJUST/EXIT mechanics and verified quantities, costs and stop
+constraints. Neither favorable structure nor an opposite signal permits reversal
+before fully reconciled flat, risk-cap changes or widening protection. Explain
+the decisive evidence and invalidation briefly in existing rationale; no new fields.
+"""
+
+
 class ScenarioModelError(ValueError):
     """Sanitized model failure; never embeds response or account payload."""
 
@@ -501,6 +556,7 @@ def propose(snapshot: dict, context: dict, response_contract: dict, *,
     # Do not recycle retired-timeframe narratives into new-policy judgments.
     # Preserve the original audit context and all structured order/risk evidence.
     model_context = dict(context)
+    model_context["ma_structure"] = build_ma_structure_context(snapshot, context)
     flat_entry = context.get("scenario_id") is None and not context.get("positions") and not context.get("pending_entries")
     if flat_entry:
         model_context["current_primary_frame_facts"] = _current_primary_frame_facts(snapshot)
@@ -514,13 +570,13 @@ def propose(snapshot: dict, context: dict, response_contract: dict, *,
     payload = {"market_snapshot": snapshot, "contract_context": model_context,
                "response_contract": response_contract}
     try:
-        prompt = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+        prompt = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     except (TypeError, ValueError):
         raise ScenarioModelError("invalid_input") from None
     if len(prompt.encode("utf-8")) > 100_000:
         raise ScenarioModelError("input_size")
     started = clock()
-    system_prompt = SYSTEM_PROMPT
+    system_prompt = SYSTEM_PROMPT + MA_STRUCTURE_PROMPT
     if flat_entry:
         system_prompt += FLAT_ENTRY_PROMPT
     from live.scenario_recovery import record_model_request, record_model_wire, record_model_error
