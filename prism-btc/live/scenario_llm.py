@@ -414,10 +414,14 @@ fabricated reward/risk or probabilities; summarize the choice in existing ration
 MA_STRUCTURE_PROMPT = """
 MA structure review applies to flat, pending and holding contexts; all earlier
 host safety, accounting, lifecycle and protection restrictions retain priority.
-Use ma_structure.primary own-time points and numeric transitions, not current
+Use ma_structure.primary own-time close/MA points and numeric transitions, not current
 MAs projected onto older candles. MA order, price position, price movement and
 MA movement are different facts: a stationary price can change band position
 because the MAs moved. Do not label that a price breakout or a successful retest.
+When primary frames differ, name each frame's actual position; do not collapse
+BETWEEN and BELOW into a collective claim that price is below both MAs on all frames.
+OHLCV volume is total volume, not buyer- or seller-initiated order flow. A down
+candle and increased total volume are separate facts, not measured selling volume.
 Compare LONG and SHORT symmetrically: crossover, existing MA-order gap expansion,
 contraction after expansion, compression then renewed expansion, repeated crosses
 and price/MA disagreement. Crosses lag price; expanding abs(MA10-MA35) is
@@ -438,9 +442,15 @@ compression duration or recross history, not invented confirmation or a veto.
 30m/1h drive direction and 15m refines timing. Inspect 4h/12h/1d/1w MA10/35
 levels on each proposed entry-to-TP or current-mark-to-TP profit path. Supplied
 obstacles are sorted from CONTEXT_MARK_PRICE, not from the proposed entry;
-re-evaluate which levels lie on that actual path. Last-trade SMA and MarkPrice
+obstacle lists and higher_frames.level_ids reference the single levels dictionary
+by stable timeframe.MA.confirmed/forming IDs. Look up each ID there; repeated
+references are not extra levels. Re-evaluate which levels lie on that actual path.
+Last-trade SMA and MarkPrice
 are different bases, not basis-adjusted execution evidence. Confirmed/forming
 versions sharing same_line_group are one evolving line, not independent votes.
+Identify confirmed or forming when citing a decisive higher-frame level. If its
+two versions straddle MarkPrice, acknowledge the evolving-line uncertainty; never
+describe the confirmed version as the current observed forming value.
 Higher-frame direction alone never vetoes a valid short-term trade, but nearby
 potential reactions can change cost-net reward, partial TP allocation, runner
 retention, protection or WAIT. Do not declare a line strong support/resistance
@@ -560,7 +570,7 @@ def propose(snapshot: dict, context: dict, response_contract: dict, *,
     payload = {"market_snapshot": snapshot, "contract_context": model_context,
                "response_contract": response_contract}
     try:
-        prompt = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+        prompt = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     except (TypeError, ValueError):
         raise ScenarioModelError("invalid_input") from None
     if len(prompt.encode("utf-8")) > 100_000:

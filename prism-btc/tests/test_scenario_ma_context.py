@@ -92,9 +92,12 @@ def test_higher_frame_levels_sorted_paired_and_basis_explicit():
     result = build(s)
     assert len(result['long_upward_obstacles']) == 8
     assert len(result['short_downward_obstacles']) == 8
+    assert len(result['levels']) == 16
+    assert set(result['long_upward_obstacles'] + result['short_downward_obstacles']) == set(result['levels'])
+    assert result['levels_price_basis'] == 'LAST_TRADE_OHLC_SMA'
     assert result['reference']['basis_difference_not_adjusted'] is True
     assert result['reference']['kind'] == 'CONTEXT_MARK_PRICE'
-    levels = result['higher_frames']['4h']['levels']
+    levels = [result['levels'][key] for key in result['higher_frames']['4h']['level_ids']]
     assert levels[0]['same_line_group'] == levels[2]['same_line_group']
     assert levels[0]['as_of_ms'] != levels[2]['as_of_ms']
     assert {p['is_confirmed'] for p in levels} == {True, False}
@@ -108,7 +111,7 @@ def test_equal_levels_and_invalid_reference_do_not_fabricate_distances():
     result = build_ma_structure_context(s, {'now': NOW / 1000, 'mark_price': float('nan')})
     assert result['reference'] is None
     assert result['long_upward_obstacles'] == []
-    assert 'distance_price' not in result['higher_frames']['4h']['levels'][0]
+    assert 'distance_price' not in result['levels'][result['higher_frames']['4h']['level_ids'][0]]
     assert result['higher_frames']['12h']['status'] == 'unavailable'
 
 
@@ -124,7 +127,8 @@ def test_stale_or_invalid_higher_history_is_not_current(fault):
         path['forming_point']['observed_at_ms'] = NOW - 120001
     else:
         path['status'] = 'unavailable'
-    levels = build(s)['higher_frames']['4h']['levels']
+    result = build(s)
+    levels = [result['levels'][key] for key in result['higher_frames']['4h']['level_ids']]
     if fault in ('stale_confirmed', 'gap'):
         assert len(levels) == 2 and all(not p['is_confirmed'] for p in levels)
     elif fault == 'stale_forming':
@@ -150,7 +154,7 @@ def test_real_snapshot_producer_consumed_with_lower_bounds():
         assert facts['confirmed_gap']['count_lower_bounds']['compression_bars'] is True
         assert facts['source_history_count'] == 50
     for frame in ('4h', '12h', '1d', '1w'):
-        assert len(result['higher_frames'][frame]['levels']) == 4
+        assert len(result['higher_frames'][frame]['level_ids']) == 4
 
 
 @pytest.mark.parametrize('metadata', [

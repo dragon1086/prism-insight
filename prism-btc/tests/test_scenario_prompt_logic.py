@@ -576,3 +576,45 @@ def test_ma_structure_actual_request_all_contexts_bounded_and_audited(mode, monk
     payload = json.loads(calls[0]['user_prompt'])
     assert len(payload['contract_context']['ma_structure']['primary']['30m']['points']) == 4
     assert ('current_primary_frame_facts' in payload['contract_context']) == (mode == 'flat')
+
+
+def test_full_recovery_payload_with_seven_frames_preserves_headroom():
+    from tests.test_scenario_snapshot import frames, snapshot as real_snapshot, NOW
+    history, provisional = frames(NOW + 300000)
+    # Variable tick-aligned prices generate long-decimal MA/gap facts, with a
+    # complete 63-path recovery comparison rather than a minimal empty context.
+    for frame, rows in history.items():
+        for index, stamp in enumerate(rows.index):
+            close = round(83000.1 + index * 11.123456789, 1)
+            rows.loc[stamp, ['open', 'high', 'low', 'close', 'volume']] = [round(close-5.3, 1), round(close+20.7, 1), round(close-10.2, 1), close, 1234.123456789]
+        provisional[frame].loc[:, ['open', 'high', 'low', 'close', 'volume']] = [83500.1, 83800.1, 83490.1, 83700.1, 987.123456789]
+    snapshot = real_snapshot(history, provisional)
+    ctx = context()
+    ctx.update(now=snapshot['as_of_ms']/1000, input_captured_at=snapshot['as_of_ms']/1000)
+    current = {}
+    for frame, item in snapshot['timeframes'].items():
+        for phase in ('confirmed', 'forming'):
+            for ma in ('ma10', 'ma35'):
+                current[f'timeframes.{frame}.{phase}.{ma}'] = item[phase][ma]
+        for name, value in item['forming']['ohlcv'].items():
+            current[f'timeframes.{frame}.forming.ohlcv.{name}'] = value
+    baseline = {key: value-1.123456789 for key, value in current.items()}
+    ctx['recovery'] = dict(phase='OBSERVING', baseline=baseline, current=current,
+                          changed_evidence={key: {'before': baseline[key], 'now': value} for key, value in current.items()},
+                          historical_outcomes=[{'scenario_id': f's_{n:024d}', 'net_pnl': -10.123456789} for n in range(3)],
+                          first_observation=False, eligible=True, current_stage=0, offered_stage=0)
+    ctx['recent_waits'] = [dict(slot=ctx['now']-n*300, confidence=.5123456789, action='WAIT') for n in range(30)]
+    ctx['seen_action_ids'] = [f'action_{n:025d}' for n in range(50)]
+    p = exposure_proposal(ctx, 'WAIT')
+    p['expires_at'] = ctx['now'] + 100
+    calls = []
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(p))
+    propose(snapshot, ctx, response_contract(ctx), generate=generate, clock=lambda: ctx['now'])
+    encoded = calls[0]['user_prompt']
+    assert len(encoded.encode()) < 95000
+    delivered = json.loads(encoded)
+    assert delivered['market_snapshot'] == snapshot
+    assert delivered['contract_context']['recovery'] == ctx['recovery']
+    assert len(delivered['contract_context']['ma_structure']['levels']) == 16

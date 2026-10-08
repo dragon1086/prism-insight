@@ -109,7 +109,8 @@ def build_ma_structure_context(snapshot: dict, context: dict) -> dict:
     """Use only supplied own-time MA values; missing history never becomes a gate."""
     result = {"version": 1, "status": "unavailable", "primary": {}, "higher_frames": {},
               "long_upward_obstacles": [], "short_downward_obstacles": [],
-              "equal_reference_levels": [], "reference": None}
+              "equal_reference_levels": [], "levels": {},
+              "levels_price_basis": "LAST_TRADE_OHLC_SMA", "reference": None}
     as_of, now = snapshot.get("as_of_ms"), context.get("now")
     if not _number(as_of) or not _number(now) or as_of > now * 1000:
         return result
@@ -130,7 +131,11 @@ def build_ma_structure_context(snapshot: dict, context: dict) -> dict:
         confirmed, forming, source, aggregate_valid = _frame_points(item, duration, as_of)
         points = confirmed + ([forming] if forming else [])
         facts = {"status": "available" if points else "unavailable", "source": source,
-                 "history_limited": source != "ma_path", "duration_ms": duration, "points": points}
+                 "history_limited": source != "ma_path", "duration_ms": duration,
+                 "price_basis": "LAST_TRADE_OHLC_SMA",
+                 "points": [{key: value for key, value in point.items()
+                             if key not in ("open", "high", "low", "price_basis", "absolute_gap_price")}
+                            for point in points]}
         path = item.get("ma_path")
         if isinstance(path, dict) and aggregate_valid:
             for key in ("source_history_count", "valid_confirmed_ma_points"):
@@ -158,19 +163,20 @@ def build_ma_structure_context(snapshot: dict, context: dict) -> dict:
             levels = []
             for point in confirmed[-1:] + ([forming] if forming else []):
                 for ma in ("ma10", "ma35"):
+                    level_id = frame + "." + ma + (".confirmed" if point["is_confirmed"] else ".forming")
                     level = {"timeframe": frame, "ma": ma, "price": point[ma],
                              "is_confirmed": point["is_confirmed"], "as_of_ms": point["as_of_ms"],
-                             "open_time_ms": point["open_time_ms"], "price_basis": point["price_basis"],
                              "same_line_group": frame + "." + ma}
                     if result["reference"]:
                         delta = point[ma] - mark
                         level.update(distance_price=delta, distance_fraction=delta / mark,
                                      relative_to_mark="ABOVE" if delta > 0 else "BELOW" if delta < 0 else "EQUAL")
                         bucket = "long_upward_obstacles" if delta > 0 else "short_downward_obstacles" if delta < 0 else "equal_reference_levels"
-                        result[bucket].append(level)
-                    levels.append(level)
-            result["higher_frames"][frame] = {"status": facts["status"], "source": source, "levels": levels}
-    result["long_upward_obstacles"].sort(key=lambda p: p["price"])
-    result["short_downward_obstacles"].sort(key=lambda p: -p["price"])
+                        result[bucket].append(level_id)
+                    result["levels"][level_id] = level
+                    levels.append(level_id)
+            result["higher_frames"][frame] = {"status": facts["status"], "source": source, "level_ids": levels}
+    result["long_upward_obstacles"].sort(key=lambda key: result["levels"][key]["price"])
+    result["short_downward_obstacles"].sort(key=lambda key: -result["levels"][key]["price"])
     result["status"] = "available" if any(p["status"] == "available" for p in result["primary"].values()) else "unavailable"
     return result
