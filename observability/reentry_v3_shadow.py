@@ -118,6 +118,13 @@ def _hash(*parts):
     return hashlib.sha256("|".join(str(p) for p in parts).encode()).hexdigest()[:32]
 
 
+def _origin_trace(market, watch):
+    """The original position's trace (observability.trading_context formula), so the
+    re-entry campaign reads on the stopped-out/skipped decision; watch-scoped if unknown."""
+    decision = str((watch.get("row") or {}).get("decision_id") or "").strip()
+    return _hash("trade-trace", market, decision) if decision else _hash("reentry-watch", watch["watch_id"])
+
+
 class MarketContext:
     """Deterministic regime (production cores.data_prefetch._compute_kr_regime on the regime
     benchmark: KOSPI for KR, SPY as the S&P 500 proxy for US) after the BUY distribution-day
@@ -222,6 +229,8 @@ def advance(state, rows, frames, completed, market, ctx):
     enrolled = 0
     for row in sorted(rows, key=lambda r: (r["exit_date"], r["entry_date"], r["ticker"])):
         wid = _watch_id(market, row)
+        if wid in watches and row.get("decision_id") and not watches[wid]["row"].get("decision_id"):
+            watches[wid]["row"]["decision_id"] = row["decision_id"]   # trace link only; identity unchanged
         if wid in watches or V2._blocked(watches, row):
             continue
         watches[wid] = {"watch_id": wid, "status": "PENDING_ENROLL", "row": row, "market": market,
@@ -546,11 +555,13 @@ def run(market, completed, *, collector, phase="close", decision_day=None, quote
                          "report_available": item["report_ref"] is not None,
                          "micro_split_appendix": bool(item["appendix_text"])}
                 if emit_event("reentry_v3.shadow_trigger", service=_service(market), event_id=item["event_id"],
-                              market=market, ticker=watch["ticker"], attributes=attrs, event_time=now) is not None:
+                              market=market, ticker=watch["ticker"], trace_id=_origin_trace(market, watch),
+                              attributes=attrs, event_time=now) is not None:
                     sent += 1
             for name, watch, key, attrs in ledger_events:
                 emit_event(name, service=_service(market), event_id=_hash(watch["watch_id"], key), market=market,
-                           ticker=watch["ticker"], attributes={"mode": "SHADOW", "trading_impact": "none",
+                           ticker=watch["ticker"], trace_id=_origin_trace(market, watch),
+                           attributes={"mode": "SHADOW", "trading_impact": "none",
                                                                "policy_version": C.POLICY_VERSION,
                                                                "watch_ref": watch["watch_id"],
                                                                "source": watch["source"], **attrs}, event_time=now)
@@ -567,8 +578,12 @@ def run(market, completed, *, collector, phase="close", decision_day=None, quote
         live_results = []
         if phase == "intraday" and not dry_run and live_enabled and rechecked:
             def _emit_live(name, watch, key, attrs):
+                entry_decision = attrs.pop("entry_decision_id", None)
+                if entry_decision:      # the new position's own trace, linked from the campaign
+                    attrs["entry_trace_id"] = _hash("trade-trace", market, entry_decision)
                 emit_event(name, service=_service(market), event_id=_hash(watch["watch_id"], key), market=market,
-                           ticker=watch["ticker"], attributes={"mode": "LIVE", "trading_impact": "order",
+                           ticker=watch["ticker"], trace_id=_origin_trace(market, watch),
+                           attributes={"mode": "LIVE", "trading_impact": "order",
                                                                "policy_version": C.POLICY_VERSION,
                                                                "watch_ref": watch["watch_id"],
                                                                "source": watch["source"], **attrs},
@@ -661,6 +676,7 @@ def _run_rechecks(state, market, completed, p, reports_root, archive_db, llm, on
                  "error": str(record.get("error") or "")[:300] or None}
         emit_event("reentry_v3.shadow_recheck", service=_service(market),
                    event_id=_hash(event_id, "recheck", attempts), market=market, ticker=watch["ticker"],
+                   trace_id=_origin_trace(market, watch),
                    attributes=attrs, event_time=datetime.now(timezone.utc))
         results.append(record)
     return results

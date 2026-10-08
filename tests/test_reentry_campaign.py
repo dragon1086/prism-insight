@@ -629,6 +629,8 @@ def test_runtime_recheck_failure_reason_reaches_the_ledger(tmp_path, monkeypatch
     attrs = next(kw["attributes"] for n, kw in sent if n == "reentry_v3.shadow_recheck")
     assert attrs["status"] == "ERROR" and attrs["approved"] is None
     assert attrs["error"].startswith("TimeoutError") and "300s" in attrs["error"]
+    traces = {kw.get("trace_id") for n, kw in sent if n.startswith("reentry_v3.") and n != "reentry_v3.shadow_run"}
+    assert len(traces) == 1 and None not in traces          # one campaign trace per watch
 
 
 def test_runtime_shakeout_recovery_is_decided_per_rule(tmp_path, monkeypatch):

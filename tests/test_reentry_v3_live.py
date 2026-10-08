@@ -193,6 +193,17 @@ def test_approved_recheck_places_one_buy_with_the_scenario_fields(tmp_path, live
     assert [e[0] for e in emitted] == ["reentry_v3.live_entry"]
 
 
+def test_live_entry_links_new_position_and_original_decision(tmp_path, live_on):
+    emitted = []
+    item = dict(_item(), original={"decision_id": "report:000001_A_20261001_morning_x.pdf"})
+    _process(tmp_path, [_record()], {"ev1": item}, FakeExecutor(), emitted=emitted)
+    [(name, _watch, _key, attrs)] = emitted
+    assert name == "reentry_v3.live_entry" and attrs["entry_decision_id"] == "reentry_v3:ev1"
+    scenario = LIVE.build_scenario(item, _record(), "KR")
+    assert scenario["reentry"]["origin_decision_id"] == "report:000001_A_20261001_morning_x.pdf"
+    assert LIVE.build_scenario(_item(), _record(), "KR")["reentry"]["origin_decision_id"] is None
+
+
 def test_only_primary_rule_signals_trade(tmp_path, live_on):
     executor = FakeExecutor()
     _, results = _process(tmp_path, [_record()], {"ev1": _item(live_rule=None)}, executor)

@@ -66,6 +66,14 @@ def test_candidates_filters_and_is_read_only(tmp_path):
     assert db.read_bytes() == before
 
 
+def test_stop_rows_carry_the_original_decision_id(tmp_path):
+    db = tmp_path / "t.sqlite"
+    _db(db, stop_rows=[("acct", "000001", "A", "2026-09-01 09:40:00", 100, "2026-09-03 10:00:00", 93, -7, "t",
+                        "stop", _scenario())], watch_rows=[])
+    [row] = S.candidates(db, "KR", "2026-09-25")
+    assert row["source"] == "STOP_EXIT" and row["decision_id"] == "d1"
+
+
 def _stopped_setup():
     closes = [80 + i * 0.3 for i in range(60)] + [100, 96, 93, 95, 97, 99, 102]
     volumes = [1000] * 66 + [2000]

@@ -158,6 +158,8 @@ def build_scenario(item, record, market):
     _price_fields(scenario, float(item["decision_price"]))    # the final buy gate checks this arithmetic
     scenario["trigger_type"] = trigger_label(market, signal)
     scenario["_decision_id"] = f"reentry_v3:{item['event_id']}"
+    # Observation only: lets the ledger point this position back to the original decision.
+    scenario["reentry"]["origin_decision_id"] = (item.get("original") or {}).get("decision_id")
     return scenario
 
 
@@ -406,7 +408,8 @@ def process(state, market, decision_day, records, items, journal_path, executor,
                  {"status": status, "reason": outcome.get("reason"), "signal": entry["signal"],
                   "decision_price": entry["price"], "attempt": entry["scenario"]["reentry"]["attempt"],
                   "stop_loss": entry["scenario"].get("stop_loss"), "target_price": entry["scenario"].get("target_price"),
-                  "entry_price": outcome.get("entry_price"), "holding_count": len(outcome.get("holding_ids") or [])})
+                  "entry_price": outcome.get("entry_price"), "holding_count": len(outcome.get("holding_ids") or []),
+                  "entry_decision_id": entry["scenario"].get("_decision_id")})
     for entry in skipped:
         status = REASON_STATUS.get(entry["reason"], "SKIPPED")
         results.append({"key": entry["key"], "ticker": entry["ticker"], "signal": entry["signal"], "status": status,

@@ -82,12 +82,27 @@ def summarize(kind, body):
     return {}
 
 
-def forward_audit(event):
+def forward_audits(events):
+    """Forward one run's committed rows.  A decision input carries no scenario id (the
+    scenario does not exist yet); when the run touched exactly one scenario, the input
+    joins that scenario's trace, flagged ``scenario_inferred``."""
+    try:
+        scenarios = {event[4] for event in events if event[4]}
+        run_scenario = next(iter(scenarios)) if len(scenarios) == 1 else None
+    except Exception:
+        run_scenario = None
+    for event in events:
+        forward_audit(event, run_scenario=run_scenario)
+
+
+def forward_audit(event, *, run_scenario=None):
     """``event`` is the committed llm_scenario_audit_events row tuple."""
     try:
         event_id, run_id, kind, observed_at, scenario_id, intent_id, slot, manifest_id, text = event
         if kind not in FORWARDED_KINDS:
             return
+        inferred = not scenario_id and bool(run_scenario) and kind == "decision_input"
+        scenario_id = scenario_id or (run_scenario if inferred else None)
         from datetime import datetime, timezone
         _emit()(f"btc.scenario.{kind}", service=SERVICE, market="CRYPTO", ticker="BTCUSDT",
                 event_id=_hex(f"audit:{event_id}"),
@@ -97,6 +112,7 @@ def forward_audit(event):
                             "scenario_ref": _hex(scenario_id, 16) if scenario_id else None,
                             "intent_ref": _hex(intent_id, 16) if intent_id else None,
                             "manifest_ref": _hex(manifest_id, 16) if manifest_id else None,
+                            "scenario_inferred": inferred,
                             **summarize(kind, json.loads(text))})
     except Exception:
         log.debug("scenario audit forward skipped")

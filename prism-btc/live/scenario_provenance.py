@@ -265,9 +265,8 @@ def _flush(capture):
             written.append(event)
     # Committed rows only; the ClickStack copy is a bounded, ID-free summary.
     try:
-        from live.scenario_ledger import forward_audit
-        for event in written:
-            forward_audit(event)
+        from live.scenario_ledger import forward_audits
+        forward_audits(written)
     except Exception:
         logging.getLogger(__name__).debug('scenario ledger forward skipped')
 

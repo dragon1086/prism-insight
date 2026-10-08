@@ -197,6 +197,7 @@ def candidates(db_path, market, completed, lookback_days=LOOKBACK_DAYS, include_
                         "entry_price": row["buy_price"], "exit_date": session_date(row["sell_date"], market),
                         "exit_price": row["sell_price"], "trigger_type": row["trigger_type"],
                         "exit_kind": row["exit_kind"], "realized_pct": row["profit_rate"],
+                        "decision_id": _scenario(row["scenario"]).get("_decision_id"),
                         "key_levels": scenario_key_levels(_scenario(row["scenario"]))})
         for row in conn.execute(SKIP_SQL[market], (since, until)):
             scenario = _scenario(row["scenario"])
