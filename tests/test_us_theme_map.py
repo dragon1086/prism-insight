@@ -88,6 +88,26 @@ def test_universe_skips_reits_funds_and_second_share_classes():
     assert excluded == {"share_class": 1, "reit": 1, "quote_type": 1}
 
 
+def test_dollar_volume_leg_ranks_by_value_and_folds_share_classes_across_legs():
+    def info(name, cap=5e9):
+        return {"longName": name, "industry": "Software", "marketCap": cap}
+
+    cap_leg = [{"symbol": "GOOGL", "cap": 300, "info": info("Alphabet Inc.")}]
+    value = [{"symbol": "GOOG", "adv": 9e9, "info": info("Alphabet Inc.")},
+             {"symbol": "GOOGL", "adv": 8e9, "info": info("Alphabet Inc.")},
+             {"symbol": "RGTI", "adv": 2e9, "info": info("Rigetti Computing, Inc.", 4.9e9)},
+             {"symbol": "TINY", "adv": 5e9, "info": info("Tiny Corp", 0.5e9)},
+             {"symbol": "OKLO", "adv": 1e9, "info": info("Oklo Inc.", 6.8e9)}]
+    kept, excluded, aliases = tm.select_universe(
+        value, 2, rank="adv", companies=tm.company_keys(cap_leg),
+        eligible=lambda i, _v: None if i["marketCap"] >= 1e9 else "market_cap")
+    assert [c["symbol"] for c in kept] == ["GOOGL", "RGTI"]  # overlap kept, GOOG folds, TINY below floor
+    assert aliases == {"GOOG": "GOOGL"} and excluded == {"share_class": 1, "market_cap": 1}
+    close = np.array([[10.0, 1.0], [11.0, np.nan], [12.0, 2.0]])
+    volume = np.array([[100.0, 5.0], [100.0, 5.0], [100.0, 5.0]])
+    assert tm.average_dollar_volume(close, volume, sessions=2) == [1150.0, 7.5]
+
+
 def test_korean_aliases_find_names_in_headlines_without_false_hits():
     names = {"MU": "마이크론 테크놀로지", "AAPL": "애플", "AXP": "아메리칸 익스프레스", "AAL": "아메리칸 에어라인스 그룹",
              "TSM": "TSMC(ADR)", "GOOGL": "알파벳 A"}

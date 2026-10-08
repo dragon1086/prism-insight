@@ -8,7 +8,7 @@
     "럭셔리 브랜드": {"sector": "소비재·유통", "keywords": ["럭셔리", "명품", "luxury", "Ferrari"]},
     "병원 운영": {"sector": "의료기기·헬스케어 서비스", "keywords": ["병원", "의료서비스", "hospital", "health system"]},
     "기업 아웃소싱 서비스": {"sector": "산업재·기계", "keywords": ["아웃소싱", "급여", "유니폼", "outsourcing", "payroll", "uniform"]},
-    "원전·우라늄": {"sector": "전력·유틸리티", "keywords": ["원전", "원자력", "우라늄", "SMR", "nuclear", "uranium", "reactor"]},
+    "원전·우라늄": {"sector": "전력·유틸리티", "anchor": "BWXT", "keywords":["원전", "원자력", "우라늄", "SMR", "nuclear", "uranium", "reactor"]},
     "파운드리": {"sector": "반도체", "keywords": ["파운드리", "위탁생산", "foundry", "TSMC"]},
     "전자제품 위탁생산(EMS)": {"sector": "IT 하드웨어·네트워크", "keywords": ["위탁생산", "EMS", "contract manufacturing", "electronics manufacturing"]},
     "공공안전 기술": {"sector": "IT 하드웨어·네트워크", "keywords": ["공공안전", "바디캠", "무전", "public safety", "body camera", "Taser"]},
@@ -25,6 +25,7 @@
     "정보 서비스": {"sector": "증권·자산운용", "keywords": ["정보 서비스", "데이터 분석", "information services", "analytics"]},
     "특수화학·위생": {"sector": "소재·화학·금속", "keywords": ["특수화학", "위생", "수처리", "specialty chemicals", "hygiene", "water treatment"]},
     "인프라 건설·운영": {"sector": "건설·주택", "keywords": ["인프라", "유료도로", "공항", "infrastructure", "toll road", "airport"]},
+    "AI 가속기·GPU": {"sector": "AI·데이터센터 인프라", "keywords": ["AI 가속기", "GPU", "AI 칩", "AI accelerator", "GPU"]},
     "메모리·저장장치": {"sector": "반도체", "anchor": "MU", "keywords": []},
     "생명보험": {"sector": "보험", "anchor": "MET", "keywords": []},
     "글로벌 대형 제약": {"sector": "바이오·제약", "anchor": "JNJ", "keywords": []},
@@ -53,7 +54,8 @@
     "BE": ["AI 데이터센터 전력·냉각"],
     "SKHY": ["메모리·저장장치"],
     "TSM": ["파운드리"], "UMC": ["파운드리"], "GFS": ["파운드리"],
-    "JBL": ["전자제품 위탁생산(EMS)"], "FLEX": ["전자제품 위탁생산(EMS)"],
+    "JBL": ["전자제품 위탁생산(EMS)"], "FLEX": ["전자제품 위탁생산(EMS)"], "SANM": ["전자제품 위탁생산(EMS)"],
+    "AMD": ["AI 가속기·GPU"],
     "AXON": ["공공안전 기술"],
     "CPRT": ["자동차 경매·중고차"],
     "IDXX": ["동물 헬스케어"], "ZTS": ["동물 헬스케어"],
@@ -72,7 +74,7 @@
     "OTIS": ["산업기계·상용차"]
   },
   "add": {
-    "CEG": ["원전·우라늄"],
+    "CEG": ["원전·우라늄"], "OKLO": ["원전·우라늄"], "SMR": ["원전·우라늄"],
     "LLY": ["GLP-1 비만치료제"], "NVO": ["GLP-1 비만치료제"],
     "MSFT": ["하이퍼스케일 클라우드"], "AMZN": ["하이퍼스케일 클라우드"], "GOOGL": ["하이퍼스케일 클라우드"], "ORCL": ["하이퍼스케일 클라우드"],
     "AXP": ["결제 네트워크"],
@@ -82,6 +84,7 @@
     "CVNA": ["자동차 경매·중고차"],
     "MRVL": ["AI 네트워크 반도체"],
     "ADP": ["기업 아웃소싱 서비스"], "PAYX": ["기업 아웃소싱 서비스"],
-    "BAP": ["남미 은행"]
+    "BAP": ["남미 은행"],
+    "NVDA": ["AI 가속기·GPU"], "CBRS": ["AI 가속기·GPU"]
   }
 }

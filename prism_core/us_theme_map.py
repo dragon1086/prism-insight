@@ -49,16 +49,20 @@ def company_key(name):
     return re.sub(r"[^a-z0-9]+", " ", key).strip()
 
 
-def select_universe(candidates, top=500, eligible=None):
-    """Rank candidates by market cap and keep the first `top` operating common stocks.
+def select_universe(candidates, top=500, eligible=None, rank="cap", companies=None):
+    """Rank candidates by `rank` (market cap, or e.g. "adv" dollar volume) and keep the first
+    `top` operating common stocks.
 
-    candidates: [{"symbol", "cap", "info": yfinance-style dict, "name_verified": bool}].
+    candidates: [{"symbol", "cap", "info": yfinance-style dict, "name_verified": bool, ...}].
     eligible(info, name_verified) -> exclusion reason or None (the screening's own check).
     REITs are left out like KR left out 리츠; a second share class of the same company
-    is folded into the larger one. Returns (kept, excluded Counter, {alias: kept symbol}).
+    is folded into the first one kept. `companies` ({company key: symbol}) carries the
+    companies another leg already kept, so a second leg folds share classes the same way
+    while still keeping that leg's own symbol. Returns (kept, excluded Counter, {alias: kept}).
     """
-    kept, excluded, aliases, by_company = [], Counter(), {}, {}
-    for cand in sorted(candidates, key=lambda c: -(c.get("cap") or 0)):
+    kept, excluded, aliases = [], Counter(), {}
+    by_company = dict(companies or {})
+    for cand in sorted(candidates, key=lambda c: -(c.get(rank) or 0)):
         if len(kept) >= top:
             break
         info = cand.get("info") or {}
@@ -69,13 +73,30 @@ def select_universe(candidates, top=500, eligible=None):
             excluded[reason] += 1
             continue
         key = company_key(info.get("longName") or info.get("shortName") or cand["symbol"])
-        if key and key in by_company:
+        if key and by_company.get(key, cand["symbol"]) != cand["symbol"]:
             aliases[cand["symbol"]] = by_company[key]
             excluded["share_class"] += 1
             continue
         by_company[key] = cand["symbol"]
         kept.append(cand)
     return kept, excluded, aliases
+
+
+def company_keys(candidates):
+    """{company key: symbol} of kept candidates (seed for a second universe leg)."""
+    return {company_key((c.get("info") or {}).get("longName") or (c.get("info") or {}).get("shortName")
+                        or c["symbol"]): c["symbol"] for c in candidates}
+
+
+def average_dollar_volume(close, volume, sessions=60):
+    """Mean close × volume over the last `sessions` rows with data, per column (NaN-safe)."""
+    value = np.asarray(close, dtype=float) * np.asarray(volume, dtype=float)
+    out = []
+    for j in range(value.shape[1]):
+        col = value[:, j]
+        col = col[np.isfinite(col)][-sessions:]
+        out.append(float(col.mean()) if len(col) else 0.0)
+    return out
 
 
 # ---------------------------------------------------------------- prices → clusters

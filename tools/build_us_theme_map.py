@@ -150,46 +150,108 @@ def yf_profile(symbol, cache, fallback=None):
     return cache[symbol] or dict((fallback or {}).get(symbol) or {})
 
 
-def stage_data(work, min_cap, top):
+def dollar_volumes(work, symbols, sessions=60):
+    """{symbol: mean close × volume over the last `sessions` sessions} (yfinance, cached)."""
+    path = work / "adv.json"
+    if path.exists():
+        return json.loads(path.read_text())
+    import yfinance as yf
+
+    from prism_core.us_theme_map import average_dollar_volume
+
+    adv = {}
+    for i in range(0, len(symbols), 100):
+        chunk = list(symbols[i:i + 100])
+        got = yf.download(chunk, period="6mo", interval="1d", auto_adjust=True, progress=False, threads=4)
+        if got is None or got.empty:
+            continue
+        close, volume = got["Close"], got["Volume"]
+        cols = [s for s in chunk if s in close.columns and s in volume.columns]
+        adv.update(zip(cols, average_dollar_volume(close[cols].to_numpy(), volume[cols].to_numpy(), sessions)))
+        if i % 500 == 0:
+            logger.info("dollar volume %d/%d", i + len(chunk), len(symbols))
+        time.sleep(1)
+    path.write_text(json.dumps(adv))
+    return adv
+
+
+def stage_data(work, min_cap, top, top_value=0, value_floor=1e9):
+    """Universe = top `top` by company market cap ∪ top `top_value` by 60-session average dollar
+    volume among stocks with market cap >= value_floor (the US screening floor)."""
     path = work / "data.json"
     if path.exists():
         return json.loads(path.read_text())
     from prism_core.us_stock_universe import eligibility_reason, fetch_universe
+    from prism_core.us_theme_map import company_keys
 
     universe = fetch_universe()
     directory = {r.symbol: r for r in universe.records}
-    caps, cap_source = market_caps(min_cap)
-    ranked = sorted((s for s in caps if s in directory), key=lambda s: -caps[s])
-    logger.info("directory %d common-like, caps %d (%s), ranked in directory %d",
-                len(directory), len(caps), cap_source, len(ranked))
+    floor = min(min_cap, value_floor) if top_value else min_cap
+    caps, cap_source = market_caps(floor)
     info_path = work / "profiles.json"
     profiles = json.loads(info_path.read_text()) if info_path.exists() else {}
     elig_path = Path(store.__file__).resolve().parents[1] / "runtime" / "us_eligibility_metadata.json"
     elig = json.loads(elig_path.read_text()) if elig_path.exists() else {}
-    # KIS lists every stock above the floor but its cap covers the listed share class only
-    # (GOOGL about half of Alphabet); rank by the company-level yfinance cap, KIS when missing.
-    candidates = []
-    for i, symbol in enumerate(ranked):
-        info = dict(yf_profile(symbol, profiles, elig))
-        cap = info.get("marketCap") if (info.get("marketCap") or 0) > 0 else caps[symbol]
-        info["marketCap"] = cap
-        candidates.append({"symbol": symbol, "cap": float(cap), "kis_cap": caps[symbol], "info": info,
-                           "name_verified": directory[symbol].name_verified, "dir_name": directory[symbol].name})
-        if i % 100 == 99:
-            info_path.write_text(json.dumps(profiles))
-            logger.info("profiles %d/%d", i + 1, len(ranked))
-    info_path.write_text(json.dumps(profiles))
+    # The KIS screen can come back short outside US hours (2026-10-08 19:00 KST: 2,130 rows at
+    # $1B against 2,492 at $2.5B that morning). Names the screening's metadata cache or earlier
+    # profiles know above the floor are added, so the candidate list does not depend on the hour.
+    known = {s: float(v["marketCap"]) for src in (elig, profiles) for s, v in src.items()
+             if isinstance(v, dict) and (v.get("marketCap") or 0) >= floor}
+    added = {s: c for s, c in known.items() if s not in caps}
+    caps.update(added)
+    if added:
+        cap_source += f"+cached_metadata({len(added)})"
+    ranked = sorted((s for s in caps if s in directory), key=lambda s: -caps[s])
+    logger.info("directory %d common-like, caps %d (%s), ranked in directory %d",
+                len(directory), len(caps), cap_source, len(ranked))
+
+    def candidates(symbols, adv=None):
+        # KIS lists every stock above the floor but its cap covers the listed share class only
+        # (GOOGL about half of Alphabet); rank by the company-level yfinance cap, KIS when missing.
+        out = []
+        for i, symbol in enumerate(symbols):
+            info = dict(yf_profile(symbol, profiles, elig))
+            cap = info.get("marketCap") if (info.get("marketCap") or 0) > 0 else caps[symbol]
+            info["marketCap"] = cap
+            out.append({"symbol": symbol, "cap": float(cap), "kis_cap": caps[symbol], "info": info,
+                        "adv": (adv or {}).get(symbol), "name_verified": directory[symbol].name_verified,
+                        "dir_name": directory[symbol].name})
+            if i % 100 == 99:
+                info_path.write_text(json.dumps(profiles))
+                logger.info("profiles %d/%d", i + 1, len(symbols))
+        info_path.write_text(json.dumps(profiles))
+        return out
+
+    cap_cands = candidates([s for s in ranked if caps[s] >= min_cap])
     kept, excluded, aliases = select_universe(
-        candidates, top, eligible=lambda info, verified: eligibility_reason(info, 1.0, verified))
+        cap_cands, top, eligible=lambda info, verified: eligibility_reason(info, 1.0, verified))
+    value_kept, value_excluded = [], Counter()
+    adv = {}
+    if top_value:
+        adv = dollar_volumes(work, ranked)
+        by_value = sorted((s for s in ranked if adv.get(s)), key=lambda s: -adv[s])
+        value_cands = candidates(by_value[:int(top_value * 1.8)], adv)
+        value_kept, value_excluded, value_aliases = select_universe(
+            value_cands, top_value, rank="adv", companies=company_keys(kept),
+            eligible=lambda info, verified: eligibility_reason(info, value_floor, verified))
+        aliases.update(value_aliases)
+    cap_set, value_set = {c["symbol"] for c in kept}, {c["symbol"] for c in value_kept}
+    union = kept + sorted((c for c in value_kept if c["symbol"] not in cap_set), key=lambda c: -c["cap"])
     kr = kis_master_names()
     data = {"built_at": datetime.now().isoformat(timespec="seconds"), "cap_source": cap_source,
             "directory_counts": universe.counts, "excluded": dict(excluded),
-            "share_class_aliases": aliases,
+            "value_excluded": dict(value_excluded), "share_class_aliases": aliases,
             "cap_rank": "yfinance marketCap (company level), KIS listed-class cap when missing",
+            "legs": {"cap": {"top": top, "count": len(cap_set)},
+                     "value": {"top": top_value, "count": len(value_set), "floor_usd": value_floor,
+                               "rank": "60-session mean close x volume (yfinance)"},
+                     "overlap": len(cap_set & value_set), "total": len(union)},
             "stocks": [{"symbol": c["symbol"], "cap": c["cap"], "kis_cap": c["kis_cap"],
+                        "adv": adv.get(c["symbol"]),
+                        "legs": [leg for leg, s in (("cap", cap_set), ("value", value_set)) if c["symbol"] in s],
                         "kr_name": kr.get(c["symbol"]) or "", "en_name": c["info"].get("longName") or c["dir_name"],
                         "sector": c["info"].get("sector"), "industry": c["info"].get("industry"),
-                        "summary": (c["info"].get("longBusinessSummary") or "")[:400]} for c in kept]}
+                        "summary": (c["info"].get("longBusinessSummary") or "")[:400]} for c in union]}
     path.write_text(json.dumps(data, ensure_ascii=False))
     return data
 
@@ -467,7 +529,11 @@ def add_news(themes, rows, kr_names, aliases, pattern):
 
 def review_table(themes, by_symbol, meta):
     cover = meta["coverage"]
-    source = (f"자료: 시가총액 상위 {cover['top']}종목(목록 {meta['universe']['cap_source']}, 순위 yfinance 회사 전체 시총, "
+    legs = meta["universe"].get("legs") or {}
+    picked = (f"시가총액 상위 {legs['cap']['top']} ∪ 거래대금(60거래일 평균, 시총 {legs['value']['floor_usd'] / 1e8:.0f}"
+              f"억 달러 이상) 상위 {legs['value']['top']} = {cover['top']}종목(겹침 {legs['overlap']})"
+              if legs.get("value") else f"시가총액 상위 {cover['top']}종목")
+    source = (f"자료: {picked}(목록 {meta['universe']['cap_source']}, 순위 yfinance 회사 전체 시총, "
               f"{meta['universe']['date']}; "
               "ETF·펀드·스팩·우선주·리츠 제외, 같은 회사 다른 주식은 하나로), "
               f"일간 종가 {meta['price_first']} ~ {meta['price_last']}({meta['price_days']}거래일), "
@@ -512,7 +578,8 @@ def review_table(themes, by_symbol, meta):
 async def main_async(args):
     work = Path(args.workdir)
     work.mkdir(parents=True, exist_ok=True)
-    data = stage_data(work, args.min_cap or (8e9 if args.top <= 500 else 2.5e9), args.top)
+    data = stage_data(work, args.min_cap or (8e9 if args.top <= 500 else 2.5e9), args.top, args.top_value,
+                      args.value_floor)
     by_symbol = {s["symbol"]: s for s in data["stocks"]}
     symbols = list(by_symbol)
     closes = stage_closes(work, symbols)
@@ -550,7 +617,7 @@ async def main_async(args):
         themes, meta = saved["themes"], saved["meta"]
     else:
         caps = {s: by_symbol[s]["cap"] for s in symbols}
-        uncovered = coverage(themes, caps, args.top)["missing"]
+        uncovered = coverage(themes, caps, len(symbols))["missing"]
         meta["uncovered_before_ai"] = len(uncovered)
         before = ask.calls  # naming calls of this run are already in meta
         if uncovered:
@@ -599,14 +666,16 @@ async def main_async(args):
         t.pop("counts", None)
 
     caps = {s: by_symbol[s]["cap"] for s in symbols}
-    cover = coverage(themes, caps, args.top)
+    cover = coverage(themes, caps, len(symbols))
     top500 = coverage(themes, caps, 500)
     per_stock = membership_counts(themes)
     meta.update(
         version=f"us_theme_map_{args.map_version}", built_at=datetime.now().isoformat(timespec="seconds"),
         universe={"cap_source": data["cap_source"], "cap_rank": data.get("cap_rank"),
                   "date": data["built_at"][:10], "count": len(symbols),
-                  "excluded": data["excluded"], "share_class_aliases": data["share_class_aliases"]},
+                  "excluded": data["excluded"], "value_excluded": data.get("value_excluded"),
+                  "share_class_aliases": data["share_class_aliases"],
+                  "legs": data.get("legs") or {"cap": {"top": len(symbols), "count": len(symbols)}}},
         coverage={"top": cover["top"], "covered": cover["covered"]},
         coverage_top500={"top": top500["top"], "covered": top500["covered"]}, missing=cover["missing"],
         memberships={str(k): v for k, v in sorted(Counter(per_stock.values()).items())},
@@ -634,6 +703,10 @@ def main():
     parser.add_argument("--out-dir", default=str(ROOT / "runtime"))
     parser.add_argument("--threshold", type=float, default=CLUSTER_CORR)
     parser.add_argument("--top", type=int, default=500, help="universe size by market cap")
+    parser.add_argument("--top-value", type=int, default=0,
+                        help="also take this many by 60-session average dollar volume (0 = cap leg only)")
+    parser.add_argument("--value-floor", type=float, default=1e9,
+                        help="market cap floor of the dollar-volume leg (US screening floor)")
     parser.add_argument("--min-cap", type=float,
                         help="KIS screen floor in USD, well below the last rank (default 8e9 for 500, 2.5e9 above)")
     parser.add_argument("--map-version", default="v2", help="output runtime/us_theme_map_<version>.json")
