@@ -6,7 +6,7 @@ import pytest
 
 from core.llm_scenario import risk_snapshot, validate_scenario
 from live.scenario_contract import response_schema, validate_wire_proposal
-from live.scenario_llm import SYSTEM_PROMPT, propose
+from live.scenario_llm import SYSTEM_PROMPT, propose, _current_primary_frame_facts
 from live.scenario_preview import response_contract
 from live.scenario_contract import identity_fields
 
@@ -372,6 +372,7 @@ def test_assembled_entry_framing_is_flat_only_and_preserves_inputs(active, monke
     policy = calls[0]['system_prompt']
     if active:
         assert policy == SYSTEM_PROMPT  # Holding policy is byte-identical.
+        assert json.loads(calls[0]['user_prompt'])['contract_context'] == ctx
     else:
         text = ' '.join(policy.split())
         assert 'Flat-entry comparison only' in text
@@ -387,6 +388,9 @@ def test_assembled_entry_framing_is_flat_only_and_preserves_inputs(active, monke
         assert 'original_budget*confidence' in text
         assert 'hard_stop*slippage_bps/10000' in text
         assert 'Never raise confidence or widen SL merely to fit quantity' in text
+        assert 'bearish MA order is NOT price below both MAs' in text
+        assert 'Mixed price position can still support a trade' in text
+        assert json.loads(calls[0]['user_prompt'])['contract_context']['current_primary_frame_facts']['30m']['status'] == 'unavailable'
     assert result['action'] == 'WAIT'
     assert journal[0]['system_prompt'] == calls[0]['system_prompt']
     assert journal[0]['user_prompt'] == calls[0]['user_prompt']
@@ -456,3 +460,89 @@ def test_recovery_quantity_obeys_existing_confidence_cap(quantity, accepted):
         assert proposed_risk > budget*.55
         with pytest.raises(ValueError, match='risk budget exceeded'):
             validate_scenario(parsed, ctx)
+
+
+def primary_snapshot():
+    return {'valid': True, 'as_of_ms': 1000000, 'timeframes': {
+        frame: {'forming': {'ohlcv': {'close': close}, 'ma10': ma10, 'ma35': ma35,
+                            'observed_at_ms': 999000, 'observation_kind': 'observed',
+                            'price_position': 'below'}}  # A bad label must not override arithmetic.
+        for frame, close, ma10, ma35 in (
+            ('15m', 83342.2, 83285.59, 83475.06),
+            ('30m', 83342.2, 83254.76999999999, 83879.15142857142),
+            ('1h', 83342.1, 83476.42000000001, 84801.81714285715))}}
+
+
+def test_exact_oct8_mixed_price_positions_not_fabricated_bearish_alignment():
+    snapshot = primary_snapshot()
+    original = json.loads(json.dumps(snapshot))
+    facts = _current_primary_frame_facts(snapshot)
+    assert facts['15m']['price_position'] == 'BETWEEN'
+    assert facts['30m']['price_position'] == 'BETWEEN'
+    assert facts['1h']['price_position'] == 'BELOW'
+    assert facts['30m']['ma_order'] == 'BEARISH'
+    assert facts['30m']['ordered_comparison'] == 'ma10 < close < ma35'
+    assert facts['30m']['price_basis'] == 'FORMING_LAST_CLOSE'
+    assert facts['30m']['source'] == 'timeframes.30m.forming'
+    assert snapshot == original
+
+
+@pytest.mark.parametrize('close,ma10,ma35,position,order,comparison', [
+    (110, 105, 100, 'ABOVE', 'BULLISH', 'ma35 < ma10 < close'),
+    (103, 105, 100, 'BETWEEN', 'BULLISH', 'ma35 < close < ma10'),
+    (100, 100, 110, 'AT_MA10', 'BEARISH', 'close = ma10 < ma35'),
+    (110, 100, 110, 'AT_MA35', 'BEARISH', 'ma10 < close = ma35'),
+    (100, 100, 100, 'AT_BOTH', 'EQUAL', 'close = ma10 = ma35'),
+    (101, 100, 100, 'ABOVE', 'EQUAL', 'ma10 = ma35 < close'),
+])
+def test_primary_facts_symmetric_arithmetic_and_equality(close, ma10, ma35, position, order, comparison):
+    snapshot = primary_snapshot()
+    snapshot['timeframes']['30m']['forming'].update(ohlcv={'close': close}, ma10=ma10, ma35=ma35)
+    facts = _current_primary_frame_facts(snapshot)['30m']
+    assert (facts['price_position'], facts['ma_order'], facts['ordered_comparison']) == (position, order, comparison)
+
+
+@pytest.mark.parametrize('bad', [None, True, float('nan'), float('inf'), 0, -1, '83342.2'])
+@pytest.mark.parametrize('field', ['close', 'ma10', 'ma35'])
+def test_primary_facts_invalid_numbers_unavailable(field, bad):
+    snapshot = primary_snapshot()
+    forming = snapshot['timeframes']['30m']['forming']
+    (forming['ohlcv'] if field == 'close' else forming)[field] = bad
+    facts = _current_primary_frame_facts(snapshot)['30m']
+    assert facts == {'status': 'unavailable', 'source': 'timeframes.30m.forming'}
+
+
+@pytest.mark.parametrize('fault', ['missing_frame', 'missing_ohlcv', 'missing_time', 'future', 'boolean_time', 'synthetic'])
+def test_primary_facts_do_not_create_missing_or_future_observations(fault):
+    snapshot = primary_snapshot()
+    forming = snapshot['timeframes']['30m']['forming']
+    if fault == 'missing_frame':
+        del snapshot['timeframes']['30m']
+    elif fault == 'missing_ohlcv':
+        del forming['ohlcv']
+    elif fault == 'missing_time':
+        del forming['observed_at_ms']
+    elif fault == 'future':
+        forming['observed_at_ms'] = 1000001
+    elif fault == 'boolean_time':
+        forming['observed_at_ms'] = True
+    else:
+        forming['observation_kind'] = 'synthetic_boundary'
+    assert _current_primary_frame_facts(snapshot)['30m']['status'] == 'unavailable'
+
+
+def test_actual_model_payload_gets_same_primary_facts_as_request_record(monkeypatch):
+    from live import scenario_recovery
+    ctx, snapshot, calls, journal = context(), primary_snapshot(), [], []
+    original = json.dumps([ctx, snapshot], sort_keys=True)
+    monkeypatch.setattr(scenario_recovery, 'record_model_request', lambda **kw: journal.append(kw))
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(exposure_proposal(ctx, 'WAIT')))
+    propose(snapshot, ctx, response_contract(ctx), generate=generate, clock=lambda: 1000)
+    assert journal[0]['user_prompt'] == calls[0]['user_prompt']
+    assert journal[0]['system_prompt'] == calls[0]['system_prompt']
+    payload = json.loads(calls[0]['user_prompt'])
+    assert payload['contract_context']['current_primary_frame_facts'] == _current_primary_frame_facts(snapshot)
+    assert payload['market_snapshot'] == snapshot
+    assert json.dumps([ctx, snapshot], sort_keys=True) == original
