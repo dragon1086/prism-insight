@@ -32,6 +32,14 @@ _COLUMNS = (
     "ma20_gt_ma50", "above_ma200", "vol_ratio_50", "updown_vol_ratio_50", "vol_dryup_10_50",
     "pocket_pivot", "created_at",
 )
+_SELECT = (
+    "SELECT trigger_type, rank_in_trigger, candidates_in_trigger, composite_score, final_score, "
+    "rs_score, extension_score, close, volume, amount, change_rate, selected, selection_channel, "
+    "selected_trigger, market_regime, above_ma50, ma50_rising, ma20_gt_ma50, above_ma200, "
+    "vol_ratio_50, updown_vol_ratio_50, vol_dryup_10_50, pocket_pivot, created_at "
+    "FROM candidate_ledger WHERE market = ? AND trade_date = ? AND mode = ? AND upper(ticker) = ? "
+    "ORDER BY rank_in_trigger"
+)
 
 
 def screening_key(decision_id: Any) -> tuple[str, str] | None:
@@ -69,12 +77,7 @@ def emit_screening_link(market: str, ticker: str, decision_id: str, trace_id: st
             conn.row_factory = sqlite3.Row
             rows = [
                 {column: row[column] for column in _COLUMNS}
-                for row in conn.execute(
-                    f"SELECT {', '.join(_COLUMNS)} FROM candidate_ledger "  # nosec B608 - fixed column list
-                    "WHERE market = ? AND trade_date = ? AND mode = ? AND upper(ticker) = ? "
-                    "ORDER BY rank_in_trigger",
-                    (normalized_market, key[0], key[1], normalized_ticker),
-                )
+                for row in conn.execute(_SELECT, (normalized_market, key[0], key[1], normalized_ticker))
             ]
         if not rows:
             return None
