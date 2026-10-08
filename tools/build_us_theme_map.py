@@ -47,6 +47,7 @@ from prism_core.us_theme_map import (  # noqa: E402
     apply_overrides,
     build_clusters,
     cap_memberships,
+    fold_overlapping,
     keyword_pattern,
     korean_aliases,
     membership_counts,
@@ -328,6 +329,27 @@ async def name_clusters(themes, by_symbol, ask):
     return len(got)
 
 
+async def name_unclassified(themes, by_symbol, ask):
+    """One retry for clusters the namer left as 미분류; returns {id: {name, sector, keywords}}."""
+    todo = [t for t in themes if t.get("name") == "미분류"]
+    rows = [f"[{t['id']}] 평균상관 {t['mean_corr'] or 0:.2f}\n  "
+            + "\n  ".join(stock_line(by_symbol[m["code"]]) for m in t["members"] if m["code"] in by_symbol)
+            for t in todo]
+    taken = sorted({t["name"] for t in themes if t.get("name") != "미분류"})
+    got = _json(await ask(
+        naming_prompt(rows).replace('JSON만 출력: {"C001"', 'JSON만 출력: {"T001"')
+        + "\n\n이번에는 \"미분류\"를 쓰지 말고 종목들의 사업 공통점으로 이름을 붙이세요. 아래 이미 쓰인 이름과 겹치지 "
+          "않게 하세요.\n" + ", ".join(taken)))
+    out = {}
+    for t in todo:
+        item = got.get(t["id"]) if isinstance(got.get(t["id"]), dict) else {}
+        name, sector = str(item.get("name", "")).strip(), str(item.get("sector", "")).strip()
+        if 0 < len(name) <= 14 and name != "미분류":
+            out[t["id"]] = {"name": name, "sector": sector if sector in SECTORS else t.get("sector", "기타"),
+                            "keywords": _keywords(item.get("keywords"))}
+    return out
+
+
 def _theme_rows(themes, by_symbol):
     return [f"{t['id']} {t['name']} ({t.get('sector', '')}): " + ", ".join(
         f"{m['code']} {by_symbol[m['code']]['kr_name']}" for m in t["members"][:6] if m["code"] in by_symbol)
@@ -530,12 +552,13 @@ async def main_async(args):
         caps = {s: by_symbol[s]["cap"] for s in symbols}
         uncovered = coverage(themes, caps, args.top)["missing"]
         meta["uncovered_before_ai"] = len(uncovered)
+        before = ask.calls  # naming calls of this run are already in meta
         if uncovered:
             async with model_session(args.proxy_port):
                 meta["ai_added"], created = await place_uncovered(themes, uncovered, by_symbol, ask)
             themes += created
             meta["ai_new_themes"] = len(created)
-        meta["model_calls"] = ask.calls if "model_calls" not in meta else meta["model_calls"] + ask.calls
+        meta["model_calls"] = meta.get("model_calls", 0) + ask.calls - before
         placed_path.write_text(json.dumps({"meta": meta, "themes": themes}, ensure_ascii=False))
 
     with closing(store.connect(store.db_path("US"), readonly=True)) as conn:
@@ -546,6 +569,19 @@ async def main_async(args):
     pattern = name_pattern(aliases)
     for t in themes:
         t["members"] = [m for m in t["members"] if m["role"] != "news"]  # rebuilt from the current store
+    renamed_path = work / f"renamed_{tag}.json"
+    if any(t.get("name") == "미분류" for t in themes):
+        if renamed_path.exists():
+            names = json.loads(renamed_path.read_text())
+        else:
+            async with model_session(args.proxy_port):
+                names = await name_unclassified(themes, by_symbol, ask)
+            meta["model_calls"] = meta.get("model_calls", 0) + 1
+            renamed_path.write_text(json.dumps(names, ensure_ascii=False))
+        for t in themes:
+            if t.get("name") == "미분류" and t["id"] in names:
+                t.update(names[t["id"]])
+    themes, meta["folded"] = fold_overlapping(themes)
     magnets = add_news(themes, rows, kr_names, aliases, pattern)
     meta["capped_memberships"] = cap_memberships(themes, MAX_THEMES_PER_STOCK)
     themes = [t for t in themes if len(t["members"]) >= 2 or t.get("source") == "price"]

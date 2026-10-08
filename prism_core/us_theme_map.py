@@ -375,40 +375,51 @@ def cap_memberships(themes, limit=MAX_THEMES_PER_STOCK):
 
 # ---------------------------------------------------------------- reviewed corrections
 
-def _anchor_theme(themes, ticker, taken):
-    """The built theme holding `ticker`, its strongest membership first (core, then corr)."""
-    hits = [(ROLE_RANK.get(m["role"], 9), -(m.get("corr") or 0), i)
-            for i, t in enumerate(themes) if id(t) not in taken for m in t["members"] if m["code"] == ticker]
-    return themes[min(hits)[2]] if hits else None
+def _holders(themes, ticker, taken):
+    """Built themes holding `ticker`, strongest membership first (price cluster, then corr)."""
+    hits = sorted((ROLE_RANK.get(m["role"], 9), -(m.get("corr") or 0), i)
+                  for i, t in enumerate(themes) if id(t) not in taken for m in t["members"] if m["code"] == ticker)
+    return [(themes[i], rank) for rank, _, i in hits]
 
 
 def resolve_targets(themes, targets):
-    """Map each reviewed target name to a built theme (anchor ticker, else exact name) or a new one.
+    """Map each reviewed target name to a built theme or a new one.
 
-    An anchor-resolved theme takes the reviewed name (and sector/keywords when given), so
-    the correction survives name drift between builds. Returns ({target: theme}, {how: [names]}).
+    With an anchor ticker: the theme of that name holding the anchor, else the price cluster
+    holding it, else a theme of that exact name, else any theme holding it (AI placement);
+    the chosen theme takes the reviewed name, so the correction survives name drift between
+    builds. Without an anchor: a theme of that exact name. Otherwise a new theme is created.
+    Returns ({target: theme}, {"anchor"|"name"|"created": [target names]}).
     """
     resolved, how, taken = {}, {"anchor": [], "name": [], "created": []}, set()
-    by_name = {t.get("name"): t for t in themes}
+    by_name = {}
+    for t in themes:
+        by_name.setdefault(t.get("name"), t)
     next_id = 1 + max((int(t["id"][1:]) for t in themes if str(t.get("id", ""))[1:].isdigit()), default=0)
     for name, spec in targets.items():
         spec = spec if isinstance(spec, dict) else {}
-        theme = _anchor_theme(themes, spec["anchor"], taken) if spec.get("anchor") else None
-        if theme is not None:
-            how["anchor"].append(name)
-            if theme.get("name") != name:
-                theme["renamed_from"] = theme.get("name")
-                theme["name"] = name
-        elif by_name.get(name) is not None and id(by_name[name]) not in taken:
-            theme = by_name[name]
-            how["name"].append(name)
+        holders = _holders(themes, spec["anchor"], taken) if spec.get("anchor") else []
+        same = by_name.get(name) if id(by_name.get(name)) not in taken else None
+        cluster = [t for t, rank in holders if rank <= ROLE_RANK["related"]]
+        if same is not None and any(t is same for t, _ in holders):
+            theme, kind = same, "anchor"
+        elif cluster:
+            theme, kind = cluster[0], "anchor"
+        elif same is not None:
+            theme, kind = same, "name"
+        elif holders:
+            theme, kind = holders[0][0], "anchor"
         else:
             theme = {"id": f"T{next_id:03d}", "name": name, "sector": spec.get("sector") or "기타",
                      "keywords": list(spec.get("keywords") or []), "lines": 0, "active_days": [],
                      "first_seen": None, "last_seen": None, "mean_corr": None, "source": "override", "members": []}
             next_id += 1
             themes.append(theme)
-            how["created"].append(name)
+            kind = "created"
+        how[kind].append(name)
+        if theme.get("name") != name:
+            theme["renamed_from"] = theme.get("name")
+            theme["name"] = name
         if spec.get("sector"):
             theme["sector"] = spec["sector"]
         if spec.get("keywords"):
@@ -428,8 +439,8 @@ def apply_overrides(themes, overrides, universe, limit=MAX_THEMES_PER_STOCK):
     """
     resolved, how = resolve_targets(themes, overrides.get("themes") or {})
     universe = set(universe)
-    report = {"version": overrides.get("version"), "targets": how, "assigned": 0, "added": 0,
-              "skipped_tickers": [], "unknown_targets": []}
+    report = {"version": overrides.get("version"), "targets": how, "anchor_members": 0, "assigned": 0,
+              "added": 0, "skipped_tickers": [], "unknown_targets": []}
 
     def place(theme, ticker):
         member = next((m for m in theme["members"] if m["code"] == ticker), None)
@@ -438,6 +449,13 @@ def apply_overrides(themes, overrides, universe, limit=MAX_THEMES_PER_STOCK):
         else:
             member["override"] = True
 
+    # An anchor is a reviewed member of its target, also when the target was found by name.
+    anchors = {name: spec.get("anchor") for name, spec in (overrides.get("themes") or {}).items()
+               if isinstance(spec, dict) and spec.get("anchor")}
+    for name, ticker in anchors.items():
+        if ticker in universe and ticker not in {m["code"] for m in resolved[name]["members"]}:
+            place(resolved[name], ticker)
+            report["anchor_members"] += 1
     for kind in ("assign", "add"):
         for ticker, names in (overrides.get(kind) or {}).items():
             if ticker not in universe:
@@ -458,6 +476,35 @@ def apply_overrides(themes, overrides, universe, limit=MAX_THEMES_PER_STOCK):
     report["skipped_tickers"] = sorted(set(report["skipped_tickers"]))
     report["unknown_targets"] = sorted(set(report["unknown_targets"]))
     return [t for t in themes if t["members"]], report
+
+
+FOLD_OVERLAP = 0.5  # an AI theme sharing half of the smaller one's stocks with a same-sector theme repeats it
+
+
+def fold_overlapping(themes, share=FOLD_OVERLAP):
+    """AI-made themes that mostly repeat another theme of the same sector fold into it
+    (e.g. 네트워크·통신 장비 into 통신장비); their extra stocks join as AI members.
+    Price clusters are never folded. Returns (themes, [(folded name, into name)])."""
+    kept, folded = [], []
+    for t in sorted(themes, key=lambda x: x.get("source") == "ai"):  # stable: price clusters first
+        codes = {m["code"] for m in t["members"]}
+        target = None
+        if t.get("source") == "ai":
+            for k in kept:
+                other = {m["code"] for m in k["members"]}
+                small = min(len(codes), len(other))
+                if k.get("sector") == t.get("sector") and small and len(codes & other) / small >= share:
+                    target = k
+                    break
+        if target is None:
+            kept.append(t)
+            continue
+        have = {m["code"] for m in target["members"]}
+        target["members"] += [dict(m, role="ai") for m in t["members"] if m["code"] not in have]
+        target["merged_from"] = target.get("merged_from", [target["id"]]) + [t["id"]]
+        folded.append((t.get("name"), target.get("name")))
+    keep = {id(t) for t in kept}
+    return [t for t in themes if id(t) in keep], folded
 
 
 def membership_counts(themes):

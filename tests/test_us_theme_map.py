@@ -261,3 +261,32 @@ def test_overrides_drop_emptied_themes_and_keep_override_over_cap():
     # X sat in two price clusters and one AI theme; the override stays, the AI membership gives way
     assert sorted(n for n, codes in names.items() if "X" in codes) == ["새 테마", "테마0", "테마1"]
     assert report["capped"] == 1
+
+
+def test_anchor_placed_only_by_ai_prefers_the_same_named_cluster_and_joins_it():
+    banks = _theme("T001", ["BSAC", "BCH", "BAP"], sector="은행")
+    banks["name"] = "남미 은행"
+    fintech = _theme("T002", ["PYPL", "XYZ", "NU"], sector="결제·핀테크·가상자산", role="ai")
+    fintech["name"] = "핀테크 결제 플랫폼"
+    ov = {"themes": {"남미 은행": {"sector": "은행", "anchor": "NU", "keywords": []}}, "add": {"BAP": ["남미 은행"]}}
+    themes, report = tm.apply_overrides([banks, fintech], ov, {"BSAC", "BCH", "BAP", "PYPL", "XYZ", "NU"})
+    by_name = {t["name"]: t for t in themes}
+    assert report["targets"]["name"] == ["남미 은행"] and report["anchor_members"] == 1
+    assert "핀테크 결제 플랫폼" in by_name  # the AI theme holding NU is not renamed
+    assert [m["code"] for m in by_name["남미 은행"]["members"]] == ["BSAC", "BCH", "BAP", "NU"]
+    assert by_name["남미 은행"]["members"][2].get("override") is True  # BAP was already a member
+
+
+def test_ai_theme_repeating_a_same_sector_theme_folds_into_it():
+    net = _theme("T001", ["ANET", "CSCO", "NOK"], sector="IT 하드웨어·네트워크", role="ai")
+    net["source"] = "ai"
+    dup = _theme("T002", ["CSCO", "NOK", "AAOI"], sector="IT 하드웨어·네트워크", role="ai")
+    dup["source"] = "ai"
+    other = _theme("T003", ["CSCO", "NOK", "ZZZ"], sector="통신·미디어·엔터", role="ai")
+    other["source"] = "ai"
+    price = _theme("T004", ["CDNS", "SNPS"], sector="IT 하드웨어·네트워크")
+    price["source"] = "price"
+    themes, folded = tm.fold_overlapping([net, dup, other, price])
+    assert [t["id"] for t in themes] == ["T001", "T003", "T004"]  # order kept, other sector untouched
+    assert [m["code"] for m in themes[0]["members"]] == ["ANET", "CSCO", "NOK", "AAOI"]
+    assert themes[0]["merged_from"] == ["T001", "T002"] and folded == [("T002", "T001")]
