@@ -1108,9 +1108,13 @@ class USStockAnalysisOrchestrator:
             # Include metadata for hybrid selection info in alert message
             all_results["metadata"] = metadata
 
-            # Today's strong industries (industry ETFs; "" when unavailable, the alert still goes out)
-            from prism_core.us_sector_brief import sector_brief
-            brief = await asyncio.to_thread(sector_brief, trade_date, language)
+            # Today's theme flow from the US theme map (precomputed by tools/build_us_theme_flow.py a few
+            # minutes before the batch); fall back to the industry-ETF line when it is missing or stale.
+            from prism_core import us_theme_flow
+            brief = us_theme_flow.render(us_theme_flow.load_fresh(trade_date), language)
+            if not brief:
+                from prism_core.us_sector_brief import sector_brief
+                brief = await asyncio.to_thread(sector_brief, trade_date, language)
 
             # Generate message based on language (no translation needed - direct templates)
             message = self._create_trigger_alert_message(mode, all_results, trade_date, language, sector_brief=brief)
