@@ -72,6 +72,19 @@ ClickHouse process (mode `0644`).
 - `entry.executed`
 - `entry.fill_reconciled` (US CAPTURE: 제출과 실제 체결을 구분하는 주문 provenance)
 - `exit.executed`
+- `holding.evaluated` (every KR/US hold-or-sell review after the runner guard; shares the
+  position's `trace_id`, because the holding-decision tables keep only the latest row)
+- `broker.order_request` (every KIS order TR from `trading/kis_auth._url_fetch`: accepted,
+  rejected, HTTP error or exception; account numbers dropped, `execution_profile_ref` kept;
+  acceptance is not a fill)
+- `job.run_completed` (run heartbeat for the analysis batches, hard-stop, trend-exit,
+  fill-chaser and US pending orders, so a missing run shows up as a time gap)
+- `btc.scenario.decision_input` / `intent_committed` / `exchange_call` /
+  `settlement_recorded` (bounded summaries of committed `llm_scenario_audit_events`; raw
+  exchange order IDs and response bodies stay in SQLite, only `order_id_hash` ships),
+  `btc.scenario.notice` (HALTED, MODEL_ERROR, fills… as queued) and
+  `job.run_completed` with `job=btc-scenario` (one per runner invocation; the runner's
+  stdout status lines carry no timestamp)
 
 `candidate.evaluated`, `entry.executed`, and `exit.executed` use context schema
 version 1. The entry scenario keeps the authoritative deterministic market

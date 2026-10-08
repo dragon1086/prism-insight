@@ -18,6 +18,7 @@ from live.scenario_runtime import ScenarioRuntime
 from live.shared_entry_coordinator import mutation_lock
 from live.entry_reservations import LockBusy
 from live.scenario_provenance import run_capture
+from live.scenario_ledger import forward_run
 
 
 _FAILURE_STAGES = {"database_init", "control", "broker_init", "activation", "run"}
@@ -160,6 +161,8 @@ def main():
     parser.add_argument("--root-db",type=Path,
                         default=Path(__file__).resolve().parents[2]/"stock_tracking_db.sqlite")
     args=parser.parse_args()
+    started=time.monotonic()
+    loop="protection" if args.protect_only else "decision"
     if not args.execute and not args.protect_only and not args.activate:
         print(json.dumps({"status":"execution_disabled","reason":"explicit_activation_required"}))
         return 0
@@ -217,6 +220,7 @@ def main():
         # after the runtime released the trading lock and only for queued proofs.
         if result.get("status")!="lock_busy":
             deliver_notices(conn,result)
+        forward_run(result,loop=loop,started=started)
         print(json.dumps(result,ensure_ascii=False))
         return 1 if result["status"] in {"blocked","execution_disabled"} else 0
     except LockBusy:
@@ -227,6 +231,7 @@ def main():
         if failure_stage in {"control", "broker_init", "activation"}:
             result["model_called"]=False
         _record_health_best_effort(conn,result,loop="protection" if args.protect_only else "decision")
+        forward_run(result,loop=loop,started=started)
         print(json.dumps(result))
         return 0
     except Exception as exc:
@@ -237,6 +242,7 @@ def main():
         _record_health_best_effort(conn,result,loop="protection" if args.protect_only else "decision")
         if conn is not None:
             deliver_notices(conn,result)
+        forward_run(result,loop=loop,started=started)
         print(json.dumps(result))
         return 1
     finally:

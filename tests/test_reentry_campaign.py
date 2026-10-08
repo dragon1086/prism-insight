@@ -617,6 +617,20 @@ def test_runtime_intraday_decision_recheck_and_close_replay(tmp_path, monkeypatc
     assert "reentry_v3.shadow_exit" in [n for n, _ in sent] and "reentry_v3.shadow_campaign_end" in [n for n, _ in sent]
 
 
+def test_runtime_recheck_failure_reason_reaches_the_ledger(tmp_path, monkeypatch):
+    # 2026-10-07 US AVGO: the live-session recheck timed out and the ledger kept only approved=None.
+    bars, root, sent, run, quote = _runtime(tmp_path, monkeypatch)
+    run(70, llm_recheck=True, llm=_fake_llm([]))
+
+    async def timed_out(system, user):
+        raise TimeoutError("codex turn exceeded 300s")
+
+    run(70, phase="intraday", decision_day=bars[71]["date"], quote_fn=quote, llm_recheck=True, llm=timed_out)
+    attrs = next(kw["attributes"] for n, kw in sent if n == "reentry_v3.shadow_recheck")
+    assert attrs["status"] == "ERROR" and attrs["approved"] is None
+    assert attrs["error"].startswith("TimeoutError") and "300s" in attrs["error"]
+
+
 def test_runtime_shakeout_recovery_is_decided_per_rule(tmp_path, monkeypatch):
     bars, root, _sent, run, quote = _runtime(tmp_path, monkeypatch, rows=_yc_shakeout_rows(), exit_price=11500,
                                             quote_price=12100.0, quote_low=11480.0, quote_volume=1250.0)

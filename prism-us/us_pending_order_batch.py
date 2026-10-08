@@ -271,4 +271,17 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="Dry run (don't execute orders)")
     args = parser.parse_args()
 
-    process_pending_orders(dry_run=args.dry_run)
+    import time as _time
+    _started, _status, _error = _time.monotonic(), "OK", None
+    try:
+        process_pending_orders(dry_run=args.dry_run)
+    except Exception as exc:
+        _status, _error = "ERROR", exc
+        raise
+    finally:
+        try:  # run heartbeat for the ledger timeline; orders themselves are broker.order_request
+            from observability.job_runs import emit_job_run
+            emit_job_run("us-pending-orders", market="US", mode="DRY_RUN" if args.dry_run else "LIVE",
+                         status=_status, started=_started, error=_error)
+        except Exception:  # noqa: BLE001 - observation must never affect the batch
+            logger.debug("job run event skipped")

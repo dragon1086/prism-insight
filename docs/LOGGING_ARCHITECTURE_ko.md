@@ -101,6 +101,10 @@ OTLP/HTTP + token → OTel Collector → ClickStack / ClickHouse
 | `candidate.outcome` | 관찰 후보의 30일 추적 완료 시 | 7·14·30일 수익률, 목표가·손절가 도달, 거래 여부 | Live + Backfill |
 | `trade.outcome` | 검증된 과거 청산 row를 기준선으로 가져올 때 | 매수·매도 가격/시각, 수익률, 보유일, trigger, exit kind | Backfill |
 | `deployment.applied` | 실제 서버 pull/merge 이력 또는 운영 이벤트 | git SHA, 대상 서버, PR, commit subject, 검증된 배포 여부 | Backfill 우선, Live 수용 |
+| `holding.evaluated` | 보유 종목 매도 검토마다(러너 보호 반영 후 최종값) | 보유/매도 결정, 사유, 현재가·수익률, 손절·목표가, 보유일. 진입·청산과 같은 `trace_id` | Live |
+| `broker.order_request` | KIS 주문 TR(매수·매도·정정취소·예약) 전송 직후 | 접수/거절/HTTP 오류/예외, 주문번호, 응답 메시지, 주문 파라미터(계좌번호 제외), 호출 프로세스 | Live |
+| `job.run_completed` | 분석 배치·손절·추세청산·미체결 추격·US 예약주문·BTC 시나리오 실행 종료 시 | 상태(OK·SKIPPED·ERROR·TIMEOUT·HOLIDAY·DISABLED), 소요 시간, 실행별 집계 | Live |
+| `btc.scenario.*` | BTC 시나리오 감사 기록 commit 후·알림 큐 등록 시 | 판단 입력 요약, 주문 의도(방향·신뢰도·위험), 거래소 호출 결과(주문번호는 해시만), 정산 손익, 중단·AI 오류 알림 | Live |
 
 `candidate.evaluated`는 실제로 산 종목만 남기지 않습니다. 사지 않은 후보도 판단과
 30일 결과를 남기므로, **선택된 거래의 성과**와 **놓친 후보의 기회비용**을 서로
