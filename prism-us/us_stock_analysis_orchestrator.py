@@ -1797,7 +1797,7 @@ def _record_job_run(market, started, status, *, reason=None, error=None):
         emit_job_run("analysis-batch", market=market, mode=mode, status=status,
                      started=started, reason=reason, error=error)
     except Exception:  # noqa: BLE001 - observation must never affect the batch
-        pass
+        logger.debug("job run event skipped")
 
 
 def _run_main_with_heartbeat(market, started):

@@ -6,6 +6,7 @@ duplicate trade notices after an ACK is lost. No public/private fallback routing
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 
 from live.scenario_notice import render_notice
@@ -36,7 +37,7 @@ def enqueue(conn, event_id, event):
             from live.scenario_ledger import forward_notice
             forward_notice(event_id,event,body)
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("scenario notice forward skipped")
 
 
 def _destination(kind):

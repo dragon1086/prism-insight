@@ -284,4 +284,4 @@ if __name__ == "__main__":
             emit_job_run("us-pending-orders", market="US", mode="DRY_RUN" if args.dry_run else "LIVE",
                          status=_status, started=_started, error=_error)
         except Exception:  # noqa: BLE001 - observation must never affect the batch
-            pass
+            logger.debug("job run event skipped")

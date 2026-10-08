@@ -269,7 +269,7 @@ def _flush(capture):
         for event in written:
             forward_audit(event)
     except Exception:
-        pass
+        logging.getLogger(__name__).debug('scenario ledger forward skipped')
 
 
 @contextmanager
