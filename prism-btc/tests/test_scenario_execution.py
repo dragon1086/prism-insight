@@ -297,7 +297,8 @@ class Exchange(Session):
 
     def get_order_history(self, **kw):
         return reply([o for o in self.orders.values() if (kw.get("orderLinkId") and kw["orderLinkId"] == o.get("orderLinkId"))
-                      or (kw.get("orderId") and kw["orderId"]==o["orderId"])])
+                      or (kw.get("orderId") and kw["orderId"]==o["orderId"])
+                      or (not kw.get("orderId") and not kw.get("orderLinkId"))])
 
     def get_executions(self, **kw):
         return reply([e for e in self.fills if not kw.get("orderId") or kw["orderId"]==e["orderId"]])
@@ -329,6 +330,7 @@ class Exchange(Session):
             return
         if float(self.size)>0 and o.get("reduceOnly") is not True:
             self.orders["native"] = dict(orderId="native-id",orderLinkId="",symbol="BTCUSDT",positionIdx=0,qty=self.size,
+                parentOrderLinkId=link,createdTime=str(int(self.now*1000)),
                 side="Sell",reduceOnly=True,stopOrderType="StopLoss",orderType="Market",triggerBy="MarkPrice",triggerPrice=self.stop,
                 orderStatus="Untriggered",cumExecQty="0",leavesQty=self.size)
         elif float(self.size)>0 and "native" in self.orders and self.orders["native"]["orderStatus"]=="Untriggered":
@@ -996,6 +998,195 @@ def aborted_replacement(live):
     assert b.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id='a2'").fetchone() == ("ABORTED",)
     assert not [c for c in b.children() if c["intent_id"] == "a2"]
     return b, e, old
+
+
+def unseen_native(live):
+    b,e=live
+    b.execute(persist(b,chase=dict(max_bps=0,max_reprices=0)),"a1")
+    entry=next(c for c in b.children() if c["kind"]=="entry")
+    e.fill(entry["link_id"],.1)
+    e.fill("native",.1)
+    return b,e,entry
+
+
+def test_unseen_native_exact_parent_recovers_and_restart_deduplicates(live):
+    b,e,entry=unseen_native(live)
+    result=b.reconcile()
+    native=next(c for c in b.children() if c["kind"]=="native_sl")
+    assert native["request"]["parentOrderLinkId"]==entry["link_id"]
+    assert native["status"]=="TERMINAL"
+    assert result["settlement"]["executions_complete"] is True
+    assert len(result["settlement"]["execution_ids"])==2
+    writes=list(e.writes)
+    restarted=ScenarioDemoBroker(b.conn,session=e,expected_main_uid="123",clock=b.clock,execution_enabled=True)
+    restarted.reconcile()
+    assert len([c for c in b.children() if c["kind"]=="native_sl"])==1
+    assert e.writes==writes
+
+
+@pytest.mark.parametrize("case",["short","partial_parent","multiple_parents","tightened"])
+def test_unseen_native_parent_link_preserves_real_position_semantics(live,case):
+    b,e=live
+    entries=([dict(id="e1",price=100,quantity=.06),dict(id="e2",price=100,quantity=.07)]
+             if case=="multiple_parents" else [dict(id="e1",price=100,quantity=.1)])
+    b.execute(persist(b,entries=entries,chase=dict(max_bps=0,max_reprices=0)),"a1")
+    parents=[c for c in b.children() if c["kind"]=="entry"]
+    amount=.04 if case=="partial_parent" else .13 if case=="multiple_parents" else .1
+    for parent in parents:
+        e.fill(parent["link_id"],.04 if case=="partial_parent" else float(parent["request"]["qty"]))
+    e.fill("native",amount)
+    if case=="short":
+        state=json.loads(b.conn.execute("SELECT body FROM llm_scenario_state").fetchone()[0])
+        state["active"].update(side="SHORT",hard_stop=102)
+        b.conn.execute("UPDATE llm_scenario_state SET body=?",(json.dumps(state),))
+        parent=parents[0]
+        request=dict(parent["request"],side="Sell",stopLoss="102")
+        b.conn.execute("UPDATE llm_scenario_children SET request=? WHERE link_id=?",(json.dumps(request),parent["link_id"]))
+        e.orders[parent["link_id"]].update(side="Sell",stopLoss="102")
+        e.orders["native"].update(side="Buy",triggerPrice="102")
+        for fill in e.fills: fill["side"]="Sell" if fill["side"]=="Buy" else "Buy"
+        b.conn.commit()
+    elif case=="tightened":
+        e.orders["native"]["triggerPrice"]="99.2"  # Original attachment was 98.
+    result=b.reconcile()
+    native=next(c for c in b.children() if c["kind"]=="native_sl")
+    assert native["status"]=="TERMINAL"
+    assert sum(float(x["execQty"]) for x in native["evidence"]["executions"])==amount
+    assert result["settlement"] is not None
+    assert result["settlement"]["fees_complete"] is True
+    assert all(c["status"]=="TERMINAL" for c in b.children())
+
+
+@pytest.mark.parametrize("bad",["missing_parent","wrong_parent","wrong_side","wrong_idx","wrong_trigger",
+                                "not_reduce","missing_execution","unknown_parent","wrong_type","foreign_parent",
+                                "requery_conflict","history_conflict","execution_before_parent","quantity_mismatch"])
+def test_unseen_native_without_exact_causal_evidence_stays_fenced(live,bad):
+    b,e,entry=unseen_native(live)
+    native=e.orders["native"]
+    if bad=="missing_parent": native.pop("parentOrderLinkId")
+    elif bad=="wrong_parent": native["parentOrderLinkId"]="unrelated"
+    elif bad=="wrong_side": native["side"]="Buy"
+    elif bad=="wrong_idx": native["positionIdx"]=1
+    elif bad=="wrong_trigger": native["triggerBy"]="LastPrice"
+    elif bad=="not_reduce": native["reduceOnly"]=False
+    elif bad=="missing_execution": e.fills.pop()
+    elif bad=="wrong_type": native["orderType"]="Limit"
+    elif bad=="execution_before_parent": e.fills[-1]["execTime"]=str(int(e.now*1000)-1)
+    elif bad=="quantity_mismatch": native["cumExecQty"]=".09"
+    elif bad=="foreign_parent":
+        b.conn.execute("INSERT INTO llm_scenario_children SELECT 'foreign-link',intent_id,'other',kind,local_id,request,status,order_id,evidence,created_at FROM llm_scenario_children WHERE link_id=?",(entry["link_id"],))
+        native["parentOrderLinkId"]="foreign-link"
+        b.conn.commit()
+    elif bad=="unknown_parent":
+        e.orders.pop(entry["link_id"])
+    elif bad=="requery_conflict":
+        original=e.get_order_history
+        def mismatched(**kw):
+            response=copy.deepcopy(original(**kw))
+            if kw.get("orderId")==native["orderId"]:
+                response["result"]["list"][0]["parentOrderLinkId"]="different-parent"
+            return response
+        e.get_order_history=mismatched
+    elif bad=="history_conflict":
+        original=e.get_order_history
+        def conflicting(**kw):
+            response=copy.deepcopy(original(**kw))
+            if not kw.get("orderId") and not kw.get("orderLinkId"):
+                response["result"]["list"].append(dict(native,side="Buy"))
+            return response
+        e.get_order_history=conflicting
+    writes=list(e.writes)
+    result=b.reconcile()
+    assert result["settlement"] is None
+    if bad!="unknown_parent":
+        assert result["observation"]["legacy_fenced"] is True
+    assert not any(i.get("executions_complete") for i in result["intents"])
+    assert not any(c["kind"]=="native_sl" for c in b.children())
+    assert e.writes==writes
+
+
+def delayed_exit(live):
+    b,e=live
+    p=persist(b,take_profits=[dict(id="tp",price=103,fraction=.5)],chase=dict(max_bps=0,max_reprices=0))
+    b.execute(p,"a1")
+    entry=next(c for c in b.children() if c["kind"]=="entry")
+    e.fill(entry["link_id"],.1)
+    b.reconcile()
+    tp=next(c for c in b.children() if c["kind"]=="tp")
+    def delayed(**kw):
+        e.writes.append(("cancel",kw))
+        return dict(retCode=0,result={})
+    e.cancel_order=delayed
+    p=persist(b,action_id="a2",action="EXIT",entries=[])
+    with pytest.raises(BrokerNotReady,match="cancel_not_confirmed"):
+        b.execute(p,"a2")
+    return b,e,tp
+
+
+@pytest.mark.parametrize("race",["cancelled","tp_fill","native_flat","ack_loss","crash"])
+def test_delayed_exit_continues_once_from_exact_remaining_exposure(live,race):
+    b,e,tp=delayed_exit(live)
+    assert not any(c["kind"]=="exit" for c in b.children())
+    b.reconcile()
+    assert not any(c["kind"]=="exit" for c in b.children())
+    if race=="tp_fill": e.fill(tp["link_id"],.05)
+    else: e.orders[tp["link_id"]]["orderStatus"]="Cancelled"
+    if race=="native_flat": e.fill("native",.1)
+    if race=="ack_loss": e.lose_ack=True
+    if race=="crash":
+        b.conn.execute("UPDATE llm_scenario_execution_batches SET status='EXECUTING' WHERE intent_id='a2'")
+        b.conn.commit()
+    b=ScenarioDemoBroker(b.conn,session=e,expected_main_uid="123",clock=b.clock,execution_enabled=True)
+    b.reconcile()
+    exits=[c for c in b.children() if c["kind"]=="exit"]
+    if race=="native_flat":
+        assert exits==[]
+    else:
+        assert len(exits)==1
+        assert float(exits[0]["request"]["qty"])==(.05 if race=="tp_fill" else .1)
+        assert exits[0]["request"]["reduceOnly"] is True
+        assert exits[0]["request"]["closeOnTrigger"] is True
+    writes=list(e.writes)
+    b.reconcile()
+    assert e.writes==writes
+    assert e.orders["native"]["orderStatus"]==("Filled" if race=="native_flat" else "Untriggered")
+
+
+@pytest.mark.parametrize("blocker",["unknown_post","superseded","disabled","external_exposure","missing_batch"])
+def test_delayed_exit_never_resubmits_unknown_or_closes_unowned_exposure(live,blocker):
+    from live.scenario_execution import stable_link
+    b,e,tp=delayed_exit(live)
+    e.orders[tp["link_id"]]["orderStatus"]="Cancelled"
+    if blocker=="unknown_post":
+        # Crash after durable child commit, before/after POST is indistinguishable.
+        request=dict(side="Sell",qty=".1",orderType="Market",reduceOnly=True,closeOnTrigger=True)
+        b.conn.execute("INSERT INTO llm_scenario_children VALUES(?,?,?,?,?,?,'UNKNOWN',NULL,NULL,?)",
+            (stable_link("a2","exit","full"),"a2","s1","exit","full",json.dumps(request),b.clock()))
+    elif blocker=="superseded": persist(b,action_id="a3",action="WAIT",entries=[])
+    elif blocker=="disabled": b.execution_enabled=False
+    elif blocker=="external_exposure": e.size=".2"
+    elif blocker=="missing_batch": b.conn.execute("DELETE FROM llm_scenario_execution_batches WHERE intent_id='a2'")
+    b.conn.commit()
+    writes=list(e.writes)
+    b.reconcile()
+    b.reconcile()
+    assert [w for w in e.writes[len(writes):] if w[0]!="stop"]==[]
+    assert not any(c["kind"]=="exit" and c["order_id"] for c in b.children())
+
+
+@pytest.mark.parametrize("already_submitted",[False,True])
+def test_partial_native_stop_and_pending_exit_have_single_market_owner(live,already_submitted):
+    b,e,tp=delayed_exit(live)
+    e.orders[tp["link_id"]]["orderStatus"]="Cancelled"
+    if already_submitted:
+        b.reconcile()
+        assert len([c for c in b.children() if c["kind"]=="exit"])==1
+    e.fill("native",.04)
+    b.reconcile()
+    assert len([c for c in b.children() if c["kind"]=="exit"])==1
+    exits=[w for w in e.writes if w[0]=="place" and w[1].get("orderType")=="Market"]
+    assert len(exits)==1
+    assert float(exits[0][1]["qty"])==(.1 if already_submitted else .06)
 
 
 def test_aborted_zero_child_adjust_resolves_only_after_exact_cancel(live):

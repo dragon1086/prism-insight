@@ -360,8 +360,8 @@ def test_old_tape_schema_rejected_without_relabeling(tmp_path):
 
 
 @pytest.mark.parametrize('case',['unobserved_native_stop','exit_cancel_pending'])
-def test_real_broker_uncertain_lifecycle_is_not_fabricated_as_settlement(tmp_path,case):
-    """Known execution gaps stay explicit; replay must not heal production state."""
+def test_real_broker_native_parent_and_delayed_exit_settle_without_fabrication(tmp_path,case):
+    """Real broker uses parent IDs/cancel proof; replay never inserts settlement."""
     b,m=recovery_inputs();calls=[];base=cycle_policy(calls)
     def policy(s,c):
         p=base(s,c)
@@ -372,15 +372,16 @@ def test_real_broker_uncertain_lifecycle_is_not_fabricated_as_settlement(tmp_pat
         return p
     with network_boundary('frozen'):
         report=run_replay(b,m,tmp_path/case,mode='fixture',tape_path=tmp_path/'tape',policy=policy)
-    assert report['economic']['completed_scenarios']==0
-    assert report['economic']['unclosed_scenario'] is True
-    assert 'UNSETTLED_END_STATE' in report['readiness']['insufficiency_reasons']
-    if case=='unobserved_native_stop':
-        assert report['decision_outcomes']['fenced']>0
-        assert report['economic']['open_quantity']==0
-    else:
-        assert report['economic']['pending_intents']==1
-        assert report['economic']['open_quantity']>0
+    assert report['economic']['completed_scenarios']==(7 if case=='unobserved_native_stop' else 5)
+    assert report['economic']['pending_intents']==0
+    assert report['economic']['open_quantity']==0
+    assert report['economic']['unclosed_scenario'] is False
+    assert report['economic']['unknown_exchange_children']==0
+    assert 'UNSETTLED_END_STATE' not in report['readiness']['insufficiency_reasons']
+    assert report['economic']['fees']>0
+    with network_boundary('frozen'):
+        frozen=run_replay(b,m,tmp_path/'frozen',mode='frozen',tape_path=tmp_path/'tape')
+    assert frozen['result_hash']==report['result_hash']
 
 
 def test_partial_tp_then_observed_native_stop_is_exactly_settled_and_frozen(tmp_path):
