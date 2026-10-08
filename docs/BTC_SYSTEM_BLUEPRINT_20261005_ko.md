@@ -267,6 +267,33 @@ MA는 잠재 지지·저항이며 보장된 반등선이 아니다. 형성 중 �
 
 ## 확인한 근거
 
+### 2026-10-09 백테스트 정책·초기 상태 계약
+
+`analysis.scenario_replay`의 기본 `--policy-profile current-live-v2`는 운영과 같은
+회복·자동 정상화 기능을 켠다. `--initial-state fresh-unblocked`는 과거 손실이 없는 새 계좌로
+시작하며, `--initial-state recovery-stage0`는 0.5% 관측 단계의 합성 시작 조건을 명시한다.
+후자는 실제 계좌·과거 거래·손익·승격 표본을 가져오지 않는다. 첫 관측 WAIT와 실제 runtime의
+허가 검사를 거쳐야 한다. 비교 실험은 두 전략의 초기 상태·자산·비용을 같게 맞춘다.
+
+`legacy-no-recovery`는 **현재 코드와 프롬프트에서 회복 기능만 끈 비교 모드**다. 과거 본 로직+
+스윙 전략이나 과거 배포 버전이라는 뜻이 아니다. schema1 기록은 원래 코드로 재생해야 하며,
+새 도구가 schema2/현재 정책으로 몰래 재분류하지 않는다. frozen 모드는 같은 소스·데이터·정책·
+초기 상태·입력과 원응답을 확인하고 외부 모델을 호출하지 않는다.
+
+새 시작 디렉터리와 새 기록 파일을 지정하는 예시:
+
+```bash
+python -m analysis.scenario_replay --input /path/to/verified-bundle.json \
+  --output /path/to/new-research-run --tape /path/to/new-tape.jsonl --mode fresh \
+  --policy-profile current-live-v2 --initial-state recovery-stage0
+```
+
+fresh의 모델 연결은 기존 명시적 loopback OAuth만 허용된다. 위 명령은 가상거래소를 사용하며
+운영 주문 명령이 아니다. 1분봉 안의 OHLC/OLHC 순서,유동성·슬리피지 가정은 실제 틱과 다르다.
+미정산·UNKNOWN·fenced는 완료 거래/확정 수익으로 처리하지 않는다. `economic.halted`는
+이전 차단 latch의 호환 필드이므로 현재 진입 가능 여부로 단독 해석하지 말고 `recovery_state`와
+결과 사유를 함께 본다. 이 도구 보완은 수익성 입증이 아니다.
+
 - `prism-btc/live/scenario_llm.py`: 판단 프롬프트·모델·75초 호출 제한·strict 출력.
 - `prism-btc/engine/scenario_snapshot.py`: 진행봉·MA·다중 시간봉 관측.
 - `prism-btc/core/llm_scenario.py`: 위험 산식·중단·상태별 행동·추격 한도.

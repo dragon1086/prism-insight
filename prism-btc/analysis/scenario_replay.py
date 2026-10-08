@@ -16,6 +16,9 @@ import socket
 import sqlite3
 import sys
 import time
+import uuid
+import threading
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 import pandas as pd
 import numpy as np
@@ -28,10 +31,53 @@ from live.scenario_broker import ScenarioDemoBroker
 from live.scenario_control import _write as write_control
 from live.scenario_runtime import ScenarioRuntime
 from live.scenario_preview import response_contract
-from live.scenario_llm import propose,SYSTEM_PROMPT,ScenarioModelError
+from live.scenario_llm import propose,SYSTEM_PROMPT,FLAT_ENTRY_PROMPT,MA_STRUCTURE_PROMPT,ScenarioModelError
+from core.scenario_limit_prices import POLICY_VERSION
 from live.shared_entry_coordinator import mutation_lock
 
 ROOT=Path(__file__).resolve().parents[2]
+POLICY_PROFILES = {
+    "current-live-v2": {"recovery_enabled": True, "automatic_normalization_enabled": True},
+    "legacy-no-recovery": {"recovery_enabled": False, "automatic_normalization_enabled": False},
+}
+_identity_scope_lock = threading.Lock()
+INPUT_PREPARATION_CODES = {"snapshot_unavailable", "snapshot_stale", "invalid_contract_context",
+                           "invalid_input", "input_size"}
+
+
+def _replay_uuid_factory(name):
+    counts = Counter()
+
+    def deterministic_uuid():
+        caller = sys._getframe(1).f_code.co_name
+        counts[caller] += 1
+        return uuid.uuid5(uuid.NAMESPACE_URL, f"prism-isolated-replay:{name}:{caller}:{counts[caller]}")
+
+    return deterministic_uuid
+
+
+@contextmanager
+def replay_identity_scope():
+    """Replay-only IDs, not authority: restore module adapters even after failure.
+
+    Namespace counters by call site so extra audit events cannot alter permit IDs.
+    Never patch the shared uuid module or reuse an existing/production database.
+    Concurrent replay in one interpreter is deliberately unsupported. Call only
+    in an isolated replay process, never alongside a running trading worker.
+    """
+    if not _identity_scope_lock.acquire(blocking=False):
+        raise ValueError("concurrent_replay_identity_scope_forbidden")
+    originals = []
+    try:
+        from live import scenario_runtime, scenario_recovery
+        for module in (scenario_runtime, scenario_recovery):
+            originals.append((module, module.uuid))
+            module.uuid = SimpleNamespace(uuid4=_replay_uuid_factory(module.__name__))
+        yield
+    finally:
+        for module, original in originals:
+            module.uuid = original
+        _identity_scope_lock.release()
 
 
 @contextmanager
@@ -59,11 +105,29 @@ def network_boundary(mode,endpoint=None):
     finally:active[0]=False
 
 
-def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna"):
+def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy_profile="current-live-v2",
+                 initial_state="fresh-unblocked"):
+    if policy_profile not in POLICY_PROFILES:
+        raise ValueError("explicit_replay_policy_profile_required")
+    if initial_state not in {"fresh-unblocked","recovery-stage0"}:
+        raise ValueError("explicit_replay_initial_state_required")
+    if initial_state=="recovery-stage0" and policy_profile!="current-live-v2":
+        raise ValueError("recovery_seed_requires_current_live_v2")
     package=ROOT/"prism-btc"
     sources={str(p.relative_to(package)):hashlib.sha256(p.read_bytes()).hexdigest()
              for p in sorted(package.rglob("*.py")) if "tests" not in p.relative_to(package).parts}
-    return dict(schema=1,kind="SIMULATED_LLM_SCENARIO",decision_origin=origin,data_hash=bundle["data_hash"],
+    return dict(schema=2,kind="SIMULATED_LLM_SCENARIO",decision_origin=origin,data_hash=bundle["data_hash"],
+        policy_profile=policy_profile,runtime_flags=dict(POLICY_PROFILES[policy_profile]),
+        initial_state=dict(profile=initial_state,
+            provenance="SYNTHETIC_INITIAL_SOFT_LATCH_NO_PRIOR_PNL" if initial_state=="recovery-stage0" else "FRESH_UNBLOCKED_NO_SYNTHETIC_LOSSES",
+            live_ledger_imported=False,prior_pnl_imported=False,prior_settlements_imported=False),
+        identity_scheme="REPLAY_ONLY_UUID5_MODULE_CALLSITE_SEQUENCE_V1",
+        context_contracts=dict(review_contract_version=1,conditional_entry_version=1,
+                              execution_price_policy=POLICY_VERSION,ma_structure_version=1),
+        assembled_prompt_hash_basis="sha256_utf8",
+        assembled_prompt_hashes={"active":hashlib.sha256((SYSTEM_PROMPT+MA_STRUCTURE_PROMPT).encode()).hexdigest(),
+                                 "flat":hashlib.sha256((SYSTEM_PROMPT+MA_STRUCTURE_PROMPT+FLAT_ENTRY_PROMPT).encode()).hexdigest()},
+        request_audit="EXACT_ASSEMBLED_REQUEST_IN_TAPE_RAW_ENVELOPE;FIXTURE_EXPLICITLY_SYNTHETIC",
         start_ms=bundle["start_ms"],end_ms=bundle["end_ms"],path=path,initial_equity=initial_equity,
         model="gpt-6-luna",effort="high",tier="fast",prompt_hash=hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
         source_hashes=sources,runtime_versions={"python":sys.version.split()[0],"pandas":pd.__version__,"numpy":np.__version__},
@@ -134,52 +198,112 @@ class Decisions:
     def __init__(self,tape,driver,mode,*,policy=None,model_generator=None,fixed_latency_ms=2000):
         self.tape,self.driver,self.mode=tape,driver,mode
         self.policy,self.model_generator,self.fixed_latency_ms=policy,model_generator,fixed_latency_ms
-        self.fatal=None;self.calls=0;self.failures=0
+        self.fatal=None;self.calls=0;self.model_calls=0;self.failures=0;self.input_failures=0
+        from live.scenario_recovery import ensure_schema
+        ensure_schema(driver.conn)
+        driver.conn.commit()
 
     def __call__(self,snapshot,context):
+        from live.scenario_recovery import capture_wire
+        # Audit capture is local even for the explicit legacy runtime profile.
+        # It does not activate recovery or change its authorization flags.
+        with capture_wire(self.driver.conn,int(context["now"]//300),self.driver.session.clock):
+            return self._call(snapshot,context)
+
+    def _call(self,snapshot,context):
+        from live import scenario_recovery
+        from live.scenario_recovery import record_model_request, record_model_wire
         at=self.driver.session.ts_ms
         if self.mode=="frozen":
             try:record=self.tape.lookup(snapshot,context)
             except TapeMismatch as exc:
                 self.fatal=str(exc);raise
+            audit=record.get("raw_response")
+            if isinstance(audit,dict) and audit.get("request"):
+                if scenario_recovery.digest(audit["request"]) != audit.get("request_hash"):
+                    self.fatal="tape_request_audit_mismatch"
+                    raise TapeMismatch(self.fatal)
+                record_model_request(**audit["request"])
+            if isinstance(audit,dict) and audit.get("wire_recorded"):
+                record_model_wire(audit["text"],**audit["wire_metadata"])
             self.driver.advance_to(at+record["latency_ms"])
             if record["error"]:
                 self.failures+=1
+                if record["error"].removeprefix("ScenarioModelError:") in INPUT_PREPARATION_CODES:
+                    self.input_failures+=1
                 if record["error"].startswith("ScenarioModelError:"):
                     raise ScenarioModelError(record["error"].split(":",1)[1])
                 raise ValueError("recorded_model_failure")
             return record["proposal"]
-        self.calls+=1;response=None;error=None;raw=[]
+        self.calls+=1;response=None;error=None;raw=[];request=None
         started=time.monotonic()
         try:
             if self.policy is not None:
+                request=dict(system_prompt="SYNTHETIC_FIXTURE_POLICY_NOT_LLM",
+                             user_prompt=json.dumps({"snapshot":snapshot,"context":context},sort_keys=True),
+                             response_schema={},model="fixture",effort=None,fast=None)
+                record_model_request(**request)
                 response=self.policy(snapshot,context)
+                raw.append(json.dumps(response,sort_keys=True))
+                record_model_wire(raw[0],model="fixture")
             else:
                 from live.scenario_oauth import generate_scenario
                 generate=self.model_generator or generate_scenario
                 def retain(**kwargs):
+                    self.model_calls+=1
                     result=generate(**kwargs);raw.append(result.text);return result
                 response=propose(snapshot,context,response_contract(context),generate=retain,clock=self.driver.session.clock)
         except ScenarioModelError as exc:
             # Preserve only runtime classification, never arbitrary exception text.
-            category = "oauth_model_failed" if str(exc) in {"oauth_model_failed", "late_response"} else "response_contract_mismatch"
+            safe_codes = {"snapshot_unavailable", "snapshot_stale", "invalid_contract_context",
+                          "invalid_input", "input_size", "oauth_model_failed", "late_response",
+                          "response_size", "invalid_json", "json_object_required",
+                          "response_contract_mismatch", "response_unknown_fields",
+                          "response_missing_scenario_id", "response_revision_mismatch",
+                          "response_identity_mismatch", "response_contract_inactive_protection",
+                          "response_contract_inactive_orders", "response_contract_missing_protection"}
+            category = str(exc) if str(exc) in safe_codes else "response_contract_mismatch"
             error = "ScenarioModelError:" + category
         except Exception as exc:
             error=type(exc).__name__
         latency=self.fixed_latency_ms if self.policy is not None else max(1,int((time.monotonic()-started)*1000))
-        if latency>75000:error="model_latency_exceeded"
-        self.tape.append(snapshot,context,response,latency,error=error,raw_response=raw[0] if raw else None)
+        if latency>75000:error="ScenarioModelError:late_response"
+        slot=int(context["now"]//300)
+        request_row=self.driver.conn.execute("SELECT body FROM llm_scenario_recovery_events WHERE slot=? AND kind='MODEL_REQUEST' ORDER BY rowid DESC LIMIT 1",(slot,)).fetchone()
+        request=None;request_hash=None
+        if request_row:
+            body=json.loads(request_row[0])
+            request={key:body[key] for key in ("system_prompt","user_prompt","response_schema",
+                                               "model","effort","fast","input_projection") if key in body}
+            request_hash=body.get("request_hash")
+            if scenario_recovery.digest(request)!=request_hash:
+                self.fatal="model_request_audit_mismatch"
+                raise TapeMismatch(self.fatal)
+        wire_row=self.driver.conn.execute("SELECT body FROM llm_scenario_recovery_events WHERE slot=? AND kind='MODEL_RAW' ORDER BY rowid DESC LIMIT 1",(slot,)).fetchone()
+        wire=json.loads(wire_row[0]) if wire_row else None
+        self.tape.append(snapshot,context,response,latency,error=error,
+                         raw_response={"request":request,"request_hash":request_hash,
+                                       "text":raw[0] if raw else None,"wire_recorded":wire is not None,
+                                       "wire_metadata":{key:wire[key] for key in ("model","effort","fast")} if wire else None})
         self.driver.advance_to(at+latency)
         if error:
             self.failures+=1
+            if error.removeprefix("ScenarioModelError:") in INPUT_PREPARATION_CODES:
+                self.input_failures+=1
             if error.startswith("ScenarioModelError:"):
                 raise ScenarioModelError(error.split(":",1)[1])
             raise ValueError("model_proposal_failed")
         return response
 
 
-def run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplier=1.,
-               initial_equity=10000.,policy=None,model_generator=None,max_decisions=288):
+def run_replay(bundle,market,output,**kwargs):
+    with replay_identity_scope():
+        return _run_replay(bundle,market,output,**kwargs)
+
+
+def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplier=1.,
+               initial_equity=10000.,policy=None,model_generator=None,max_decisions=288,
+               policy_profile="current-live-v2",initial_state="fresh-unblocked"):
     """No production paths accepted; fresh DB per run and explicit data provenance."""
     if mode not in {"fresh","frozen","fixture"} or path not in {"OHLC","OLHC"}:
         raise ValueError("explicit_replay_mode_required")
@@ -196,9 +320,11 @@ def run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplier
     origin="fixture" if mode=="fixture" else "luna"
     if mode=="frozen":
         header=json.loads(Path(tape_path).read_text().splitlines()[0])
+        if header["contract"].get("schema") != 2:
+            raise TapeMismatch("legacy_tape_requires_original_code; record_explicit_legacy-no-recovery_profile_for_new_comparison")
         origin=header["contract"]["decision_origin"]
         if origin not in {"fixture","luna"}:raise ValueError("unknown_decision_origin")
-    contract=contract_for(bundle,path,cost_multiplier,initial_equity,origin)
+    contract=contract_for(bundle,path,cost_multiplier,initial_equity,origin,policy_profile,initial_state)
     output=Path(output).resolve()
     if output.exists():raise ValueError("never_overwrite_replay")
     if any(p in output.parts for p in ("state","logs","trading")):
@@ -218,14 +344,27 @@ def run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplier
     broker=ScenarioDemoBroker(conn,session=session,expected_main_uid="42",clock=session.clock,execution_enabled=True)
     driver=Driver(bundle,market,session,path,broker,conn)
     provider=Decisions(tape,driver,mode,policy=policy,model_generator=model_generator)
-    runtime=ScenarioRuntime(conn,broker,provider,lambda:market.snapshot((session.ts_ms//300000)*300000),clock=session.clock)
-    statuses=Counter();start=bundle["start_ms"];end=bundle["end_ms"]
+    runtime=ScenarioRuntime(conn,broker,provider,lambda:market.snapshot((session.ts_ms//300000)*300000),
+                            clock=session.clock,**POLICY_PROFILES[policy_profile])
+    if initial_state=="recovery-stage0":
+        with mutation_lock(conn):
+            state=runtime.state()
+            if state!={"version":0,"active":None,"breaker":{}}:
+                raise ValueError("recovery_seed_requires_pristine_replay_state")
+            # Seed only an explicitly synthetic soft latch. No closed trades,
+            # prior-loss counter, PnL, permit or baseline evidence is invented.
+            state.update(version=1,breaker={"blocked":True,"reasons":["three_losses"],
+                                           "consecutive_losses":0,"completed_ids":[]})
+            runtime._save(state)
+    statuses=Counter();outcome_reasons=Counter();start=bundle["start_ms"];end=bundle["end_ms"]
     decisions=list(range(start,end,300000))
     if len(decisions)>max_decisions:raise ValueError("decision_budget_exceeded")
     try:
         for i,at in enumerate(decisions):
             driver.advance_to(at)
             result=runtime.tick();statuses[result["status"]]+=1
+            reason=result.get("failure_code") or result.get("reason")
+            if isinstance(reason,str):outcome_reasons[result["status"]+":"+reason]+=1
             if provider.fatal:raise TapeMismatch(provider.fatal)
             if (i+1)%12==0:print(json.dumps({"progress":i+1,"total":len(decisions),"status":result["status"]}),flush=True)
         driver.advance_to(end)
@@ -253,13 +392,19 @@ def run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplier
             largest_winner_removed_net=sum(net)-max([0.]+net),open_quantity=float(session.position),
             unclosed_scenario=state.get("active") is not None,
             pending_intents=conn.execute("SELECT count(*) FROM llm_scenario_intents WHERE status='PENDING'").fetchone()[0],
+            unknown_exchange_children=conn.execute("SELECT count(*) FROM llm_scenario_children WHERE status='UNKNOWN'").fetchone()[0],
             halted=state.get("breaker",{}).get("blocked",False),
+            halted_field_basis="HISTORICAL_BREAKER_LATCH_NOT_EFFECTIVE_ENTRY_PERMISSION",
             scenario_loss_budget_breaches=sum(r['net_pnl'] < -budgets[r['scenario_id']] for r in completed),
             scenario_risk_budgets=budgets)
         report=dict(schema=1,contract=contract,contract_hash=digest(contract),data_coverage=market.manifest(),
             simulated_only=True,mode="SYNTHETIC_FIXTURE" if origin=="fixture" else "HISTORICAL_LLM_RESEARCH",
-            decisions=len(decisions),model_decisions=len(tape.rows),model_failures=provider.failures,
+            decisions=len(decisions),model_decisions=len(tape.rows),
+            model_failures=provider.failures-provider.input_failures,input_preparation_failures=provider.input_failures,
             decision_outcomes=dict(statuses),protection_outcomes=dict(driver.protection),economic=economic,
+            runtime_outcome_reasons=dict(outcome_reasons),
+            recovery_state=dict(policy_version=state.get("recovery",{}).get("policy_version"),
+                                phase=state.get("recovery",{}).get("phase"),stage=state.get("recovery",{}).get("stage")),
             tape_hash=tape.transcript_hash(),exchange_hash=session.digest(),cash_baseline_net=0,
             assumptions=["OHLC_ORDER_IS_ASSUMED_NOT_TICKS","NO_ORDERBOOK_QUEUE_MODEL","NO_LIQUIDATION_RECONSTRUCTION",
                 "MODEL_HISTORICAL_KNOWLEDGE_NOT_EXCLUDED","NO_UNTOUCHED_HOLDOUT","NO_FORCED_TERMINAL_CLOSE"],
@@ -268,12 +413,16 @@ def run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplier
         reasons=["HISTORICAL_NOT_UNTOUCHED","INTRABAR_PATH_ASSUMED","NO_LIQUIDATION_RECONSTRUCTION",
                  "NO_FORWARD_PROFITABILITY_EVIDENCE"]
         if len(completed)<60:reasons.append("CLOSED_SCENARIOS_LT_60")
-        if provider.failures:reasons.append("MODEL_FAILURES")
+        if provider.failures>provider.input_failures:reasons.append("MODEL_FAILURES")
+        if provider.input_failures:reasons.append("INPUT_PREPARATION_FAILURES")
         if economic["unclosed_scenario"] or economic["pending_intents"]:reasons.append("UNSETTLED_END_STATE")
+        if economic["unknown_exchange_children"]:reasons.append("UNKNOWN_EXECUTION_EVIDENCE")
+        if statuses.get("fenced"):reasons.append("FENCED_OBSERVATIONS")
         report["readiness"]={"profitability_proven":False,"insufficiency_reasons":reasons}
         report["result_hash"]=digest(report)
         # Run mechanics are outside the reproducible economic result hash.
-        report["execution_metadata"]={"mode":mode,"actual_model_calls":provider.calls,
+        report["execution_metadata"]={"mode":mode,"actual_model_calls":provider.model_calls,
+                                      "synthetic_policy_calls":provider.calls if policy is not None else 0,
                                       "tape_records_consumed":len(tape.used)}
         (output/"report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False))
         (output/"exchange.json").write_text(json.dumps(session.snapshot(),indent=2,allow_nan=False))
@@ -291,11 +440,14 @@ def main():
     parser.add_argument("--path",choices=("OHLC","OLHC"),default="OHLC")
     parser.add_argument("--cost-multiplier",type=float,default=1.)
     parser.add_argument("--max-decisions",type=int,default=288)
+    parser.add_argument("--policy-profile",choices=tuple(POLICY_PROFILES),default="current-live-v2")
+    parser.add_argument("--initial-state",choices=("fresh-unblocked","recovery-stage0"),default="fresh-unblocked")
     args=parser.parse_args()
     bundle,market=load_bundle(args.input)
     with network_boundary(args.mode,os.environ.get("PRISM_BTC_SCENARIO_OAUTH_URL")) as blocked:
         report=run_replay(bundle,market,args.output,mode=args.mode,tape_path=args.tape,path=args.path,
-            cost_multiplier=args.cost_multiplier,max_decisions=args.max_decisions)
+            cost_multiplier=args.cost_multiplier,max_decisions=args.max_decisions,policy_profile=args.policy_profile,
+            initial_state=args.initial_state)
         if blocked:raise RuntimeError("forbidden_network_attempt_detected")
     print(json.dumps({"status":"complete","result_hash":report["result_hash"],"economic":report["economic"],
                       "execution_metadata":report["execution_metadata"]},ensure_ascii=False))
