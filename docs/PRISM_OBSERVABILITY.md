@@ -123,6 +123,27 @@ event stores the unchanged live ranks 1 and 2 beside the counterfactual rank 3.
 close, MFE, and MAE outcomes. `tools/build_third_slot_evidence_packet.py`
 deduplicates and compares these cohorts without claiming fills or account PnL.
 
+## Trace linkage
+
+One `trace_id` reads a decision end to end. The id is
+`sha256("trade-trace|<MARKET>|<decision_id>")[:32]` (`observability.trading_context`).
+
+- **Screening → position**: when `candidate.evaluated` is emitted for a `report:<pdf>`
+  decision, `screening.candidate_linked` copies the matching
+  `runtime/candidate_ledger.sqlite` rows (market, trade date, session, ticker parsed from
+  the report name) onto the same trace, timestamped at the screening run.
+- **Position lifecycle**: `candidate.evaluated` → `entry.executed` → `entry.fill_reconciled`
+  → every `holding.evaluated` → `exit.executed`.
+- **Re-entry campaign**: every `reentry_v3.*` watch event (trigger, recheck, live
+  entry/skip, exit, campaign end) uses the trace of the stopped-out or skipped original
+  decision, falling back to a watch-scoped trace when it is unknown. A live re-entry buy
+  is a new position with its own trace. `reentry_v3.live_entry` carries its
+  `entry_trace_id`, and that position's context events carry `origin_trace_id`.
+- **BTC**: `btc.scenario.*` share `sha256("scenario:<id>")`. A `decision_input` joins the
+  scenario trace when its run touched exactly one scenario (`scenario_inferred=true`).
+- Not linked by design: `broker.order_request` (HTTP layer; join by ticker, time and
+  `execution_profile_ref`) and `job.run_completed` (run level).
+
 ## Historical baseline
 
 tools/backfill_observability.py backfills only verifiable facts:

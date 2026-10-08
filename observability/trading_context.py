@@ -245,7 +245,14 @@ def emit_trading_context(
         }
         if event_type == "candidate.evaluated" and research_context is not None:
             attributes["research_context"] = dict(research_context)
-        return emit_event(
+        reentry = _load_scenario(scenario).get("reentry")
+        origin = str(reentry.get("origin_decision_id") or "").strip() if isinstance(reentry, Mapping) else ""
+        if origin:
+            # A re-entry position keeps its own trace; this points back to the stopped-out
+            # or skipped original, whose trace carries the whole re-entry campaign.
+            attributes["origin_trace_id"] = _stable_hex("trade-trace", normalized_market, origin, length=32)
+        trace_id = _stable_hex("trade-trace", normalized_market, identity, length=32)
+        event = emit_event(
             event_type,
             event_id=_stable_hex(
                 "trading-context", event_type, normalized_market, identity, normalized_position,
@@ -254,11 +261,15 @@ def emit_trading_context(
             service=f"prism-{normalized_market.lower()}-context-ledger",
             market=normalized_market,
             ticker=normalized_ticker,
-            trace_id=_stable_hex("trade-trace", normalized_market, identity, length=32),
+            trace_id=trace_id,
             decision_id=normalized_decision,
             position_id=normalized_position,
             attributes=attributes,
         )
+        if event is not None and event_type == "candidate.evaluated" and normalized_decision:
+            from observability.screening_link import emit_screening_link
+            emit_screening_link(normalized_market, normalized_ticker, normalized_decision, trace_id)
+        return event
     except Exception:  # noqa: BLE001 - observability must never affect trading
         return None
 

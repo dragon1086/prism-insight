@@ -265,3 +265,68 @@ def test_analysis_batch_heartbeat_statuses(market, spool, monkeypatch):
     assert all(e["attributes"]["mode"] == "morning" for e in events)
     assert events[1]["attributes"]["reason"] == "morning:weak_market"
     assert events[3]["attributes"]["error"] == "SystemExit(1)"
+
+
+# --- screening.candidate_linked / origin_trace_id -------------------------------
+
+REPORT_ID = "report:038500_삼표시멘트_20261007_afternoon_gpt-6-luna.pdf"
+
+
+def _ledger(tmp_path, monkeypatch, rows):
+    import sqlite3
+    from observability import candidate_ledger
+    path = tmp_path / "candidate_ledger.sqlite"
+    monkeypatch.setenv("CANDIDATE_LEDGER_DB", str(path))
+    with sqlite3.connect(path) as conn:
+        candidate_ledger.ensure_schema(conn)
+        for row in rows:
+            cols = ", ".join(row)
+            conn.execute(f"INSERT INTO candidate_ledger ({cols}) VALUES ({', '.join('?' * len(row))})",
+                         tuple(row.values()))
+    return path
+
+
+def test_candidate_trace_carries_its_screening_row(tmp_path, monkeypatch, spool):
+    from observability.trading_context import emit_trading_context
+    base = {"market": "KR", "trade_date": "2026-10-07", "mode": "afternoon", "ticker": "038500",
+            "created_at": "2026-10-07T14:46:30", "updated_at": "2026-10-07T14:46:30", "outcome_status": "PENDING",
+            "anchor_date": "2026-10-07"}
+    _ledger(tmp_path, monkeypatch, [
+        dict(base, trigger_type="거래량 급증", rank_in_trigger=1, final_score=0.91, selected=1,
+             selection_channel="bottom-up", selected_trigger="거래량 급증", above_ma50=1),
+        dict(base, trigger_type="갭 상승", rank_in_trigger=4, final_score=0.55, selected=0),
+        dict(base, ticker="069540", trigger_type="거래량 급증", rank_in_trigger=2, selected=1),
+    ])
+    emit_trading_context("candidate.evaluated", market="KR", ticker="038500", decision_id=REPORT_ID,
+                         scenario={"decision": "진입"})
+    candidate, link = spool()
+    assert link["event_type"] == "screening.candidate_linked"
+    assert link["trace_id"] == candidate["trace_id"] and link["decision_id"] == REPORT_ID
+    attrs = link["attributes"]
+    assert (attrs["trade_date"], attrs["mode"], attrs["selected"]) == ("2026-10-07", "afternoon", True)
+    assert attrs["trigger_count"] == 2 and attrs["triggers"][0]["trigger_type"] == "거래량 급증"
+    assert link["timestamp"] < candidate["timestamp"]          # screening precedes the analysis
+
+
+def test_screening_link_skips_unmatched_and_non_report_decisions(tmp_path, monkeypatch, spool):
+    from observability.screening_link import emit_screening_link, screening_key
+    _ledger(tmp_path, monkeypatch, [])
+    assert screening_key("watchlist:KR:12") is None
+    assert screening_key(REPORT_ID) == ("2026-10-07", "afternoon")
+    assert emit_screening_link("KR", "038500", REPORT_ID, "a" * 32) is None
+    monkeypatch.setenv("CANDIDATE_LEDGER_DB", str(tmp_path / "missing.sqlite"))
+    assert emit_screening_link("KR", "038500", REPORT_ID, "a" * 32) is None
+    assert spool() == []
+
+
+def test_reentry_position_points_back_to_its_origin(spool):
+    from observability.trading_context import emit_trading_context
+    emit_trading_context("entry.executed", market="KR", ticker="000001", decision_id="reentry_v3:ev1",
+                         position_id="legacy:KR:7",
+                         scenario={"reentry": {"origin_decision_id": REPORT_ID}})
+    emit_trading_context("entry.executed", market="KR", ticker="000002", decision_id="d2",
+                         scenario={"reentry": True})
+    linked, plain = spool()
+    assert linked["attributes"]["origin_trace_id"] == _stable_hex("trade-trace", "KR", REPORT_ID, length=32)
+    assert linked["trace_id"] == _stable_hex("trade-trace", "KR", "reentry_v3:ev1", length=32)
+    assert "origin_trace_id" not in plain["attributes"]

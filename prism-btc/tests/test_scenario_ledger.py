@@ -72,3 +72,17 @@ def test_bridge_failures_never_escape(spool):
     ledger.forward_notice("x", None, "body")
     ledger.forward_run(None, loop="decision", started=None)
     assert [e["attributes"]["status"] for e in spool()] == ["UNKNOWN"]
+
+
+def test_decision_input_joins_the_runs_single_scenario(spool):
+    def row(kind, scenario=None, body=None):
+        return ("e-" + kind, "run-1", kind, 1791449405.0, scenario, None, 9, None, json.dumps(body or {}))
+    ledger.forward_audits([row("decision_input", body={"context": {"day": "2026-10-08"}}),
+                           row("intent_committed", "s_1", {"payload": {"action": "OPEN"}})])
+    decision, intent = spool()
+    assert decision["trace_id"] == intent["trace_id"] == ledger._hex("scenario:s_1")
+    assert decision["attributes"]["scenario_inferred"] is True
+    assert intent["attributes"]["scenario_inferred"] is False
+    ledger.forward_audits([row("decision_input"), row("exchange_call", "s_1"), row("exchange_call", "s_2")])
+    ambiguous = spool()[2]
+    assert ambiguous["event_type"] == "btc.scenario.decision_input" and ambiguous.get("trace_id") != intent["trace_id"]
