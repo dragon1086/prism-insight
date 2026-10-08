@@ -24,7 +24,7 @@ MIN_OBS = 60             # trading days a stock needs before it is clustered
 MOVE_Z = 2.0             # a co-move day: cluster mean residual beyond this many std
 MOVE_AGREE = 2 / 3       # ... with at least this share of members on the same side
 MAX_THEMES_PER_STOCK = 3
-ROLE_RANK = {"core": 0, "related": 1, "ai": 2, "news": 3}
+ROLE_RANK = {"core": 0, "related": 1, "override": 1, "ai": 2, "news": 3}
 
 # US-feed titles that list many stocks or restate ratings without a shared theme.
 ROUNDUP = re.compile(r"뉴욕증시|뉴욕마켓|마켓 브리핑|마켓워치|장중시황|주요 종목|투자의견|목표주가|목표가|"
@@ -348,15 +348,21 @@ def tagged_titles(rows, canonical):
     return out
 
 
+def _is_override(member):
+    return member["role"] == "override" or bool(member.get("override"))
+
+
 def cap_memberships(themes, limit=MAX_THEMES_PER_STOCK):
-    """A stock keeps at most `limit` themes: price clusters first, then AI, then news members."""
+    """A stock keeps at most `limit` themes: reviewed overrides first (never dropped), then
+    price clusters, then AI, then news members."""
     seen = []
     for t in themes:
         for m in t["members"]:
-            seen.append((ROLE_RANK.get(m["role"], 9), -(m.get("corr") or 0), t["id"], m["code"]))
+            rank = -1 if _is_override(m) else ROLE_RANK.get(m["role"], 9)
+            seen.append((rank, -(m.get("corr") or 0), t["id"], m["code"]))
     keep, per_stock = set(), Counter()
-    for _, _, tid, code in sorted(seen):
-        if per_stock[code] < limit:
+    for rank, _, tid, code in sorted(seen):
+        if rank < 0 or per_stock[code] < limit:
             per_stock[code] += 1
             keep.add((tid, code))
     dropped = 0
@@ -365,6 +371,93 @@ def cap_memberships(themes, limit=MAX_THEMES_PER_STOCK):
         t["members"] = [m for m in t["members"] if (t["id"], m["code"]) in keep]
         dropped += before - len(t["members"])
     return dropped
+
+
+# ---------------------------------------------------------------- reviewed corrections
+
+def _anchor_theme(themes, ticker, taken):
+    """The built theme holding `ticker`, its strongest membership first (core, then corr)."""
+    hits = [(ROLE_RANK.get(m["role"], 9), -(m.get("corr") or 0), i)
+            for i, t in enumerate(themes) if id(t) not in taken for m in t["members"] if m["code"] == ticker]
+    return themes[min(hits)[2]] if hits else None
+
+
+def resolve_targets(themes, targets):
+    """Map each reviewed target name to a built theme (anchor ticker, else exact name) or a new one.
+
+    An anchor-resolved theme takes the reviewed name (and sector/keywords when given), so
+    the correction survives name drift between builds. Returns ({target: theme}, {how: [names]}).
+    """
+    resolved, how, taken = {}, {"anchor": [], "name": [], "created": []}, set()
+    by_name = {t.get("name"): t for t in themes}
+    next_id = 1 + max((int(t["id"][1:]) for t in themes if str(t.get("id", ""))[1:].isdigit()), default=0)
+    for name, spec in targets.items():
+        spec = spec if isinstance(spec, dict) else {}
+        theme = _anchor_theme(themes, spec["anchor"], taken) if spec.get("anchor") else None
+        if theme is not None:
+            how["anchor"].append(name)
+            if theme.get("name") != name:
+                theme["renamed_from"] = theme.get("name")
+                theme["name"] = name
+        elif by_name.get(name) is not None and id(by_name[name]) not in taken:
+            theme = by_name[name]
+            how["name"].append(name)
+        else:
+            theme = {"id": f"T{next_id:03d}", "name": name, "sector": spec.get("sector") or "기타",
+                     "keywords": list(spec.get("keywords") or []), "lines": 0, "active_days": [],
+                     "first_seen": None, "last_seen": None, "mean_corr": None, "source": "override", "members": []}
+            next_id += 1
+            themes.append(theme)
+            how["created"].append(name)
+        if spec.get("sector"):
+            theme["sector"] = spec["sector"]
+        if spec.get("keywords"):
+            theme["keywords"] = list(dict.fromkeys(list(spec["keywords"]) + list(theme.get("keywords") or [])))
+        taken.add(id(theme))
+        resolved[name] = theme
+    return resolved, how
+
+
+def apply_overrides(themes, overrides, universe, limit=MAX_THEMES_PER_STOCK):
+    """Apply reviewed corrections as the last build step; returns (themes, report).
+
+    assign: the ticker's memberships become exactly the listed targets. add: the targets
+    are added (an existing membership is kept and flagged). Overridden memberships survive
+    the per-stock cap; automatic ones are dropped instead. Tickers outside the universe and
+    unknown targets are reported and skipped. Themes left empty are removed.
+    """
+    resolved, how = resolve_targets(themes, overrides.get("themes") or {})
+    universe = set(universe)
+    report = {"version": overrides.get("version"), "targets": how, "assigned": 0, "added": 0,
+              "skipped_tickers": [], "unknown_targets": []}
+
+    def place(theme, ticker):
+        member = next((m for m in theme["members"] if m["code"] == ticker), None)
+        if member is None:
+            theme["members"].append({"code": ticker, "times": 0, "share": None, "role": "override"})
+        else:
+            member["override"] = True
+
+    for kind in ("assign", "add"):
+        for ticker, names in (overrides.get(kind) or {}).items():
+            if ticker not in universe:
+                report["skipped_tickers"].append(ticker)
+                continue
+            known = [n for n in names if n in resolved]
+            report["unknown_targets"] += [n for n in names if n not in resolved]
+            if not known:
+                continue
+            if kind == "assign":
+                for t in themes:
+                    t["members"] = [m for m in t["members"] if m["code"] != ticker]
+            for name in known:
+                place(resolved[name], ticker)
+                report["assigned" if kind == "assign" else "added"] += 1
+    report["capped"] = cap_memberships(themes, limit)
+    report["emptied"] = [t.get("name") for t in themes if not t["members"]]
+    report["skipped_tickers"] = sorted(set(report["skipped_tickers"]))
+    report["unknown_targets"] = sorted(set(report["unknown_targets"]))
+    return [t for t in themes if t["members"]], report
 
 
 def membership_counts(themes):

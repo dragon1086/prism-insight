@@ -194,3 +194,70 @@ def test_build_writes_kr_shaped_json_with_fake_model(tmp_path, monkeypatch):
         assert {"id", "name", "sector", "keywords", "lines", "active_days", "first_seen", "last_seen",
                 "members"} <= set(t)
         assert all({"code", "times", "share", "role"} <= set(m) for m in t["members"])
+
+
+def _ov_map():
+    mem = _theme("T001", ["MU", "WDC", "STX"], sector="반도체")
+    mem["name"] = "메모리 반도체 묶음"  # the builder named it differently since the review
+    pay = _theme("T002", ["V", "MA", "AON"], sector="보험")
+    pay["name"] = "보험중개·결제"
+    phones = _theme("T003", ["AAPL", "APH"], sector="IT 하드웨어·네트워크", role="ai")
+    phones["name"] = "전자 커넥터"
+    return [mem, pay, phones]
+
+
+OVERRIDES = {
+    "version": "test",
+    "themes": {"메모리·저장장치": {"sector": "반도체", "anchor": "MU", "keywords": []},
+               "보험중개·결제": {"sector": "보험", "keywords": ["보험중개"]},
+               "결제 네트워크": {"sector": "결제·핀테크·가상자산", "keywords": ["카드"]},
+               "스마트폰·소비자 기기": {"sector": "IT 하드웨어·네트워크", "keywords": ["스마트폰"]}},
+    "assign": {"V": ["결제 네트워크"], "MA": ["결제 네트워크"], "AAPL": ["스마트폰·소비자 기기"],
+               "SKHY": ["메모리·저장장치"], "NOPE": ["결제 네트워크"]},
+    "add": {"AXP": ["결제 네트워크"], "WDC": ["보험중개·결제"]},
+}
+
+
+def test_overrides_resolve_by_anchor_name_or_create():
+    themes = _ov_map()
+    resolved, how = tm.resolve_targets(themes, OVERRIDES["themes"])
+    assert how == {"anchor": ["메모리·저장장치"], "name": ["보험중개·결제"],
+                   "created": ["결제 네트워크", "스마트폰·소비자 기기"]}
+    memory = resolved["메모리·저장장치"]
+    assert memory["id"] == "T001" and memory["name"] == "메모리·저장장치"
+    assert memory["renamed_from"] == "메모리 반도체 묶음"
+    created = resolved["결제 네트워크"]
+    assert created["source"] == "override" and created["id"] == "T004" and created["keywords"] == ["카드"]
+
+
+def test_overrides_assign_replaces_add_appends_and_unknown_tickers_skip():
+    universe = {"MU", "WDC", "STX", "V", "MA", "AON", "AAPL", "APH", "SKHY", "AXP"}
+    themes, report = tm.apply_overrides(_ov_map(), OVERRIDES, universe)
+    by_name = {t["name"]: t for t in themes}
+    homes = {code: sorted(t["name"] for t in themes if code in {m["code"] for m in t["members"]})
+             for code in ("V", "MA", "AAPL", "SKHY", "AXP", "WDC")}
+    assert homes["V"] == homes["MA"] == ["결제 네트워크"]  # assign replaces
+    assert homes["AAPL"] == ["스마트폰·소비자 기기"] and homes["SKHY"] == ["메모리·저장장치"]
+    assert homes["AXP"] == ["결제 네트워크"]  # add places a new member
+    assert homes["WDC"] == ["메모리·저장장치", "보험중개·결제"]  # add keeps existing memberships
+    assert {m["code"]: m["role"] for m in by_name["결제 네트워크"]["members"]} == {
+        "V": "override", "MA": "override", "AXP": "override"}
+    assert report["skipped_tickers"] == ["NOPE"] and report["assigned"] == 4 and report["added"] == 2
+    assert [m["code"] for m in by_name["보험중개·결제"]["members"]] == ["AON", "WDC"]
+
+
+def test_overrides_drop_emptied_themes_and_keep_override_over_cap():
+    themes = [_theme("T001", ["X"]), _theme("T002", ["X"]), _theme("T003", ["X"], role="ai"),
+              _theme("T004", ["Y"], role="ai")]
+    for i, t in enumerate(themes):
+        t["name"] = f"테마{i}"
+    ov = {"themes": {"새 테마": {"sector": "기타", "keywords": []}}, "assign": {"Y": ["새 테마"]},
+          "add": {"X": ["새 테마"]}}
+    themes, report = tm.apply_overrides(themes, ov, {"X", "Y"}, limit=3)
+    names = {t["name"]: [m["code"] for m in t["members"]] for t in themes}
+    # 테마3: Y moved out; 테마2: its only member X went to the cap. Empty themes are removed.
+    assert "테마3" not in names and report["emptied"] == ["테마2", "테마3"]
+    assert names["새 테마"] == ["Y", "X"]
+    # X sat in two price clusters and one AI theme; the override stays, the AI membership gives way
+    assert sorted(n for n, codes in names.items() if "X" in codes) == ["새 테마", "테마0", "테마1"]
+    assert report["capped"] == 1
