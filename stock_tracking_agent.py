@@ -3329,18 +3329,17 @@ class StockTrackingAgent:
                 )
 
             # Add sell message
-            arrow = "⬆️" if profit_rate > 0 else "⬇️" if profit_rate < 0 else "➖"
             from prism_core.runner_hold import public_reason, sell_message_line
+            from prism_core.sell_message import allocation_after_adds, holding_text, plain_reason, return_line
             message = f"📉 매도: {company_name}({ticker})\n" \
                       f"매수가: {buy_price:,.0f}원\n" \
                       f"매도가: {current_price:,.0f}원\n" \
-                      f"수익률: {arrow} {abs(profit_rate):.2f}%\n" \
-                      f"보유기간: {holding_days}일\n" \
-                      f"매도이유: {public_reason(sell_reason)}"
-            from prism_core.micro_split_live import allocation_line
-            _alloc = allocation_line(scenario_json, profit_rate=profit_rate, market="KR")
+                      f"{return_line(profit_rate, scenario_json)}\n" \
+                      f"보유기간: {holding_text(now_datetime - buy_datetime)}\n" \
+                      f"매도이유: {plain_reason(public_reason(sell_reason), sell_price=current_price, market='KR')}"
+            _alloc = allocation_after_adds(scenario_json, profit_rate=profit_rate, market="KR")
             if _alloc:
-                message += "\n" + _alloc.rstrip("\n")
+                message += "\n" + _alloc
             _runner_line = sell_message_line(scenario_json, language="ko")
             if _runner_line:
                 message += "\n" + _runner_line

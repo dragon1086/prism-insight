@@ -220,7 +220,7 @@ async def test_sell_notice_distinguishes_reference_return_and_elapsed_time(
         assert len(agent.message_queue) == 1
         message = agent.message_queue[0]
         assert f"보유기간: {expected_period}\n" in message
-        assert "수익률(전략 기준): ⬇️ 5.00%" in message
+        assert "수익률(전략 기준): ⬇️ -5.00%" in message
         assert "증권사 확정 실현손익이 아닙니다" in message
         assert "보유기간: 0일" not in message
         assert agent._msg_types == ["analysis"]
