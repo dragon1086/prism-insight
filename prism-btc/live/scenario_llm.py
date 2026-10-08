@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 
 from engine.scenario_ma_context import build_ma_structure_context
+from live.scenario_model_input import project_model_input
 
 MODEL = "gpt-6-luna"
 EFFORT = "high"
@@ -570,6 +571,7 @@ def propose(snapshot: dict, context: dict, response_contract: dict, *,
     payload = {"market_snapshot": snapshot, "contract_context": model_context,
                "response_contract": response_contract}
     try:
+        payload, projection_audit = project_model_input(payload)
         prompt = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     except (TypeError, ValueError):
         raise ScenarioModelError("invalid_input") from None
@@ -581,7 +583,8 @@ def propose(snapshot: dict, context: dict, response_contract: dict, *,
         system_prompt += FLAT_ENTRY_PROMPT
     from live.scenario_recovery import record_model_request, record_model_wire, record_model_error
     record_model_request(system_prompt=system_prompt, user_prompt=prompt,
-                         response_schema=schema, model=MODEL, effort=EFFORT, fast=True)
+                         response_schema=schema, model=MODEL, effort=EFFORT, fast=True,
+                         input_projection=projection_audit)
     try:
         result = generate(system_prompt=system_prompt, user_prompt=prompt,
                           model=MODEL, reasoning_effort=EFFORT, fast_tier=True,

@@ -485,6 +485,25 @@ def test_llm_failure_has_safe_audit_category_and_no_orders(setup, error, reason)
     assert r.tick()["status"] == "duplicate_slot"
 
 
+@pytest.mark.parametrize('code', ['snapshot_unavailable', 'snapshot_stale', 'invalid_contract_context', 'invalid_input', 'input_size'])
+def test_model_input_failure_is_not_output_failure_and_has_no_raw(setup, code):
+    import json
+    from live import scenario_recovery as recovery
+    from live.scenario_llm import ScenarioModelError
+    r, broker, _, _ = setup
+    r.recovery_enabled = True
+    recovery.ensure_schema(r.conn)
+    r.propose = lambda *_: (_ for _ in ()).throw(ScenarioModelError(code))
+    result = r.tick()
+    assert result == dict(status='blocked', reason='llm_input_preparation_failed',
+                         failure_stage='model_input_preparation', failure_code=code, model_called=False)
+    assert not broker.executed
+    rows = r.conn.execute('SELECT kind,body FROM llm_scenario_recovery_events').fetchall()
+    errors = [json.loads(body) for kind, body in rows if kind == 'MODEL_INPUT_ERROR']
+    assert errors and errors[-1]['code'] == code and errors[-1]['model_called'] is False
+    assert not any(kind in ('MODEL_REQUEST', 'MODEL_RAW') for kind, _ in rows)
+
+
 def test_recent_wait_context_is_bounded_causal_and_excludes_rejections(setup):
     r, b, now, _ = setup
     seen = []

@@ -484,10 +484,16 @@ def render_notice(event: dict) -> str:
         lines.append("체결·취소·보호·정산의 불명확 상태를 확인 중입니다. 재주문하지 않습니다.")
     if kind == "MODEL_ERROR":
         reason = {"llm_output_contract_failed":"LLM 응답이 출력 규격 검증을 통과하지 못했습니다.",
-                  "llm_call_failed":"LLM 호출에 실패했습니다."}.get(event.get("reason_code"))
+                  "llm_call_failed":"LLM 호출에 실패했습니다.",
+                  "llm_input_preparation_failed":"판단 입력 준비에 실패하여 LLM을 호출하지 않았습니다."}.get(event.get("reason_code"))
         if reason is None:
             raise ValueError("model_error_reason_required")
-        lines.extend([reason, "이번 응답에 따른 주문 변경은 적용하지 않습니다.",
+        input_failure = event.get("reason_code") == "llm_input_preparation_failed"
+        if input_failure:
+            lines[0] = "⚠️ BTC 데모 판단 입력 오류 · LLM 호출 생략"
+            if event.get("failure_code") == "input_size":
+                reason = "판단 입력이 허용 크기를 초과해 LLM을 호출하지 않았습니다."
+        lines.extend([reason, "이번 판단에 따른 주문 변경은 적용하지 않습니다." if input_failure else "이번 응답에 따른 주문 변경은 적용하지 않습니다.",
             "거래소 주문·체결·보호 상태는 별도 확인 대상입니다."])
     if kind == "MODEL_RECOVERED":
         lines.extend(["후속 LLM 응답이 검증을 통과했습니다.",

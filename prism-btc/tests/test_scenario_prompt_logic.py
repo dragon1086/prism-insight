@@ -605,6 +605,7 @@ def test_full_recovery_payload_with_seven_frames_preserves_headroom():
                           first_observation=False, eligible=True, current_stage=0, offered_stage=0)
     ctx['recent_waits'] = [dict(slot=ctx['now']-n*300, confidence=.5123456789, action='WAIT') for n in range(30)]
     ctx['seen_action_ids'] = [f'action_{n:025d}' for n in range(50)]
+    original_inputs = json.dumps([snapshot, ctx], sort_keys=True)
     p = exposure_proposal(ctx, 'WAIT')
     p['expires_at'] = ctx['now'] + 100
     calls = []
@@ -614,7 +615,9 @@ def test_full_recovery_payload_with_seven_frames_preserves_headroom():
     propose(snapshot, ctx, response_contract(ctx), generate=generate, clock=lambda: ctx['now'])
     encoded = calls[0]['user_prompt']
     assert len(encoded.encode()) < 95000
-    delivered = json.loads(encoded)
+    from live.scenario_model_input import restore_model_input
+    delivered = restore_model_input(json.loads(encoded))
     assert delivered['market_snapshot'] == snapshot
     assert delivered['contract_context']['recovery'] == ctx['recovery']
     assert len(delivered['contract_context']['ma_structure']['levels']) == 16
+    assert json.dumps([snapshot, ctx], sort_keys=True) == original_inputs

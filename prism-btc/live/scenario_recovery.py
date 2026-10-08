@@ -63,7 +63,7 @@ def capture_wire(conn, slot, clock):
 
 
 def record_model_request(*, system_prompt, user_prompt, response_schema,
-                         model=None, effort=None, fast=None):
+                         model=None, effort=None, fast=None, input_projection=None):
     capture = _wire.get()
     if capture is None:
         return
@@ -72,6 +72,8 @@ def record_model_request(*, system_prompt, user_prompt, response_schema,
         body = {"system_prompt": system_prompt, "user_prompt": user_prompt,
                 "response_schema": response_schema, "model": model,
                 "effort": effort, "fast": fast}
+        if input_projection is not None:
+            body["input_projection"] = input_projection
         body["request_hash"] = digest(body)
         journal(conn, "MODEL_REQUEST", body, clock(), slot=slot)
         conn.commit()

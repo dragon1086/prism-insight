@@ -517,6 +517,15 @@ def test_model_error_requires_safe_reason_code():
         render_notice(dict(kind='MODEL_ERROR',timestamp=1000,reason_code='raw exception'))
 
 
+def test_input_failure_notice_does_not_invent_an_llm_response():
+    out = render_notice(dict(kind='MODEL_ERROR',timestamp=1000,
+                            reason_code='llm_input_preparation_failed',failure_code='input_size',
+                            details='secret raw input'))
+    assert '허용 크기' in out and 'LLM을 호출하지 않았습니다' in out
+    assert '입력' in out and '출력 규격' not in out and '이번 응답' not in out
+    assert '별도 확인 대상' in out and 'secret' not in out
+
+
 def test_readable_blocks_show_notional_and_verified_equity_without_fake_margin():
     out = render_notice(filled(quantity=.03, price=85000, entry_stage="additional",
         position_before=position(timestamp=900, quantity=.07)))
