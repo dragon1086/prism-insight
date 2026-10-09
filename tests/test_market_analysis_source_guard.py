@@ -10,7 +10,14 @@ from prism_core.us_report_public_inputs import render_public_source_receipt
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_actual_downstream_assembly_excludes_dangling_claim_before_strategy():
+def test_actual_downstream_assembly_excludes_dangling_claim_before_strategy(monkeypatch):
+    theme_calls = []
+
+    def theme_block(reference_date, language):
+        theme_calls.append((reference_date, language))
+        return "THEME_FLOW_SENTINEL"
+
+    monkeypatch.setattr("prism_core.us_theme_flow.build_report_block", theme_block)
     source = ast.parse((ROOT / "prism-us/cores/us_analysis.py").read_text())
     function = next(node for node in ast.walk(source) if isinstance(node, ast.AsyncFunctionDef)
                     and any(isinstance(child, ast.Name) and child.id == "combined_reports" for child in ast.walk(node)))
@@ -23,7 +30,7 @@ def test_actual_downstream_assembly_excludes_dangling_claim_before_strategy():
     # Execute the production block that builds downstream strategy/summary inputs.
     namespace = {"section_reports": {"market_index_analysis": "연준 25bp 인하[1][10]"},
                  "macro_context": {"market_intelligence": {}, "market_regime": "sideways"},
-                 "language": "ko", "base_sections": ["market_index_analysis"],
+                 "language": "ko", "reference_date": "20260925", "base_sections": ["market_index_analysis"],
                  "shared_reference": "REFERENCE_SENTINEL\n", "prefetched": {},
                  "render_public_source_receipt": render_public_source_receipt}
     exec(compile(ast.Module(body=block[start:end], type_ignores=[]), "assembly", "exec"), namespace)  # noqa: S102 - trusted checked-in AST only
@@ -31,6 +38,8 @@ def test_actual_downstream_assembly_excludes_dangling_claim_before_strategy():
     assert "25bp" not in combined and "[10]" not in combined
     assert "제외했습니다" in combined and "공통 시장 근거" in combined
     assert combined.startswith("REFERENCE_SENTINEL\n")
+    assert theme_calls == [("20260925", "ko")]
+    assert combined.count("THEME_FLOW_SENTINEL") == 1
 
 
 def test_provider_price_only_prose_needs_no_fabricated_url():
