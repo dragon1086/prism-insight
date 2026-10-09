@@ -9,6 +9,7 @@ headline is shown as a related title, not as the cause.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from datetime import datetime, timedelta
@@ -16,6 +17,7 @@ from pathlib import Path
 from statistics import mean, median
 from zoneinfo import ZoneInfo
 
+logger = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[1]
 FLOW_PATH = ROOT / "runtime" / "us_theme_flow.json"
 KST = ZoneInfo("Asia/Seoul")
@@ -51,7 +53,8 @@ def theme_stats(themes, changes):
                     "members": [m["code"] for m in theme["members"]], "n": len(quoted),
                     "median": round(median(pcts), 2), "mean": round(mean(pcts), 2), "up": sum(p > 0 for p in pcts),
                     "down": sum(p < 0 for p in pcts),
-                    "movers": sorted(quoted, key=lambda q: -q[2])[:TOP_STOCKS]})
+                    "movers": sorted(quoted, key=lambda q: -q[2])[:TOP_STOCKS],
+                    "losers": sorted(quoted, key=lambda q: q[2])[:TOP_STOCKS]})
     return sorted(out, key=lambda s: -s["median"])
 
 
@@ -135,3 +138,45 @@ def render(flow, language="ko"):
     lines.append("※ 등락은 테마 종목의 중앙값이고, 기사 제목은 참고용이며 원인으로 단정하지 않습니다." if ko else
                  "※ Moves are theme medians; headlines are context, not a stated cause.")
     return "\n".join(lines) + "\n\n"
+
+
+REPORT_MAX_AGE_MIN = 240   # reports of a batch finish up to a few hours after the precomputed flow
+
+
+def render_report(flow, language="ko"):
+    """Markdown block for the report market section (KR mirror: kr_market_theme_flow.theme_flow)."""
+    themes = (flow or {}).get("themes") or []
+    if not themes:
+        return ""
+    ko = language == "ko"
+    at = str(flow.get("as_of", ""))[11:16]
+    lines = [f"\n\n### {'오늘 테마 흐름' if ko else 'Theme flow today'}\n",
+             (f"미국 테마 지도 {flow.get('quoted', 0):,}종목의 테마별 중앙 등락률입니다(전일 종가 대비, 한국시간 {at} 시세). "
+              "관련 제목은 같은 시간대 기사 제목이며, 원인으로 확인된 것은 아닙니다.\n" if ko else
+              f"Median move of each theme in the US theme map ({flow.get('quoted', 0):,} names, vs previous close, "
+              f"quotes at {at} KST). Related titles are same-window headlines, not confirmed causes.\n")]
+    for header, block in (("오른 테마" if ko else "Rising themes", [t for t in themes if t["median"] > 0]),
+                          ("내린 테마" if ko else "Falling themes", [t for t in themes if t["median"] < 0])):
+        if not block:
+            continue
+        lines.append(f"**{header}**\n")
+        for t in block:
+            moved = f"{t['up']}/{t['n']} 상승" if ko else f"{t['up']}/{t['n']} up"
+            stocks = t["movers"] if t["median"] > 0 else t.get("losers") or t["movers"]
+            shown = ", ".join(_stock(c, p) for c, _, p in stocks)
+            lines.append(f"- **{t['name']}** ({'중앙값' if ko else 'median'} {t['median']:+.1f}%, {moved}): {shown}")
+            for h in t.get("headlines") or []:
+                lines.append(f"  - {'관련 제목' if ko else 'Related title'}: {str(h['at'])[5:16]} {h['provider']} — "
+                             f"{_headline(h['title'])}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def build_report_block(reference_date, language="ko", *, path=FLOW_PATH, now=None):
+    """db-server path: the saved flow for `reference_date` (US trade date); "" when absent or stale."""
+    flow = load_fresh(str(reference_date), path=path, now=now, max_age_min=REPORT_MAX_AGE_MIN)
+    block = render_report(flow, language)
+    if flow is not None:
+        logger.info("[US_THEME_FLOW] report date=%s themes=%d chars=%d", reference_date,
+                    len(flow.get("themes") or []), len(block))
+    return block

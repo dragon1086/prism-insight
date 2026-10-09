@@ -315,6 +315,14 @@ async def analyze_us_stock(
             except Exception as e:
                 logger.warning(f"US social sentiment prefetch failed, continuing without it: {e}")
 
+        # KIS overseas headlines from the local US headline store (db-server batch); "" elsewhere.
+        try:
+            from prism_core.us_news_titles import build_us_news_listing
+            prefetched['news_listing'] = await asyncio.to_thread(build_us_news_listing, ticker, reference_date, language)
+        except Exception:
+            prefetched['news_listing'] = ""
+        logger.info(f"KIS news listing for {ticker}: {'present' if prefetched['news_listing'] else 'unavailable'}")
+
         peer_packet = await peer_task
         logger.info(
             f"[PEER_COMPARISON] market=US symbol={ticker} status={'ready' if peer_packet.get('ready') else 'skipped'} "
@@ -435,6 +443,11 @@ async def analyze_us_stock(
         shared_market = market_report_context(macro_context, language)
         if shared_market:
             section_reports["market_index_analysis"] = section_reports.get("market_index_analysis", "") + shared_market
+        # Today's theme flow from the precomputed US theme map flow (db-server batch); "" elsewhere.
+        from prism_core.us_theme_flow import build_report_block
+        theme_flow = build_report_block(reference_date, language)
+        if theme_flow:
+            section_reports["market_index_analysis"] = section_reports.get("market_index_analysis", "") + theme_flow
         section_reports['market_index_analysis'] = section_reports.get('market_index_analysis', '') + '\n\n' + render_public_source_receipt(
             prefetched.get('official_macro'), 'macro', language)
 

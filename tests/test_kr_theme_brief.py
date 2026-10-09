@@ -159,3 +159,11 @@ def test_archive_news_headlines_endpoint_is_authenticated_and_bounded(tmp_path, 
 
     monkeypatch.setenv("PRISM_KR_NEWS_DB", str(tmp_path / "missing.sqlite"))
     assert client.get("/news_headlines", params={"query": "광통신"}, headers=auth).status_code == 503
+
+    us = tmp_path / "us"
+    us.mkdir()
+    _store(us).close()
+    monkeypatch.setenv("PRISM_KR_NEWS_DB", str(tmp_path / "missing.sqlite"))
+    monkeypatch.setenv("PRISM_US_NEWS_DB", str(us / "news.sqlite"))
+    assert client.get("/news_headlines", params={"query": "광통신", "market": "US"}, headers=auth).status_code == 200
+    assert client.get("/news_headlines", params={"query": "광통신", "market": "JP"}, headers=auth).status_code == 400

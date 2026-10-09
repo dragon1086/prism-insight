@@ -131,6 +131,7 @@ def get_us_agent_directory(
             reference_date,
             language,
             prefetched_social_sentiment=pf.get("social_sentiment"),
+            news_listing=pf.get("news_listing", ""),
         ),
         "market_index_analysis": lambda: create_us_market_index_analysis_agent(
             reference_date, max_years_ago, max_years, language,
