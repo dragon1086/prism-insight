@@ -53,7 +53,8 @@ def theme_stats(themes, changes):
                     "members": [m["code"] for m in theme["members"]], "n": len(quoted),
                     "median": round(median(pcts), 2), "mean": round(mean(pcts), 2), "up": sum(p > 0 for p in pcts),
                     "down": sum(p < 0 for p in pcts),
-                    "movers": sorted(quoted, key=lambda q: -q[2])[:TOP_STOCKS]})
+                    "movers": sorted(quoted, key=lambda q: -q[2])[:TOP_STOCKS],
+                    "losers": sorted(quoted, key=lambda q: q[2])[:TOP_STOCKS]})
     return sorted(out, key=lambda s: -s["median"])
 
 
@@ -161,7 +162,8 @@ def render_report(flow, language="ko"):
         lines.append(f"**{header}**\n")
         for t in block:
             moved = f"{t['up']}/{t['n']} 상승" if ko else f"{t['up']}/{t['n']} up"
-            shown = ", ".join(_stock(c, p) for c, _, p in t["movers"])
+            stocks = t["movers"] if t["median"] > 0 else t.get("losers") or t["movers"]
+            shown = ", ".join(_stock(c, p) for c, _, p in stocks)
             lines.append(f"- **{t['name']}** ({'중앙값' if ko else 'median'} {t['median']:+.1f}%, {moved}): {shown}")
             for h in t.get("headlines") or []:
                 lines.append(f"  - {'관련 제목' if ko else 'Related title'}: {str(h['at'])[5:16]} {h['provider']} — "

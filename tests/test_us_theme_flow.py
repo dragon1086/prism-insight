@@ -29,6 +29,7 @@ def test_scores_need_three_quoted_members_and_rank_by_mean():
     stats = flow.theme_stats(MAP["themes"], CHANGES)
     assert [s["name"] for s in stats] == ["양자컴퓨팅", "방산", "비트코인 채굴"]
     assert stats[0]["median"] == 9.4 and stats[0]["up"] == 3 and stats[0]["movers"][0][0] == "RGTI"
+    assert stats[2]["losers"][0][0] == "MARA"
 
 
 def test_build_picks_strong_and_weak_themes_with_a_headline(tmp_path):
@@ -86,11 +87,12 @@ def test_report_block_uses_the_same_day_flow_for_a_few_hours(tmp_path):
     path.write_text(json.dumps({"as_of": NOW.isoformat(), "trade_date": "20261008", "quoted": 1019, "themes": [
         {"name": "양자컴퓨팅", "median": 9.4, "up": 3, "n": 3, "movers": [["RGTI", "rgti", 12.1], ["QBTS", "q", 9.4]],
          "headlines": [{"title": "[특징주] 리게티, 양자 칩 수주", "provider": "연합미국", "at": "2026-10-08 22:05:00"}]},
-        {"name": "비트코인 채굴", "median": -3.5, "up": 1, "n": 4, "movers": [["CIFR", "c", 1.0]], "headlines": []}]}))
+        {"name": "비트코인 채굴", "median": -3.5, "up": 1, "n": 4, "movers": [["CIFR", "c", 1.0]],
+         "losers": [["MARA", "m", -5.0]], "headlines": []}]}))
     text = flow.build_report_block("20261008", path=path, now=NOW + timedelta(hours=3))
     assert text.startswith("\n\n### 오늘 테마 흐름\n") and "1,019종목" in text and "한국시간 23:12 시세" in text
     assert "- **양자컴퓨팅** (중앙값 +9.4%, 3/3 상승): RGTI +12.1%, QBTS +9.4%" in text
     assert "  - 관련 제목: 10-08 22:05 연합미국 — 특징주 리게티, 양자 칩 수주" in text
-    assert "**내린 테마**" in text and "비트코인 채굴" in text
+    assert "**내린 테마**" in text and "비트코인 채굴** (중앙값 -3.5%, 1/4 상승): MARA -5.0%" in text
     assert flow.build_report_block("20261008", path=path, now=NOW + timedelta(hours=5)) == ""
     assert flow.build_report_block("20261009", path=path, now=NOW) == ""
