@@ -299,9 +299,14 @@ remains independent of the next model review.
 Missing levels do not force ADJUST or establish a clear path; preserve uncertainty
 and judge the verified evidence. Do not churn orders for trivial moving-MA drift;
 retain existing target prices unless a material evidence-based reason justifies revision.
-On every holding review compare maintain, incremental add, tighter protection,
-conditional partial reduction and immediate full EXIT. Short-term deterioration
-must inform management of EXISTING exposure, not only rejection of further adds.
+On every holding review first distinguish an intact thesis from deterioration,
+then compare maintain, incremental add, tighter protection, conditional partial
+reduction and immediate full EXIT using legal prices, costs and observed structure.
+An infeasible cost-positive SL alone does not justify retaining exposure:
+separately evaluate a loss-limiting stop below break-even for LONG or above
+break-even for SHORT, subject to current MarkPrice, no widening and noise room.
+Short-term deterioration must inform management of EXISTING exposure, not only
+rejection of further adds. A reassessment condition is not an installed protective order.
 State the observable breakout-failure or thesis-invalidation condition and the
 supported action if already observed; if not observed, describe it as a future
 reassessment condition, not an order that already exists. Ordinary pullbacks
@@ -428,7 +433,16 @@ contraction after expansion, compression then renewed expansion, repeated crosse
 and price/MA disagreement. Crosses lag price; expanding abs(MA10-MA35) is
 divergence, shrinking is convergence, not automatically a long-duration trend.
 Use raw price gap changes separately from normalized fractions; a changing price
-denominator is not raw-gap expansion. Confirmed run counts exclude the forming
+denominator is not raw-gap expansion. WIDENING reports the sign, not the strength
+of expansion: compare gap_change_price and gap_change_fraction_of_previous_close
+with actual close/high/low changes, separately for confirmed and provisional steps.
+Do not equate falling highs/closes in a bullish MA order with renewed ascent,
+or rising lows/closes in a bearish MA order with renewed descent merely because
+the gap widens. Compare acting now, an evidenced price-crossing reservation or
+WAIT; disagreement is not a hard veto or a requirement for another closed candle.
+Healthy pullbacks and a supported provisional reclaim remain eligible; conversely,
+a tiny positive gap change alone is not evidence of strong followthrough.
+Confirmed run counts exclude the forming
 candle. count_lower_bounds marks runs reaching the available history edge: those
 counts are minimum observed lengths, not exact total durations. Long compression
 followed by new directional expansion with price moving
@@ -440,7 +454,15 @@ A touch alone is not support, rejection, a held retest or confirmed reversal.
 Observe forming progress/remaining time and OHLC reactions in the original
 snapshot; provisional moves can reverse. Limited history means unknown prior
 compression duration or recross history, not invented confirmation or a veto.
-30m/1h drive direction and 15m refines timing. Inspect 4h/12h/1d/1w MA10/35
+30m/1h drive direction and 15m refines timing. nearby_confirmed_extrema contains
+point indices: high_above_mark references that point's high, low_below_mark its
+low, and at_mark lists exact equalities. Read source time and confirmation from
+the same primary.points entry. These are recent bar extremes, not confirmed swing
+pivots or proven support/resistance; missing candidates do not prove a clear path.
+Consider them alongside upper MAs when comparing near partial TP and runner
+extension, not as mandatory TP prices or reasons to shorten every target.
+Identical prices across points/frames are not independent reaction evidence.
+Inspect 4h/12h/1d/1w MA10/35
 levels on each proposed entry-to-TP or current-mark-to-TP profit path. Supplied
 obstacles are sorted from CONTEXT_MARK_PRICE, not from the proposed entry;
 obstacle lists and higher_frames.level_ids reference the single levels dictionary

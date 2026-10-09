@@ -621,3 +621,41 @@ def test_full_recovery_payload_with_seven_frames_preserves_headroom():
     assert delivered['contract_context']['recovery'] == ctx['recovery']
     assert len(delivered['contract_context']['ma_structure']['levels']) == 16
     assert json.dumps([snapshot, ctx], sort_keys=True) == original_inputs
+
+
+def test_followthrough_prompt_compares_without_forced_entry_or_early_exit():
+    text = ' '.join((SYSTEM_PROMPT + MA_STRUCTURE_PROMPT).split())
+    for rule in (
+        'WIDENING reports the sign, not the strength of expansion',
+        'falling highs/closes in a bullish MA order',
+        'rising lows/closes in a bearish MA order',
+        'Healthy pullbacks and a supported provisional reclaim remain eligible',
+        'recent bar extremes, not confirmed swing pivots',
+        'An infeasible cost-positive SL alone does not justify retaining exposure',
+        'loss-limiting stop below break-even for LONG or above break-even for SHORT',
+        'A reassessment condition is not an installed protective order',
+        'Immediate partial market reduction is unsupported',
+    ):
+        assert rule in text
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_infeasible_profit_lock_does_not_remove_legal_loss_reduction(side):
+    sign = 1 if side == 'LONG' else -1
+    ctx = context(True)
+    ctx.update(side=side, mark_price=60000-sign*50,
+               previous_hard_stop=60000-sign*300,
+               positions=[dict(price=60000, quantity=.01)])
+    proposal = wire(ctx, 'ADJUST')
+    proposal.update(side=side, hard_stop=60000-sign*100,
+                    take_profits=[dict(id='runner', price=60000+sign*200, fraction=.5)],
+                    partial_stops=[dict(id='loss-reduction', price=60000-sign*75, fraction=.5)])
+    accepted = validate_scenario(validate_wire_proposal(proposal, ctx), ctx)
+    assert accepted['entries'] == []
+    assert accepted['hard_stop'] == 60000-sign*100
+    assert accepted['risk']['budget'] == 200
+    # A positive-return stop would be across Mark and remains invalid. The
+    # remedy is not to weaken the validator or force immediate partial market.
+    proposal['hard_stop'] = 60000+sign*100
+    with pytest.raises(ValueError):
+        validate_scenario(validate_wire_proposal(proposal, ctx), ctx)

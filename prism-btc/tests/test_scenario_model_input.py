@@ -132,3 +132,31 @@ def test_actual_assembled_payload_retains_projection_and_original_objects(monkey
     assert 'model_input_projection' in sent
     assert restore_model_input(sent)['contract_context']['recovery'] == ctx['recovery']
     assert (market, ctx) == original
+
+
+def test_followthrough_facts_survive_exact_input_cap_without_evidence_truncation():
+    source = payload()
+    market, ctx = source['market_snapshot'], source['contract_context']
+    ctx.update(now=market['as_of_ms'] / 1000, input_captured_at=market['as_of_ms'] / 1000,
+               retained_evidence='')
+    p = wire(ctx)
+    p['expires_at'] = ctx['now'] + 300
+    calls = []
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(p))
+    propose(market, ctx, response_contract(ctx), generate=generate, clock=lambda: ctx['now'])
+    ctx['retained_evidence'] = 'x' * (100_000 - len(calls[-1]['user_prompt'].encode()))
+    original = deepcopy((market, ctx))
+    propose(market, ctx, response_contract(ctx), generate=generate, clock=lambda: ctx['now'])
+    assert len(calls[-1]['user_prompt'].encode()) == 100_000
+    restored = restore_model_input(json.loads(calls[-1]['user_prompt']))
+    assert restored['market_snapshot'] == market
+    assert restored['contract_context']['recovery'] == ctx['recovery']
+    assert restored['contract_context']['retained_evidence'] == ctx['retained_evidence']
+    assert restored['contract_context']['ma_structure'] == build_ma_structure_context(market, ctx)
+    assert (market, ctx) == original
+    ctx['retained_evidence'] += 'x'
+    with pytest.raises(ScenarioModelError, match='input_size'):
+        propose(market, ctx, response_contract(ctx), generate=generate, clock=lambda: ctx['now'])
+    assert len(calls) == 2
