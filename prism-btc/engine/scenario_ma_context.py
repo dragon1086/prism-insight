@@ -26,6 +26,7 @@ def _point(source, duration, as_of, confirmed):
     start = source.get("open_time_ms")
     observed = start + duration if _number(start) and confirmed else source.get("observed_at_ms")
     if (not all(_number(v, positive=True) for v in values.values())
+            or not values["low"] <= min(values["open"], values["close"]) <= max(values["open"], values["close"]) <= values["high"]
             or not _number(start) or not _number(observed)
             or not start <= observed <= as_of
             or (not confirmed and (not start <= observed < start + duration
@@ -110,7 +111,8 @@ def build_ma_structure_context(snapshot: dict, context: dict) -> dict:
     result = {"version": 1, "status": "unavailable", "primary": {}, "higher_frames": {},
               "long_upward_obstacles": [], "short_downward_obstacles": [],
               "equal_reference_levels": [], "levels": {},
-              "levels_price_basis": "LAST_TRADE_OHLC_SMA", "reference": None}
+              "levels_price_basis": "LAST_TRADE_OHLC_SMA", "reference": None,
+              "extrema_interpretation": "RECENT_BAR_EXTREMES_NOT_CONFIRMED_SWING_OR_SUPPORT_RESISTANCE"}
     as_of, now = snapshot.get("as_of_ms"), context.get("now")
     if not _number(as_of) or not _number(now) or as_of > now * 1000:
         return result
@@ -134,7 +136,7 @@ def build_ma_structure_context(snapshot: dict, context: dict) -> dict:
                  "history_limited": source != "ma_path", "duration_ms": duration,
                  "price_basis": "LAST_TRADE_OHLC_SMA",
                  "points": [{key: value for key, value in point.items()
-                             if key not in ("open", "high", "low", "price_basis", "absolute_gap_price")}
+                             if key not in ("open", "price_basis", "absolute_gap_price")}
                             for point in points]}
         path = item.get("ma_path")
         if isinstance(path, dict) and aggregate_valid:
@@ -150,12 +152,28 @@ def build_ma_structure_context(snapshot: dict, context: dict) -> dict:
                     "from_ma_order": before["ma_order"], "to_ma_order": after["ma_order"],
                     "bar_steps": (after["open_time_ms"] - before["open_time_ms"]) / duration,
                     "close_change_price": after["close"] - before["close"],
+                    "high_change_price": after["high"] - before["high"],
+                    "low_change_price": after["low"] - before["low"],
                     "ma10_change_price": after["ma10"] - before["ma10"],
                     "ma35_change_price": after["ma35"] - before["ma35"],
                     "gap_change_price": gap_change,
+                    "gap_change_fraction_of_previous_close": gap_change / before["close"],
                     "gap_state": "WIDENING" if gap_change > 0 else "NARROWING" if gap_change < 0 else "UNCHANGED",
                     "provisional": not after["is_confirmed"]})
-            facts.update(transitions=transitions,
+            # Indices reference the bounded own-time points above, not new pivots.
+            extrema = None
+            if result["reference"]:
+                extrema = {"high_above_mark": None, "low_below_mark": None, "at_mark": []}
+                for index, point in enumerate(confirmed):
+                    for field, key in (("high", "high_above_mark"), ("low", "low_below_mark")):
+                        price = point[field]
+                        if price == mark:
+                            extrema["at_mark"].append({"point_index": index, "field": field})
+                        elif (price > mark if field == "high" else price < mark):
+                            previous = extrema[key]
+                            if previous is None or abs(price - mark) <= abs(confirmed[previous][field] - mark):
+                                extrema[key] = index
+            facts.update(transitions=transitions, nearby_confirmed_extrema=extrema,
                          confirmed_gap=_gap_stats(path, "confirmed_gap") if confirmed and aggregate_valid else None,
                          forming_gap=_gap_stats(path, "forming_gap") if forming and aggregate_valid else None)
             result["primary"][frame] = facts

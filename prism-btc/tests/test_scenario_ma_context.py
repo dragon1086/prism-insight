@@ -197,3 +197,72 @@ def test_closed_expansion_retains_preceding_compression_from_producer():
     assert facts['confirmed_gap']['preceding_compression_bars'] == 15
     assert facts['confirmed_gap']['count_lower_bounds']['preceding_compression_bars'] is True
     assert facts['forming_gap']['state'] == 'WIDENING'
+
+
+@pytest.mark.parametrize('sign', [1, -1])
+def test_price_followthrough_and_small_gap_widening_are_separate_facts(sign):
+    before = point('30m', 3, close=100, fast=100 + sign * 5, slow=100 - sign * 5)
+    after = point('30m', 2, close=100 - sign, fast=100 + sign * 5.001, slow=100 - sign * 5)
+    s = snapshot(before=after)
+    s['timeframes']['30m']['ma_path']['confirmed_points'] = [before, after]
+    original = copy.deepcopy(s)
+    facts = build(s)['primary']['30m']
+    t = facts['transitions'][0]
+    assert t['gap_state'] == 'WIDENING'
+    assert t['gap_change_fraction_of_previous_close'] == pytest.approx(.00001)
+    assert t['close_change_price'] == t['high_change_price'] == t['low_change_price'] == -sign
+    assert facts['points'][0]['high'] == before['high']
+    assert facts['points'][1]['low'] == after['low']
+    assert not t['provisional']
+    assert s == original
+
+
+def test_nearby_extrema_reference_confirmed_points_not_forming_or_swing_pivots():
+    s = snapshot(before=point('30m', 2, close=102), after=point('30m', 1, close=100, confirmed=False))
+    path = s['timeframes']['30m']['ma_path']
+    path['confirmed_points'].insert(0, point('30m', 3, close=98))
+    result = build(s)
+    facts = result['primary']['30m']
+    candidates = facts['nearby_confirmed_extrema']
+    assert candidates == {'high_above_mark': 1, 'low_below_mark': 0, 'at_mark': []}
+    assert facts['points'][1]['high'] == 103  # forming high=101 is deliberately excluded
+    assert facts['points'][0]['low'] == 97
+    assert facts['points'][1]['is_confirmed']
+    assert result['extrema_interpretation'] == 'RECENT_BAR_EXTREMES_NOT_CONFIRMED_SWING_OR_SUPPORT_RESISTANCE'
+    assert result['reference']['basis_difference_not_adjusted']
+    assert facts['price_basis'] == 'LAST_TRADE_OHLC_SMA'
+    assert facts['points'][1]['as_of_ms'] <= NOW
+
+
+def test_extrema_equal_mark_missing_reference_and_latest_tie_are_explicit():
+    s = snapshot(before=point('30m', 2, close=99))
+    path = s['timeframes']['30m']['ma_path']
+    path['confirmed_points'].insert(0, point('30m', 3, close=99))
+    candidates = build(s)['primary']['30m']['nearby_confirmed_extrema']
+    assert candidates['high_above_mark'] is None
+    assert candidates['low_below_mark'] == 1
+    assert candidates['at_mark'] == [{'point_index': 0, 'field': 'high'}, {'point_index': 1, 'field': 'high'}]
+    assert build_ma_structure_context(s, {'now': NOW / 1000})['primary']['30m']['nearby_confirmed_extrema'] is None
+
+
+@pytest.mark.parametrize('fault', ['future', 'gap', 'nan'])
+def test_invalid_history_never_becomes_nearby_price_candidate(fault):
+    s = snapshot()
+    p = s['timeframes']['30m']['ma_path']['confirmed_points'][0]
+    if fault == 'future':
+        p['open_time_ms'] = candle_start(NOW, TIMEFRAME_MS['30m'])
+    elif fault == 'gap':
+        p['open_time_ms'] -= TIMEFRAME_MS['30m']
+    else:
+        p['high'] = float('nan')
+    facts = build(s)['primary']['30m']
+    assert facts['nearby_confirmed_extrema'] == {'high_above_mark': None, 'low_below_mark': None, 'at_mark': []}
+
+
+@pytest.mark.parametrize('changes', [{'high': 99}, {'low': 101}, {'open': 102}])
+def test_malformed_ohlc_is_not_a_price_obstacle(changes):
+    s = snapshot()
+    s['timeframes']['30m']['ma_path']['confirmed_points'][0].update(changes)
+    facts = build(s)['primary']['30m']
+    assert not any(p['is_confirmed'] for p in facts['points'])
+    assert facts['nearby_confirmed_extrema'] == {'high_above_mark': None, 'low_below_mark': None, 'at_mark': []}
