@@ -8,12 +8,46 @@ Uses perplexity and firecrawl for news gathering and sector analysis.
 from mcp_agent.agents.agent import Agent
 
 
+def _kis_listing_step(reference_date, language, news_listing):
+    """STEP 0: the KIS overseas headline list (Korean titles, same day first); "" when unavailable."""
+    if not news_listing:
+        return ""
+    if language == "en":
+        return f"""
+### STEP 0: Use the KIS overseas headline list first
+1. The table below is the primary news list. Explain the price move on {reference_date} from the headlines of that
+   US session first (KST times; the session ends the next KST morning).
+2. Headlines have no body or URL. Use the Yahoo Finance page in STEP 1 to find the original article of a material
+   headline. If the body is not confirmed, say it is headline-only.
+3. Cite a headline you could not open as "KIS news headline — provider, YYYY-MM-DD HH:MM (body not confirmed)". This is
+   the only allowed citation without a URL; never invent URLs.
+
+<kis_news_headlines>
+{news_listing}
+</kis_news_headlines>
+"""
+    return f"""
+### STEP 0: KIS 해외 뉴스 제목 목록을 먼저 사용
+1. 아래 표가 1차 뉴스 목록입니다. 기준일({reference_date}) 미국 장 시간대 제목으로 당일 주가 변동 요인을 먼저
+   설명하세요(시각은 한국시간이며, 미국 장은 다음 날 한국 아침에 끝납니다).
+2. 제목에는 본문과 URL이 없습니다. 중요한 제목은 STEP 1의 Yahoo Finance 뉴스 페이지에서 원문을 찾으세요. 본문을
+   확인하지 못했으면 제목만 확인했다고 밝히세요.
+3. 원문을 열지 못한 제목은 "KIS 뉴스 제목 — 제공처, YYYY-MM-DD HH:MM (본문 미확인)"으로 표기하세요. 이것이 URL 표기
+   규칙의 유일한 예외이며, URL을 만들어 내지 마세요.
+
+<kis_news_headlines>
+{news_listing}
+</kis_news_headlines>
+"""
+
+
 def create_us_news_analysis_agent(
     company_name: str,
     ticker: str,
     reference_date: str,
     language: str = "ko",
     prefetched_social_sentiment: str = None,
+    news_listing: str = "",
 ):
     """Create US news analysis agent
 
@@ -22,6 +56,7 @@ def create_us_news_analysis_agent(
         ticker: Stock ticker symbol
         reference_date: Analysis reference date (YYYYMMDD)
         language: Language code (default: "ko")
+        news_listing: KIS overseas headline table (prism_core.us_news_titles); "" if unavailable
 
     Returns:
         Agent: News analysis agent
@@ -44,11 +79,13 @@ def create_us_news_analysis_agent(
                 f"{prefetched_social_sentiment}\n"
             )
 
+    kis_step = _kis_listing_step(reference_date, language, news_listing)
+
     if language == "ko":
         instruction = f"""당신은 미국 주식 기업 뉴스 분석 전문가입니다. 주어진 기업과 관련된 최근 뉴스 및 이벤트를 분석하여 심층 뉴스 동향 분석 보고서를 작성해야 합니다.
 
 ## 필수 데이터 수집 순서 (반드시 이 순서를 따르세요)
-
+{kis_step}
 ### STEP 1: 대상 종목 뉴스 수집 (firecrawl)
 
 1. **firecrawl_scrape**로 Yahoo Finance 뉴스 페이지 접근:
@@ -110,7 +147,7 @@ def create_us_news_analysis_agent(
         instruction = f"""You are a corporate news analysis expert for US stocks. You need to analyze recent news and events related to the given company and write an in-depth news trend analysis report.
 
 ## Required Data Collection Order (Must follow this sequence)
-
+{kis_step}
 ### STEP 1: Collect Target Stock News (firecrawl)
 
 1. **firecrawl_scrape** to access Yahoo Finance news page:

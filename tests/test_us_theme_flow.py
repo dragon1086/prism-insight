@@ -79,3 +79,18 @@ def test_headlines_lose_markdown_marks_and_are_shortened():
                                                      "provider": "p", "at": "2026-10-08 22:05:00"}]}]}
     line = [l for l in flow.render(flow_).splitlines() if "📰" in l][0]
     assert not any(c in line for c in "*_`[]") and line.endswith("…")
+
+
+def test_report_block_uses_the_same_day_flow_for_a_few_hours(tmp_path):
+    path = tmp_path / "flow.json"
+    path.write_text(json.dumps({"as_of": NOW.isoformat(), "trade_date": "20261008", "quoted": 1019, "themes": [
+        {"name": "양자컴퓨팅", "median": 9.4, "up": 3, "n": 3, "movers": [["RGTI", "rgti", 12.1], ["QBTS", "q", 9.4]],
+         "headlines": [{"title": "[특징주] 리게티, 양자 칩 수주", "provider": "연합미국", "at": "2026-10-08 22:05:00"}]},
+        {"name": "비트코인 채굴", "median": -3.5, "up": 1, "n": 4, "movers": [["CIFR", "c", 1.0]], "headlines": []}]}))
+    text = flow.build_report_block("20261008", path=path, now=NOW + timedelta(hours=3))
+    assert text.startswith("\n\n### 오늘 테마 흐름\n") and "1,019종목" in text and "한국시간 23:12 시세" in text
+    assert "- **양자컴퓨팅** (중앙값 +9.4%, 3/3 상승): RGTI +12.1%, QBTS +9.4%" in text
+    assert "  - 관련 제목: 10-08 22:05 연합미국 — 특징주 리게티, 양자 칩 수주" in text
+    assert "**내린 테마**" in text and "비트코인 채굴" in text
+    assert flow.build_report_block("20261008", path=path, now=NOW + timedelta(hours=5)) == ""
+    assert flow.build_report_block("20261009", path=path, now=NOW) == ""
