@@ -94,28 +94,44 @@ def load_fresh(trade_date, *, path=FLOW_PATH, now=None, max_age_min=MAX_AGE_MIN)
     return flow
 
 
+_MARKDOWN = str.maketrans({c: "" for c in "*_`["})
+HEADLINE_MAX = 42
+
+
 def _stock(code, pct):
     return f"{code} {pct:+.1f}%"
 
 
+def _headline(title):
+    title = str(title).translate(_MARKDOWN).replace("]", "").strip()
+    return title if len(title) <= HEADLINE_MAX else title[:HEADLINE_MAX].rstrip() + "…"
+
+
 def render(flow, language="ko"):
+    """Telegram (legacy Markdown) block: strong themes with members and one headline, then weak themes."""
     themes = (flow or {}).get("themes") or []
-    up = [t for t in themes if t["median"] > 0]
-    down = [t for t in themes if t["median"] < 0]
     if not themes:
         return ""
+    up = [t for t in themes if t["median"] > 0]
+    down = [t for t in themes if t["median"] < 0]
     ko = language == "ko"
-    lines = [f"🧭 오늘 테마 흐름 (미국 테마 지도 {flow.get('quoted', 0):,}종목, 알림 직전 시세·전일 종가 대비, 테마 중앙값)"
-             if ko else f"🧭 Theme flow today (US theme map, {flow.get('quoted', 0):,} names, vs previous close, theme median)"]
-    for i, t in enumerate(up, 1):
-        movers = ", ".join(_stock(c, p) for c, _, p in t["movers"])
-        rise = f"{t['up']}/{t['n']} 상승" if ko else f"{t['up']}/{t['n']} up"
-        lines.append(f"{i}) {t['name']} {t['median']:+.1f}% ({rise}): {movers}")
-        for h in t.get("headlines") or []:
-            lines.append(f"   └ {h['title']} ({h['provider']} {h['at'][11:16]})")
+    quoted = f"{flow.get('quoted', 0):,}"
+    lines = ["🧭 *오늘 테마 흐름*" if ko else "🧭 *Theme flow today*",
+             f"미국 {quoted}종목 · 전일 종가 대비 · 테마별 중앙값" if ko
+             else f"US {quoted} names · vs previous close · theme median", ""]
+    if up:
+        lines.append("📈 *강한 테마*" if ko else "📈 *Strong themes*")
+        for i, t in enumerate(up, 1):
+            rise = f"{t['up']}/{t['n']} 상승" if ko else f"{t['up']}/{t['n']} up"
+            lines.append(f"{i}. *{t['name']}* {t['median']:+.1f}%  ({rise})")
+            lines.append("    " + " · ".join(_stock(c, p) for c, _, p in t["movers"]))
+            for h in t.get("headlines") or []:
+                lines.append(f"    📰 {_headline(h['title'])}")
+        lines.append("")
     if down:
-        weak = " · ".join(f"{t['name']} {t['median']:+.1f}%" for t in down)
-        lines.append(("약세: " if ko else "Weak: ") + weak)
-    lines.append("※ 테마 구성 종목 등락의 중앙값과 관련 제목이며, 원인을 단정하지 않습니다." if ko else
-                 "※ Median move of theme members and related headlines; not a stated cause.")
+        lines.append("📉 *약한 테마*" if ko else "📉 *Weak themes*")
+        lines += [f"· {t['name']} {t['median']:+.1f}%" for t in down]
+        lines.append("")
+    lines.append("※ 등락은 테마 종목의 중앙값이고, 기사 제목은 참고용이며 원인으로 단정하지 않습니다." if ko else
+                 "※ Moves are theme medians; headlines are context, not a stated cause.")
     return "\n".join(lines) + "\n\n"
