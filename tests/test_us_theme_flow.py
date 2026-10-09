@@ -43,9 +43,9 @@ def test_build_picks_strong_and_weak_themes_with_a_headline(tmp_path):
     assert [t["name"] for t in result["themes"]] == ["양자컴퓨팅", "비트코인 채굴"]   # flat 방산 is left out
     assert result["themes"][0]["headlines"][0]["title"] == "리게티, 양자 칩 수주"     # older than 18h excluded
     text = flow.render(result, "ko")
-    assert "1) 양자컴퓨팅 +9.4% (3/3 상승): RGTI +12.1%, QBTS +9.4%, IONQ +3.0%" in text
-    assert "└ 리게티, 양자 칩 수주 (연합미국 22:05)" in text
-    assert "약세: 비트코인 채굴 -3.5%" in text and text.endswith("\n\n")
+    assert "1. *양자컴퓨팅* +9.4%  (3/3 상승)\n    RGTI +12.1% · QBTS +9.4% · IONQ +3.0%\n" in text
+    assert "    📰 리게티, 양자 칩 수주\n" in text
+    assert "📉 *약한 테마*\n· 비트코인 채굴 -3.5%\n" in text and text.endswith("\n\n")
 
 
 def test_load_fresh_rejects_stale_or_other_day(tmp_path):
@@ -71,3 +71,11 @@ def test_one_outlier_cannot_carry_a_small_theme():
     themes = [theme("디지털 플랫폼", ["BSP", "MTCH", "GRAB", "X"])]
     changes = {"BSP": 24.2, "MTCH": 0.6, "GRAB": 0.3, "X": -1.0}   # mean +6.0%, median +0.45%
     assert flow.build({"themes": themes}, changes, trade_date="20261008", mode="morning", now=NOW)["themes"] == []
+
+
+def test_headlines_lose_markdown_marks_and_are_shortened():
+    flow_ = {"quoted": 3, "themes": [{"name": "t", "median": 2.0, "up": 3, "n": 3, "movers": [("A", "a", 2.0)],
+                                      "headlines": [{"title": "*급등* [특징주] a_b `x` " + "가" * 60,
+                                                     "provider": "p", "at": "2026-10-08 22:05:00"}]}]}
+    line = [l for l in flow.render(flow_).splitlines() if "📰" in l][0]
+    assert not any(c in line for c in "*_`[]") and line.endswith("…")
