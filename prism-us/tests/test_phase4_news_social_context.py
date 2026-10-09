@@ -193,3 +193,18 @@ async def test_analyze_us_stock_logs_rendered_social_prefetch_ticker(monkeypatch
         for message in root_logger.warning_messages
     )
     assert "news report" in report
+
+
+def test_news_agent_puts_kis_headlines_before_the_yahoo_scrape(sample_reference_date):
+    """KIS overseas headlines (roadmap U4) come first when present; absent, the prompt is unchanged."""
+    def news(prefetched, language="ko"):
+        return get_us_agent_directory(company_name="Micron", ticker="MU", reference_date=sample_reference_date,
+                                      base_sections=["news_analysis"], language=language,
+                                      prefetched_data=prefetched)["news_analysis"].instruction
+
+    listing = "## KIS 해외 뉴스 제목 목록\n| 2026-10-08 08:07 | 연합미국 | 마이크론 목표가 3천달러 |"
+    text = news({"news_listing": listing})
+    assert "<kis_news_headlines>" in text and listing in text
+    assert text.index("STEP 0") < text.index("### STEP 1") and "(본문 미확인)" in text
+    assert "<kis_news_headlines>" not in news({}) and "STEP 0" not in news({}, "en")
+    assert "body not confirmed" in news({"news_listing": listing}, "en")

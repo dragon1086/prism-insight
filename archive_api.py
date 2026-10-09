@@ -236,8 +236,9 @@ async def search(
 
 
 @app.get("/news_headlines")
-def news_headlines(query: str, days: int = 14, limit: int = 25, _key: str = Depends(_verify_key)):
-    """KIS headline evidence for the bot's /theme and /signal (read-only, bounded)."""
+def news_headlines(query: str, days: int = 14, limit: int = 25, market: str = "KR",
+                   _key: str = Depends(_verify_key)):
+    """KIS headline evidence for the bot's /theme and /signal, US store for /us_theme and /us_signal (read-only)."""
     from contextlib import closing
 
     from prism_core import kr_news_context
@@ -248,8 +249,10 @@ def news_headlines(query: str, days: int = 14, limit: int = 25, _key: str = Depe
         raise HTTPException(status_code=400, detail="query must be 1-40 characters")
     if not (1 <= days <= kr_news_context.MAX_DAYS and 1 <= limit <= kr_news_context.MAX_LIMIT):
         raise HTTPException(status_code=400, detail="days 1-30, limit 1-40")
+    if market not in ("KR", "US"):
+        raise HTTPException(status_code=400, detail="market must be KR or US")
     try:
-        with closing(kr_news_store.connect(readonly=True)) as conn:
+        with closing(kr_news_store.connect(kr_news_store.db_path(market), readonly=True)) as conn:
             rows = kr_news_context.find(conn, query, days=days, limit=limit)
     except Exception as e:
         logger.warning(f"/news_headlines unavailable: {type(e).__name__}")
