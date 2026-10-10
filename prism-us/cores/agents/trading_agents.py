@@ -153,6 +153,9 @@ T1이 아닙니다. 거래량이 함께 늘었으면 추세 전환 근거로 rat
 ## 2단계 — 시장 체제별 진입 매트릭스 (단일 기준점)
 
 펀더 게이트 평가가 끝난 후에만 적용하십시오.
+min_score 열: 이 지시문 뒤에 '초분할 진입 기준' 부록이 붙어 있으면 그 부록의 최소 점수가 이 열을 대신합니다(부록이 정한
+예외 포함). 부록이 없으면 이 열을 따르되, 시스템 국면 하한(횡보·moderate_bear 8점, strong_bear 9점, 횡보이면서
+시장 흐름 UPTREND 7점)이 더 높으면 그 값이 적용됩니다.
 
 | 시장 체제 | min_score | 손익비 floor | 최대 손절폭 | 모멘텀 신호 | 추가 확인 |
 |----------|-----------|------------|----------|----------|--------|
@@ -185,8 +188,10 @@ T1이 아닙니다. 거래량이 함께 늘었으면 추세 전환 근거로 rat
 분포일(거래량 동반 -0.2%↓ 마감)은 `index_summary.distribution_days`에 **결정론적으로 집계**됩니다
 (최근 25거래일 윈도우, +5% 회복 시 만료; 거래량 결측이면 null → 보고서 최근 4주 내 분포일로 판단).
 이 값은 거래량 동반 가격 하락의 누적 경고이며, 기관 매도를 직접 관측한 값은 아닙니다.
-- 값이 높으면(통상 5~6건 이상) **신규 매수에 한해** regime을 1단계 보수적으로 적용하십시오
-  (parabolic → strong_bull, strong_bull → moderate_bull, moderate_bull → sideways): 신규 진입·parabolic 사이징의 문턱만 높입니다.
+- 값이 **6건 이상**이면 시스템이 **신규 매수에 한해** regime을 1단계 낮춰 판정합니다
+  (parabolic → strong_bull, strong_bull → moderate_bull, moderate_bull → sideways, sideways → moderate_bear,
+  moderate_bear → strong_bear, strong_bear는 그대로). 신규 매수는 낮춘 regime의 매트릭스 행(min_score·손익비 floor·
+  최대 손절폭·모멘텀 신호·추가 확인)으로 판단하십시오. 최종 매수 점검도 같은 기준을 적용합니다.
 - **보유 종목의 매도·trailing 판단은 원래 regime을 그대로 사용**하며, 분산일로 조기 청산하지 않습니다.
 - distribution_days 값과 신규매수 보수화 여부를 `market_condition` 필드에 명시하십시오.
 
@@ -255,7 +260,7 @@ us_stock_holdings 테이블(account_id='primary' 필터)에서 다음을 확인�
 2. P/E ≥ 업종 평균 2.5배 (극단적 고평가)
 3. 펀더 게이트 미달 + 시장 체제가 sideways/bear
 4. severity = "high" 리스크 이벤트의 직접 피해 종목 (이벤트명 + 영향 경로 명시 필수)
-5. effective_score < 현재 regime의 min_score
+5. effective_score < min_score (초분할 진입 기준 부록이 있으면 그 최소 점수, 없으면 매트릭스의 현재 regime 값)
 
 **복합 사유 (둘 다 충족 시):**
 6. (RSI ≥ 85 OR 20일선 괴리율 ≥ +25%) AND (기관 5거래일+ 순매도) — 미국은 일별 기관 순매매 자료가 없어 이 조건은 발동하지 않습니다. 과열 위험은 기존 추격 위험·손익비 규칙으로 판단하고, 기관 매도 미확인을 근거로 서술하지 마십시오.
@@ -395,7 +400,7 @@ key_levels의 가격 필드 형식: `170` / `"170"` / `"170~180"` (범위는 중
     "buy_score": 1~10 정수,
     "macro_adjustment": -1, 0, 또는 +1,
     "effective_score": buy_score + macro_adjustment,
-    "min_score": 시장 체제별 (parabolic:4, strong_bull:4, moderate_bull:4, sideways:5, moderate_bear:5, strong_bear:6),
+    "min_score": 초분할 진입 기준 부록이 있으면 그 최소 점수, 없으면 시장 체제별 매트릭스 값 (parabolic:4, strong_bull:4, moderate_bull:4, sideways:5, moderate_bear:5, strong_bear:6),
     "momentum_signal_count": 0~5,
     "additional_confirmation_count": 0~5,
     "decision": "진입" 또는 "미진입",
@@ -536,6 +541,10 @@ new catalysts. Repeated stop-outs are a discipline failure; raise the entry bar 
 ## Step 2 — Market-Regime Entry Matrix (single source of truth)
 
 Apply only after the Fundamental Gate is evaluated.
+min_score column: when a "Micro-split entry threshold" appendix follows this instruction, its minimum score
+replaces this column (with the exceptions it states); without that appendix, use this column, but the
+system's regime floor applies when it is higher (sideways / moderate_bear 8, strong_bear 9, sideways with an
+UPTREND market pulse 7).
 
 | Regime | min_score | R/R floor | Max stop | Momentum signals | Extra confirmations |
 |--------|-----------|-----------|----------|------------------|---------------------|
@@ -570,9 +579,10 @@ Distribution days (price-volume proxies with ≥ -0.2% close on rising volume) a
 counted **deterministically** in `index_summary.distribution_days` (rolling 25-session window,
 expiring on a +5% recovery; null when volume is missing → then judge from the report's last
 4 weeks). A higher count of distribution days warns of repeated price-volume weakness, not confirmed institutional selling.
-- When it is elevated (≈5-6 or more), apply ONE step of caution to NEW BUYS ONLY
-  (parabolic → strong_bull, strong_bull → moderate_bull, moderate_bull → sideways): raise the bar
-  for new entries / parabolic sizing.
+- When it is **6 or more**, the system steps the regime down ONE level for NEW BUYS ONLY
+  (parabolic → strong_bull, strong_bull → moderate_bull, moderate_bull → sideways, sideways → moderate_bear,
+  moderate_bear → strong_bear, strong_bear stays). Judge new buys with the stepped-down regime's matrix row
+  (min_score, R/R floor, max stop, momentum signals, extra confirmations); the final buy check applies the same row.
 - Do NOT change sell or trailing-stop decisions for existing holdings — those keep the original
   regime. Distribution days never force an early exit.
 - State the distribution_days value and any new-buy caution in the `market_condition` field.
@@ -646,7 +656,7 @@ Query us_stock_holdings (filter by account_id='primary' when column exists):
 2. PE ≥ 2.5× industry average (extreme overvaluation)
 3. Fundamental Gate fail in sideways / bear regime
 4. Direct victim of a "high" severity risk event (cite event + impact path)
-5. effective_score < min_score for the current regime
+5. effective_score < min_score (the micro-split appendix's minimum when that appendix is present; otherwise the matrix value for the current regime)
 
 **Compound (BOTH required):**
 6. (RSI ≥ 85 OR 20d-MA deviation ≥ +25%) AND (institutional net selling ≥ 5 sessions) — daily institutional flow is not supplied for US stocks, so this condition never fires. Judge overextension with the existing chasing-risk and R/R rules and do not cite unconfirmed institutional selling.
@@ -795,7 +805,7 @@ Prohibited: `"$170"`, `"about $170"`, `"minimum 170"`.
     "buy_score": Integer 1~10,
     "macro_adjustment": -1, 0, or +1,
     "effective_score": buy_score + macro_adjustment,
-    "min_score": Regime-adaptive (parabolic:4, strong_bull:4, moderate_bull:4, sideways:5, moderate_bear:5, strong_bear:6),
+    "min_score": The micro-split appendix's minimum when present; otherwise the regime matrix value (parabolic:4, strong_bull:4, moderate_bull:4, sideways:5, moderate_bear:5, strong_bear:6),
     "momentum_signal_count": 0~5,
     "additional_confirmation_count": 0~5,
     "decision": "Enter" or "No Entry",

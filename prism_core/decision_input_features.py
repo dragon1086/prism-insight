@@ -245,7 +245,8 @@ def prompt_contract(language="ko", market="KR"):
 블록은 기존 채점 항목의 비어 있던 입력을 채우는 결정론적 계산입니다. 새 가점·감점·진입 차단 조건이 아닙니다.
 항목이 '결측'이면 기존처럼 보고서로 판단하고, 같은 사실을 두 번 세지 마십시오. 거래량 해석 기준은 그대로 따릅니다.
 - 3단계 1번(최근 3거래일 내 거래량 200%): 확정 세션 기준 '충족: 예'이면 충족입니다. '아니오'이면 확정 세션 기준 미충족이며,
-  진행 중인 당일 봉은 기존 기준대로 미확정으로 둡니다.
+  진행 중인 당일 봉은 기존 기준대로 미확정으로 둡니다. 단, 거래량 해석 기준의 하한 판정 예외대로 장중 누적 거래량이
+  이미 확정 20거래일 평균의 200% 이상이면 당일 조건을 충족한 것으로 셉니다.
 - 4단계 'PER 30% 이상 저평가'와 미진입 단독 사유 2번(PER ≥ 업종 평균 2.5배): 보고서 2-1에 업종 평균이 없으면 블록의
   동종업계 중앙값을 업종 평균으로 씁니다. 비교군은 선정된 비교기업이며 업종 전체가 아님을 rationale에 밝히되, 자료 제공 업체명은 쓰지 마십시오.
   '업종 평균 대용 가능'은 지표별(PER·PBR)로 판정합니다. 해당 지표가 '아니오'(유효값 3개 미만)면 그 중앙값은 참고만 하고
@@ -263,7 +264,8 @@ def prompt_contract(language="ko", market="KR"):
 The block fills inputs that existing rubric items already require. It adds no score bonus, penalty or entry gate.
 If an item is 'missing', judge from the report as before and never count the same fact twice. The volume interpretation rules still apply.
 - Step 3 item 1 (volume 200% within the last 3 sessions): 'met: yes' on completed sessions counts as satisfied. 'no' means not met
-  on completed sessions; the unfinished current bar stays unconfirmed as before.
+  on completed sessions; the unfinished current bar stays unconfirmed as before, except that under the volume rules'
+  lower-bound exception, cumulative intraday volume already at 200% or more of the completed 20-session average counts as met for today.
 - Step 4 'PE discount >= 30%' and standalone No-Entry 2 (PE >= 2.5x industry average): when report 2-1 lacks an industry average,
   use the block's peer median and state in the rationale that it is a selected peer set, not the whole industry, without naming the data vendor.
   Usability is judged per metric (PER, PBR). If a metric reads 'no' (fewer than 3 valid values), use that median

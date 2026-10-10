@@ -79,9 +79,11 @@ def test_decision_rules_and_json_schema_are_byte_preserved(prompt):
     # Step 1 bull-regime compensation path scores by the bands, capped at 6). JSON unchanged.
     # 2026-10-10 reviewed: rules hash only — Step 1.5 T1/T2 judged at the current price from the facts block
     # (as the final gate does); the exception is the current price back above the 50-day MA. JSON unchanged.
+    # 2026-10-10 reviewed: rules + JSON — text aligned with executed rules (distribution-day step-down ladder,
+    # min_score source: micro-split appendix else matrix with the system regime floor). No rule change.
     expected = {
-        "ko": ("5d8acd9a795772ed73d178f4d976ea469dbb8c0211d3a7b18bf0ef2ef33af49a", "013c4c4bdc5cb32e71c714048ca0feb9a534d9c5acbedab4e8b3d3ca643e8741"),
-        "en": ("4f9b72a5ae2d1faab40e5451cede3e5a6e81b71dd594e09d4a2b86de130af5db", "a76e0b453cf782a0115938eb4d606cd8a06e964b477f2e17eaac3336e20ef6cb"),
+        "ko": ("6f47e5079640519e674e710dd16f54136f0294524fa1b8f3a70d8cfe5c47cc38", "b3d868ed9d55e5b9c39d717204f52252e7c0a8549996117f08ccaa026b32a290"),
+        "en": ("9c5f26f07a2bf5e3d66cb1e19406deac5397086deb2688591609290781a9f69d", "42167974db3b0e53d09409c02f9df89ae798fd7dce0b7b50b7b922fdfb266c37"),
     }
     assert hashlib.sha256(text.split(heading)[0].encode()).hexdigest() == expected[language][0]
     assert hashlib.sha256(text[text.index(json_heading):].encode()).hexdigest() == expected[language][1]

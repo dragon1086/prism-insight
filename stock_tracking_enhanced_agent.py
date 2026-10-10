@@ -535,7 +535,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         ticker, current_price
                     )
 
-                # 레짐 적응 하한선(env-gated REGIME_MIN_SCORE_FLOOR, 기본 off). 플래그 ON 시
+                # 레짐 적응 하한선(env-gated REGIME_MIN_SCORE_FLOOR, 기본 on: entry_score_policy). 플래그 ON 시
                 # 약세장 하한(strong_bear 9 / bear·sideways 8)을 강제해 min_score 를 끌어올린다.
                 # 아래 진입 게이트(effective_score < min_score → Skip)가 그대로 차단을 수행한다.
                 # 레짐은 레거시 경로와 동일한 결정론적 현재 시장 레짐을 사용한다.
