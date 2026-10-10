@@ -922,7 +922,8 @@ def create_sell_decision_agent(language: str = "ko"):
         **Core-1) Stop loss is intraday; the system trailing stop is confirmed at the close:**
         - stop_loss and the absolute -7% stop are executed automatically on the **live intraday price**: once the price is at or below stop_loss × 0.995 (0.5% wick buffer) or 7% or more below entry, the intraday hard stop exits fully without waiting for the close.
         - A brief touch inside the buffer (between stop_loss and stop_loss × 0.995) is not a stop-loss on its own.
-        - The system trailing stop (off the post-entry peak) is confirmed on the **closing price**. An intraday low that briefly touches the trailing stop (intraday wick) is NEVER a sell reason on its own.
+        - The system trailing stop (off the post-entry peak) is confirmed by the **pre-close automatic check** (between 15:10 and 15:25 KST) or by a breach over several consecutive days. An intraday low that briefly touches the trailing stop (intraday wick) is NEVER a sell reason on its own.
+        - This sell decision runs before the close (afternoon run around 14:46 KST), so today's close does not exist yet. Use the latest confirmed session close for close-based judgements.
 - But a stop you raise through portfolio_adjustment (new_stop_loss) is executed by the intraday hard stop above. Raising stop_loss to the trailing level makes that level sell on an intraday wick.
         - Use today's close only when the source confirms a completed session and captured-data finality. Otherwise use the latest verified completed session and state its date; time alone cannot finalize a bar.
 
@@ -940,7 +941,7 @@ def create_sell_decision_agent(language: str = "ko"):
 
         **Core-4) Sell-signal priority (single source of truth):**
         - Tier 1: Absolute sell (live-price loss ≥ -7%, OR live price at or below stop_loss × 0.995 — executed automatically by the intraday hard stop).
-        - Tier 2: Trailing-stop closing breach (only if activated per Core-3).
+        - Tier 2: Trailing-stop breach — on the latest confirmed close; today's breach is confirmed by the pre-close automatic check (only if activated per Core-3).
         - Tier 3: Trend-weakness composite (3 consecutive daily-closing declines + above-average volume + close below 20d MA — ALL three required).
         - Time-based conditions are NOT sell triggers; they are trend-review checkpoints only. Sell decisions fire only via Tiers 1~3.
 
@@ -974,7 +975,7 @@ def create_sell_decision_agent(language: str = "ko"):
 
         Trailing Stop %: Bull market peak × 0.92 (-8%), Bear/Sideways peak × 0.95 (-5%)
 
-        **⚠️ Important**: new_stop_loss must NEVER exceed current price. If the confirmed close is below the trailing stop, set should_sell: true; if only the intraday price is below it, do not raise stop_loss above the current price and wait for the close.
+        **⚠️ Important**: new_stop_loss must NEVER exceed current price. If the latest confirmed close is below the trailing stop, set should_sell: true. If only today's intraday price is below it, do not raise stop_loss above the current price; leave it to the pre-close automatic check.
 
         **B) Bear/Sideways Mode → Secure Profit (Defensive)**
         - Reaching the target is not a sell reason; raise the stop (trailing) to protect the gain instead.
@@ -1148,7 +1149,8 @@ def create_sell_decision_agent(language: str = "ko"):
         **핵심-1) 손절은 장중, 시스템 trailing stop은 종가 확인:**
         - 손절가(stop_loss)와 -7% 절대 손절은 **장중 현재가** 기준으로 자동 실행됩니다. 현재가가 stop_loss×0.995(0.5% 꼬리 버퍼) 이하이거나 매수가 대비 -7% 이하가 되면 장중 하드스탑이 즉시 전량 매도하며, 종가 마감을 기다리지 않습니다.
         - 버퍼 안(stop_loss와 stop_loss×0.995 사이)의 일시 터치만으로는 손절하지 않습니다.
-        - 시스템의 trailing stop(진입 후 최고가 기준)은 **종가(closing price)** 확인으로 실행됩니다. 장중 저가가 trailing stop을 일시적으로 터치(intraday wick)한 것만으로는 매도하지 마십시오.
+        - 시스템의 trailing stop(진입 후 최고가 기준)은 **장 마감 직전 자동 점검**(15:10~15:25 KST) 가격 또는 여러 날 연속 이탈로 확인해 실행됩니다. 장중 저가가 trailing stop을 일시적으로 터치(intraday wick)한 것만으로는 매도하지 마십시오.
+        - 이 매도 판단은 장 마감 전에 실행되므로(오후 판단 14:46 KST경) 당일 종가는 아직 없습니다. 종가가 필요한 판단은 최근 확정 거래일 종가로 하십시오.
 - 단, portfolio_adjustment로 올린 손절가(new_stop_loss)는 위 장중 하드스탑이 그대로 실행합니다. trailing 수준을 손절가로 올리면 그 수준은 장중 꼬리에도 매도됩니다.
         - 출처에서 해당 세션의 종료와 수집 데이터의 확정을 확인한 경우에만 당일 종가를 사용하십시오. 그 외에는 최근 확정 거래일의 종가와 기준일을 사용하며, 시각만으로 봉을 확정하지 마십시오.
 
@@ -1166,7 +1168,7 @@ def create_sell_decision_agent(language: str = "ko"):
 
         **핵심-4) 매도 신호 우선순위 (single source of truth):**
         - 1단계: 절대 매도 (장중 현재가 기준 -7% 이상 손실 OR 현재가 stop_loss×0.995 이하 — 장중 하드스탑이 자동 실행)
-        - 2단계: trailing stop 종가 이탈 (활성화된 이후에만)
+        - 2단계: trailing stop 이탈 — 최근 확정 종가 기준, 당일은 장 마감 직전 자동 점검이 확인 (활성화된 이후에만)
         - 3단계: 추세 종합 약화 (3거래일 연속 종가 하락 + 거래량 동반 + 20일선 종가 이탈, 3개 모두 충족)
         - 시간 조건은 매도 트리거가 아닙니다. 추세 점검 시점일 뿐이며, 매도 결정은 위 1~3단계에서만 발동합니다.
 
@@ -1203,7 +1205,7 @@ def create_sell_decision_agent(language: str = "ko"):
 
         Trailing Stop %: 강세장 고점 × 0.92 (-8%), 약세장 고점 × 0.95 (-5%)
 
-        **⚠️ 중요**: new_stop_loss는 절대 현재가를 초과하면 안 됩니다. 확정 종가가 trailing stop 아래면 should_sell: true로 매도하고, 장중 현재가만 아래면 손절가를 현재가 위로 올리지 말고 종가 확인을 기다리십시오.
+        **⚠️ 중요**: new_stop_loss는 절대 현재가를 초과하면 안 됩니다. 최근 확정 종가가 trailing stop 아래면 should_sell: true로 매도하십시오. 오늘 장중 현재가만 아래면 손절가를 현재가 위로 올리지 말고 장 마감 직전 자동 점검에 맡기십시오.
         **🔒 손절가 하향 절대 금지**: new_stop_loss가 현재 stop_loss보다 낮은 값이면 제출하지 마세요. 어떤 이유로도 손절가를 내리는 것은 허용되지 않습니다.
 
         **B) 약세장/횡보장 모드 → 수익 확보 (방어적)**
