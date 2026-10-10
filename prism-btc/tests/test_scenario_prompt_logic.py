@@ -11,6 +11,15 @@ from live.scenario_preview import response_contract
 from live.scenario_contract import identity_fields
 
 
+def test_review_receipt_and_exact_ma_reference_instructions():
+    text = ' '.join(SYSTEM_PROMPT.split())
+    for term in ('review_update_receipt', 'review_free_capacity', 'NOT_ADDED_CAPACITY'):
+        assert term in text
+    assert 'not broker order acceptance' in text
+    assert 'exact level ID' in MA_STRUCTURE_PROMPT
+    assert 'same dictionary entry' in MA_STRUCTURE_PROMPT
+
+
 def context(active=False):
     return dict(now=1000, input_id="input-1", input_captured_at=1000,
                 max_input_age_seconds=120, scenario_id="active" if active else None,

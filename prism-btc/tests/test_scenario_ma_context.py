@@ -105,6 +105,31 @@ def test_higher_frame_levels_sorted_paired_and_basis_explicit():
     assert len(json.dumps(result)) < 25000
 
 
+def test_canonical_ma_labels_keep_line_phase_and_value_bound():
+    s = snapshot('12h', before=point('12h', 2, close=84000, fast=84056.08, slow=84385.5),
+                 after=point('12h', 1, close=84000, fast=83702, slow=84283.47, confirmed=False))
+    original = copy.deepcopy(s)
+    levels = build(s)['levels']
+    expected = {
+        '12h.ma10.confirmed': ('12h MA10 confirmed', 84056.08, True),
+        '12h.ma35.confirmed': ('12h MA35 confirmed', 84385.5, True),
+        '12h.ma10.forming': ('12h MA10 forming', 83702, False),
+        '12h.ma35.forming': ('12h MA35 forming', 84283.47, False),
+    }
+    for key, (label, price, confirmed) in expected.items():
+        assert levels[key]['label'] == label
+        assert levels[key]['price'] == price
+        assert levels[key]['is_confirmed'] is confirmed
+        assert levels[key]['ma'] == key.split('.')[1]
+    assert s == original
+
+
+def test_equal_ma_prices_do_not_merge_canonical_identities():
+    levels = build(snapshot('12h', before=point('12h', 2, fast=100, slow=100)))['levels']
+    assert levels['12h.ma10.confirmed']['price'] == levels['12h.ma35.confirmed']['price']
+    assert levels['12h.ma10.confirmed']['label'] != levels['12h.ma35.confirmed']['label']
+
+
 def test_equal_levels_and_invalid_reference_do_not_fabricate_distances():
     s = snapshot('4h', before=point('4h', 2, fast=100), after=point('4h', 1, fast=100, confirmed=False))
     assert len(build(s)['equal_reference_levels']) == 2

@@ -112,6 +112,12 @@ farther away. Empty review does not erase old conditions; add only useful numeri
 MARK_PRICE levels, at most three, fitting the retained capacity. Do not encode
 candle-close confirmation in a mark-price condition or recycle old free-text
 rationales. Missing timestamps mean hit status is unknown, not false certainty.
+review_update_receipt is the last advisory-memory persistence result, not broker
+order acceptance or a fill. Read its action_id and each requested condition's status
+alongside current review_memory and review_free_capacity. NOT_ADDED_CAPACITY means
+that condition is NOT tracked: do not describe it as registered. If still needed,
+explicitly replace a superseded exact host ID and submit the desired condition;
+hold does not free a slot. Never evict unresolved checkpoints just to make room.
 After confirmed partial profit, compare runner_economics whole-sequence net
 outcomes at current mark and the CURRENT confirmed stop, including known costs
 and the host's estimated cost allowance (not exact future fees/funding). The host
@@ -468,6 +474,9 @@ obstacles are sorted from CONTEXT_MARK_PRICE, not from the proposed entry;
 obstacle lists and higher_frames.level_ids reference the single levels dictionary
 by stable timeframe.MA.confirmed/forming IDs. Look up each ID there; repeated
 references are not extra levels. Re-evaluate which levels lie on that actual path.
+When citing a decisive higher-frame MA, include its exact level ID (for example
+[12h.ma10.confirmed]) and use label, price, phase and time from that same dictionary entry.
+Do not rename MA10 as MA35, confirmed as forming, or infer identity from nearby prices.
 Last-trade SMA and MarkPrice
 are different bases, not basis-adjusted execution evidence. Confirmed/forming
 versions sharing same_line_group are one evolving line, not independent votes.

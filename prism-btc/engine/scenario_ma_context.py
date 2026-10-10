@@ -183,6 +183,7 @@ def build_ma_structure_context(snapshot: dict, context: dict) -> dict:
                 for ma in ("ma10", "ma35"):
                     level_id = frame + "." + ma + (".confirmed" if point["is_confirmed"] else ".forming")
                     level = {"timeframe": frame, "ma": ma, "price": point[ma],
+                             "label": f"{frame} {ma.upper()} {'confirmed' if point['is_confirmed'] else 'forming'}",
                              "is_confirmed": point["is_confirmed"], "as_of_ms": point["as_of_ms"],
                              "same_line_group": frame + "." + ma}
                     if result["reference"]:
