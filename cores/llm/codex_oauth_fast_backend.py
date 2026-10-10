@@ -28,6 +28,7 @@ from typing import Literal
 
 from prism_core.codex_config import (
     CodexFastError as CodexFastError,
+    CodexFastTimeout as CodexFastTimeout,
     SUPPORTED_MODELS as SUPPORTED_MODELS,
     SUPPORTED_REASONING_EFFORTS as SUPPORTED_REASONING_EFFORTS,
     active_oauth_email,
@@ -561,7 +562,7 @@ def generate_codex_fast(
                     remaining = timeout - (time.monotonic() - started)
                     if remaining <= 0:
                         log_event("timeout")
-                        raise CodexFastError(f"Codex Fast timed out after {timeout:g}s")
+                        raise CodexFastTimeout(f"Codex Fast timed out after {timeout:g}s")
                     pump.advance()
                     remaining = timeout - (time.monotonic() - started)
                     if remaining <= 0:

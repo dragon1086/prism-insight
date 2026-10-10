@@ -53,4 +53,61 @@ def note_kis_rate_limit(url: str, status_code: Any, body: Any) -> None:
     )
 
 
-__all__ = ["note_kis_rate_limit", "note_sell_fallback"]
+_DECISION_KO = {"buy": "매수", "sell": "매도·보유"}
+# One maintenance alert per (market, decision) per process; later ones are events only.
+_alerted: set[tuple[str, str]] = set()
+
+
+async def note_codex_fallback(market: str, decision: str, ticker: Any, cause: Any, *,
+                              timeout_s: Any = None, alert_sender: Any = None) -> None:
+    """Record that a BUY/SELL decision left the configured Codex model for the mcp-agent fallback.
+
+    ``cause`` is the exception from the Codex call or the string ``"parse_failed"``.
+    Emits ``codex.decision_fallback`` and sends one maintenance alert per batch and
+    side. Never raises: the fallback decision must still run.
+    """
+    try:
+        from prism_core.codex_config import CodexFastError, CodexFastTimeout
+
+        market, decision = str(market).upper(), str(decision).lower()
+        if isinstance(cause, CodexFastTimeout):
+            reason = "timeout"
+        elif isinstance(cause, str):
+            reason = cause
+        else:
+            reason = "error"
+        # CodexFastError text is allowlisted by the backend; other exception text may not be.
+        detail = str(cause)[:200] if isinstance(cause, CodexFastError) else None
+        emit_event(
+            "codex.decision_fallback",
+            service=f"prism-{market.lower()}-{decision}-decision",
+            market=market,
+            ticker=str(ticker) if ticker else None,
+            severity="WARNING",
+            attributes={
+                "decision": decision,
+                "reason": reason,
+                "error_type": None if isinstance(cause, str) else type(cause).__name__,
+                "detail": detail,
+                "timeout_s": timeout_s,
+                "fallback": "mcp-agent",
+            },
+        )
+        if (market, decision) in _alerted:
+            return
+        _alerted.add((market, decision))
+        if alert_sender is None:
+            from messaging.publish_guard import signal_publishing_disabled
+            if signal_publishing_disabled():  # test runs never reach Telegram
+                return
+            from prism_core.ops_alert import send_ops_alert as alert_sender
+        reason_ko = {"timeout": f"제한 시간({timeout_s}초) 초과", "parse_failed": "응답 해석 실패"}.get(reason, "오류")
+        await alert_sender(
+            f"[PRISM] {market} {_DECISION_KO.get(decision, decision)} 판단: {ticker} — 설정 모델(Codex)이 "
+            f"{reason_ko}로 실패해 예비 모델로 판단했습니다. 같은 실행의 추가 건은 "
+            "codex.decision_fallback 이벤트로만 남깁니다.")
+    except Exception:  # noqa: BLE001 - observability never blocks the fallback decision
+        return
+
+
+__all__ = ["note_codex_fallback", "note_kis_rate_limit", "note_sell_fallback"]

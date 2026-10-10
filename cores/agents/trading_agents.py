@@ -96,16 +96,20 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         O'Neil principle: **never buy a stock below a declining moving average (no falling knives).**
         Regardless of market regime, momentum, capital inflow, or a bullish report, if the stock's OWN
         trend matches any below → **No Entry**:
-        - (T1) Close below the 50-day (or 60-day) MA — a break of O'Neil's 10-week line (a pullback above a rising MA is fine; losing the line is trend damage)
-        - (T2) The 20-day MA is sloping down AND close is ≥5% below the 20-day MA — a sharp early breakdown
+        - (T1) Current price at decision time below the 50-day (or 60-day) MA — a break of O'Neil's 10-week line (a pullback above a rising MA is fine; losing the line is trend damage)
+        - (T2) The 20-day MA is sloping down AND the current price is ≥5% below the 20-day MA — a sharp early breakdown
         Use the provided '개별 추세 팩트 / Individual Trend Facts' input and report section '1-1 Price'
         (if facts absent, judge conservatively from the report).
         **Only cite a moving average that appears in the facts block.** If a line is marked
         데이터 없음, or is not listed at all, do not assert where price sits relative to it and do not
         call it support or resistance — say the data is unavailable instead. A market index's
         200-day MA is the index's, never the stock's.
-        **Exception (entry allowed)** only when the stock reclaims/breaks above the declining MA with
-        volume, confirming a trend change. "It looks like it will bounce soon" is NOT an exception.
+        Judge T1/T2 at any time of day from the facts block's current price and the system's T1_hit/T2_hit;
+        do not re-judge them from the previous close or the report's older prices (the final buy check uses the
+        same current price). **Exception (entry allowed)**: if the previous close was below the 50-day MA but the
+        current price has reclaimed it (T1_hit=False), T1 does not apply; cite rising volume in the rationale as
+        trend-change evidence. While the current price is still below the 50-day MA (T1_hit=True), "it looks like
+        it will bounce soon" is NOT an exception.
         State the trend basis in rejection_reason (No Entry) or rationale (exception entry).
 
         ## Step 1.6 — Repeat Stop-Out Gate (mandatory)
@@ -244,7 +248,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - **9~10**: All 4 fundamental checks strong + 3+ momentum signals + clear trend (above a rising 50-day MA)
         - **7~8**: F1~F4 pass + 2+ momentum signals + Step 1.5/1.6 gates pass
         - **5~6**: F1~F4 pass + 1 momentum signal + Step 1.5/1.6 gates pass (conditional zone)
-        - **3~4**: F1~F4 pass + zero momentum signals (a no-entry zone because the matrix momentum condition fails), or F1~F4 pass but the stock is a no-entry under the Step 1.5 trend gate or the Step 1.6 repeat stop-out gate. A gated stock never scores above 4 however strong its fundamentals or momentum, and the trend gate alone does not push it down to 1~2. When the Step 1.5 exception (volume-backed reclaim of the moving average) holds, the gate counts as passed and the score is assigned normally.
+        - **3~4**: F1~F4 pass + zero momentum signals (a no-entry zone because the matrix momentum condition fails), or F1~F4 pass but the stock is a no-entry under the Step 1.5 trend gate or the Step 1.6 repeat stop-out gate. A gated stock never scores above 4 however strong its fundamentals or momentum, and the trend gate alone does not push it down to 1~2. When the Step 1.5 exception (the current price has reclaimed the 50-day MA, T1_hit=False) holds, the gate counts as passed and the score is assigned normally.
         - **1~2**: Fundamental Gate fails, or clear negative factor (e.g. standalone no-entry reasons 1, 2 or 4). Exception: a stock on the Step 1 bull-regime compensation path (one F check fails, the rationale gives concrete compensating evidence, and rejection_reason is null) is scored by the momentum and gate bands instead, capped at 6 (conditional zone). Without compensating evidence, or with two or more fails, it scores 1~2.
 
         R/R, stop-width and target shortfalls are about price location: do not fold them into the score; state them in rejection_reason only.
@@ -497,12 +501,15 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         오닐 원칙: **하락하는 이동평균 아래의 종목은 사지 않는다(떨어지는 칼 금지).**
         시장 체제·모멘텀·자금 유입·보고서 강세와 무관하게, 종목 자신의 추세가 아래에 해당하면 **미진입**:
-        - (T1) 종가가 50일선(또는 60일선) 아래 — 오닐 10주선 이탈 (상승 이동평균 위 눌림목은 정상, 라인 이탈은 추세 훼손)
-        - (T2) 20일선이 하향이고 종가가 20일선 대비 5% 이상 아래 — 급격한 초기 붕괴
+        - (T1) 판단 시점 현재가가 50일선(또는 60일선) 아래 — 오닐 10주선 이탈 (상승 이동평균 위 눌림목은 정상, 라인 이탈은 추세 훼손)
+        - (T2) 20일선이 하향이고 현재가가 20일선 대비 5% 이상 아래 — 급격한 초기 붕괴
         입력으로 제공되는 '개별 추세 팩트' 섹션과 보고서 '1-1 가격'을 사용해 판정하십시오
         (팩트가 없으면 보고서로 보수적으로 판단).
-        **예외(진입 허용)**: 하락 이동평균을 거래량 동반으로 상향 돌파·회복하여 추세 전환이
-        확인된 경우에 한함. "곧 반등할 것 같다"는 기대는 예외가 아니다.
+        T1·T2는 시간대와 관계없이 '개별 추세 팩트'의 현재가와 시스템이 계산한 T1_hit/T2_hit로 판정하고,
+        직전 종가나 보고서의 과거 가격으로 다시 판정하지 마십시오(최종 매수 검증도 같은 현재가 기준입니다).
+        **예외(진입 허용)**: 직전 종가가 50일선 아래였더라도 현재가가 50일선 위로 회복했으면(T1_hit=False)
+        T1이 아닙니다. 거래량이 함께 늘었으면 추세 전환 근거로 rationale에 적으십시오. 현재가가 아직
+        50일선 아래(T1_hit=True)인데 "곧 반등할 것 같다"는 기대는 예외가 아닙니다.
         미진입 시 rejection_reason에, 예외 진입 시 rationale에 추세 근거를 명시하십시오.
 
         ## 1.6단계 — 상습 손절 종목 게이트 (필수)
@@ -632,7 +639,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - **9~10점**: 펀더 4개 모두 강함 + 모멘텀 3개+ 신호 + 추세 명확 (상승하는 50일선 위)
         - **7~8점**: F1~F4 통과 + 모멘텀 2개+ 신호 + 1.5·1.6단계 게이트 통과
         - **5~6점**: F1~F4 통과 + 모멘텀 1개 신호 + 1.5·1.6단계 게이트 통과 (조건부 진입 영역)
-        - **3~4점**: F1~F4 통과 + 모멘텀 신호 0개(매트릭스 모멘텀 조건 미달이라 미진입 영역), 또는 F1~F4는 통과했지만 1.5단계 추세 게이트·1.6단계 상습 손절 게이트에 걸려 미진입하는 종목. 게이트에 걸린 종목은 펀더·모멘텀이 강해도 4점을 넘지 않고, 추세 게이트 하나만으로 1~2점까지 내리지 않습니다. 1.5단계 예외(거래량 동반 이동평균 회복)가 성립하면 게이트 통과로 보고 정상 산정합니다.
+        - **3~4점**: F1~F4 통과 + 모멘텀 신호 0개(매트릭스 모멘텀 조건 미달이라 미진입 영역), 또는 F1~F4는 통과했지만 1.5단계 추세 게이트·1.6단계 상습 손절 게이트에 걸려 미진입하는 종목. 게이트에 걸린 종목은 펀더·모멘텀이 강해도 4점을 넘지 않고, 추세 게이트 하나만으로 1~2점까지 내리지 않습니다. 1.5단계 예외(현재가의 50일선 회복, T1_hit=False)가 성립하면 게이트 통과로 보고 정상 산정합니다.
         - **1~2점**: 펀더 게이트 미달 또는 명확한 부정 요소 (미진입 단독 사유 1·2·4 해당 등). 단, 1단계의 강세 국면 보완 경로(F 1개 미달 + rationale의 구체적 보완 근거 + rejection_reason null)에 해당하면 1~2점이 아니라 모멘텀·게이트 기준대로 산정하되 최대 6점(조건부 진입 영역)으로 둡니다. 보완 근거가 없거나 2개 이상 미달이면 1~2점입니다.
 
         손익비·손절폭·목표가 미달은 가격 위치의 문제이므로 점수에 반영하지 않고 rejection_reason에만 적습니다.

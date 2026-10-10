@@ -1319,15 +1319,15 @@ class USStockTrackingAgent:
 
             lines = [
                 "### 📉 개별 추세 팩트 (추세 게이트용 · as-of 오늘)",
-                f"- 종가: {close:,.2f}",
+                f"- 현재가(판단 시점 · 장중이면 오늘 미완성 봉): {close:,.2f}",
                 f"- vs MA20: {_above(close, ma20)} ({_fmt(_pct(close, ma20), '%')}), MA20 기울기: {_dir(ma20_up)}",
                 f"- vs MA50: {_above(close, ma50)} ({_fmt(_pct(close, ma50), '%')}), MA50 기울기: {_dir(ma50_up)}",
                 f"- vs MA60: {_above(close, ma60)} ({_fmt(_pct(close, ma60), '%')}), MA60 기울기: {_dir(ma60_up)}",
                 _ma200_line(),
                 f"- RS(60일, 종목-S&P500): {_fmt(rs, '%p')} (종목 {_fmt(stock_ret, '%')} / 지수 {_fmt(idx_ret, '%')})",
                 f"- Volatility: ATR20={_fmt(atr20_pct, '%')} / ADR20={_fmt(adr20_pct, '%')} (stop-width shadow check)",
-                f"- T1_hit(종가<{ma_mid_label}, 오닐 10주선 이탈): {t1_hit} / "
-                f"T2_hit(MA20 하락 and 종가 MA20 대비 -5%↓): {t2_hit}",
+                f"- T1_hit(현재가<{ma_mid_label}, 오닐 10주선 이탈): {t1_hit} / "
+                f"T2_hit(MA20 하락 and 현재가 MA20 대비 -5%↓): {t2_hit}",
             ]
             # Momentum signal 1 volume facts. Today's bar is always open during
             # US batches; a partial bar that already reaches 200% proves it.
@@ -1585,6 +1585,7 @@ class USStockTrackingAgent:
                 "PRISM_US_CODEX_FAST_TRADING", "0"
             ).strip().lower() in {"1", "true", "yes", "on"}
             if codex_enabled:
+                settings = None
                 try:
                     instruction = str(
                         getattr(self.trading_agent, "instruction", "") or ""
@@ -1625,6 +1626,9 @@ class USStockTrackingAgent:
                             "[%s] Codex Fast parse failed; falling back to mcp-agent",
                             ticker_tag,
                         )
+                        from observability.fallbacks import note_codex_fallback
+                        await note_codex_fallback("US", "buy", ticker, "parse_failed",
+                                                  timeout_s=settings.timeout)
                     if scenario_json is not None:
                         schedule_buy_model_shadow(
                             market="US", ticker=ticker or "?",
@@ -1643,6 +1647,9 @@ class USStockTrackingAgent:
                         ticker_tag,
                         type(codex_err).__name__,
                     )
+                    from observability.fallbacks import note_codex_fallback
+                    await note_codex_fallback("US", "buy", ticker, codex_err,
+                                              timeout_s=settings.timeout if settings else None)
                     scenario_json = None
 
             # LLM scenario generation with retry+backoff. Transient API/parse
