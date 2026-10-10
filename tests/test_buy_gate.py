@@ -51,8 +51,8 @@ def test_rr_is_recomputed_and_reported_value_cannot_override_it():
         current_price=100.0,
         market_regime="moderate_bear",
     )
-    codes = {item["code"] for item in result["hard_findings"]}
-    assert {"rr_below_floor", "rr_arithmetic_mismatch"} <= codes
+    assert "rr_below_floor" in _codes(result)                       # the recomputed R/R blocks
+    assert "rr_arithmetic_mismatch" in _all_codes(result) - _codes(result)   # the slip is only recorded
 
 
 def test_trend_facts_are_final_blockers():
@@ -99,47 +99,52 @@ def _codes(result):
     return {item["code"] for item in result["hard_findings"]}
 
 
+def _all_codes(result):
+    return {item["code"] for item in result["findings"]}
+
+
 def test_quote_drift_is_not_reported_as_arithmetic_mismatch():
     # Production case 2026-09-09 (지엔씨에너지): scenario written at 49,350, fresh quote 48,850.
     scenario = _scenario(target_price=56270.0, stop_loss=46000.0, risk_reward_ratio=2.1,
                          expected_return_pct=14.0, expected_loss_pct=6.8, _analysis_entry_price=49350.0)
     result = evaluate_production_buy_gate(scenario, current_price=48850.0, market_regime="moderate_bull")
-    codes = _codes(result)
+    codes = _all_codes(result)
     assert not codes & {"rr_arithmetic_mismatch", "risk_arithmetic_mismatch"}
     assert round(result["recomputed_rr"], 2) == 2.6  # floors still judge the fresh price
 
 
-def test_wrong_arithmetic_at_its_own_price_still_blocks():
+def test_wrong_arithmetic_at_its_own_price_is_recorded_not_blocking():
     # Production case 2026-09-10 (리노공업): entry basis equals the quote, reported numbers do not.
+    # User decision 2026-10-10: the AI's arithmetic slip is logged; the recomputed R/R decides.
     scenario = _scenario(target_price=103500.0, stop_loss=67500.0, risk_reward_ratio=11.9,
                          expected_return_pct=47.23, expected_loss_pct=3.98, _analysis_entry_price=71300.0)
     result = evaluate_production_buy_gate(scenario, current_price=71300.0, market_regime="moderate_bull")
-    assert {"rr_arithmetic_mismatch", "risk_arithmetic_mismatch"} <= _codes(result)
+    assert {"rr_arithmetic_mismatch", "risk_arithmetic_mismatch"} <= _all_codes(result)
+    assert result["allowed"] and not _codes(result)
 
 
 def test_without_or_with_invalid_basis_the_fresh_price_is_used():
     scenario = _scenario(target_price=7900.0, stop_loss=6000.0, risk_reward_ratio=4.4)
     result = evaluate_production_buy_gate(scenario, current_price=6380.0, market_regime="moderate_bull")
-    assert "rr_arithmetic_mismatch" in _codes(result)
+    assert "rr_arithmetic_mismatch" in _all_codes(result)
     scenario["_analysis_entry_price"] = 5000.0  # below the stop: not a usable basis
     result = evaluate_production_buy_gate(scenario, current_price=6380.0, market_regime="moderate_bull")
-    assert "rr_arithmetic_mismatch" in _codes(result)
+    assert "rr_arithmetic_mismatch" in _all_codes(result)
 
 
 def test_drift_that_breaks_the_floor_still_blocks():
     scenario = _scenario(target_price=110.0, stop_loss=95.0, risk_reward_ratio=2.0,
                          expected_return_pct=10.0, expected_loss_pct=5.0, _analysis_entry_price=100.0)
     result = evaluate_production_buy_gate(scenario, current_price=104.0, market_regime="moderate_bear")
-    codes = _codes(result)
-    assert "rr_below_floor" in codes
-    assert not codes & {"rr_arithmetic_mismatch", "risk_arithmetic_mismatch"}
+    assert "rr_below_floor" in _codes(result)
+    assert not _all_codes(result) & {"rr_arithmetic_mismatch", "risk_arithmetic_mismatch"}
 
 
 def test_reported_entry_price_is_the_basis_before_the_contract_refresh():
     scenario = _scenario(target_price=56270.0, stop_loss=46000.0, risk_reward_ratio=2.1,
                          expected_return_pct=14.0, expected_loss_pct=6.8, entry_price=49350.0)
     result = evaluate_production_buy_gate(scenario, current_price=48850.0, market_regime="moderate_bull")
-    assert not _codes(result) & {"rr_arithmetic_mismatch", "risk_arithmetic_mismatch"}
+    assert not _all_codes(result) & {"rr_arithmetic_mismatch", "risk_arithmetic_mismatch"}
 
 
 def test_score_exemption_skips_only_the_score_floor_for_a_rule_approved_reentry():

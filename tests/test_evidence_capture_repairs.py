@@ -127,10 +127,12 @@ def test_buy_prompt_reconciles_evidence_without_new_gate(market, language):
             # the Step 1 bull-regime compensation path scores by the bands, capped at 6).
             # 2026-10-07 reviewed: JSON tail only — the take-profit sell_trigger says the target is never a
             # sell in any regime (trailing protects the gain); decision rules unchanged.
+            # 2026-10-10 reviewed: rules hash only — Step 1.5 T1/T2 are judged at the current price from the
+            # facts block (as the final gate does); the exception is the current price back above the 50-day MA.
             # Unrelated execution rules retain their original hashes.
-            "ko": ("21da240f3ebf990ef6071eb2224791af7a87c0cdad432b4fcc2edf2a29f47da7",
+            "ko": ("1a6c18f63e76775b22f5a4033642e923a1477ed5905d5d3cfc59aa092d9911f0",
                    "17f5a081b0b15253f680f706a2edc44271c94104d4e4f9ea4d6560221858b5d7"),
-            "en": ("987b563c0cc7d939eb28a3abee6b8ad49d5d75a4e066279e5eab83b94efc2a6b",
+            "en": ("b7a71eca9428dbb9413890e7fb59f8efe747ccd2249d6767bd93bcd67e4ffce9",
                    "bf093719008980f796ab5219ec36104b1051e009b6717554ac55eaede4e63a8c"),
         }
         tool_heading = "## 도구 사용" if language == "ko" else "## Tool Usage"

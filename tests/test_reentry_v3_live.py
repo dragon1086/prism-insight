@@ -462,8 +462,9 @@ def no_cooldown(monkeypatch):
 
 
 def _kr(agent):
+    ns = _load_functions(ROOT / "stock_tracking_enhanced_agent.py", {"_kr_effective_score"}, _base_ns())
     method = _load_method(ROOT / "stock_tracking_enhanced_agent.py", "EnhancedStockTrackingAgent",
-                          "enter_reentry_candidate", _base_ns())
+                          "enter_reentry_candidate", ns)
     return lambda **kw: method(agent, **kw)
 
 
