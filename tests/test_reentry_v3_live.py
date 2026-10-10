@@ -925,3 +925,27 @@ def test_runtime_rule_approval_orders_without_any_llm_call(tmp_path, monkeypatch
     shadow = run(71, phase="intraday", decision_day=bars[72]["date"], quote_fn=quote, llm=no_llm,
                  live_executor=executor)
     assert shadow["mode"] == "SHADOW" and shadow["llm_calls"] == 0 and len(executor.calls) == 1
+
+
+@pytest.mark.parametrize("market,prefix", [("KR", ""), ("US", "us_")])
+def test_sector_falls_back_to_the_tickers_other_rows_then_unknown_without_blocking(tmp_path, monkeypatch, market,
+                                                                                  prefix):
+    db = tmp_path / "t.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(f"CREATE TABLE {prefix}trading_history (ticker TEXT, sell_date TEXT, sector TEXT)")
+    conn.execute(f"CREATE TABLE {prefix}watchlist_history (id INTEGER PRIMARY KEY, ticker TEXT, analyzed_date TEXT, "
+                 "sector TEXT)")
+    conn.execute(f"CREATE TABLE {prefix}stock_holdings (ticker TEXT, buy_date TEXT, sector TEXT)")
+    conn.execute(f"INSERT INTO {prefix}watchlist_history (id, ticker, analyzed_date, sector) VALUES "
+                 "(1, 'AAA', '2026-09-01', '전기·전자'), (2, 'AAA', '2026-09-20', 'Unknown'), (3, 'BBB', '2026-09-02', '')")
+    conn.execute(f"INSERT INTO {prefix}trading_history VALUES ('CCC', '2026-08-01', '화학')")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(LIVE, "kis_master_sector", lambda ticker: "기계·장비" if ticker == "DDD" else None)
+    gone = {"source": "LOCATION_SKIP", "analysis_id": 99}              # the original row no longer exists
+    assert LIVE.resolve_sector(db, market, "AAA", gone) == "전기·전자"   # newest known, 'Unknown' skipped
+    assert LIVE.resolve_sector(db, market, "CCC", gone) == "화학"
+    assert LIVE.resolve_sector(db, market, "AAA", gone, "반도체") == "반도체"   # the scenario's sector first
+    assert LIVE.resolve_sector(db, market, "DDD", gone) == ("기계·장비" if market == "KR" else "Unknown")
+    assert LIVE.resolve_sector(db, market, "BBB", gone) == "Unknown"     # unknown is recorded, never a block
+    assert LIVE.resolve_sector(tmp_path / "missing.sqlite", market, "AAA", gone) == "Unknown"
