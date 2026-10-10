@@ -683,7 +683,7 @@ def _capture_entry_quality_context(
 # =============================================================================
 
 def _reentry_rule_approved(scenario):
-    """Rule-approved re-entry (no AI score): the final gate skips only its score floor."""
+    """Rule-approved re-entry: the final gate skips its score floor and the T1 (50-day line) block."""
     from prism_core.reentry_v3_live import deterministic_approval
     return deterministic_approval(scenario)
 
@@ -2791,6 +2791,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 is_add=is_add,
                 required_score_override=_micro_split_gate_score(scenario),
                 score_exempt=_reentry_rule_approved(scenario),
+                t1_exempt=_reentry_rule_approved(scenario),
             )
             if result.get("score_policy"):
                 logger.info("[ENTRY_SCORE_POLICY][US] regime=%s pulse=%s policy=%s", computed_regime, pulse, result["score_policy"])
