@@ -4342,10 +4342,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     entry_cash_amount = None
                     _rp = None
 
-                    # 레짐 적응 하한선(env-gated REGIME_MIN_SCORE_FLOOR, 기본 off). 플래그 ON 시
+                    # 레짐 적응 하한선(env-gated REGIME_MIN_SCORE_FLOOR, 기본 on: entry_score_policy). 플래그 ON 시
                     # 약세장 하한(strong_bear 9 / bear·sideways 8)을 강제해 min_score 를 끌어올린다.
                     # 진입 게이트(아래 adjusted_score >= min_score)가 그대로 차단을 수행한다.
-                    # 기본 off = 현행 유지. fail-open: 레짐/모듈 로드 실패 시 LLM min_score 유지.
+                    # 플래그 false = LLM min_score 그대로. fail-open: 레짐/모듈 로드 실패 시 LLM min_score 유지.
                     # prism-us/cores 섀도잉 회피: root cores/regime_policy.py 를 파일경로로 로드.
                     try:
                         _rp = self._regime_policy_mod()

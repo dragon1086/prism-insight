@@ -4328,11 +4328,11 @@ class StockTrackingAgent:
                     entry_cash_amount = None
                     logger.info(f"Buy score check: {company_name}({ticker}) - Score: {buy_score}")
 
-                    # 레짐 적응 하한선 게이트(env-gated REGIME_MIN_SCORE_FLOOR, 기본 off).
+                    # 레짐 적응 하한선 게이트(env-gated REGIME_MIN_SCORE_FLOOR, 기본 on: entry_score_policy).
                     # KR 진입은 LLM decision=="Enter" 로만 결정되고 min_score 는 정보용이었다.
                     # 플래그 ON 시 약세장 하한(strong_bear 9 / bear·sideways 8)을 강제해,
                     # buy_score 가 하한 미만이면 LLM 이 Enter 라 해도 매수를 차단한다(안전 게이트).
-                    # 기본 off = 현행 유지(하한 계산·차단 없음). fail-open: 레짐 조회 실패 시 하한 0.
+                    # 플래그 false = 하한 계산·차단 없음. fail-open: 레짐 조회 실패 시 하한 0.
                     _regime_floor_block = False
                     try:
                         from cores.regime_policy import (

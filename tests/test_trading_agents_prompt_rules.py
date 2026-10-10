@@ -117,7 +117,7 @@ def test_no_entry_standalone_reasons_ko():
     assert "PER ≥ 업종 평균 2.5배" in agent.instruction
     assert "펀더 게이트 미달 + 시장 체제가 sideways/bear" in agent.instruction
     assert 'severity = "high"' in agent.instruction
-    assert "effective_score < 현재 regime의 min_score" in agent.instruction
+    assert "effective_score < min_score (초분할 진입 기준 부록이 있으면 그 최소 점수, 없으면 매트릭스의 현재 regime 값)" in agent.instruction
 
 
 def test_no_entry_standalone_reasons_en():
