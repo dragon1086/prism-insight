@@ -140,3 +140,19 @@ def test_reported_entry_price_is_the_basis_before_the_contract_refresh():
                          expected_return_pct=14.0, expected_loss_pct=6.8, entry_price=49350.0)
     result = evaluate_production_buy_gate(scenario, current_price=48850.0, market_regime="moderate_bull")
     assert not _codes(result) & {"rr_arithmetic_mismatch", "risk_arithmetic_mismatch"}
+
+
+def test_score_exemption_skips_only_the_score_floor_for_a_rule_approved_reentry():
+    no_score = _scenario(buy_score=None, min_score=None)
+    blocked = evaluate_production_buy_gate(no_score, current_price=100.0, market_regime="moderate_bull")
+    assert "missing_score" in {item["code"] for item in blocked["hard_findings"]}
+    exempt = evaluate_production_buy_gate(no_score, current_price=100.0, market_regime="moderate_bull",
+                                          score_exempt=True)
+    assert exempt["allowed"] and exempt["score_policy"]["mode"] == "score_exempt"
+    trend = evaluate_production_buy_gate(no_score, current_price=100.0, market_regime="moderate_bull",
+                                         score_exempt=True, trend_facts="T1_hit(종가<MA50): true / T2_hit: false")
+    assert "individual_trend_t1" in {item["code"] for item in trend["hard_findings"]}
+    rr = evaluate_production_buy_gate(_scenario(buy_score=None, target_price=101.0, stop_loss=99.0,
+                                                risk_reward_ratio=0.5),
+                                      current_price=100.0, market_regime="moderate_bull", score_exempt=True)
+    assert "rr_below_floor" in {item["code"] for item in rr["hard_findings"]}

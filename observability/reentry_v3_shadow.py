@@ -567,7 +567,11 @@ def run(market, completed, *, collector, phase="close", decision_day=None, quote
                                                                "source": watch["source"], **attrs}, event_time=now)
         rechecked = []
         live_enabled = LIVE.live_enabled(market)
-        if not dry_run and (llm_recheck if llm_recheck is not None else llm_recheck_enabled()):
+        if not dry_run and LIVE.deterministic_enabled():
+            # No LLM: today's primary-rule triggers are approved by the rule at the decision run.
+            if phase == "intraday" and live_enabled:
+                rechecked = _approve_deterministic(state, market, completed, p, decision_day)
+        elif not dry_run and (llm_recheck if llm_recheck is not None else llm_recheck_enabled()):
             cap = {}
             if phase == "intraday" and live_enabled:
                 # Today's triggers: recheck at most the remaining daily cap + 1, in LIVE rank order.
@@ -610,12 +614,48 @@ def run(market, completed, *, collector, phase="close", decision_day=None, quote
                    "attempt_counts": attempts, "intraday": counts, "new_triggers": len(frozen),
                    "trigger_events_emitted": sent, "ledger_events": len(ledger_events), "archived": archived,
                    "dry_run": dry_run, "rechecks": len(rechecked),
-                   "llm_calls": sum(r["status"] in {"OK", "PARSE_ERROR", "ERROR"} for r in rechecked),
+                   "llm_calls": sum(r["status"] in {"OK", "PARSE_ERROR", "ERROR"} and r.get("approval") != "deterministic"
+                                    for r in rechecked),
                    "recheck_status": _tally(r["status"] for r in rechecked)}
         if not dry_run:
             emit_event("reentry_v3.shadow_run", service=_service(market), market=market, attributes=summary,
                        event_time=datetime.now(timezone.utc))
         return summary
+
+
+def _approve_deterministic(state, market, completed, p, decision_day):
+    """REENTRY_V3_DETERMINISTIC: approve today's pending primary-rule triggers without an LLM call.
+
+    The records keep the recheck shape (results file, state, event) so the LIVE path, the ledger and the
+    reports read them unchanged; prism_core.reentry_v3_live.plan still applies the daily cap and rank order.
+    """
+    todo = [(watch, event_id, rc) for watch in state["watches"]
+            for event_id, rc in (watch.get("rechecks") or {}).items()
+            if rc["status"] not in RC3.FINAL and rc["status"] != "SKIPPED_CAP"]
+    items = _items_for(p, [{"event_id": event_id} for _, event_id, _ in todo])
+    results = []
+    for watch, event_id, rc in todo:
+        item = items.get(event_id)
+        if item is None or item.get("trigger_date") != decision_day or item.get("live_rule") != LIVE.PRIMARY_RULE:
+            continue
+        record = LIVE.deterministic_record(item, market)
+        record.update(attempt=rc["attempts"], trigger=item["trigger"], decision_price=item["decision_price"],
+                      decision_time=item["decision_time"], level=item["level"]["L"])
+        with p["results"].open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
+        rc.update(status=record["status"], last=completed, approved=True, approval="deterministic")
+        _atomic(p["state"], state)
+        emit_event("reentry_v3.shadow_recheck", service=_service(market),
+                   event_id=_hash(event_id, "recheck", "deterministic"), market=market, ticker=watch["ticker"],
+                   trace_id=_origin_trace(market, watch),
+                   attributes={"mode": "SHADOW", "trading_impact": "none", "policy_version": C.POLICY_VERSION,
+                               "watch_ref": watch["watch_id"], "trigger_date": item["trigger_date"],
+                               "trigger": item["trigger"], "status": "OK", "approved": True, "decision": "진입",
+                               "approval": "deterministic", "decision_price": item.get("decision_price"),
+                               "level": item["level"]["L"]},
+                   event_time=datetime.now(timezone.utc))
+        results.append(record)
+    return results
 
 
 def _run_rechecks(state, market, completed, p, reports_root, archive_db, llm, only_day=None, limit=None,

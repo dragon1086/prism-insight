@@ -682,6 +682,12 @@ def _capture_entry_quality_context(
 # US Stock Tracking Agent
 # =============================================================================
 
+def _reentry_rule_approved(scenario):
+    """Rule-approved re-entry (no AI score): the final gate skips only its score floor."""
+    from prism_core.reentry_v3_live import deterministic_approval
+    return deterministic_approval(scenario)
+
+
 def _micro_split_gate_score(scenario):
     """Relaxed required score of a verified micro-split entry (None keeps the regime floor)."""
     try:
@@ -2784,6 +2790,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 trend_facts=str(scenario.get("_deterministic_trend_facts") or ""),
                 is_add=is_add,
                 required_score_override=_micro_split_gate_score(scenario),
+                score_exempt=_reentry_rule_approved(scenario),
             )
             if result.get("score_policy"):
                 logger.info("[ENTRY_SCORE_POLICY][US] regime=%s pulse=%s policy=%s", computed_regime, pulse, result["score_policy"])
@@ -5016,9 +5023,11 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             if not await self._check_sector_diversity(sector, is_pyramiding_add=False):
                 return {"bought": False, "reason": "sector_limit"}
             min_score = _safe_number(scenario.get("min_score", 0))
+            # A rule-approved re-entry has no AI score: the score floors do not apply, every other check does.
+            rule_approved = live.deterministic_approval(scenario)
             try:
                 _rp = self._regime_policy_mod()
-                if _rp is not None and _rp.regime_min_score_floor_enabled():
+                if not rule_approved and _rp is not None and _rp.regime_min_score_floor_enabled():
                     pulse = effects.market_pulse() if effects is not None else _rp.get_market_pulse_state("us")
                     min_score = max(min_score, _rp.effective_min_score(min_score, self._buy_floor_regime(), pulse))
             except EffectsFailure:
@@ -5031,11 +5040,11 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             if self.enable_journal and ticker:
                 score_adjustment, _ = self.get_score_adjustment(ticker, sector, trigger_type=trigger_type)
             adjusted_score = _effective_buy_score(scenario, journal_adjustment=score_adjustment)["effective_score"]
-            if getattr(self, "_no_order_effects", None) is None:
+            if getattr(self, "_no_order_effects", None) is None and not rule_approved:
                 min_score, scenario = micro_split_live.relaxed_min_score(
                     self, market="US", ticker=ticker, current_price=current_price, scenario=scenario,
                     min_score=min_score, is_add=False, rebound_pilot=False, logger=logger)
-            if adjusted_score < min_score:
+            if not rule_approved and adjusted_score < min_score:
                 return {"bought": False, "reason": f"score_below_min({adjusted_score:g}<{min_score:g})"}
             buy_gate = self._evaluate_production_buy_gate(scenario, current_price, score_override=adjusted_score,
                                                           is_add=False)
