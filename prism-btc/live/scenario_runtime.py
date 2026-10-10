@@ -25,7 +25,7 @@ from core.scenario_limit_prices import validate_execution_prices
 from live.shared_entry_coordinator import database_path, mutation_lock
 from live.entry_reservations import LockBusy
 from live.scenario_llm import ScenarioModelError
-from live.scenario_review_memory import apply_review, observe_review
+from live.scenario_review_memory import apply_review, observe_review, review_context
 from live import scenario_recovery as recovery
 
 REQUIRED_CAPABILITIES = frozenset({"exact_fills", "atomic_protection",
@@ -293,6 +293,7 @@ class ScenarioRuntime:
         ctx.update(review_contract_version=1,
                    review_memory=json.loads(_json(active.get("review_memory", []))) if active else [],
                    review_status=active.get("review_status", "not_initialized") if active else "no_scenario")
+        ctx.update(review_context(active))
         ctx.update(scenario_id=active["scenario_id"] if active else None,
                    revision=active["revision"] if active else 0,
                    seen_action_ids=[r[0] for r in self.conn.execute("SELECT id FROM llm_scenario_intents")])
@@ -475,10 +476,10 @@ class ScenarioRuntime:
                 core_payload = {key: value for key, value in payload.items() if key not in {"review", "recovery"}}
                 validated = validate_execution_prices(core_payload, fresh)
                 if validated["action"] == "WAIT" and not validated.get("cancel_entry_ids"):
-                    apply_review(state["active"], payload.get("review"), validated["action_id"],
-                                 now=self.clock(), presented=ctx["review_memory"])
+                    receipt = apply_review(state["active"], payload.get("review"), validated["action_id"],
+                                           now=self.clock(), presented=ctx["review_memory"])
                     self._save(state)
-                    return {"status": "wait"}
+                    return {"status": "wait", **({"review_update_receipt": receipt} if receipt else {})}
                 stage = "execution"
                 ident = validated["action_id"]
                 if state["active"] is None:
@@ -489,8 +490,8 @@ class ScenarioRuntime:
                     state["active"] = {"scenario_id": validated["scenario_id"], "initial_equity": fresh["initial_equity"],
                         "side": validated["side"], "hard_stop": validated["hard_stop"], "revision": 0,
                         "created_at": self.clock(), "expires_at": validated["expires_at"]}
-                apply_review(state["active"], payload.get("review"), validated["action_id"],
-                             now=self.clock(), presented=ctx["review_memory"])
+                receipt = apply_review(state["active"], payload.get("review"), validated["action_id"],
+                                       now=self.clock(), presented=ctx["review_memory"])
                 state["active"]["revision"] = validated["revision"]
                 if validated["action"] in ("OPEN", "ADJUST"):
                     state["active"]["desired_hard_stop"] = validated["hard_stop"]
@@ -525,8 +526,10 @@ class ScenarioRuntime:
                 except Exception:
                     self._notice("unknown:"+ident,dict(kind="PENDING",timestamp=self.clock()))
                     self.conn.commit()
-                    return {"status": "intent_pending", "reason": "submission_unknown"}
-                return {"status": "intent_pending", "reason": "awaiting_exact_evidence"}
+                    return {"status": "intent_pending", "reason": "submission_unknown",
+                            "review_update_receipt": receipt}
+                return {"status": "intent_pending", "reason": "awaiting_exact_evidence",
+                        "review_update_receipt": receipt}
         except ScenarioModelError as exc:
             self.conn.rollback()
             # Fixed codes only: never expose a response, account or transport error.
