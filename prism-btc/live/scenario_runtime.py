@@ -140,6 +140,24 @@ class ScenarioRuntime:
         self.conn.execute("UPDATE llm_scenario_state SET body=? WHERE id=1", (_json(state),))
         self.conn.commit()
 
+    def _apply_review(self, active, payload, validated, presented, input_id, slot):
+        """Optional audit failures must never interrupt advisory apply or EXIT."""
+        stamp, boundary = self.clock(), None
+        try:
+            from live.scenario_provenance import begin_review_capture
+            boundary = begin_review_capture(active, presented, payload, validated,
+                input_id=input_id, slot=slot, applied_at=stamp)
+        except Exception:
+            boundary = None
+        receipt = apply_review(active, payload.get("review"), validated["action_id"],
+                               now=stamp, presented=presented)
+        try:
+            from live.scenario_provenance import finish_review_capture
+            finish_review_capture(boundary, active, receipt)
+        except Exception:
+            return receipt
+        return receipt
+
     def _notice(self, identity, event):
         """Optional local publication must never undo a durable order intent."""
         from live.scenario_outbox import enqueue
@@ -476,8 +494,8 @@ class ScenarioRuntime:
                 core_payload = {key: value for key, value in payload.items() if key not in {"review", "recovery"}}
                 validated = validate_execution_prices(core_payload, fresh)
                 if validated["action"] == "WAIT" and not validated.get("cancel_entry_ids"):
-                    receipt = apply_review(state["active"], payload.get("review"), validated["action_id"],
-                                           now=self.clock(), presented=ctx["review_memory"])
+                    receipt = self._apply_review(state["active"], payload, validated,
+                                                 ctx["review_memory"], input_id, slot)
                     self._save(state)
                     return {"status": "wait", **({"review_update_receipt": receipt} if receipt else {})}
                 stage = "execution"
@@ -490,8 +508,8 @@ class ScenarioRuntime:
                     state["active"] = {"scenario_id": validated["scenario_id"], "initial_equity": fresh["initial_equity"],
                         "side": validated["side"], "hard_stop": validated["hard_stop"], "revision": 0,
                         "created_at": self.clock(), "expires_at": validated["expires_at"]}
-                receipt = apply_review(state["active"], payload.get("review"), validated["action_id"],
-                                       now=self.clock(), presented=ctx["review_memory"])
+                receipt = self._apply_review(state["active"], payload, validated,
+                                             ctx["review_memory"], input_id, slot)
                 state["active"]["revision"] = validated["revision"]
                 if validated["action"] in ("OPEN", "ADJUST"):
                     state["active"]["desired_hard_stop"] = validated["hard_stop"]
