@@ -1585,6 +1585,7 @@ class USStockTrackingAgent:
                 "PRISM_US_CODEX_FAST_TRADING", "0"
             ).strip().lower() in {"1", "true", "yes", "on"}
             if codex_enabled:
+                settings = None
                 try:
                     instruction = str(
                         getattr(self.trading_agent, "instruction", "") or ""
@@ -1625,6 +1626,9 @@ class USStockTrackingAgent:
                             "[%s] Codex Fast parse failed; falling back to mcp-agent",
                             ticker_tag,
                         )
+                        from observability.fallbacks import note_codex_fallback
+                        await note_codex_fallback("US", "buy", ticker, "parse_failed",
+                                                  timeout_s=settings.timeout)
                     if scenario_json is not None:
                         schedule_buy_model_shadow(
                             market="US", ticker=ticker or "?",
@@ -1643,6 +1647,9 @@ class USStockTrackingAgent:
                         ticker_tag,
                         type(codex_err).__name__,
                     )
+                    from observability.fallbacks import note_codex_fallback
+                    await note_codex_fallback("US", "buy", ticker, codex_err,
+                                              timeout_s=settings.timeout if settings else None)
                     scenario_json = None
 
             # LLM scenario generation with retry+backoff. Transient API/parse
