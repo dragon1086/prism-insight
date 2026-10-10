@@ -74,6 +74,45 @@ def live_enabled(market):
     return _flag("REENTRY_V3_LIVE_ENABLED", "false") and str(market).upper() in live_markets()
 
 
+def deterministic_enabled():
+    """REENTRY_V3_DETERMINISTIC=true: the rule's signal is the entry, no LLM recheck (user decision 2026-10-10).
+
+    LLM replays (stop-out and held-off, KR and US) showed the recheck picked no better than chance and kept
+    far less of the total than taking every signal. Every deterministic check of the entry path still runs.
+    """
+    return _flag("REENTRY_V3_DETERMINISTIC", "false")
+
+
+def deterministic_record(item, market, now=None):
+    """Recheck-shaped approval of one trigger without an LLM call (scenario = entry, stop and target of the rule).
+
+    The original analysis's fundamental check is kept so the final buy gate treats it as the batch would."""
+    signal = SIGNALS[item["trigger"]]
+    original = item.get("original") or {}
+    meta = {"signal": signal, "level": item["level"]["L"], "source": item["source"],
+            "level_basis": item["level"].get("basis"),
+            "band_level": (((item.get("campaign") or {}).get("windows") or {}).get(PRIMARY_RULE) or {}).get("R"),
+            "band_basis": (item.get("campaign") or {}).get("reclaim_basis")}
+    why = SIGNAL_WHY_KO[signal].format(level=level_phrase(meta, market))
+    scenario = {"decision": "진입", "investment_period": "중기",
+                "rationale": (f"재진입 규칙 신호로 매수합니다(AI 재점검 없음). "
+                              f"{SOURCE_SENTENCE_KO.get(item['source'], '')} {why}.")}
+    if isinstance(original.get("fundamental_check"), dict):
+        scenario["fundamental_check"] = original["fundamental_check"]
+    return {"contract": "reentry_v3_recheck_result_v1", "event_id": item["event_id"], "watch_ref": item["watch_ref"],
+            "market": market, "ticker": item["ticker"], "source": item["source"],
+            "trigger_date": item["trigger_date"], "entry": item.get("entry"),
+            "evaluated_at": (now or datetime.now(timezone.utc)).isoformat(), "status": "OK", "approved": True,
+            "decision": "진입", "approval": "deterministic", "buy_score": None, "model": None,
+            "report_stale": None, "latency_s": 0.0, "scenario": scenario}
+
+
+def deterministic_approval(scenario):
+    """True for a re-entry approved by the rule (no AI score: the entry path skips the score floors)."""
+    meta = (scenario or {}).get("reentry") if isinstance(scenario, dict) else None
+    return isinstance(meta, dict) and meta.get("approval") == "deterministic"
+
+
 def _local(market, now, table):
     zone = table[market][0]
     return (now or datetime.now(timezone.utc)).astimezone(ZoneInfo(zone))
@@ -151,6 +190,7 @@ def build_scenario(item, record, market):
         "stop_rule": item.get("stop_rule"), "target_rule": item.get("target_rule"),
         "band_level": window.get("R") or item["level"]["L"],
         "band_basis": (item.get("campaign") or {}).get("reclaim_basis") if window.get("R") else "L",
+        "approval": record.get("approval") or "llm",
     }
     scenario["stop_loss"] = item["stop"]
     if item.get("target"):

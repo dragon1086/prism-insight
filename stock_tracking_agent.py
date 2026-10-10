@@ -306,6 +306,12 @@ def _capture_entry_quality_context(*, cursor, scenario, current_price, trigger_t
         return None
 
 
+def _reentry_rule_approved(scenario):
+    """Rule-approved re-entry (no AI score): the final gate skips only its score floor."""
+    from prism_core.reentry_v3_live import deterministic_approval
+    return deterministic_approval(scenario)
+
+
 def _micro_split_gate_score(scenario):
     """Relaxed required score of a verified micro-split entry (None keeps the regime floor)."""
     try:
@@ -2902,6 +2908,7 @@ class StockTrackingAgent:
                 trend_facts=str(scenario.get("_deterministic_trend_facts") or ""),
                 is_add=is_add,
                 required_score_override=_micro_split_gate_score(scenario),
+                score_exempt=_reentry_rule_approved(scenario),
             )
             if result.get("score_policy"):
                 logger.info("[ENTRY_SCORE_POLICY][KR] regime=%s pulse=%s policy=%s", computed_regime, pulse, result["score_policy"])

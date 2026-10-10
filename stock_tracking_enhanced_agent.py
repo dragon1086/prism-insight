@@ -1267,21 +1267,23 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             scenario = live.apply_stop_cap(scenario, current_price, scenario.get("_deterministic_market_regime"))
             buy_score = scenario.get("buy_score", 0) or 0
             min_score = scenario.get("min_score", 0) or 0
+            # A rule-approved re-entry has no AI score: the score floors do not apply, every other check does.
+            rule_approved = live.deterministic_approval(scenario)
             try:
                 from cores.regime_policy import (effective_min_score, get_market_pulse_state,
                                                  regime_min_score_floor_enabled)
-                if regime_min_score_floor_enabled():
+                if not rule_approved and regime_min_score_floor_enabled():
                     pulse = effects.market_pulse() if effects is not None else get_market_pulse_state("kr")
                     min_score = max(min_score, effective_min_score(min_score, self._buy_floor_regime(), pulse))
             except EffectsFailure:
                 raise
             except Exception as floor_error:  # same fail-open as the batch
                 logger.warning(f"[REGIME_MIN_SCORE_FLOOR] fail-open, LLM min_score 유지: {floor_error}")
-            if effects is None:
+            if effects is None and not rule_approved:
                 min_score, scenario = micro_split_live.relaxed_min_score(
                     self, market="KR", ticker=ticker, current_price=current_price, scenario=scenario,
                     min_score=min_score, is_add=False, rebound_pilot=False, logger=logger)
-            if buy_score < min_score:
+            if not rule_approved and buy_score < min_score:
                 return {"bought": False, "reason": f"score_below_min({buy_score}<{min_score})"}
             buy_gate = self._evaluate_production_buy_gate(scenario, current_price, score_override=buy_score,
                                                           is_add=False)
