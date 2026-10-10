@@ -849,3 +849,78 @@ def test_position_counts_use_fixed_queries_and_fail_closed_on_an_unknown_table()
     assert LIVE.strict_position_counts(conn.cursor(), "us_stock_holdings", "AAPL", "a") == (True, 2)
     with pytest.raises(KeyError):
         LIVE.strict_position_counts(conn.cursor(), "us_stock_holdings; DROP TABLE x", "AAPL", "a")
+
+
+# ---------------------------------------------------------------- rule-approved re-entry (no LLM, 2026-10-10)
+def test_rule_approval_switch_defaults_off(monkeypatch):
+    monkeypatch.delenv("REENTRY_V3_DETERMINISTIC", raising=False)
+    assert LIVE.deterministic_enabled() is False
+    monkeypatch.setenv("REENTRY_V3_DETERMINISTIC", "true")
+    assert LIVE.deterministic_enabled() is True
+
+
+def test_rule_approval_is_an_approved_record_with_the_rule_stop_and_target():
+    item = dict(_item(), original={"fundamental_check": {"all_passed": True}})
+    record = LIVE.deterministic_record(item, "KR")
+    assert LIVE.approved(record) and record["approval"] == "deterministic" and record["model"] is None
+    scenario = LIVE.build_scenario(item, record, "KR")
+    assert LIVE.deterministic_approval(scenario) and scenario["reentry"]["approval"] == "deterministic"
+    assert scenario["stop_loss"] == 11591.5 and scenario["target_price"] == 12990.0
+    assert scenario["fundamental_check"] == {"all_passed": True} and "buy_score" not in scenario
+    assert "AI 재점검 없음" in scenario["rationale"] and scenario["investment_period"] == "중기"
+    apply_buy_scenario_contract(scenario, market="KR", entry_price=12150.0)    # a valid entry scenario
+    assert not LIVE.deterministic_approval(LIVE.build_scenario(_item(), _record(), "KR"))
+    line = LIVE.entry_message_line(scenario, "KR")
+    assert line.startswith("🔁 재진입 매수 (기준 가격 눌림 지지 매수, 1/3번째 시도)")
+
+
+@pytest.mark.parametrize("market", ["KR", "US"])
+def test_rule_approved_reentry_skips_only_the_score_floors(market, monkeypatch, no_cooldown):
+    from types import SimpleNamespace
+
+    from cores import regime_policy
+    monkeypatch.setattr(regime_policy, "regime_min_score_floor_enabled", lambda: True)      # KR floor: 8
+    monkeypatch.setattr(regime_policy, "effective_min_score", lambda *a, **k: 8)
+    monkeypatch.setattr(regime_policy, "get_market_pulse_state", lambda market: None)
+    floor = SimpleNamespace(regime_min_score_floor_enabled=lambda: True, effective_min_score=lambda *a, **k: 8,
+                            get_market_pulse_state=lambda market: None)
+    rule = _kwargs(market)
+    rule["scenario"] = LIVE.build_scenario(_item(), LIVE.deterministic_record(_item(), market), market)
+    agent = _Agent(_table(market))
+    agent._regime_policy_mod = lambda: floor                                               # US floor: 8
+    assert asyncio.run(_enter(market, agent, monkeypatch)(**_kwargs(market)))["reason"].startswith("score_below_min")
+    out = asyncio.run(_enter(market, agent, monkeypatch)(**rule))
+    assert out["bought"] is True and len(agent.calls) == 1
+    assert agent.calls[0]["scenario"]["reentry"]["approval"] == "deterministic"
+    blocked = _Agent(_table(market), gate=False)                     # every other check still applies
+    blocked._regime_policy_mod = lambda: floor
+    assert asyncio.run(_enter(market, blocked, monkeypatch)(**rule)) == {"bought": False,
+                                                                        "reason": "buy_gate:rr_below_floor"}
+
+
+def test_runtime_rule_approval_orders_without_any_llm_call(tmp_path, monkeypatch, live_on):
+    import test_reentry_campaign as T
+    monkeypatch.setenv("REENTRY_V3_DETERMINISTIC", "true")
+    bars, root, sent, run, quote = T._runtime(tmp_path, monkeypatch)
+    executor = FakeExecutor()
+
+    def no_llm(*a, **k):
+        raise AssertionError("the LLM must not be called")
+    run(70, llm_recheck=False)
+    summary = run(70, phase="intraday", decision_day=bars[71]["date"], quote_fn=quote, llm_recheck=True,
+                  llm=no_llm, live_executor=executor,
+                  now_fn=lambda: datetime.fromisoformat(bars[71]["date"] + "T05:00:00+00:00"))
+    assert summary["live_results"] == {"BOUGHT": 1} and summary["llm_calls"] == 0 and len(executor.calls) == 1
+    entry = executor.calls[0][1][0]
+    assert entry["scenario"]["reentry"]["approval"] == "deterministic"
+    results = [json.loads(line) for line in (root / "reentry_v3_recheck_results_kr.jsonl").read_text().splitlines()]
+    assert [r["approval"] for r in results] == ["deterministic"]
+    state = json.loads((root / "reentry_v3_state_kr.json").read_text())
+    assert state["watches"][0]["live"][bars[71]["date"]]["status"] == "BOUGHT"
+    again = run(70, phase="intraday", decision_day=bars[71]["date"], quote_fn=quote, llm=no_llm,
+                live_executor=executor)
+    assert len(executor.calls) == 1 and again["live_results"] == {}                  # never twice
+    monkeypatch.delenv("REENTRY_V3_LIVE_ENABLED")
+    shadow = run(71, phase="intraday", decision_day=bars[72]["date"], quote_fn=quote, llm=no_llm,
+                 live_executor=executor)
+    assert shadow["mode"] == "SHADOW" and shadow["llm_calls"] == 0 and len(executor.calls) == 1
