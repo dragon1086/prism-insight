@@ -1312,6 +1312,7 @@ class StockTrackingAgent:
                 "PRISM_KR_CODEX_FAST_TRADING", "0"
             ).strip().lower() in {"1", "true", "yes", "on"}
             if codex_enabled:
+                settings = None
                 try:
                     instruction = str(
                         getattr(self.trading_agent, "instruction", "") or ""
@@ -1348,6 +1349,10 @@ class StockTrackingAgent:
                         scenario_json is not None,
                         len(codex_result.mcp_calls),
                     )
+                    if scenario_json is None:
+                        from observability.fallbacks import note_codex_fallback
+                        await note_codex_fallback("KR", "buy", ticker, "parse_failed",
+                                                  timeout_s=settings.timeout)
                     if scenario_json is not None:
                         schedule_buy_model_shadow(
                             market="KR", ticker=ticker or "?",
@@ -1366,6 +1371,9 @@ class StockTrackingAgent:
                         ticker or "?",
                         type(codex_err).__name__,
                     )
+                    from observability.fallbacks import note_codex_fallback
+                    await note_codex_fallback("KR", "buy", ticker, codex_err,
+                                              timeout_s=settings.timeout if settings else None)
                     scenario_json = None
 
             if scenario_json is None:
