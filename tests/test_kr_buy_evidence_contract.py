@@ -99,6 +99,8 @@ def test_sell_factory_matches_reviewed_volume_prompt():
     # but micro-split adds exist; Step 0 defers to the system regime; the system trailing stop stays
     # close-confirmed while a raised stop_loss runs on the intraday hard stop; the dead -5~-7% grace
     # exception and -7.1% wording removed. Trailing bands and discretionary-sell wording unchanged.
+    # 2026-10-10 reviewed: "close" wording matches operations — the AI sell run is before the close
+    # (14:46 KST) and the trailing stop is confirmed by the pre-close trend-exit check (15:10~15:25 KST).
     source = SOURCE.read_text(encoding="utf-8")
     node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "create_sell_decision_agent")
-    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "97d5fa8699ab7d368ae8be7c486ecf32a55d9b9fdb05f2583bb6bc90d85a5305"
+    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "00f948f9bf409f84cc07040705cf12a3f325f452076a757b1e8f158038a54bbf"
