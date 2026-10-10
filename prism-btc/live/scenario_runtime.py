@@ -148,14 +148,14 @@ class ScenarioRuntime:
             boundary = begin_review_capture(active, presented, payload, validated,
                 input_id=input_id, slot=slot, applied_at=stamp)
         except Exception:
-            pass
+            boundary = None
         receipt = apply_review(active, payload.get("review"), validated["action_id"],
                                now=stamp, presented=presented)
         try:
             from live.scenario_provenance import finish_review_capture
             finish_review_capture(boundary, active, receipt)
         except Exception:
-            pass
+            return receipt
         return receipt
 
     def _notice(self, identity, event):
