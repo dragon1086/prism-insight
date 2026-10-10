@@ -142,8 +142,13 @@ def _plan_summary(plan, market, language):
     return f"{plan.get('valid_for')} {plan.get('status')}" + (f" — {labels}" if labels else "")
 
 
-def review_block(block, *, market, language, valid_for, stop_loss=None):
-    """Holdings-review appendix asking for ``next_session_add_plan`` for a micro-split holding."""
+def review_block(block, *, market, language, valid_for, stop_loss=None, pulse=None):
+    """Holdings-review appendix asking for ``next_session_add_plan`` for a micro-split holding.
+
+    ``pulse`` is the system Market Pulse (state, distribution days, window) or None. The block hands the
+    model what the add plan needs so it does not look anything up for it: extra DB/price/news lookups
+    pushed US micro-split sell reviews past the 180 s Codex limit (2026-10-06..10, 8 -> 18~26 tool calls).
+    """
     lang, market = _lang(language), str(market).upper()
     allocation = round(float(block["allocation"]) * 100)
     legs = block["legs"]
@@ -154,17 +159,26 @@ def review_block(block, *, market, language, valid_for, stop_loss=None):
     stop = _money(stop_loss, market, lang) if stop_loss else ("미확인" if lang == "ko" else "unknown")
     current = _plan_summary(block.get("add_plan"), market, lang)
     room = max(Decimal(1) - Decimal(str(block["allocation"])), Decimal(0))
+    if pulse:
+        state, dd, window = pulse
+        pulse_line = (f"시스템 Market Pulse: {state}, 분배일 {dd}회(최근 {window}세션).\n" if lang == "ko" else
+                      f"System Market Pulse: {state}, distribution days {dd} (last {window} sessions).\n")
+    else:
+        pulse_line = ""
     if lang == "ko":
         return ("\n\n### 초분할 증액 계획 갱신 (next_session_add_plan)\n"
                 f"이 종목은 초분할 보유 중입니다. 현재 비중 {allocation}% (1슬롯 기준, 남은 여유 {round(room * 100)}%p), "
                 f"매수 기록: {history}. 평균 매수가 {_money(average, market, lang)}, 손절선 {stop}"
                 "(최초 진입가 기준 손절 로직은 그대로입니다).\n"
                 f"현재 증액 계획: {current}.\n"
+                + pulse_line +
                 "보유를 유지한다면 기존 JSON에 \"next_session_add_plan\" 키를 함께 쓰십시오. 매도 판단, 손절가, "
                 "portfolio_adjustment 기준은 바뀌지 않습니다.\n"
                 f"- 이 계획은 {valid_for} 세션 하루만 유효합니다. 키를 쓰지 않으면 그 세션에는 기존에 그 세션용으로 "
                 "세운 계획이 없는 한 증액하지 않습니다.\n"
-                "- 오늘·최근 일봉과 거래량, 기존 계획과 집행 결과, 시장 국면·Pulse·분배일, 업종 강도와 뉴스를 반영하십시오. "
+                "- 매도 판단에 이미 확인한 일봉·거래량, 위 매수 기록·현재 계획, 시장 국면과 Market Pulse·분배일을 "
+                "반영하십시오. 증액 계획만을 위해 DB·시세·뉴스를 추가로 조회하지 마십시오(매도 판단은 시간 제한 안에 "
+                "끝나야 합니다). "
                 "시장 조건만으로 증액을 일괄 금지하지 말고, 약한 시장에서는 상대강도 증거를 더 요구하고 폭을 줄이십시오.\n"
                 "- 계획보다 강하면(갭 상승 유지, 거래량 급증 등) acceleration 시나리오를 넣거나 트리거를 앞당기십시오. "
                 "같은 세션의 두 번째 증액은 아래 가속 구간 규칙에 따라 코드가 정합니다.\n"
@@ -176,12 +190,14 @@ def review_block(block, *, market, language, valid_for, stop_loss=None):
             f"buys: {history}. Average entry {_money(average, market, lang)}, stop {stop} (the stop logic stays on "
             "the initial entry).\n"
             f"Current add plan: {current}.\n"
+            + pulse_line +
             "If you keep holding, also write a \"next_session_add_plan\" key in the same JSON. The sell decision, stop "
             "and portfolio_adjustment rules are unchanged.\n"
             f"- The plan is valid for the {valid_for} session only. Without the key there is no add in that session "
             "unless a plan for that session already exists.\n"
-            "- Use today's and recent daily bars and volume, the previous plan and its executions, the market regime, "
-            "Pulse and distribution days, sector strength and news. Never ban adds on market conditions alone; in a "
+            "- Use the daily bars and volume you already checked for the sell decision, the buys and current plan "
+            "above, the market regime and the Market Pulse / distribution days. Do not run extra DB, price or news "
+            "lookups just for the add plan (the sell review has a time limit). Never ban adds on market conditions alone; in a "
             "weak market require more relative-strength evidence and smaller adds.\n"
             "- If the stock is stronger than planned (gap held, volume surge), add an acceleration scenario or bring "
             "triggers forward. A second add in the same session is decided by code under the acceleration rule "

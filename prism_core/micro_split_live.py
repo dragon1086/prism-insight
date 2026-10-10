@@ -289,9 +289,35 @@ def review_prompt_block(scenario, *, market, language, now=None, stop_loss=None)
         from prism_core import add_plan, add_plan_prompts
         return add_plan_prompts.review_block(block, market=market, language=language,
                                              valid_for=add_plan.review_valid_for(market, now or _utc_now()),
-                                             stop_loss=stop_loss)
+                                             stop_loss=stop_loss, pulse=_market_pulse(market))
     except Exception:  # noqa: BLE001 - a broken record never breaks the sell review
         return ""
+
+
+def _market_pulse(market):
+    """(state, distribution_days, window) from the root cores/regime_policy (memoized per process), or None.
+
+    Loaded by file path: inside the US process ``cores`` resolves to prism-us/cores. Fail-open.
+    """
+    try:
+        import importlib.util
+        import sys
+        from pathlib import Path
+        name = "prism_root_regime_policy"  # same module name the US tracker uses, so the cache is shared
+        mod = sys.modules.get(name)
+        if mod is None:
+            spec = importlib.util.spec_from_file_location(name, Path(__file__).resolve().parents[1] / "cores" / "regime_policy.py")
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[name] = mod
+            try:
+                spec.loader.exec_module(mod)
+            except Exception:
+                sys.modules.pop(name, None)
+                raise
+        detail = mod.get_market_pulse_detail(str(market).lower())
+        return (detail.state, detail.distribution_days, detail.window) if detail else None
+    except Exception:  # noqa: BLE001 - the pulse line is optional context
+        return None
 
 
 def add_plan_buy_block(agent, *, market, ticker, language):
