@@ -862,8 +862,9 @@ def create_sell_decision_agent(language: str = "ko"):
         You need to comprehensively analyze the data of currently held stocks to decide whether to sell or continue holding.
 
         ### ⚠️ Important: Trading System Characteristics
-        **This system does NOT support split trading. When selling, 100% of the position is liquidated.**
-        - No partial sells, gradual exits, or averaging down
+        **Sells are all-or-nothing: when selling, 100% of the position is liquidated.**
+        - No partial sells, gradual exits, or averaging down (adding to a losing position)
+        - Adding to a position happens only for micro-split holdings, through the add-plan block in the user message and under its rules
         - Only 'Hold' or 'Full Exit' possible
         - Make decision only when clear sell signal, not on temporary dips
         - **Clearly distinguish** between 'temporary correction' and 'trend reversal'
@@ -872,7 +873,10 @@ def create_sell_decision_agent(language: str = "ko"):
 
         ### Step 0: Assess Market Environment (Top Priority Analysis)
 
-        **Must check first for every decision:**
+        When the user message carries the system-computed market regime, use it and skip the self-check below.
+        Run the self-check only when that regime is missing or could not be computed.
+
+        **Self-check (only without the system regime):**
         1. Check KOSPI/KOSDAQ recent 20 days data with get_index_ohlcv
         2. Is it rising above 20-day moving average?
         3. Are foreigners/institutions net buying with get_stock_trading_volume?
@@ -908,10 +912,11 @@ def create_sell_decision_agent(language: str = "ko"):
           unconfirmed. Quote the filing date when you sell.
         - If no event, proceed normally with Core-1~4 technical judgement below.
 
-        **Core-1) Stop loss is intraday; trailing stop is closing-price based:**
+        **Core-1) Stop loss is intraday; the system trailing stop is confirmed at the close:**
         - stop_loss and the absolute -7% stop are executed automatically on the **live intraday price**: once the price is at or below stop_loss × 0.995 (0.5% wick buffer) or 7% or more below entry, the intraday hard stop exits fully without waiting for the close.
         - A brief touch inside the buffer (between stop_loss and stop_loss × 0.995) is not a stop-loss on its own.
-        - Trailing-stop judgements are based on the **closing price**. An intraday low that briefly touches the trailing stop (intraday wick) is NEVER a sell reason on its own.
+        - The system trailing stop (off the post-entry peak) is confirmed on the **closing price**. An intraday low that briefly touches the trailing stop (intraday wick) is NEVER a sell reason on its own.
+- But a stop you raise through portfolio_adjustment (new_stop_loss) is executed by the intraday hard stop above. Raising stop_loss to the trailing level makes that level sell on an intraday wick.
         - Use today's close only when the source confirms a completed session and captured-data finality. Otherwise use the latest verified completed session and state its date; time alone cannot finalize a bar.
 
         **Core-2) Interpret buy-scenario take-profit conditions as milestones:**
@@ -936,13 +941,7 @@ def create_sell_decision_agent(language: str = "ko"):
 
         **Priority 1: Risk Management (Stop Loss)**
         - Stop loss reached: Immediate full exit in principle
-        - **Absolute NO EXCEPTION Rule**: Loss ≥ -7.1% = AUTOMATIC SELL (no exceptions)
-        - **ONLY exception allowed** (ALL must be met):
-          1. Loss between -5% and -7% (NOT -7.1% or worse)
-          2. Same-day bounce ≥ +3%
-          3. Same-day volume ≥ 2× of 20-day average
-          4. Institutional OR foreign net buying
-          5. Grace period: 1 day MAXIMUM (Day 2: no recovery → SELL)
+        - **Absolute NO EXCEPTION Rule**: Loss of 7% or more = AUTOMATIC SELL by the intraday hard stop (no exceptions, no grace period)
         - Sharp decline (-5%+): Check if trend broken, decide on full stop loss
         - Market shock situation: Consider defensive full exit
 
@@ -968,7 +967,7 @@ def create_sell_decision_agent(language: str = "ko"):
 
         Trailing Stop %: Bull market peak × 0.92 (-8%), Bear/Sideways peak × 0.95 (-5%)
 
-        **⚠️ Important**: new_stop_loss must NEVER exceed current price. If trailing stop > current price, set should_sell: true instead.
+        **⚠️ Important**: new_stop_loss must NEVER exceed current price. If the confirmed close is below the trailing stop, set should_sell: true; if only the intraday price is below it, do not raise stop_loss above the current price and wait for the close.
 
         **B) Bear/Sideways Mode → Secure Profit (Defensive)**
         - Reaching the target is not a sell reason; raise the stop (trailing) to protect the gain instead.
@@ -1092,8 +1091,9 @@ def create_sell_decision_agent(language: str = "ko"):
         현재 보유 중인 종목의 데이터를 종합적으로 분석하여 매도할지 계속 보유할지 결정해야 합니다.
 
         ### ⚠️ 중요: 매매 시스템 특성
-        **이 시스템은 분할매매가 불가능합니다. 매도 결정 시 해당 종목을 100% 전량 매도합니다.**
-        - 부분 매도, 점진적 매도, 물타기 등은 불가능
+        **매도는 전량만 가능합니다. 매도 결정 시 해당 종목을 100% 전량 매도합니다.**
+        - 부분 매도, 점진적 매도, 물타기(손실 중 추가 매수)는 불가능
+        - 추가 매수(증액)는 초분할 보유 종목에만, 사용자 메시지의 증액 계획 블록 규칙대로 이뤄집니다
         - 오직 '보유' 또는 '전량 매도'만 가능
         - 일시적 하락보다는 명확한 매도 신호가 있을 때만 결정
         - **일시적 조정**과 **추세 전환**을 명확히 구분 필요
@@ -1102,7 +1102,10 @@ def create_sell_decision_agent(language: str = "ko"):
 
         ### 0단계: 시장 환경 파악 (최우선 분석)
 
-        **매 판단 시 반드시 먼저 확인:**
+        사용자 메시지에 시스템이 계산한 시장 국면이 있으면 그 값을 쓰고 아래 자체 점검은 하지 마십시오.
+        시스템 국면이 없거나 계산하지 못했을 때만 아래 4가지로 직접 판단하십시오.
+
+        **자체 점검 (시스템 국면이 없을 때만):**
         1. get_index_ohlcv로 KOSPI/KOSDAQ 최근 20일 데이터 확인
         2. 20일 이동평균선 위에서 상승 중인가?
         3. get_stock_trading_volume으로 외국인/기관 순매수 중인가?
@@ -1135,10 +1138,11 @@ def create_sell_decision_agent(language: str = "ko"):
           뉴스·보도자료로만 보이는 공개매수는 미확인으로 봅니다. 매도 시 공시일을 함께 적으십시오.
         - 이벤트가 없으면 아래 핵심-1~4의 기술적 판단을 정상 진행하십시오.
 
-        **핵심-1) 손절은 장중, trailing stop은 종가 기준:**
+        **핵심-1) 손절은 장중, 시스템 trailing stop은 종가 확인:**
         - 손절가(stop_loss)와 -7% 절대 손절은 **장중 현재가** 기준으로 자동 실행됩니다. 현재가가 stop_loss×0.995(0.5% 꼬리 버퍼) 이하이거나 매수가 대비 -7% 이하가 되면 장중 하드스탑이 즉시 전량 매도하며, 종가 마감을 기다리지 않습니다.
         - 버퍼 안(stop_loss와 stop_loss×0.995 사이)의 일시 터치만으로는 손절하지 않습니다.
-        - trailing stop 판단은 **종가(closing price)** 기준입니다. 장중 저가가 trailing stop을 일시적으로 터치(intraday wick)한 것만으로는 매도하지 마십시오.
+        - 시스템의 trailing stop(진입 후 최고가 기준)은 **종가(closing price)** 확인으로 실행됩니다. 장중 저가가 trailing stop을 일시적으로 터치(intraday wick)한 것만으로는 매도하지 마십시오.
+- 단, portfolio_adjustment로 올린 손절가(new_stop_loss)는 위 장중 하드스탑이 그대로 실행합니다. trailing 수준을 손절가로 올리면 그 수준은 장중 꼬리에도 매도됩니다.
         - 출처에서 해당 세션의 종료와 수집 데이터의 확정을 확인한 경우에만 당일 종가를 사용하십시오. 그 외에는 최근 확정 거래일의 종가와 기준일을 사용하며, 시각만으로 봉을 확정하지 마십시오.
 
         **핵심-2) 매수 시나리오의 익절 조건은 마일스톤으로 해석:**
@@ -1163,13 +1167,7 @@ def create_sell_decision_agent(language: str = "ko"):
 
         **1순위: 리스크 관리 (손절)**
         - 손절가 도달: 원칙적 즉시 전량 매도
-        - **절대 예외 없는 규칙**: 손실 -7.1% 이상 = 자동 매도 (예외 없음)
-        - **유일한 예외 허용** (다음 모두 충족 시만):
-          1. 손실이 -5% ~ -7% 사이 (-7.1% 이상은 예외 불가)
-          2. 당일 종가 반등률 ≥ +3%
-          3. 당일 거래량 ≥ 20일 평균 × 2배
-          4. 기관 또는 외국인 순매수
-          5. 유예 기간: 최대 1일 (2일차 회복 없으면 무조건 매도)
+        - **절대 예외 없는 규칙**: 손실 -7% 이상 = 장중 하드스탑 자동 매도 (예외·유예 없음)
         - 급격한 하락(-5% 이상): 추세가 꺾였는지 확인 후 전량 손절 여부 결정
         - 시장 충격 상황: 방어적 전량 매도 고려
 
@@ -1198,7 +1196,7 @@ def create_sell_decision_agent(language: str = "ko"):
 
         Trailing Stop %: 강세장 고점 × 0.92 (-8%), 약세장 고점 × 0.95 (-5%)
 
-        **⚠️ 중요**: new_stop_loss는 절대 현재가를 초과하면 안 됩니다. trailing stop > 현재가이면 should_sell: true로 매도 판단하세요.
+        **⚠️ 중요**: new_stop_loss는 절대 현재가를 초과하면 안 됩니다. 확정 종가가 trailing stop 아래면 should_sell: true로 매도하고, 장중 현재가만 아래면 손절가를 현재가 위로 올리지 말고 종가 확인을 기다리십시오.
         **🔒 손절가 하향 절대 금지**: new_stop_loss가 현재 stop_loss보다 낮은 값이면 제출하지 마세요. 어떤 이유로도 손절가를 내리는 것은 허용되지 않습니다.
 
         **B) 약세장/횡보장 모드 → 수익 확보 (방어적)**
