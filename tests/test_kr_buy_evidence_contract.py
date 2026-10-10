@@ -93,6 +93,10 @@ def test_sell_factory_matches_reviewed_volume_prompt():
     # 2026-10-08 reviewed: Core-0 counts only control/delisting tender offers confirmed by an
     # official filing (Official filing check block); buybacks, debt tenders and mini-tenders are
     # not corporate events (MRVL sold on a 0.06% press-release mini-tender, 2026-10-07).
+    # 2026-10-10 reviewed (contradiction sweep, tests/test_sell_prompt_consistency.py): sells are all-or-nothing
+    # but micro-split adds exist; Step 0 defers to the system regime; the system trailing stop stays
+    # close-confirmed while a raised stop_loss runs on the intraday hard stop; the dead -5~-7% grace
+    # exception and -7.1% wording removed. Trailing bands and discretionary-sell wording unchanged.
     source = SOURCE.read_text(encoding="utf-8")
     node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "create_sell_decision_agent")
-    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "7686f185e659135717f6a4dc8b664a2ce030f39fd646a6169dc9e255670b3898"
+    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "97d5fa8699ab7d368ae8be7c486ecf32a55d9b9fdb05f2583bb6bc90d85a5305"
