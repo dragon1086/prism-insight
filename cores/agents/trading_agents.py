@@ -123,7 +123,9 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         Apply only after the Fundamental Gate is evaluated.
         min_score column: when a "Micro-split entry threshold" appendix follows this instruction, its minimum score
-        replaces this column (with the exceptions it states); without that appendix, use this column.
+        replaces this column (with the exceptions it states); without that appendix, use this column, but the
+        system's regime floor applies when it is higher (sideways / moderate_bear 8, strong_bear 9, sideways with an
+        UPTREND market pulse 7).
 
         | Regime | min_score | R/R floor | Max stop | Momentum signals | Extra confirmations |
         |--------|-----------|-----------|----------|------------------|---------------------|
@@ -525,7 +527,8 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         펀더 게이트 평가가 끝난 후에만 적용하십시오.
         min_score 열: 이 지시문 뒤에 '초분할 진입 기준' 부록이 붙어 있으면 그 부록의 최소 점수가 이 열을 대신합니다(부록이 정한
-        예외 포함). 부록이 없으면 이 열을 따릅니다.
+        예외 포함). 부록이 없으면 이 열을 따르되, 시스템 국면 하한(횡보·moderate_bear 8점, strong_bear 9점, 횡보이면서
+        시장 흐름 UPTREND 7점)이 더 높으면 그 값이 적용됩니다.
 
         | 시장 체제 | min_score | 손익비 floor | 최대 손절폭 | 모멘텀 신호 | 추가 확인 |
         |----------|-----------|------------|----------|----------|--------|
