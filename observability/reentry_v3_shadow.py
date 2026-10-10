@@ -487,8 +487,8 @@ def _items_for(p, records):
 def _entry_context(entry, state, frames, completed, reports_root, market, db_path=None):
     """Everything the tracker entry needs beyond the scenario: name, sector, decision bars, report path.
 
-    Sector: the recheck scenario's, else the original decision row's (trading/watchlist history), else
-    "Unknown" (which the tracker's sector limit does not count).
+    Sector: prism_core.reentry_v3_live.resolve_sector (scenario, original decision row, the ticker's other
+    rows, KR KIS master), else "Unknown" (recorded as unknown; the tracker's sector limit does not count it).
     """
     from observability.reentry_recheck_inputs import REPORT_DIRS
     watch = next((w for w in state["watches"] if w["watch_id"] == entry["watch_id"]), None)
@@ -498,8 +498,8 @@ def _entry_context(entry, state, frames, completed, reports_root, market, db_pat
     ref = entry["item"].get("report_ref") or {}
     report_path = str(Path(reports_root) / REPORT_DIRS[market] / ref["name"]) if ref.get("kind") == "file" else None
     return {"company_name": watch["row"].get("company_name") or watch["ticker"],
-            "sector": ((entry["record"].get("scenario") or {}).get("sector")
-                       or (LIVE.original_sector(db_path, market, watch["row"]) if db_path else None) or "Unknown"),
+            "sector": LIVE.resolve_sector(db_path, market, watch["ticker"], watch["row"],
+                                          (entry["record"].get("scenario") or {}).get("sector")),
             "bars": bars[-80:], "report_path": report_path}
 
 

@@ -534,6 +534,59 @@ def strict_position_counts(cursor, table, ticker, account_key):
     return int(held) > 0, int(slots)
 
 
+# Latest known sector of a ticker in the decision tables, newest first (fixed literal queries).
+_TICKER_SECTOR_SQL = {
+    "KR": ("SELECT sector FROM watchlist_history WHERE ticker = ? AND sector IS NOT NULL AND TRIM(sector) != '' "
+           "AND sector != 'Unknown' ORDER BY analyzed_date DESC LIMIT 1",
+           "SELECT sector FROM trading_history WHERE ticker = ? AND sector IS NOT NULL AND TRIM(sector) != '' "
+           "AND sector != 'Unknown' ORDER BY sell_date DESC LIMIT 1",
+           "SELECT sector FROM stock_holdings WHERE ticker = ? AND sector IS NOT NULL AND TRIM(sector) != '' "
+           "AND sector != 'Unknown' ORDER BY buy_date DESC LIMIT 1"),
+    "US": ("SELECT sector FROM us_watchlist_history WHERE ticker = ? AND sector IS NOT NULL AND TRIM(sector) != '' "
+           "AND sector != 'Unknown' ORDER BY analyzed_date DESC LIMIT 1",
+           "SELECT sector FROM us_trading_history WHERE ticker = ? AND sector IS NOT NULL AND TRIM(sector) != '' "
+           "AND sector != 'Unknown' ORDER BY sell_date DESC LIMIT 1",
+           "SELECT sector FROM us_stock_holdings WHERE ticker = ? AND sector IS NOT NULL AND TRIM(sector) != '' "
+           "AND sector != 'Unknown' ORDER BY buy_date DESC LIMIT 1"),
+}
+
+
+def ticker_sector(db_path, market, ticker):
+    """The ticker's newest known sector in any analysis/trade/holding row (read-only), else None."""
+    try:
+        with _ro(db_path) as conn:
+            for query in _TICKER_SECTOR_SQL["KR" if market == "KR" else "US"]:
+                found = conn.execute(query, (ticker,)).fetchone()
+                if found and isinstance(found[0], str) and found[0].strip():
+                    return found[0]
+    except Exception:  # noqa: BLE001 - no sector -> next fallback
+        return None
+    return None
+
+
+def kis_master_sector(ticker):
+    """KR: the industry of the ticker in today's KIS stock master (cached per day), else None."""
+    try:
+        from cores.kis_market_snapshot import fetch_kis_master_data
+        from cores.kis_sector_map import get_sector_info
+        return get_sector_info(fetch_kis_master_data().observed_date).get(str(ticker)) or None
+    except Exception:  # noqa: BLE001 - network/master outage -> unknown sector
+        return None
+
+
+def resolve_sector(db_path, market, ticker, row, scenario_sector=None):
+    """Sector for the sector limit: scenario, original decision row, the ticker's other rows, KR KIS master.
+
+    Never blocks an entry: when nothing is found the sector is "Unknown" (as the batch records it)."""
+    for candidate in (scenario_sector,
+                      original_sector(db_path, market, row) if db_path else None,
+                      ticker_sector(db_path, market, ticker) if db_path else None,
+                      kis_master_sector(ticker) if market == "KR" else None):
+        if isinstance(candidate, str) and candidate.strip() and candidate != "Unknown":
+            return candidate
+    return "Unknown"
+
+
 def original_sector(db_path, market, row):
     """Sector of the original decision (trading_history / watchlist_history row), else None."""
     market = "KR" if market == "KR" else "US"
