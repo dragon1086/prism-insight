@@ -272,12 +272,16 @@ def evaluate_production_buy_gate(
             if reported_rr is not None:
                 tolerance = max(0.15, abs(basis_rr) * 0.10)
                 if abs(reported_rr - basis_rr) > tolerance:
-                    findings.append(_finding("rr_arithmetic_mismatch", f"reported R/R {reported_rr:.2f} != {basis_rr:.2f}"))
+                    # Recorded, not blocking (user decision 2026-10-10): the floors above already use
+                    # the recomputed R/R, so the AI's arithmetic slip alone must not refuse the entry.
+                    findings.append(_finding("rr_arithmetic_mismatch", f"reported R/R {reported_rr:.2f} != {basis_rr:.2f}",
+                                             hard=False))
 
             for field, expected in (("expected_return_pct", basis_return), ("expected_loss_pct", basis_loss)):
                 reported = _number(data.get(field))
                 if reported is not None and abs(reported - expected) > max(0.25, abs(expected) * 0.10):
-                    findings.append(_finding("risk_arithmetic_mismatch", f"{field} {reported:.2f} != {expected:.2f}"))
+                    findings.append(_finding("risk_arithmetic_mismatch", f"{field} {reported:.2f} != {expected:.2f}",
+                                             hard=False))
 
     t1 = _T1_RE.search(facts)
     t2 = _T2_RE.search(facts)
