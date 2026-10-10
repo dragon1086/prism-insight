@@ -156,3 +156,17 @@ def test_score_exemption_skips_only_the_score_floor_for_a_rule_approved_reentry(
                                                 risk_reward_ratio=0.5),
                                       current_price=100.0, market_regime="moderate_bull", score_exempt=True)
     assert "rr_below_floor" in {item["code"] for item in rr["hard_findings"]}
+
+
+def test_t1_exemption_lets_a_rule_approved_reentry_below_the_50_day_line_through():
+    facts = "T1_hit(종가<MA50): true / T2_hit: false"
+    plain = evaluate_production_buy_gate(_scenario(), current_price=100.0, market_regime="moderate_bull",
+                                         trend_facts=facts)
+    assert "individual_trend_t1" in {item["code"] for item in plain["hard_findings"]}
+    exempt = evaluate_production_buy_gate(_scenario(), current_price=100.0, market_regime="moderate_bull",
+                                          trend_facts=facts, t1_exempt=True)
+    assert exempt["allowed"]
+    assert "individual_trend_t1_exempt" in {item["code"] for item in exempt["shadow_findings"]}
+    t2 = evaluate_production_buy_gate(_scenario(), current_price=100.0, market_regime="moderate_bull",
+                                      trend_facts="T1_hit: true / T2_hit: true", t1_exempt=True)
+    assert {item["code"] for item in t2["hard_findings"]} == {"individual_trend_t2"}

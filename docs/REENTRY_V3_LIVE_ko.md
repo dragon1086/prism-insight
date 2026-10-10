@@ -394,8 +394,11 @@ REENTRY_V3_LIVE_MARKETS=KR,US      # 한 시장만 켜려면 KR 또는 US
 - 근거(같은 신호를 AI 승인분 vs 전부 산 경우, 결정론 청산, 총 슬롯 손익): 손절 후 KR −20.2%p(17건) vs +29.1%p(91건),
   US +13.4%p(4건) vs +62.9%p(72건); 보류 후 KR −9.2%p(7건) vs +12.8%p(32건), US +13.7%p(16건) vs +81.9%p(153건).
   AI 승인·거절의 평균 차이는 ±1%p 안팎(선별력 없음). 주의: 전부 사는 쪽은 매매가 많고 상위 몇 건 의존이 크며(KR 손절 후 상위 2건 빼면
-  −67%p), KR 손절 후 뒤 절반은 −41%p. 추세 관문 T1(종가<50일선)은 그대로 막으므로 실제 체결은 50일선 위 신호 위주다
-  (손절 후 50일선 위만: KR +35.2%p/48건, US +16.6%p/35건). 연구: tasks/research-20261010/reentry-heldoff, reentry-v4/report.txt.
+  −67%p), KR 손절 후 뒤 절반은 −41%p. 연구: tasks/research-20261010/reentry-heldoff, reentry-v4/report.txt.
+- 50일선 관문(T1, 종가<50일선) 해제(2026-10-10 사용자 결정): 규칙 승인 재진입에는 T1이 막지 않고 기록만 남긴다
+  (`buy_gate` `t1_exempt`, finding `individual_trend_t1_exempt`). T2(20일선 하락+5% 이탈)와 나머지 관문은 그대로.
+  근거(손절 후, 결정론 청산): 50일선 위만 KR +35.2%p/48건·US +16.6%p/35건 → 제한 없음 KR +29.1%p/91건·US +62.9%p/72건.
+  KR은 50일선 아래 신호가 평균 −1.0%로 약간 손해, US는 크게 이득. 한·미 같은 규칙으로 해제.
 - 끄기: `REENTRY_V3_DETERMINISTIC=false`(LLM 재점검 승인으로 복귀; `REENTRY_V3_LLM_RECHECK=true` 필요).
 
 ### 11.7 첫 실거래일 점검표

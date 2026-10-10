@@ -127,6 +127,7 @@ def evaluate_production_buy_gate(
     pilot_budget_available: bool = False,
     required_score_override: float | None = None,
     score_exempt: bool = False,
+    t1_exempt: bool = False,
 ) -> dict[str, Any]:
     """Evaluate one candidate immediately before the simulator buy call.
 
@@ -135,6 +136,10 @@ def evaluate_production_buy_gate(
 
     ``score_exempt`` skips the score floor for a new entry that has no AI score
     (rule-approved re-entry, 2026-10-10); every other gate is unchanged.
+
+    ``t1_exempt`` turns the T1 trend gate (close below the 50-day line) into a
+    recorded, non-blocking finding for a rule-approved re-entry (user decision
+    2026-10-10); T2 and every other gate are unchanged.
 
     ``market_regime`` must be the programmatically computed regime.  A missing
     regime is a hard stop for a new buy: a data outage may reduce opportunity,
@@ -277,7 +282,11 @@ def evaluate_production_buy_gate(
     t1 = _T1_RE.search(facts)
     t2 = _T2_RE.search(facts)
     if t1 and t1.group(1).lower() == "true":
-        findings.append(_finding("individual_trend_t1", "T1 individual trend gate is hit"))
+        if t1_exempt and not is_add:
+            findings.append(_finding("individual_trend_t1_exempt",
+                                     "T1 hit; not blocking for a rule-approved re-entry", hard=False))
+        else:
+            findings.append(_finding("individual_trend_t1", "T1 individual trend gate is hit"))
     if t2 and t2.group(1).lower() == "true":
         findings.append(_finding("individual_trend_t2", "T2 individual trend gate is hit"))
 
