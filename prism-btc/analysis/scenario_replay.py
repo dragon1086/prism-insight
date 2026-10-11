@@ -106,7 +106,8 @@ def network_boundary(mode,endpoint=None):
 
 
 def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy_profile="current-live-v2",
-                 initial_state="fresh-unblocked"):
+                 initial_state="fresh-unblocked", *, observed_manifest=None,
+                 market_input_mode="historical", allow_input_gaps=False):
     if policy_profile not in POLICY_PROFILES:
         raise ValueError("explicit_replay_policy_profile_required")
     if initial_state not in {"fresh-unblocked","recovery-stage0"}:
@@ -116,7 +117,12 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
     package=ROOT/"prism-btc"
     sources={str(p.relative_to(package)):hashlib.sha256(p.read_bytes()).hexdigest()
              for p in sorted(package.rglob("*.py")) if "tests" not in p.relative_to(package).parts}
-    return dict(schema=2,kind="SIMULATED_LLM_SCENARIO",decision_origin=origin,data_hash=bundle["data_hash"],
+    if observed_manifest is None:
+        if market_input_mode != "historical" or allow_input_gaps:
+            raise ValueError("observed_input_contract_required")
+    elif market_input_mode not in {"observed", "reconstructed_at_observed_schedule"}:
+        raise ValueError("explicit_observed_input_mode_required")
+    contract = dict(schema=2,kind="SIMULATED_LLM_SCENARIO",decision_origin=origin,data_hash=bundle["data_hash"],
         policy_profile=policy_profile,runtime_flags=dict(POLICY_PROFILES[policy_profile]),
         initial_state=dict(profile=initial_state,
             provenance="SYNTHETIC_INITIAL_SOFT_LATCH_NO_PRIOR_PNL" if initial_state=="recovery-stage0" else "FRESH_UNBLOCKED_NO_SYNTHETIC_LOSSES",
@@ -136,6 +142,13 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
         latencies=dict(entry=5000,market=5000,cancel=2000,amend=2000,model="measured_and_taped_ms"),
         decision_interval_ms=300000,protection_interval_ms=60000,
         terminal_policy="NO_FORCED_CLOSE_MARK_OPEN_POSITION",liquidity="previous_minute_volume_shared_across_four_path_points")
+    if observed_manifest is not None:
+        contract.update(schema=3, market_input=dict(mode=market_input_mode,
+            provider_manifest=observed_manifest, allow_input_gaps=allow_input_gaps,
+            clock="OBSERVED_AVAILABILITY_BEFORE_SIMULATED_CONTEXT",
+            account_source="INDEPENDENT_SIMULATED_ACCOUNT_ONLY"),
+            replay_scope="HYBRID_OBSERVED_INPUT_ASSUMED_EXECUTION")
+    return contract
 
 
 class Driver:
@@ -310,7 +323,9 @@ def run_replay(bundle,market,output,**kwargs):
 
 def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplier=1.,
                initial_equity=10000.,policy=None,model_generator=None,max_decisions=288,
-               policy_profile="current-live-v2",initial_state="fresh-unblocked"):
+               policy_profile="current-live-v2",initial_state="fresh-unblocked",
+               observed_packet=None, observed_packet_sha256=None,
+               market_input_mode="historical", allow_input_gaps=False):
     """No production paths accepted; fresh DB per run and explicit data provenance."""
     if mode not in {"fresh","frozen","fixture"} or path not in {"OHLC","OLHC"}:
         raise ValueError("explicit_replay_mode_required")
@@ -324,14 +339,44 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
         raise ValueError("minute_btc_bundle_required")
     if not 0<cost_multiplier<=3 or not math.isfinite(initial_equity) or initial_equity<=0:
         raise ValueError("invalid_replay_cost_or_equity")
+    observed = None
+    schedule = None
+    if market_input_mode == "historical":
+        if observed_packet is not None or observed_packet_sha256 is not None or allow_input_gaps:
+            raise ValueError("explicit_observed_input_mode_required")
+    elif market_input_mode in {"observed", "reconstructed_at_observed_schedule"}:
+        if observed_packet is None or not observed_packet_sha256:
+            raise ValueError("observed_packet_and_external_pin_required")
+        from backtest.observed_scenario_data import ObservedScenarioData
+        observed = ObservedScenarioData(observed_packet, observed_packet_sha256, allow_gaps=allow_input_gaps)
+        schedule = observed.schedule(bundle["start_ms"], bundle["end_ms"])
+        if len(schedule) > max_decisions:
+            raise ValueError("decision_budget_exceeded")
+        # Validate the reconstructed comparator at the SAME observed release
+        # clock before creating output or calling a model. Never retimestamp its
+        # boundary snapshot just to make the ordinary 120s freshness gate pass.
+        if market_input_mode == "reconstructed_at_observed_schedule":
+            from live.scenario_runtime import snapshot_input_time
+            for item in schedule:
+                if item["status"] == "MISSING":
+                    continue
+                reconstructed = market.snapshot(item["slot"] * 300000)
+                if (reconstructed.get("valid") is not True or
+                        not 0 <= item["available_at_ms"] / 1000 - snapshot_input_time(reconstructed) <= 120):
+                    raise ValueError("reconstructed_snapshot_stale_at_observed_schedule")
+    else:
+        raise ValueError("unknown_market_input_mode")
     origin="fixture" if mode=="fixture" else "luna"
     if mode=="frozen":
         header=json.loads(Path(tape_path).read_text().splitlines()[0])
-        if header["contract"].get("schema") != 2:
+        expected_schema = 3 if observed is not None else 2
+        if header["contract"].get("schema") != expected_schema:
             raise TapeMismatch("legacy_tape_requires_original_code; record_explicit_legacy-no-recovery_profile_for_new_comparison")
         origin=header["contract"]["decision_origin"]
         if origin not in {"fixture","luna"}:raise ValueError("unknown_decision_origin")
-    contract=contract_for(bundle,path,cost_multiplier,initial_equity,origin,policy_profile,initial_state)
+    contract=contract_for(bundle,path,cost_multiplier,initial_equity,origin,policy_profile,initial_state,
+        observed_manifest=observed.manifest() if observed is not None else None,
+        market_input_mode=market_input_mode, allow_input_gaps=allow_input_gaps)
     output=Path(output).resolve()
     if output.exists():raise ValueError("never_overwrite_replay")
     if any(p in output.parts for p in ("state","logs","trading")):
@@ -351,7 +396,16 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
     broker=ScenarioDemoBroker(conn,session=session,expected_main_uid="42",clock=session.clock,execution_enabled=True)
     driver=Driver(bundle,market,session,path,broker,conn)
     provider=Decisions(tape,driver,mode,policy=policy,model_generator=model_generator)
-    runtime=ScenarioRuntime(conn,broker,provider,lambda:market.snapshot((session.ts_ms//300000)*300000),
+    def snapshot():
+        if observed is None:
+            return market.snapshot((session.ts_ms//300000)*300000)
+        # The loop has already advanced price/protection/account time. The
+        # callback only reads; it never imports original account state.
+        captured = observed.snapshot(session.ts_ms)
+        if market_input_mode == "observed":
+            return captured
+        return market.snapshot((session.ts_ms//300000)*300000)
+    runtime=ScenarioRuntime(conn,broker,provider,snapshot,
                             clock=session.clock,**POLICY_PROFILES[policy_profile])
     if initial_state=="recovery-stage0":
         with mutation_lock(conn):
@@ -364,11 +418,17 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
                                            "consecutive_losses":0,"completed_ids":[]})
             runtime._save(state)
     statuses=Counter();outcome_reasons=Counter();start=bundle["start_ms"];end=bundle["end_ms"]
-    decisions=list(range(start,end,300000))
+    decisions=list(range(start,end,300000)) if schedule is None else [item["available_at_ms"] for item in schedule]
     if len(decisions)>max_decisions:raise ValueError("decision_budget_exceeded")
     try:
         for i,at in enumerate(decisions):
             driver.advance_to(at)
+            if schedule is not None and schedule[i]["status"] == "MISSING":
+                # Driver continues independent protection. No runtime tick,
+                # model call, account transplant, or invented WAIT decision.
+                statuses["INPUT_GAP"] += 1
+                outcome_reasons["INPUT_GAP:observed_snapshot_missing"] += 1
+                continue
             result=runtime.tick();statuses[result["status"]]+=1
             reason=result.get("failure_code") or result.get("reason")
             if isinstance(reason,str):outcome_reasons[result["status"]+":"+reason]+=1
@@ -425,6 +485,13 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
         if economic["unclosed_scenario"] or economic["pending_intents"]:reasons.append("UNSETTLED_END_STATE")
         if economic["unknown_exchange_children"]:reasons.append("UNKNOWN_EXECUTION_EVIDENCE")
         if statuses.get("fenced"):reasons.append("FENCED_OBSERVATIONS")
+        if observed is not None:
+            report["market_input"] = contract["market_input"]
+            report["replay_scope"] = contract["replay_scope"]
+            report["input_gaps"] = [item["slot"] for item in schedule if item["status"] == "MISSING"]
+            report["assumptions"].append("OBSERVED_MARKET_INPUT_NOT_OBSERVED_FILL_PATH")
+            if report["input_gaps"]:
+                reasons.append("INPUT_GAP")
         report["readiness"]={"profitability_proven":False,"insufficiency_reasons":reasons}
         report["result_hash"]=digest(report)
         # Run mechanics are outside the reproducible economic result hash.
@@ -449,12 +516,18 @@ def main():
     parser.add_argument("--max-decisions",type=int,default=288)
     parser.add_argument("--policy-profile",choices=tuple(POLICY_PROFILES),default="current-live-v2")
     parser.add_argument("--initial-state",choices=("fresh-unblocked","recovery-stage0"),default="fresh-unblocked")
+    parser.add_argument("--observed-packet", type=Path)
+    parser.add_argument("--observed-packet-sha256")
+    parser.add_argument("--market-input-mode", choices=("historical", "observed", "reconstructed_at_observed_schedule"), default="historical")
+    parser.add_argument("--allow-input-gaps", action="store_true", help="Diagnostic only: skip missing-input ticks, continue protection, mark INPUT_GAP")
     args=parser.parse_args()
     bundle,market=load_bundle(args.input)
     with network_boundary(args.mode,os.environ.get("PRISM_BTC_SCENARIO_OAUTH_URL")) as blocked:
         report=run_replay(bundle,market,args.output,mode=args.mode,tape_path=args.tape,path=args.path,
             cost_multiplier=args.cost_multiplier,max_decisions=args.max_decisions,policy_profile=args.policy_profile,
-            initial_state=args.initial_state)
+            initial_state=args.initial_state, observed_packet=args.observed_packet,
+            observed_packet_sha256=args.observed_packet_sha256,
+            market_input_mode=args.market_input_mode, allow_input_gaps=args.allow_input_gaps)
         if blocked:raise RuntimeError("forbidden_network_attempt_detected")
     print(json.dumps({"status":"complete","result_hash":report["result_hash"],"economic":report["economic"],
                       "execution_metadata":report["execution_metadata"]},ensure_ascii=False))
