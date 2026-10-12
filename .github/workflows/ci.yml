@@ -295,6 +295,7 @@ jobs:
             prism-btc/tests/test_scenario_provenance.py \
             prism-btc/tests/test_scenario_forward_packet.py \
             prism-btc/tests/test_scenario_notice.py \
+            prism-btc/tests/test_scenario_decision_notice.py \
             prism-btc/tests/test_scenario_daily_report.py \
             prism-btc/tests/test_reporter_nearmiss.py \
             prism-btc/tests/test_reporter_swing.py \

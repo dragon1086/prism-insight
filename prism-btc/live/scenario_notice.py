@@ -302,6 +302,9 @@ def _position_lines(event, after):
 def render_notice(event: dict) -> str:
     """No raw identifiers/payloads. Acknowledgement never implies a fill or PnL."""
     kind = event.get("kind")
+    if kind == "DECISION":
+        from live.scenario_decision_notice import render_decision
+        return render_decision(event)
     if kind not in TITLES:
         raise ValueError("unknown_notice_kind")
     if kind in {"FILLED", "PARTIAL"} and event.get("fill_confirmed") is not True:

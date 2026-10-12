@@ -8,17 +8,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 
 from live.scenario_notice import render_notice
 from live.shared_entry_coordinator import mutation_lock
 
-PRIVATE = {"PLAN", "SUBMITTED", "PENDING", "HALTED", "RESOLVED", "MODEL_ERROR", "MODEL_RECOVERED"}
+PRIVATE = {"PLAN", "SUBMITTED", "PENDING", "HALTED", "RESOLVED", "MODEL_ERROR", "MODEL_RECOVERED", "DECISION"}
 
 
 def _schema(conn):
     conn.execute("""CREATE TABLE IF NOT EXISTS llm_scenario_outbox (
         event_id TEXT PRIMARY KEY, kind TEXT NOT NULL, body TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'QUEUED', message_id INTEGER)""")
+    conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_decision_expiry (event_id TEXT PRIMARY KEY, expires_at REAL NOT NULL)")
 
 
 def enqueue(conn, event_id, event):
@@ -32,6 +34,9 @@ def enqueue(conn, event_id, event):
         raise ValueError("conflicting_notice_identity")
     conn.execute("INSERT OR IGNORE INTO llm_scenario_outbox(event_id,kind,body) VALUES(?,?,?)",
                  (event_id,event["kind"],body))
+    if event["kind"] == "DECISION" and not existing:
+        conn.execute("INSERT INTO llm_scenario_decision_expiry VALUES(?,?)",
+                     (event_id, event["expires_at"]))
     if not existing:
         try:
             from live.scenario_ledger import forward_notice
@@ -54,13 +59,14 @@ async def _deliver(token,channel,body):
     return getattr(receipt,"message_id",None)
 
 
-def flush(conn, *, sender=None, limit=10):
+def flush(conn, *, sender=None, limit=10, clock=time.time):
     """Claim under lock, then send once without it. sender(body, kind)->message_id."""
     if type(limit) is not int or not 1<=limit<=50:
         raise ValueError("invalid_notice_limit")
     sent=unknown=0
     with mutation_lock(conn):
         _schema(conn)
+        conn.execute("UPDATE llm_scenario_outbox SET status='EXPIRED' WHERE kind='DECISION' AND status='QUEUED' AND NOT EXISTS (SELECT 1 FROM llm_scenario_decision_expiry e WHERE e.event_id=llm_scenario_outbox.event_id AND e.expires_at>?)", (clock(),))
         conn.commit()
         rows=conn.execute("SELECT event_id,kind,body FROM llm_scenario_outbox WHERE status='QUEUED' ORDER BY rowid LIMIT ?",(limit,)).fetchall()
     for event_id,kind,body in rows:
@@ -70,6 +76,7 @@ def flush(conn, *, sender=None, limit=10):
             if not token or not channel:
                 continue  # No attempt made; operator may restore configuration.
         with mutation_lock(conn):
+            conn.execute("UPDATE llm_scenario_outbox SET status='EXPIRED' WHERE event_id=? AND kind='DECISION' AND status='QUEUED' AND NOT EXISTS (SELECT 1 FROM llm_scenario_decision_expiry e WHERE e.event_id=llm_scenario_outbox.event_id AND e.expires_at>?)", (event_id, clock()))
             changed=conn.execute("UPDATE llm_scenario_outbox SET status='SENDING' WHERE event_id=? AND status='QUEUED'",(event_id,)).rowcount
             conn.commit()
         if not changed:

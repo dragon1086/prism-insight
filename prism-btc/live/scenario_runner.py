@@ -218,7 +218,19 @@ def main():
             snapshots.append(value)
             return value
         failure_stage="run"
-        result=run_once(conn,broker,execute=args.execute,protect_only=args.protect_only,snapshot=snapshot)
+        decision_slot = int(time.time() // 300)
+        decision_context = {}
+        def proposal(snap, ctx, contract):
+            decision_context.update(input_id=ctx.get("input_id"), now=ctx.get("now"))
+            return propose(snap, ctx, contract)
+        result=run_once(conn,broker,execute=args.execute,protect_only=args.protect_only,
+                        snapshot=snapshot,proposal=proposal)
+        if args.execute and not args.protect_only:
+            try:
+                from live.scenario_decision_notice import enqueue_decision
+                enqueue_decision(conn, result, slot=decision_slot, captured=decision_context)
+            except Exception:
+                pass  # Optional diagnostics never change the trading outcome.
         _record_health_best_effort(conn,result,snapshot=snapshots[-1] if snapshots else None,
                                    loop="protection" if args.protect_only else "decision")
         # Disabled adapters cannot produce trade notices. Delivery occurs only
