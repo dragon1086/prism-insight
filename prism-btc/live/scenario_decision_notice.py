@@ -111,4 +111,4 @@ def enqueue_decision(conn, result, *, slot, captured=None, clock=time.time):
                 conn.execute("ROLLBACK TO decision_notice")
                 conn.execute("RELEASE decision_notice")
     except Exception:
-        pass  # Diagnostic-only path; preserve the original trading outcome.
+        return None  # Diagnostic-only path; preserve the original trading outcome.

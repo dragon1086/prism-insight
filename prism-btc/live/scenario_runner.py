@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sqlite3
 import time
 import uuid
@@ -230,7 +231,7 @@ def main():
                 from live.scenario_decision_notice import enqueue_decision
                 enqueue_decision(conn, result, slot=decision_slot, captured=decision_context)
             except Exception:
-                pass  # Optional diagnostics never change the trading outcome.
+                logging.getLogger(__name__).debug("decision notice unavailable")
         _record_health_best_effort(conn,result,snapshot=snapshots[-1] if snapshots else None,
                                    loop="protection" if args.protect_only else "decision")
         # Disabled adapters cannot produce trade notices. Delivery occurs only
