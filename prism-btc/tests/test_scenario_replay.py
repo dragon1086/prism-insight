@@ -7,8 +7,8 @@ from backtest.scenario_data import HistoricalScenarioData
 from engine.scenario_snapshot import TIMEFRAME_MS, candle_start
 
 
-def inputs(duration_ms=600000):
-    start=1790899200000;end=start+duration_ms
+def inputs(duration_ms=600000, *, start_ms=1790899200000):
+    start=start_ms;end=start+duration_ms
     index=pd.to_datetime(range(start-86400000,end,60000),unit='ms',utc=True)
     frame=pd.DataFrame(dict(open=100.,high=101.,low=99.,close=100.,volume=100.),index=index)
     warm={}
