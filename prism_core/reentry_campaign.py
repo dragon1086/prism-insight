@@ -69,6 +69,9 @@ REGIME_RULES = _root_buy_gate().REGIME_RULES
 
 POLICY_VERSION = "reentry_campaign_v3"
 STOP_EXIT = "STOP_EXIT"
+# Eligibility reason: a newer decision (any source) exists for the ticker, so this older watch opens no
+# new position after its supersession date (existing positions keep being managed). See replay().
+SUPERSEDED = "superseded_by_newer"
 KEY_LEVELS = ("primary_support", "secondary_support", "primary_resistance", "secondary_resistance")
 BULL_REGIMES = ("parabolic", "strong_bull", "moderate_bull")
 
@@ -630,19 +633,28 @@ def _window_public(window, i):
 
 
 def replay(setup, bars, anchor, *, decisions=None, regime_at=None, pulse_at=None, stop_dates=(), policy=None,
-           market=None):
+           market=None, superseded_after=None):
     """Ledger of the watch from the anchor through the last completed bar.
 
     decisions: {date: intraday decision} recorded live; such a day uses that decision's per-rule
     triggers (entry at the decision price) instead of re-evaluating the close. Other days are
     evaluated on the close (BACKFILL, completed volume). regime_at(day)/pulse_at(day) give the
     state as of the session before `day`. market: also records the pivot control.
+    superseded_after: a newer decision for the ticker exists from this session on; sessions after it
+    open no new position (reason SUPERSEDED). Open positions, exits, windows and watch ends still run,
+    and a recorded LIVE buy is still followed (the real order exists).
     """
     policy = policy or POLICY
     decisions = decisions or {}
     regime_at = regime_at or (lambda day: None)
     pulse_at = pulse_at or (lambda day: None)
     level, a, n = setup["L"], anchor, len(bars)
+
+    def may_open(camp, k):
+        ok, why = eligible(camp, k, a, policy)
+        if ok and superseded_after and (k >= n or bars[k]["date"] > superseded_after):
+            return False, SUPERSEDED
+        return ok, why
     flags = {"armed": bars[a]["close"] < level,
              "above": (setup.get("anchor_price") or 0) >= level or bars[a]["close"] > level}
     camps = {rule: _new_campaign(rule) for rule in policy["campaign_rules"]}
@@ -669,7 +681,7 @@ def replay(setup, bars, anchor, *, decisions=None, regime_at=None, pulse_at=None
         real_trigger = _real_buy_trigger(decision, policy)
         if real_trigger is not None:
             primary = camps[policy["primary_rule"]]
-            if not eligible(primary, i, a, policy)[0]:
+            if not may_open(primary, i)[0]:
                 # The real order exists, so the ledger follows it even when the replay disagrees
                 # (data revision, ended watch): close any virtual position and open the real attempt.
                 if primary["_pos"] is not None and not primary["attempts"][primary["_pos"]].get("real"):
@@ -677,7 +689,7 @@ def replay(setup, bars, anchor, *, decisions=None, regime_at=None, pulse_at=None
                 stats["conflicts"].append({"date": bar["date"], "reason": "real_buy_forced"})
                 _fire(stats, primary, setup, bars, i, real_trigger, "INTRADAY", decision, regime, pulse_at,
                       stop_dates, policy)
-        open_ok = {r: c for r, c in camps.items() if eligible(c, i, a, policy)[0]}
+        open_ok = {r: c for r, c in camps.items() if may_open(c, i)[0]}
         if open_ok and decision is not None:
             by_rule = decision.get("by_rule") or {}
             for rule, camp in open_ok.items():
@@ -738,7 +750,7 @@ def replay(setup, bars, anchor, *, decisions=None, regime_at=None, pulse_at=None
     upcoming = {}
     if last == n - 1 and not complete:
         for rule, camp in camps.items():
-            ok, why = eligible(camp, n, a, policy)
+            ok, why = may_open(camp, n)
             upcoming[rule] = {"eligible": ok, "reason": why, "attempt": len(camp["attempts"]) + 1,
                               "mode": "SHAKEOUT" if camp["window"] else "NORMAL",
                               "window": _window_public(camp["window"], n)}
@@ -747,7 +759,7 @@ def replay(setup, bars, anchor, *, decisions=None, regime_at=None, pulse_at=None
         "rule_ids": {k: policy[k] for k in ("triggers", "window_triggers", "campaign_rules", "primary_rule",
                                             "stop_rule", "exit_rule", "shadow_exit_rules")},
         "L": level, "anchor_date": bars[a]["date"], "asof": bars[last]["date"], "elapsed": last - a,
-        "horizon_complete": complete, "flags": flags, "next": upcoming,
+        "horizon_complete": complete, "flags": flags, "next": upcoming, "superseded_after": superseded_after,
         "trigger_stats": {"fired": stats["fired"], "checks": stats["checks"]}, "conflicts": stats["conflicts"],
         "campaigns": {rule: _public(dict(camp, window=_window_public(camp["window"], last + 1)))
                       for rule, camp in camps.items()},

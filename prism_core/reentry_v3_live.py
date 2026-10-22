@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
 LIVE_VERSION = "reentry_v3"
+# decision_id prefix of a re-entry position (its own exit row belongs to the watch that bought it).
+DECISION_PREFIX = "reentry_v3:"
 DAILY_CAP = 2
 PRIMARY_RULE = "L97"
 # Continuous regular session with a buffer: KR 09:00-15:20 (closing auction 15:20-15:30),
@@ -197,7 +199,7 @@ def build_scenario(item, record, market):
         scenario["target_price"] = item["target"]
     _price_fields(scenario, float(item["decision_price"]))    # the final buy gate checks this arithmetic
     scenario["trigger_type"] = trigger_label(market, signal)
-    scenario["_decision_id"] = f"reentry_v3:{item['event_id']}"
+    scenario["_decision_id"] = f"{DECISION_PREFIX}{item['event_id']}"
     # Observation only: lets the ledger point this position back to the original decision.
     scenario["reentry"]["origin_decision_id"] = (item.get("original") or {}).get("decision_id")
     return scenario

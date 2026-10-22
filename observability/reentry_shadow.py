@@ -195,7 +195,8 @@ def candidates(db_path, market, completed, lookback_days=LOOKBACK_DAYS, include_
             out.append({"source": "STOP_EXIT", "account_key": account_ref, "ticker": str(row["ticker"]),
                         "company_name": row["company_name"], "entry_date": session_date(row["buy_date"], market),
                         "entry_price": row["buy_price"], "exit_date": session_date(row["sell_date"], market),
-                        "exit_price": row["sell_price"], "trigger_type": row["trigger_type"],
+                        "exit_price": row["sell_price"], "decided_at": str(row["sell_date"] or ""),
+                        "trigger_type": row["trigger_type"],
                         "exit_kind": row["exit_kind"], "realized_pct": row["profit_rate"],
                         "decision_id": _scenario(row["scenario"]).get("_decision_id"),
                         "key_levels": scenario_key_levels(_scenario(row["scenario"]))})
@@ -215,7 +216,7 @@ def candidates(db_path, market, completed, lookback_days=LOOKBACK_DAYS, include_
                         "ticker": str(row["ticker"]),
                         "company_name": row["company_name"], "entry_date": session_date(row["analyzed_date"], market),
                         "entry_price": price, "exit_date": session_date(row["analyzed_date"], market),
-                        "exit_price": price,
+                        "exit_price": price, "decided_at": str(row["analyzed_date"] or ""),
                         "trigger_type": row["trigger_type"], "exit_kind": None, "analysis_id": row["id"],
                         "decision": row["decision"], "buy_score": score, "min_score": minimum,
                         "skip_categories": skip_category(row["skip_reason"]),

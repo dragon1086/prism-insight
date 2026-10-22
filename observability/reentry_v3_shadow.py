@@ -4,11 +4,14 @@ This module writes no DB and sends no Telegram. With REENTRY_V3_LIVE_ENABLED on,
 decision run are handed to prism_core/reentry_v3_live, which places the real buy in an isolated
 subprocess through the tracker's normal entry path (kill switch, daily cap, idempotency, hours).
 
-Enrolment is the v2 one (observability.reentry_shadow.candidates with include_blocked=True:
-STOP_EXIT / LOCATION_SKIP / ENTER_BLOCKED, 70-day window, point-in-time dedupe). Each watch
-becomes a campaign around one level L (prism_core/reentry_campaign.py); the whole ledger is
-replayed from the anchor on every run, so reruns are idempotent and the only stored inputs are
-the live decisions.
+Enrolment rows are the v2 ones (observability.reentry_shadow.candidates with include_blocked=True:
+STOP_EXIT / LOCATION_SKIP / ENTER_BLOCKED, 70-day window, point-in-time same-source dedupe V2._blocked).
+Newest decision wins (2026-10-22, 028670): per ticker only the watch of the latest enrolled decision row
+may open new positions; older watches are marked
+``superseded`` and keep managing positions they already own (supersede()). A re-entry position's own
+exit row is not a new decision (reentry_own_exit). Each watch becomes a campaign around one level L
+(prism_core/reentry_campaign.py); the whole ledger is replayed from the anchor on every run, so reruns
+are idempotent and the only stored inputs are the live decisions and the supersession dates.
 
 * ``phase="intraday"`` (KR 14:00 KST, US 13:50 New York: before the afternoon batches at KR 14:46 /
   US 14:30 ET and before the KR closing auction at 15:20): for campaigns that may open a position
@@ -201,16 +204,63 @@ def _refresh(watch, frames, completed, market, ctx):
         watch["last_missing"] = completed
         return False
     ledger = C.replay(watch["setup"], bars, anchor, decisions=watch.get("decisions"), regime_at=ctx.regime_at,
-                      pulse_at=ctx.pulse_fn(bench), stop_dates=watch.get("stop_dates") or (), market=market)
+                      pulse_at=ctx.pulse_fn(bench), stop_dates=watch.get("stop_dates") or (), market=market,
+                      superseded_after=(watch.get("superseded") or {}).get("after"))
     watch["ledger"], watch["asof"] = ledger, completed
     camps = ledger["campaigns"]
     primary = camps[C.POLICY["primary_rule"]]
     if primary["status"] == "ENDED":
-        watch["watch_ended"] = primary["end_date"]       # point-in-time dedupe (V2._blocked) follows L97
+        watch["watch_ended"] = primary["end_date"]       # primary (L97) watch end, kept for reports
     real_open = any(att.get("real") and att["status"] == "OPEN" for c in camps.values() for att in c["attempts"])
     if all(c["status"] == "ENDED" for c in camps.values()) and not real_open:
         watch["status"] = "CLOSED"
     return True
+
+
+def reentry_own_exit(row):
+    """A LIVE re-entry position's own exit row (STOP_EXIT of a buy this module placed). It is part of the
+    watch that bought it (find_real_exit closes that attempt there), not a new decision: it neither starts
+    a watch nor supersedes one, so the campaign keeps its attempt count (max 3)."""
+    return str((row or {}).get("decision_id") or "").startswith(LIVE.DECISION_PREFIX)
+
+
+def _decision_key(watch):
+    """Order of the decisions behind a ticker's watches: session date, then the raw decision stamp
+    (same-session stop and analysis), then the id so the order is total."""
+    row = watch["row"]
+    return row["exit_date"], str(row.get("decided_at") or ""), watch["watch_id"]
+
+
+def supersede(watches, completed):
+    """Newest decision wins: per ticker, only the watch of the latest enrolled decision row may open new
+    positions. Rows of another source always enrol, so a newer stop exit replaces an older held-off watch
+    (028670) and vice versa; a newer row of the same source while that watch is live is not enrolled
+    (V2._blocked), so the running campaign keeps its level and attempt count (a re-analysis every few days
+    would otherwise restart US leaders' watches; replay 2026-10-22). Every older watch gets
+    ``superseded`` = {by, after, reason}; ``after`` is the completed
+    session when it was first seen (it stays, the newer one may change), so sessions after it open nothing.
+    Point-in-time: live decisions already taken are kept, and positions an older watch owns (LIVE or
+    virtual) keep being managed by that watch. Returns the watches superseded on this call."""
+    by_ticker = {}
+    for watch in watches.values():
+        if not reentry_own_exit(watch["row"]):
+            by_ticker.setdefault(watch["ticker"], []).append(watch)
+    fresh = []
+    for group in by_ticker.values():
+        if len(group) < 2:
+            continue
+        newest = max(group, key=_decision_key)
+        for watch in group:
+            if watch is newest or watch["status"] in FINAL:
+                continue
+            mark = watch.get("superseded")
+            if mark is None:
+                watch["superseded"] = {"by": newest["watch_id"], "after": completed, "reason": C.SUPERSEDED,
+                                       "by_source": newest["source"], "by_decided_on": newest["row"]["exit_date"]}
+                fresh.append(watch)
+            elif mark["by"] != newest["watch_id"]:
+                mark.update(by=newest["watch_id"], by_source=newest["source"], by_decided_on=newest["row"]["exit_date"])
+    return fresh
 
 
 def advance(state, rows, frames, completed, market, ctx):
@@ -229,9 +279,15 @@ def advance(state, rows, frames, completed, market, ctx):
     enrolled = 0
     for row in sorted(rows, key=lambda r: (r["exit_date"], r["entry_date"], r["ticker"])):
         wid = _watch_id(market, row)
-        if wid in watches and row.get("decision_id") and not watches[wid]["row"].get("decision_id"):
-            watches[wid]["row"]["decision_id"] = row["decision_id"]   # trace link only; identity unchanged
-        if wid in watches or V2._blocked(watches, row):
+        if wid in watches:
+            known = watches[wid]["row"]
+            for key in ("decision_id", "decided_at"):      # trace link / ordering only; identity unchanged
+                if row.get(key) and not known.get(key):
+                    known[key] = row[key]
+            continue
+        # A re-entry position's own stop is part of its watch; a newer row of the same source while the older
+        # watch of that source is live continues that campaign (point-in-time v2 dedupe, unchanged).
+        if reentry_own_exit(row) or V2._blocked(watches, row):
             continue
         watches[wid] = {"watch_id": wid, "status": "PENDING_ENROLL", "row": row, "market": market,
                         "source": row["source"], "ticker": row["ticker"], "enrolled_at": completed,
@@ -239,6 +295,8 @@ def advance(state, rows, frames, completed, market, ctx):
                         "stop_dates": sorted(stops.get(row["ticker"], ())), "decisions": {}, "rechecks": {}}
         enrolled += 1
         _refresh(watches[wid], frames, completed, market, ctx)
+    for watch in supersede(watches, completed):           # replay again so today's eligibility is blocked
+        _refresh(watch, frames, completed, market, ctx)
     state["watches"] = list(watches.values())
     return enrolled
 
@@ -248,16 +306,18 @@ def _local_time(iso, market):
     return datetime.fromisoformat(iso).astimezone(ZoneInfo(TZ[market])).strftime("%Y-%m-%d %H:%M %Z")
 
 
-def decide(watch, quote, frames, completed, decision_day, market, ctx):
+def decide(watch, quote, frames, completed, decision_day, market, ctx, rules=None, record=True):
     """Record the decision-time evaluation for one watch, per campaign rule (a rule inside a shakeout
     window and only checks SHAKEOUT_RECLAIM). Returns the decision; "trigger" is the primary (L97) rule's
-    fired trigger or None (an SS-only trigger stays in by_rule as a parallel record)."""
+    fired trigger or None (an SS-only trigger stays in by_rule as a parallel record).
+    rules/record=False: evaluate the given rules without storing the decision (superseded watches)."""
     bars, bench = _frames_for(watch, frames, completed)
     ledger = watch["ledger"]
     share = quote.get("volume_share")
     projected = C.projected_volume(quote.get("volume"), market, share)
     regime = ctx.regime_detail(decision_day)
-    eligible = {rule: info for rule, info in ledger["next"].items() if info["eligible"]}
+    eligible = rules if rules is not None else {rule: info for rule, info in ledger["next"].items()
+                                                if info["eligible"]}
     by_rule, checks, details, results = {}, {}, {}, {}
     for rule, info in eligible.items():
         window = info.get("window")
@@ -283,7 +343,8 @@ def decide(watch, quote, frames, completed, decision_day, market, ctx):
                 "market_pulse": ctx.pulse_fn(bench)(decision_day),
                 "eligible_rules": {rule: info["attempt"] for rule, info in eligible.items()},
                 "windows": {rule: info.get("window") for rule, info in eligible.items() if info.get("window")}}
-    watch.setdefault("decisions", {})[decision_day] = decision
+    if record:
+        watch.setdefault("decisions", {})[decision_day] = decision
     return decision
 
 
@@ -422,13 +483,19 @@ def intraday(state, market, decision_day, frames, completed, quote_fn, ctx, repo
     """Decision-time (KR 14:00 / US 13:50) evaluations for campaigns that may open a position today.
     Returns (frozen, counts); ``observed`` (a list) collects (watch, decision, near_misses) for the ledger."""
     counts = {"candidates": 0, "quotes": 0, "quote_missing": 0, "quote_cap": 0, "decisions": 0, "triggers": 0,
-              "near_misses": 0}
+              "near_misses": 0, "superseded_checks": 0, "superseded_would_fire": 0}
     frozen = []
+    superseded = []
     for watch in state["watches"]:
         ledger = watch.get("ledger") or {}
         if watch["status"] != "ACTIVE" or watch.get("asof") != completed or decision_day <= completed \
-                or not any(info["eligible"] for info in (ledger.get("next") or {}).values()) \
                 or decision_day in (watch.get("decisions") or {}):
+            continue
+        if not any(info["eligible"] for info in (ledger.get("next") or {}).values()):
+            blocked = {rule: info for rule, info in (ledger.get("next") or {}).items()
+                       if info["reason"] == C.SUPERSEDED}
+            if blocked:
+                superseded.append((watch, blocked))
             continue
         counts["candidates"] += 1
         if counts["quotes"] >= MAX_QUOTES:
@@ -452,6 +519,28 @@ def intraday(state, market, decision_day, frames, completed, quote_fn, ctx, repo
             decision["event_id"] = item["event_id"]
             watch.setdefault("rechecks", {})[item["event_id"]] = {"status": "PENDING", "attempts": 0, "last": None}
             frozen.append((watch, item))
+    # Evidence only, after the tradable watches and inside the same quote budget: would a superseded watch
+    # have fired today? Kept as a near miss "superseded_by_newer"; the decision is not stored (no attempt).
+    for watch, blocked in superseded:
+        if counts["quotes"] >= MAX_QUOTES:
+            counts["quote_cap"] += 1
+            continue
+        counts["quotes"] += 1
+        quote = quote_fn(watch["ticker"])
+        if not quote or not quote.get("price"):
+            counts["quote_missing"] += 1
+            continue
+        decision = decide(watch, quote, frames, completed, decision_day, market, ctx, rules=blocked, record=False)
+        counts["superseded_checks"] += 1
+        fired, decision["trigger"] = decision["trigger"], None
+        if fired is None:
+            continue
+        counts["superseded_would_fire"] += 1
+        counts["near_misses"] += 1
+        detail = {k: fired[k] for k in C.DETAIL_KEYS if fired.get(k) is not None}
+        detail.update(superseded_by=watch["superseded"]["by"], superseded_after=watch["superseded"]["after"])
+        if observed is not None:
+            observed.append((watch, decision, [(fired["trigger"], C.SUPERSEDED, detail)]))
     return frozen, counts
 
 
@@ -480,6 +569,16 @@ def _ledger_events(state, market):
     out = []
     for watch in state["watches"]:
         seen = set(watch.get("emitted") or [])
+        mark = watch.get("superseded")
+        if mark and "superseded" not in seen:
+            seen.add("superseded")
+            open_real = any(att.get("real") and att["status"] == "OPEN"
+                            for camp in ((watch.get("ledger") or {}).get("campaigns") or {}).values()
+                            for att in camp["attempts"])
+            out.append(("reentry_v3.shadow_superseded", watch, "superseded", {
+                "reason": mark["reason"], "superseded_by": mark["by"], "after": mark["after"],
+                "by_source": mark.get("by_source"), "by_decided_on": mark.get("by_decided_on"),
+                "decided_on": watch["row"]["exit_date"], "real_position_open": open_real}))
         for rule, camp in ((watch.get("ledger") or {}).get("campaigns") or {}).items():
             for att in camp["attempts"]:
                 key = f"exit|{rule}|{att['attempt']}|{att['date']}"
@@ -712,6 +811,8 @@ def run(market, completed, *, collector, phase="close", decision_day=None, quote
                    "policy_version": C.POLICY_VERSION, "live_results": _tally(r["status"] for r in live_results),
                    "completed_market_day": completed, "decision_day": decision_day, "enrol_rows": len(rows),
                    "newly_enrolled": enrolled, "symbols": len(tickers),
+                   "superseded_watches": sum(1 for w in state["watches"]
+                                             if w.get("superseded") and w["status"] not in FINAL),
                    "collected": len([t for t in tickers if frames.get(t)]), "status_counts": status,
                    "attempt_counts": attempts, "intraday": counts, "new_triggers": len(frozen),
                    "trigger_events_emitted": sent, "ledger_events": len(ledger_events), "archived": archived,
