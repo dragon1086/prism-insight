@@ -28,6 +28,29 @@ def observed_quotes(ticker, captured_at):
         return None
 
 
+def _policy_offset(price, tick, buy):
+    return ((price + (Decimal('7.3') if buy else -Decimal('7.3'))) / tick).to_integral_value(rounding=ROUND_HALF_UP) * tick
+
+
+def possible_entry_price_anchor(row, context, side):
+    """Static risk bound only; quote/quantity/edge checks still decide execution."""
+    policy = context.get('execution_price_policy')
+    if (not isinstance(policy, dict) or policy.get('version') != POLICY_VERSION
+            or row.get('trigger_price') is not None or side not in {'LONG','SHORT'}):
+        return None
+    try:
+        price, tick = _decimal(row['price']), _decimal(context.get('price_tick'))
+        if (price <= 0 or tick <= 0 or abs(price.adjusted()) > 15 or abs(tick.adjusted()) > 15
+                or price.adjusted() - tick.adjusted() > 24 or price % 10 or price % tick):
+            return None
+        adjusted = _policy_offset(price, tick, side == 'LONG')
+        if adjusted <= 0 or not 5 <= abs(adjusted-price) <= 10 or adjusted % 10 == 0:
+            return None
+        return adjusted
+    except (KeyError, ValueError, TypeError, InvalidOperation, OverflowError):
+        return None
+
+
 def _basis(payload, context):
     rows = context.get("positions", []) + context.get("pending_entries", []) + payload.get("entries", [])
     quantity = sum(_decimal(row["quantity"]) for row in rows)
@@ -131,7 +154,7 @@ def _validate_execution_prices(payload, context, *, quote_reference_now=None):
                 reason = "raw_price_off_tick"
             if not reason:
                 buy = (kind == "entries") == (payload["side"] == "LONG")
-                adjusted = ((price + (Decimal("7.3") if buy else -Decimal("7.3"))) / tick).to_integral_value(rounding=ROUND_HALF_UP) * tick
+                adjusted = _policy_offset(price, tick, buy)
                 if adjusted <= 0 or not 5 <= abs(adjusted - price) <= 10:
                     reason = "offset_out_of_bounds"
                 elif adjusted % 10 == 0:

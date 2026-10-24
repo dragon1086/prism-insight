@@ -9,6 +9,7 @@ from decimal import Decimal, ROUND_FLOOR
 import math
 
 from core.llm_scenario import EconomicProposalRejection, ScenarioValidationError, quantity_for_risk, risk_snapshot
+from core.scenario_limit_prices import possible_entry_price_anchor
 
 
 def _number(value, name, *, positive=False):
@@ -135,8 +136,13 @@ def allocate_entry_risk(proposal, context):
     for row, fraction in zip(entries, fractions):
         cap = ceiling * fraction
         immediate_unit = _unit_risk(plan, context, row["price"])
-        worst_price = _chase_risk_price(plan, context, row["price"])
-        unit = _worst_unit_risk(plan, context, row["price"])
+        anchors = [row['price']]
+        possible = possible_entry_price_anchor(row, context, plan['side'])
+        if possible is not None:
+            anchors.append(float(possible))
+        anchor = max(anchors, key=lambda value: _worst_unit_risk(plan, context, value))
+        worst_price = _chase_risk_price(plan, context, anchor)
+        unit = _worst_unit_risk(plan, context, anchor)
         raw_quantity = quantity_for_risk(available_risk=float(ceiling),
             allocation_fraction=float(fraction), entry_price=float(worst_price),
             hard_stop=plan["hard_stop"], side=plan["side"],
@@ -156,6 +162,10 @@ def allocate_entry_risk(proposal, context):
             quantity=float(quantity), risk_per_btc=float(immediate_unit),
             computed_risk=float(quantity * immediate_unit), worst_chase_price=float(worst_price),
             worst_chase_risk_per_btc=float(unit), worst_chase_risk=float(quantity * unit)))
+        if possible is not None:
+            receipt['quantity_basis']='FULL_BATCH_MAX_RAW_OR_POLICY_ANCHOR_CHASE_NOT_EXECUTION_PRICE'
+            receipt['entries'][-1].update(possible_policy_price=float(possible),risk_anchor_price=float(anchor),
+                price_policy_anchor_is_execution_price=False)
         row.pop("allocation_fraction")
         row["quantity"] = float(quantity)
     validate_allocation_prices(plan, receipt, context)

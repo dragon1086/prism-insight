@@ -24,8 +24,9 @@ def allocation_wire(ctx, action="OPEN"):
     return raw
 
 
-def taped(mode, *, action="OPEN", corrupt=False):
+def taped(mode, *, action="OPEN", corrupt=False, ctx_override=None):
     ctx = context()
+    ctx.update(ctx_override or {})
     snap = dict(valid=True, as_of_ms=1000000)
     calls = []
 
@@ -92,16 +93,37 @@ def test_allocation_schema_does_not_modify_legacy_and_prompt_has_no_sizing_arith
     assert "Do not emit entry quantity" in prompt
 
 
-def test_price_adjustment_exceeding_model_allocation_rejects_without_resize():
+def test_possible_price_adjustment_is_reserved_once_without_post_resize():
     ctx = context()
     ctx.update(quantity_step=.000001, minimum_quantity=.000001,
         execution_price_policy=dict(version="round-limit-v1"),
         limit_price_quotes=dict(bid=83400, ask=83401, captured_at=1000))
     raw = allocation_wire(ctx)
     receipt = calculate_allocation_candidate(raw, ctx, candidate_id="c0")
-    assert receipt["eligible"] is False
-    assert "allocation" in receipt["rejection"]
+    assert receipt["eligible"] is True
+    assert receipt['raw_proposal']['entries'][0]['quantity']==receipt['effective_plan']['entries'][0]['quantity']
+    from live.scenario_risk_allocation import validate_allocation_prices
+    validate_allocation_prices(receipt['effective_plan'],receipt['allocation_receipt'],ctx)
+    changed=deepcopy(receipt['effective_plan'])
+    changed['entries'][0]['price']+=100
+    with pytest.raises(ValueError,match='allocation_budget_exceeded'):
+        validate_allocation_prices(changed,receipt['allocation_receipt'],ctx)
     assert raw == allocation_wire(ctx)
+
+
+def test_priced_allocation_fresh_guard_preserves_quantity_and_rejects_changed_price():
+    args,_=taped('allocation-calculated',ctx_override=dict(
+        execution_price_policy=dict(version='round-limit-v1'),
+        limit_price_quotes=dict(bid=83400,ask=83401,captured_at=1000)))
+    assert args[3]['outcome']['status']=='COMPLETE'
+    fresh=dict(args[1],now=1001,account_captured_at=1001,
+               limit_price_quotes=dict(bid=83401,ask=83402,captured_at=1001))
+    checked=guard_review(*args,fresh,bindings={'test':'allocation-calculated'},research_mode='allocation-calculated')
+    selected=args[3]['outcome']['result']['selected']
+    assert checked['validated']['entries']==selected['effective_plan']['entries']
+    fresh['limit_price_quotes']=dict(bid=83411,ask=83412,captured_at=1001)
+    with pytest.raises(ValueError,match='review_guard_effective_plan_changed'):
+        guard_review(*args,fresh,bindings={'test':'allocation-calculated'},research_mode='allocation-calculated')
 
 
 def test_first_observation_is_wait_only_even_without_phase_label():
