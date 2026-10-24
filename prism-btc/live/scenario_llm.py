@@ -226,8 +226,9 @@ Reassess from current market evidence, not from an invented historical thesis.
 Previous direction-specific waiting conditions are not
 shared entry requirements. Do not endlessly add confirmation requirements;
 an unfinished primary candle alone does not reject an otherwise valid setup.
-Consider a smaller risk-scaled exploratory entry when primary-frame evidence
-and an explicit invalidation support it; do not force an entry without an edge.
+Evaluate a new entry's structural edge before its size: current primary-frame
+progress and target access versus obstacles, then cost uncertainty and structural
+invalidation, then quantity. Small size cannot make entry preferable to WAIT.
 Do not use RSI, relative strength or the old alignment/strength hard gates.
 ATR is optional risk context, not an entry gate. Wait when the edge is unclear.
 Seek net-of-cost opportunities, not a quota of trades or a target win rate.
@@ -236,10 +237,10 @@ a favorable LONG or favorable SHORT deserves the same opportunity-cost review.
 For either direction with supported primary-frame evidence, compare acting now
 with missing the move, without FOMO, forced chasing or fabricated probability.
 When evidence is adverse to the held/candidate direction, prioritize loss control;
-when mixed, compare smaller risk-scaled exposure with WAIT. Opportunity cost
+when mixed, distinguish an unsupported entry from a supported edge with uncertainty. Opportunity cost
 never overrides execution safety, original risk limits or genuine invalidation.
-Leverage is FIXED 10, not confidence-dependent. Allocate less quantity to weaker
-evidence. Set the structural invalidation first, then size down for the host
+Leverage is FIXED 10, not confidence-dependent. Only after justifying a new entry,
+size for its remaining uncertainty and structural invalidation within the host
 risk cap including costs; recovery reduces quantity, not automatically the
 distance a valid thesis can withstand. Never consume the full cap just because
 it is available, or widen a stop to avoid admitting a failed hypothesis.
@@ -566,8 +567,8 @@ justify immediate entry without a mandatory candle close or retest, including a
 supported MA10-to-MA35 traverse; no fixed crossing width or duration applies. Prolonged contraction
 with stalled progress or repeated recrosses is not continuation merely because
 old MA order and ABOVE/BELOW persist. If no structural entry edge exists, prefer
-WAIT; small risk cannot repair it. If a limited structural edge exists, compare
-smaller allocation and a nearer first TP before the actual obstacle.
+WAIT; small risk cannot repair it. A limited but supported edge still needs a
+grounded reachable target path; use the preceding edge-before-size sequence.
 In calculated review, use host-calculated candidate economics; do not discard
 a structurally justified candidate solely on an estimated-cost impression before
 that calculation. The host still enforces economic and safety limits. Keep SL at structural

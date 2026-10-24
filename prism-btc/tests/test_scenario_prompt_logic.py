@@ -17,9 +17,9 @@ def test_user_approved_flexible_management_prompt_version_is_pinned():
     from live.scenario_llm import FLAT_ENTRY_PROMPT
     # 2026-10-23: distinguish actual confirmed progression from a forming move.
     expected = {
-        'SYSTEM_PROMPT': '5179b3c75b3a5001fdcbf0aca97a99f1a923becc1253e2de304fe9a41fdb4d3f',
+        'SYSTEM_PROMPT': '28a7abb47434150354102164fd6cfe74ba87a0488d12b83fc2d137d9fccdc3f2',
         'MA_STRUCTURE_PROMPT': 'e133d909aaf1583ad364326732b3c7e8025b974ef87e7e18b4bd0ef9a78ab76f',
-        'FLAT_ENTRY_PROMPT': '901e83d231b213d78d182039ee0ecf0fd738e99af2525e609a309cf2042d0c25',
+        'FLAT_ENTRY_PROMPT': '96ddec6f2324e6771f813b3fa049b2d63dd23151c07d9b983281d9b0af3fdac6',
     }
     for name, prompt in [('SYSTEM_PROMPT', SYSTEM_PROMPT), ('MA_STRUCTURE_PROMPT', MA_STRUCTURE_PROMPT),
                          ('FLAT_ENTRY_PROMPT', FLAT_ENTRY_PROMPT)]:

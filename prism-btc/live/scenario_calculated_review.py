@@ -43,8 +43,8 @@ shrink a structural SL to make size fit. A candidate may fail host risk validati
 it will remain visible but cannot be selected. If no grounded candidate exists,
 return an empty candidates list and a qualitative
 reason identifying missing structure or evidence, not invented arithmetic.
-Economic objections alone must submit a candidate for host calculation, not use
-an empty list to bypass calculation. First recovery observation stays WAIT only,
+Submit structurally grounded candidates for host cost comparison despite uncertain
+fees; calculation is not a reason to invent an edge or select a trade. First recovery observation stays WAIT only,
 with empty candidates. Candidate submission is not an order or permission
 to trade. Unknown real fees never authorize invented net-reward arithmetic.
 For a new flat OPEN, consider TP, optional structural-weakening partial stops and
@@ -144,7 +144,9 @@ unknown; a projection cannot replenish risk or grant stop-restoration permission
 Unknown actual future fees alone are not a new automatic WAIT gate; evaluate the
 supplied reserve-based comparisons without inventing exact net profit or an edge.
 Pure wire/economic validation is NOT recovery authorization or execution evidence.
-Candidate eligible=true is selectable when its token is in the response enum;
+Candidate eligible=true is selectable when its token is in the response enum.
+Selectable is not evidence of an entry edge: compare current progress, target
+access, obstacles and cost uncertainty before considering size versus WAIT;
 eligible=false is excluded. allocation_receipt.executable=false and order-free
 receipt flags mean the calculation cannot submit orders, NOT candidate rejection.
 Do not use those authority flags as a reason to WAIT on an eligible candidate.
@@ -768,11 +770,11 @@ def _bind_model_wrapper(receipt, wrapper, extracted):
 def allocation_system_prompt(base):
     # Replace only new-entry sizing instructions; holding/exit quantities and
     # all directional, lifecycle and safety instructions remain unchanged.
-    base = base.replace("Leverage is FIXED 10, not confidence-dependent. Allocate less quantity to weaker\n"
-        "evidence. Set the structural invalidation first, then size down for the host\n"
+    base = base.replace("Leverage is FIXED 10, not confidence-dependent. Only after justifying a new entry,\n"
+        "size for its remaining uncertainty and structural invalidation within the host\n"
         "risk cap including costs; recovery reduces quantity, not automatically the",
-        "Leverage is FIXED 10, not confidence-dependent. Allocate less new-entry risk to weaker\n"
-        "evidence. Set structural invalidation first, then choose allocation_fraction;\n"
+        "Leverage is FIXED 10, not confidence-dependent. Only after justifying a new entry,\n"
+        "choose allocation_fraction for its remaining uncertainty and structural invalidation;\n"
         "the host calculates size including costs; recovery reduces size, not automatically the")
     base = base.replace("quantity must be a multiple of quantity_step and satisfy minimum_quantity and\n"
         "minimum_notional. Round proposed quantity DOWN, never squeeze SL to fit more size.",
