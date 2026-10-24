@@ -33,7 +33,7 @@ def test_mirrored_structural_inputs_keep_both_phases_and_host_contract(side, pat
         for clause in (
             "old MA order and ABOVE/BELOW persist",
             "If no structural entry edge exists, prefer WAIT; small risk cannot repair it",
-            "nearer first TP before the actual obstacle",
+            "grounded reachable target path; use the preceding edge-before-size sequence",
             "In calculated review, use host-calculated candidate economics; do not discard",
             "a structurally justified candidate solely on an estimated-cost impression before that calculation",
             "The host still enforces economic and safety limits",
