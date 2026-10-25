@@ -551,7 +551,10 @@ class ScenarioDemoBroker(ScenarioExecution):
             accounting_status="confirmed" if financial_ok else "pending", protection_ok=protection,
             legacy_fenced=observed["legacy_fenced"], pending_entries=pending, positions=accounting["positions"],
             unknown_intents=any(c["status"] == "UNKNOWN" or not c["evidence"] for c in children))
-        return dict(entry_thesis=initial_entry_evidence, stop_policy=stop_policy, scenario_risk_fraction=fraction, conditional_entry_version=1, account_version=observed["account_version"],legacy_fenced=observed["legacy_fenced"],
+        from live.scenario_incident_epoch import new_risk_blocked, historical
+        incident_blocked = new_risk_blocked(self)
+        return dict(historical_unsettled=historical(self.conn), incident_epoch_blocked=incident_blocked,
+            entry_thesis=initial_entry_evidence, stop_policy=stop_policy, scenario_risk_fraction=fraction, conditional_entry_version=1, account_version=observed["account_version"],legacy_fenced=observed["legacy_fenced"],
             **({'management_quarantine': management} if management else {}),
             **({'management_quarantine_block': management_block} if management_block else {}),
             **reduction_status,
@@ -571,7 +574,7 @@ class ScenarioDemoBroker(ScenarioExecution):
             price_tick=float(instrument["tick"]),quantity_step=float(instrument["step"]),
             minimum_quantity=float(instrument["minimum"]),minimum_notional=float(instrument["notional"]),
             market_maximum_quantity=float(instrument["market_maximum"]),
-            protection_ok=protection,new_risk_blocked=not self._new_risk_enabled() or not financial_ok or not daily.get("new_risk_allowed",False),
+            protection_ok=protection,new_risk_blocked=incident_blocked or not self._new_risk_enabled() or not financial_ok or not daily.get("new_risk_allowed",False),
             initial_equity=active["initial_equity"] if active else observed["equity"],mark_price=observed["mark_price"],
             previous_hard_stop=active["hard_stop"] if active else None,positions=accounting["positions"],pending_entries=pending,
             realized_loss=accounting["realized_loss"],fees_paid=accounting["fees_paid"],funding_paid=accounting["funding_paid"],
@@ -629,6 +632,8 @@ class ScenarioDemoBroker(ScenarioExecution):
                 self._daily(observed)
             flat_verified=bool(self.execution_enabled and
                 observed["exchange_flat"] and not observed["open_orders"] and not observed["legacy_fenced"])
+            from live.scenario_incident_epoch import monitor
+            monitor(self)
             return dict(intents=[],settlement=None,observation=observed,notices=self._pending_notices(),
                 protection_confirmed=flat_verified,
                 protection_status="verified_flat_no_exposure" if flat_verified else "not_managed_by_scenario_adapter")
@@ -666,12 +671,14 @@ class ScenarioDemoBroker(ScenarioExecution):
         try:
             daily=self._daily(observed)
             state=json.loads(self.conn.execute("SELECT body FROM llm_scenario_state WHERE id=1").fetchone()[0])
+            from live.scenario_incident_epoch import halted as incident_halted
+            state['incident_halted'] = incident_halted(self.conn)
             from live.scenario_recovery import authorize_pending, managed_permit, normal_permission, risk_fraction
             from live.scenario_pending_renewal import load
             waiting_lease = load(self.conn, active)
             recovery_pending = authorize_pending(state, active, self.clock(),
                 waiting_deadline=waiting_lease['until'] if waiting_lease else None)
-            halted=not self._new_risk_enabled() or (state.get("breaker",{}).get("blocked",False) and not recovery_pending) or not daily.get("new_risk_allowed",False)
+            halted=state['incident_halted'] or not self._new_risk_enabled() or (state.get("breaker",{}).get("blocked",False) and not recovery_pending) or not daily.get("new_risk_allowed",False)
             permit = managed_permit(state, active)
             if permit:
                 # Every managed stage retains its immutable scenario budget.
@@ -818,6 +825,27 @@ class ScenarioDemoBroker(ScenarioExecution):
             except Exception:
                 unknown = True
             children = self.children(active["scenario_id"])
+        # Do not let historical REST delay any current protection, cancellation,
+        # committed EXIT or owned-quantity emergency reduction above.
+        from live.scenario_incident_epoch import monitor, halted as incident_halted
+        monitor(self)
+        if self.execution_enabled and incident_halted(self.conn):
+            for child in self.children(active['scenario_id']):
+                if child['kind'] == 'entry' and child['status'] != 'TERMINAL':
+                    try:
+                        self._cancel(child)
+                    except Exception:
+                        unknown = True
+            # A cancellation can race a fill. Reconcile its exact evidence and
+            # keep Full SL on the actual owned remainder, never reverse it.
+            observed = self.capture_account()
+            if not observed['exchange_flat']:
+                try:
+                    observed = self._ensure_protection(observed, active['hard_stop'], active['side'])
+                except Exception:
+                    unknown = True
+            protection = self._verify_protection(observed, active['hard_stop'], active['side'])
+            children = self.children(active['scenario_id'])
         items=[]
         for (ident,body) in self.conn.execute("SELECT id,payload FROM llm_scenario_intents WHERE scenario_id=?",(active["scenario_id"],)).fetchall():
             payload=json.loads(body)

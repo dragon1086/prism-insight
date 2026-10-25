@@ -28,7 +28,7 @@ def _halted_scenario_conn():
         {"version": 1, "state": "active", "main_uid": "123"}),))
     conn.execute("CREATE TABLE llm_scenario_state(id INTEGER,body TEXT)")
     conn.execute("INSERT INTO llm_scenario_state VALUES(1,?)", (json.dumps({"active": None}),))
-    conn.execute("CREATE TABLE llm_scenario_intents(status TEXT)")
+    conn.execute("CREATE TABLE llm_scenario_intents(id TEXT PRIMARY KEY,scenario_id TEXT,payload TEXT,status TEXT,evidence TEXT)")
     tracking.set_meta(conn, "scenario_input_asof_ms", int((_NOW.timestamp()-3600)*1000), "demo")
     for lane, status in (("decision", "blocked"), ("protection", "protection_checked")):
         tracking.set_meta(conn, "scenario_health_"+lane, json.dumps({
@@ -115,7 +115,7 @@ def test_flat_halt_never_masks_uncertain_exposure_or_invalid_market(fault):
         conn.execute("UPDATE llm_scenario_state SET body=?", (json.dumps({"active": {}}) if fault == "active" else "{}",))
     elif fault in {"pending", "live", "unknown_order", "null_order"}:
         status = {"pending": "PENDING", "live": "LIVE_RECONCILED", "unknown_order": "UNKNOWN", "null_order": None}[fault]
-        conn.execute("INSERT INTO llm_scenario_intents VALUES(?)", (status,))
+        conn.execute("INSERT INTO llm_scenario_intents(id,scenario_id,payload,status) VALUES('intent-1','scenario-1','{}',?)", (status,))
     elif fault == "missing_market":
         conn.execute("DELETE FROM btc_meta WHERE key='scenario_input_asof_ms'")
     else:

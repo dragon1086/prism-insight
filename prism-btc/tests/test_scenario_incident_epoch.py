@@ -1,0 +1,686 @@
+"""Actual broker/runtime incident recovery; no network or production state."""
+import copy
+import json
+import os
+import sqlite3
+
+import pytest
+
+from live import scenario_incident_epoch as policy
+from live.scenario_broker import ScenarioDemoBroker
+from live.scenario_control import legacy_entries_allowed, legacy_management_allowed, read_control
+from live.scenario_management_quarantine import digest
+from live.scenario_runtime import ScenarioRuntime
+from tests.test_scenario_management_quarantine_runtime import incident  # noqa: F401
+
+
+@pytest.fixture
+def flat_incident(incident, monkeypatch):  # noqa: F811
+    i = incident
+    i['authorize']()
+    runtime, broker, exchange = i['runtime'], i['broker'], i['exchange']
+    runtime.propose = lambda s, c: dict(i['model'](s, c), action='EXIT')
+    assert runtime.tick()['status'] == 'intent_pending'
+    exit_child = next(c for c in broker.children('s1') if c['kind'] == 'exit')
+    exchange.fill(exit_child['link_id'], .05)
+    for child in broker.children('s1'):
+        if child['link_id'] != i['original']['children']['link_id']:
+            broker._query_child(child)
+    assert float(exchange.size) == 0
+    monkeypatch.setattr(policy, 'SCENARIO', 's1')
+    monkeypatch.setattr(policy, 'UNKNOWN', i['original']['children']['link_id'])
+    from live import scenario_provenance
+    loaded_parity = scenario_provenance._loaded_parity
+    # Test-only incident identities differ from disk constants. Do not claim
+    # loaded-code verification for that module, or weaken the production guard.
+    monkeypatch.setattr(scenario_provenance, '_loaded_parity', lambda name, source, selected=None:
+        'UNKNOWN' if name == 'live/scenario_incident_epoch.py' else loaded_parity(name, source, selected))
+    # The fake supports BTC only. Empty other categories are explicit complete
+    # responses, not an omitted category or a trusted boolean.
+    positions, orders = exchange.get_positions, exchange.get_open_orders
+    from tests.test_scenario_broker import reply
+    exchange.get_positions = lambda **kw: (reply([]) if kw.get('category') != 'linear' or kw.get('settleCoin') == 'USDC' else positions(**kw))
+    exchange.get_open_orders = lambda **kw: (reply([]) if kw.get('category') != 'linear' or kw.get('settleCoin') == 'USDC' else orders(**kw))
+    executions = exchange.get_executions
+    def scoped_executions(**kw):
+        response = executions(**kw)
+        response['result']['list'] = [r for r in response['result']['list']
+            if kw.get('startTime', 0) <= int(r['execTime']) <= kw.get('endTime', 2**63-1)]
+        return response
+    exchange.get_executions = scoped_executions
+    path = broker.conn.execute('PRAGMA database_list').fetchone()[2]
+    code = policy.code_digest()
+    proof = dict(captured_at=i['now'][0], host=os.uname().nodename, database=path,
+        scheduler_before='decision-and-protection-enabled', scheduler_after='both-stopped',
+        process_inventory_before='pid=2147483646 command=scenario_runner.py',
+        process_inventory_after='no runner processes; fixture controlled process inventory',
+        launcher_manifest=dict(epoch_protocol=1, code_sha256=code),
+        stopped_workers=[dict(pid=2147483646, command='scenario_runner.py', started_at=1,
+                              termination_evidence='waitpid collected (synthetic fixture)')])
+    approval = dict(approval_id='separate-cutover-approval', scenario_id='s1',
+        unknown_link_id=policy.UNKNOWN, main_uid='123', endpoint=exchange.endpoint,
+        database=path, symbol='BTCUSDT', position_idx=0, code_sha256=code,
+        residual_hidden_order_risk_accepted=True, issued_at=i['now'][0],
+        expires_at=i['now'][0]+3600, epoch_id='new-observation-epoch',
+        incident_sha256=digest(policy._snapshot(broker)), quiescence_sha256=digest(proof))
+    i.update(approval=approval, proof=proof, old_state=runtime.state(),
+             old_intents=list(broker.conn.execute('SELECT * FROM llm_scenario_intents')),
+             old_children=copy.deepcopy(broker.children('s1')))
+    exchange.writes.clear()
+    return i
+
+
+def transition(i):
+    return policy.cutover(i['broker'], approval=i['approval'], quiescence_probe=lambda: i['proof'])
+
+
+def restarted(i):
+    return ScenarioDemoBroker(i['broker'].conn, session=i['exchange'], expected_main_uid='123',
+                              clock=lambda: i['now'][0], execution_enabled=True)
+
+
+def test_atomic_separation_preserves_unknown_intents_contract_and_daily(flat_incident):
+    i = flat_incident
+    before_daily = i['broker']._daily(i['broker'].capture_account())
+    result = transition(i)
+    conn = i['broker'].conn
+    assert list(conn.execute('SELECT * FROM llm_scenario_intents')) == i['old_intents']
+    assert i['broker'].children('s1') == i['old_children']
+    assert conn.execute('SELECT count(*) FROM llm_scenario_settlements').fetchone()[0] == 0
+    assert i['runtime'].state()['active'] is None
+    assert i['runtime'].state()['breaker'] == i['old_state']['breaker']
+    assert result['old_state'] == i['old_state']
+    assert read_control(conn)['version'] == 2
+    assert not legacy_entries_allowed(conn) and not legacy_management_allowed(conn)
+    assert not policy.pending(conn)
+    assert policy.historical(conn)[0]['status'] == 'HISTORICAL_UNSETTLED'
+    current = restarted(i)
+    current.reconcile()  # Explicit observation; context itself never polls history.
+    context = current.context()
+    assert context['scenario_risk_fraction'] <= .005
+    assert not context['incident_epoch_blocked']
+    assert current._daily(current.capture_account()) == before_daily
+    assert i['exchange'].writes == []
+
+
+def test_idempotent_approval_returns_receipt_without_reprobing(flat_incident):
+    i = flat_incident
+    first = transition(i)
+    assert policy.cutover(i['broker'], approval=i['approval'], quiescence_probe=None) == first
+    altered = dict(i['approval'], approval_id='different')
+    with pytest.raises(ValueError, match='approval_reused'):
+        policy.cutover(i['broker'], approval=altered, quiescence_probe=None)
+
+
+def test_snapshot_scenario_filter_remains_a_bound_value(flat_incident, monkeypatch):
+    broker = flat_incident['broker']
+    baseline = policy._snapshot(broker)
+    monkeypatch.setattr(policy, 'SCENARIO', "s1' OR 1=1 --")
+    snapshot = policy._snapshot(broker)
+    assert all(not rows for table, rows in snapshot.items() if table.startswith('llm_scenario_'))
+    assert snapshot['management'] == baseline['management']
+
+
+@pytest.mark.parametrize('table', [
+    'llm_scenario_intents', 'llm_scenario_children', 'llm_scenario_reductions',
+    'llm_scenario_entry_contracts', 'llm_scenario_pending_leases',
+])
+def test_snapshot_requires_every_fixed_schema(flat_incident, table):
+    broker = flat_incident['broker']
+    statements = {
+        'llm_scenario_intents': 'DROP TABLE llm_scenario_intents',
+        'llm_scenario_children': 'DROP TABLE llm_scenario_children',
+        'llm_scenario_reductions': 'DROP TABLE llm_scenario_reductions',
+        'llm_scenario_entry_contracts': 'DROP TABLE llm_scenario_entry_contracts',
+        'llm_scenario_pending_leases': 'DROP TABLE llm_scenario_pending_leases',
+    }
+    broker.conn.execute(statements[table])
+    with pytest.raises(ValueError, match='incident_epoch_schema_missing'):
+        policy._snapshot(broker)
+
+
+@pytest.mark.parametrize('mutation', ['expired', 'hash', 'uid', 'endpoint', 'risk_acceptance', 'probe', 'worker_alive', 'inflight', 'extra_intent'])
+def test_denials_do_not_separate_or_post(flat_incident, mutation):
+    i = flat_incident
+    if mutation == 'expired':
+        i['approval']['expires_at'] = i['now'][0]
+    elif mutation == 'hash':
+        i['approval']['incident_sha256'] = '0'*64
+    elif mutation == 'uid':
+        i['approval']['main_uid'] = '999'
+    elif mutation == 'endpoint':
+        i['approval']['endpoint'] = 'https://api.bybit.com'
+    elif mutation == 'risk_acceptance':
+        i['approval']['residual_hidden_order_risk_accepted'] = False
+    elif mutation == 'probe':
+        i['proof']['process_inventory_after'] = ''
+    elif mutation == 'worker_alive':
+        i['proof']['stopped_workers'][0]['pid'] = os.getpid()
+        i['approval']['quiescence_sha256'] = digest(i['proof'])
+    elif mutation == 'inflight':
+        i['broker']._incident_transport_active = True
+    else:
+        i['broker'].conn.execute("INSERT INTO llm_scenario_intents VALUES('foreign','foreign','{}','PENDING',NULL)")
+        i['broker'].conn.commit()
+    with pytest.raises(ValueError):
+        transition(i)
+    assert not policy.receipt(i['broker'].conn)
+    assert i['runtime'].state()['active'] == i['old_state']['active']
+    assert i['exchange'].writes == []
+
+
+@pytest.mark.parametrize('method,params', [
+    ('place_order', dict(orderLinkId='old', reduceOnly=True)),
+    ('cancel_order', dict(orderLinkId='old')),
+    ('set_trading_stop', dict(stopLoss='98')),
+    ('amend_order', dict(orderLinkId='old')),
+])
+def test_old_worker_all_posts_are_sealed_after_cutover(flat_incident, method, params):
+    i = flat_incident
+    transition(i)
+    with pytest.raises(ValueError, match='stale_worker'):
+        i['broker']._write(method, **params)
+    assert i['exchange'].writes == []
+
+
+def test_epoch_read_failure_never_uses_reduce_or_cancel_fallback(flat_incident, monkeypatch):
+    i = flat_incident
+    transition(i)
+    broker = restarted(i)
+    monkeypatch.setattr(policy, 'epoch', lambda conn: (_ for _ in ()).throw(ValueError('read failure')))
+    for method in ('place_order', 'cancel_order', 'set_trading_stop'):
+        with pytest.raises(ValueError, match='read failure'):
+            broker._write(method, reduceOnly=True)
+    assert i['exchange'].writes == []
+
+
+@pytest.mark.parametrize('crash_table', ['llm_scenario_broker_evidence', 'llm_scenario_state', 'llm_scenario_control', 'llm_scenario_recovery_events'])
+def test_each_atomic_write_failure_rolls_back_without_nested_commits(flat_incident, crash_table):
+    i = flat_incident
+    conn = i['broker'].conn
+    operation = 'INSERT' if crash_table.endswith(('evidence', 'events')) else 'UPDATE'
+    # Evidence collectors may append before BEGIN; only interrupt the cutover
+    # event's INSERT, never their separate durable observation records.
+    condition = "WHEN NEW.kind='incident_epoch_v1'" if crash_table.endswith('evidence') else ''
+    from live.scenario_recovery import ensure_schema
+    ensure_schema(conn)
+    conn.execute(f"CREATE TRIGGER crash_cutover BEFORE {operation} ON {crash_table} {condition} BEGIN SELECT RAISE(ABORT,'injected crash'); END")
+    conn.commit()
+    with pytest.raises(sqlite3.IntegrityError, match='injected crash'):
+        transition(i)
+    assert not policy.receipt(conn)
+    assert i['runtime'].state() == i['old_state']
+    assert read_control(conn)['version'] == 1
+    assert i['exchange'].writes == []
+
+
+def test_late_evidence_halts_new_risk_without_mutating_old_unknown(flat_incident):
+    i = flat_incident
+    transition(i)
+    broker = restarted(i)
+    child = i['original']['children']
+    i['exchange'].orders[child['link_id']] = dict(child['request'], orderId='late-old',
+        orderStatus='Untriggered', cumExecQty='0', leavesQty=child['request']['qty'])
+    policy.monitor(broker, refresh=True)
+    assert policy.new_risk_blocked(broker)
+    assert next(c for c in broker.children('s1') if c['link_id'] == child['link_id']) == child
+    assert broker.conn.execute('SELECT count(*) FROM llm_scenario_settlements').fetchone()[0] == 0
+    assert i['exchange'].writes == []
+
+
+def new_runtime(i):
+    from live import scenario_recovery as recovery
+    from tests.test_scenario_runtime import proposal, wait_proposal
+    from tests.test_scenario_entry_contract_runtime import definition
+    broker = restarted(i)
+    price = [100.]
+    calls = []
+
+    def model(snapshot, context):
+        calls.append(copy.deepcopy(context))
+        recovery.record_model_request(system_prompt='fixture', user_prompt=json.dumps(context), response_schema={})
+        first = context['recovery']['first_observation']
+        result = wait_proposal(snapshot, context) if first else proposal(snapshot, context)
+        result.update(action_id='new-action-'+str(int(i['now'][0])), scenario_id=context['scenario_id'] or 'new-scenario')
+        if not first:
+            contract = definition('LONG')
+            contract['explicit_failure']['price'] = 98.5
+            result.update(chase=dict(max_bps=0, max_reprices=0), entry_contract=contract,
+                          thesis_assessment=None, hard_stop=98,
+                          entries=[dict(id='new-entry', price=100, quantity=.1)])
+        else:
+            result.update(entry_contract=None, thesis_assessment=None)
+        result['recovery'] = dict(decision='OBSERVE' if first else 'PROBE', reason='New numerical evidence',
+            changed_evidence=[] if first else ['timeframes.30m.closed.close'],
+            counterevidence='A reversal remains possible.', invalidation='Original hard stop invalidates premise.')
+        recovery.record_model_wire(json.dumps(result))
+        return result
+
+    runtime = ScenarioRuntime(broker.conn, broker, model,
+        lambda: dict(valid=True, as_of_ms=i['now'][0]*1000,
+            timeframes={'30m': {'closed': {'close': price[0], 'ma10': 99.}}}),
+        clock=lambda: i['now'][0], entry_contract_enabled=True)
+    return runtime, broker, price, calls
+
+
+def open_new(i):
+    transition(i)
+    i['now'][0] += 300
+    i['exchange'].now = i['now'][0]
+    runtime, broker, price, calls = new_runtime(i)
+    execute_errors = []
+    execute = broker.execute
+    def inspected_execute(*args, **kwargs):
+        try:
+            return execute(*args, **kwargs)
+        except Exception as exc:
+            execute_errors.append(repr(exc))
+            raise
+    broker.execute = inspected_execute
+    assert runtime.tick()['status'] == 'wait'
+    assert i['exchange'].writes == []
+    assert runtime.state()['recovery']['phase'] == 'OBSERVING'
+    i['now'][0] += 300
+    i['exchange'].now = i['now'][0]
+    price[0] += 1
+    outcome = runtime.tick()
+    assert outcome['status'] == 'intent_pending', outcome
+    assert runtime.state()['active']['scenario_id'] == 'new-scenario'
+    assert runtime.state()['recovery']['risk_fraction'] <= .005
+    assert runtime.state()['recovery']['auto_promotion'] is False
+    assert all(c['scenario_id'] == 'new-scenario' for c in broker.children())
+    assert len([r for kind, r in i['exchange'].writes if kind == 'place']) == 1, (outcome, execute_errors)
+    assert calls[0]['historical_unsettled'][0]['excluded_from_performance']
+    assert list(broker.conn.execute('SELECT * FROM llm_scenario_intents WHERE scenario_id=?', ('s1',))) == i['old_intents']
+    return runtime, broker
+
+
+def test_new_runtime_requires_first_observation_then_actual_changed_evidence(flat_incident):
+    open_new(flat_incident)
+
+
+def fill_new(i, broker):
+    exchange = i['exchange']
+    exchange.orders['historical-native'] = copy.deepcopy(exchange.orders['native'])
+    entry = next(c for c in broker.children() if c['kind'] == 'entry')
+    exchange.fill(entry['link_id'], .1)
+    exchange.orders['native']['orderId'] = 'new-native-id'
+    broker.reconcile()
+
+
+def test_new_filled_trade_settles_separately_and_preserves_old_unsettled(flat_incident):
+    i = flat_incident
+    runtime, broker = open_new(i)
+    fill_new(i, broker)
+    assert not policy.new_risk_blocked(broker), policy._events(broker.conn, policy.HALT)
+    new_entry_fill = i['exchange'].fills[-1]['execId']
+    i['exchange'].fill('native', .1)
+    new_exit_fill = i['exchange'].fills[-1]['execId']
+    i['now'][0] += 300
+    i['exchange'].now = i['now'][0]
+    outcome = runtime.tick()
+    assert runtime.state()['active'] is None, (outcome, broker.reconcile())
+    settlements = list(broker.conn.execute('SELECT scenario_id,evidence FROM llm_scenario_settlements'))
+    assert len(settlements) == 1 and settlements[0][0] == 'new-scenario'
+    proof = json.loads(settlements[0][1])
+    assert set(proof['execution_ids']) == {new_entry_fill, new_exit_fill}
+    assert proof['net_pnl'] == -.02
+    assert runtime.state()['recovery']['auto_promotion'] is False
+    assert list(broker.conn.execute('SELECT * FROM llm_scenario_intents WHERE scenario_id=?', ('s1',))) == i['old_intents']
+    assert broker.children('s1') == i['old_children']
+
+
+def test_late_old_order_blocks_new_risk_but_current_native_protection_remains(flat_incident):
+    i = flat_incident
+    runtime, broker = open_new(i)
+    fill_new(i, broker)
+    child = i['original']['children']
+    i['exchange'].orders[child['link_id']] = dict(child['request'], orderId='late-original',
+        orderStatus='Untriggered', cumExecQty='0', leavesQty=child['request']['qty'])
+    # Simulate a missing Full SL: independent protection must run before the
+    # historical monitor and remain allowed after the new-risk latch is set.
+    i['exchange'].stop = '0'
+    i['exchange'].orders['native']['triggerPrice'] = '0'
+    i['now'][0] += 11
+    i['exchange'].now = i['now'][0]
+    result = broker.reconcile()
+    assert result['protection_confirmed'] is True
+    assert i['exchange'].stop == '98'
+    assert policy.new_risk_blocked(broker)
+    assert broker._verify_protection(broker.capture_account(), 98, 'LONG')
+    before = len(i['exchange'].writes)
+    with pytest.raises(ValueError, match='new_risk_halted'):
+        broker._write('place_order', orderLinkId='forbidden-new-risk', reduceOnly=False)
+    assert len(i['exchange'].writes) == before
+    assert runtime.state()['active']['scenario_id'] == 'new-scenario'
+
+
+def test_lower_existing_cap_is_preserved_and_never_promoted(flat_incident):
+    from live import scenario_recovery as recovery
+    i = flat_incident
+    state = i['runtime'].state()
+    state['recovery'] = dict(risk_fraction=.002)
+    i['runtime']._save(state)
+    transition(i)
+    state = i['runtime'].state()
+    assert recovery.offered_fraction(state) == .002
+    assert recovery.risk_fraction(state, None) == .002
+    evidence = state['recovery']['stage_evidence']
+    evidence.update(window=[dict(scenario_id=str(n), settlement_hash='a'*64,
+        net_pnl=10., settled_at=1800000000.+n) for n in (1, 2)])
+    evidence.update(**recovery._window_metrics(evidence['window']))
+    assert recovery.offered_stage(state['recovery']) == 0
+
+
+@pytest.mark.parametrize('case', ['daily_halted', 'daily_missing', 'flows_missing', 'source_incomplete', 'source_order', 'source_position', 'extra_unknown', 'transport_lease'])
+def test_account_and_risk_boundaries_fail_closed(flat_incident, case):
+    i = flat_incident
+    conn = i['broker'].conn
+    from tests.test_scenario_broker import reply
+    if case == 'daily_halted':
+        raw = json.loads(conn.execute('SELECT body FROM llm_scenario_daily_accounting WHERE id=1').fetchone()[0])
+        raw['halted'] = True
+        conn.execute('UPDATE llm_scenario_daily_accounting SET body=?', (json.dumps(raw),))
+    elif case == 'daily_missing':
+        conn.execute('DELETE FROM llm_scenario_daily_accounting')
+    elif case == 'flows_missing':
+        i['exchange'].get_transaction_log = lambda **kw: dict(retCode=10001)
+    elif case.startswith('source'):
+        orders, positions = i['exchange'].get_open_orders, i['exchange'].get_positions
+        if case == 'source_incomplete':
+            i['exchange'].get_open_orders = lambda **kw: (dict(retCode=10001) if kw.get('category') == 'option' else orders(**kw))
+        elif case == 'source_order':
+            i['exchange'].get_open_orders = lambda **kw: (reply([dict(orderId='foreign', symbol='ETHUSDT')]) if kw.get('category') == 'spot' else orders(**kw))
+        else:
+            i['exchange'].get_positions = lambda **kw: (reply([dict(symbol='ETHUSDT', positionIdx=0, size='1')]) if kw.get('settleCoin') == 'USDC' else positions(**kw))
+    elif case == 'extra_unknown':
+        conn.execute("INSERT INTO llm_scenario_children VALUES('foreign','foreign','foreign','entry','e','{}','UNKNOWN',NULL,NULL,1)")
+    else:
+        policy._append(conn, policy.TRANSPORT, dict(call_id='crashed-worker', state='SENDING'), i['now'][0])
+    conn.commit()
+    with pytest.raises(Exception):
+        transition(i)
+    assert not policy.receipt(conn)
+    assert read_control(conn)['version'] == 1
+    assert i['exchange'].writes == []
+
+
+def test_one_atomic_transaction_has_no_early_commit(flat_incident):
+    i = flat_incident
+    sql = []
+    i['broker'].conn.set_trace_callback(sql.append)
+    transition(i)
+    start = next(n for n, statement in enumerate(sql) if statement == 'BEGIN IMMEDIATE')
+    assert sum(statement == 'COMMIT' for statement in sql[start:]) == 1
+    assert sql[start:].index('COMMIT') > next(n for n, statement in enumerate(sql[start:]) if 'UPDATE llm_scenario_control' in statement)
+
+
+def test_legacy_normal_runner_control_reader_rejects_epoch_v2(flat_incident):
+    from tests.test_incident_epoch_legacy_blocker import baseline_source
+    i = flat_incident
+    transition(i)
+    source = baseline_source('scenario_control')
+    namespace = {'json': json}
+    exec(compile(source, '<frozen-control-v1>', 'exec'), namespace)
+    with pytest.raises(ValueError, match='scenario_control_invalid'):
+        namespace['read_control'](i['broker'].conn)
+    assert not namespace['legacy_entries_allowed'](i['broker'].conn)
+    assert not namespace['legacy_management_allowed'](i['broker'].conn)
+
+
+def test_transport_and_final_epoch_check_hold_same_mutex(flat_incident, monkeypatch):
+    from live import shared_entry_coordinator
+    i = flat_incident
+    runtime, broker = open_new(i)
+    called = []
+    original = i['exchange'].cancel_order
+    lock_path = str(shared_entry_coordinator.database_path(broker.conn)) + '.btc-execution.lock'
+    import os
+    def cancel(**params):
+        assert (os.getpid(), lock_path) in shared_entry_coordinator._held.keys
+        assert broker._incident_transport_active is True
+        called.append(True)
+        return original(**params)
+    monkeypatch.setattr(i['exchange'], 'cancel_order', cancel)
+    entry = next(c for c in broker.children() if c['kind'] == 'entry')
+    broker._cancel(entry)
+    assert called == [True]
+    assert runtime.state()['incident_epoch'] == i['approval']['epoch_id']
+
+
+def test_old_link_rejected_even_by_current_epoch_broker(flat_incident):
+    i = flat_incident
+    _, broker = open_new(i)
+    before = len(i['exchange'].writes)
+    with pytest.raises(ValueError, match='sealed_order'):
+        broker._write('cancel_order', orderLinkId=i['original']['children']['link_id'])
+    assert len(i['exchange'].writes) == before
+
+
+def test_fresh_current_pending_does_not_inherit_historical_unknown_age(flat_incident):
+    from datetime import datetime, timezone
+    from live import healthcheck
+    i = flat_incident
+    _, broker = open_new(i)
+    now = datetime.fromtimestamp(i['now'][0]+1, timezone.utc)
+    assert healthcheck._check_execution_stalled(broker.conn, 'demo', now) is None
+
+
+@pytest.mark.parametrize('fill_race', [False, True])
+def test_halt_cancels_existing_pending_entry_and_protects_racing_fill(flat_incident, fill_race):
+    from live.scenario_recovery import authorize_pending
+    i = flat_incident
+    runtime, broker = open_new(i)
+    entry = next(c for c in broker.children() if c['kind'] == 'entry')
+    assert entry['status'] == 'LIVE'
+    policy.record_late(broker, dict(status='known HALT before next protection cycle'))
+    state = runtime.state()
+    assert not authorize_pending(dict(state, incident_halted=True), state['active'], i['now'][0])
+    original_cancel = i['exchange'].cancel_order
+    if fill_race:
+        def racing_cancel(**params):
+            i['exchange'].orders['historical-native'] = copy.deepcopy(i['exchange'].orders['native'])
+            i['exchange'].fill(entry['link_id'], .04)
+            i['exchange'].orders['native']['orderId'] = 'racing-native-id'
+            return original_cancel(**params)
+        i['exchange'].cancel_order = racing_cancel
+    before = len([r for kind, r in i['exchange'].writes if kind == 'place'])
+    result = broker.reconcile()
+    current = next(c for c in broker.children() if c['link_id'] == entry['link_id'])
+    assert current['status'] == 'TERMINAL'
+    assert current['evidence']['order']['orderStatus'] == 'Cancelled'
+    assert float(i['exchange'].size) == (.04 if fill_race else 0)
+    assert result['protection_confirmed'] is True
+    if fill_race:
+        assert broker._verify_protection(broker.capture_account(), 98, 'LONG')
+    later = [r for kind, r in i['exchange'].writes if kind == 'place'][before:]
+    assert all(r.get('reduceOnly') is True for r in later)
+
+
+def test_postcutover_unknown_link_execution_halts_even_when_orders_remain_absent(flat_incident):
+    i = flat_incident
+    transition(i)
+    broker = restarted(i)
+    i['now'][0] += 11
+    i['exchange'].fills.append(dict(execId='late-link-only', orderId='opaque-original-id',
+        orderLinkId=policy.UNKNOWN, symbol='BTCUSDT', side='Sell', execType='Trade',
+        execQty='.001', execPrice='100', execFee='.01', execTime=str(int(i['now'][0]*1000))))
+    policy.monitor(broker, refresh=True)
+    assert policy.halted(broker.conn)
+    assert policy.new_risk_blocked(broker)
+    assert next(c for c in broker.children('s1') if c['link_id'] == policy.UNKNOWN) == i['original']['children']
+    assert not broker.conn.execute('SELECT 1 FROM llm_scenario_settlements').fetchone()
+    assert any('late-link-only' in json.dumps(e) for e in policy._events(broker.conn, policy.HALT))
+
+
+def test_final_guard_and_projection_reuse_explicit_observation_without_rest(flat_incident, monkeypatch):
+    i = flat_incident
+    _, broker = open_new(i)
+    def no_rest(*args, **kwargs):
+        raise AssertionError('Historical REST was repeated in a final guard/projection.')
+    monkeypatch.setattr(broker, '_call', no_rest)
+    assert policy.monitor(broker) is broker._incident_observation
+    assert not policy.new_risk_blocked(broker)
+    policy.guard_write(broker, 'place_order', dict(reduceOnly=False, orderLinkId='unsubmitted-current'))
+    i['now'][0] += 11
+    with pytest.raises(ValueError, match='new_risk_halted'):
+        policy.guard_write(broker, 'place_order', dict(reduceOnly=False, orderLinkId='stale-current'))
+
+
+def test_current_epoch_guard_rejects_different_broker_account_without_rest(flat_incident, monkeypatch):
+    i = flat_incident
+    _, broker = open_new(i)
+    monkeypatch.setattr(broker, 'expected_main_uid', '999')
+    with pytest.raises(ValueError, match='epoch_identity_changed'):
+        policy.guard_write(broker, 'set_trading_stop', dict(stopLoss='98'))
+
+
+def test_identity_get_delay_cannot_send_entry_after_final_observation_expires(flat_incident, monkeypatch):
+    i = flat_incident
+    _, broker = open_new(i)
+    identity = broker._identity
+    def delayed_identity():
+        identity()
+        i['now'][0] += 11
+    monkeypatch.setattr(broker, '_identity', delayed_identity)
+    before = len(i['exchange'].writes)
+    with pytest.raises(ValueError):
+        broker._write('place_order', category='linear', symbol='BTCUSDT', positionIdx=0,
+            orderLinkId='stale-after-identity', reduceOnly=False, side='Buy', qty='.1', orderType='Limit', price='100')
+    assert len(i['exchange'].writes) == before
+
+
+def test_known_halt_cancellation_precedes_slow_historical_gets(flat_incident, monkeypatch):
+    i = flat_incident
+    _, broker = open_new(i)
+    entry = next(c for c in broker.children() if c['kind'] == 'entry')
+    policy.record_late(broker, dict(status='known historical HALT'))
+    broker._incident_observation = None
+    query = broker._query_child
+    def delayed_historical(child):
+        if child['scenario_id'] == 's1':
+            assert i['exchange'].orders[entry['link_id']]['orderStatus'] == 'Cancelled'
+            i['now'][0] += 80
+        return query(child)
+    monkeypatch.setattr(broker, '_query_child', delayed_historical)
+    broker.reconcile()
+    assert i['exchange'].orders[entry['link_id']]['orderStatus'] == 'Cancelled'
+    assert broker._incident_observation is None
+    assert policy.halted(broker.conn)
+
+
+def test_current_protection_precedes_slow_historical_gets(flat_incident, monkeypatch):
+    i = flat_incident
+    _, broker = open_new(i)
+    fill_new(i, broker)
+    i['exchange'].stop = '0'
+    i['exchange'].orders['native']['triggerPrice'] = '0'
+    broker._incident_observation = None
+    query = broker._query_child
+    def delayed_historical(child):
+        if child['scenario_id'] == 's1':
+            assert i['exchange'].stop == '98'
+            i['now'][0] += 80
+        return query(child)
+    monkeypatch.setattr(broker, '_query_child', delayed_historical)
+    result = broker.reconcile()
+    assert result['protection_confirmed'] is True
+    assert policy.new_risk_blocked(broker)
+
+
+def test_rolling_financial_coverage_passes_day_seven_without_resetting_incident(flat_incident):
+    i = flat_incident
+    transition(i)
+    broker = restarted(i)
+    for day in range(9):
+        policy.monitor(broker, refresh=True)
+        assert not policy.halted(broker.conn), (day, policy._events(broker.conn, policy.HALT))
+        assert not policy.new_risk_blocked(broker)
+        i['now'][0] += 86400
+    assert next(c for c in broker.children('s1') if c['link_id'] == policy.UNKNOWN) == i['original']['children']
+    assert len(policy._events(broker.conn, policy.FINANCE_CURSOR)) == 9
+
+
+def test_unobserved_financial_gap_beyond_api_window_remains_fail_closed(flat_incident):
+    i = flat_incident
+    transition(i)
+    broker = restarted(i)
+    i['now'][0] += 8*86400
+    policy.monitor(broker, refresh=True)
+    assert policy.halted(broker.conn)
+    assert policy.new_risk_blocked(broker)
+    assert not policy._events(broker.conn, policy.FINANCE_CURSOR)
+
+
+def test_runtime_overlong_historical_observation_skips_model_and_all_new_posts(flat_incident, monkeypatch):
+    i = flat_incident
+    transition(i)
+    i['now'][0] += 300
+    runtime, broker, _, calls = new_runtime(i)
+    query = broker._query_child
+    def delayed_history(child):
+        if child['scenario_id'] == 's1':
+            i['now'][0] += 80
+        return query(child)
+    monkeypatch.setattr(broker, '_query_child', delayed_history)
+    outcome = runtime.tick()
+    assert outcome['status'] == 'blocked', outcome
+    assert calls == []
+    assert i['exchange'].writes == []
+    assert policy.halted(broker.conn)
+
+
+def test_owned_emergency_exit_fallback_precedes_delayed_historical_observation(flat_incident, monkeypatch):
+    i = flat_incident
+    _, broker = open_new(i)
+    fill_new(i, broker)
+    i['exchange'].stop = '0'
+    i['exchange'].orders['native']['triggerPrice'] = '0'
+    broker._incident_observation = None
+    def unavailable_protection(*args):
+        raise ValueError('Native update unavailable in controlled fixture.')
+    monkeypatch.setattr(broker, '_ensure_protection', unavailable_protection)
+    query = broker._query_child
+    def delayed_history(child):
+        if child['scenario_id'] == 's1':
+            assert any(c['kind'] == 'exit' and c['local_id'].startswith('hard-stop-race:') for c in broker.children())
+            i['now'][0] += 80
+        return query(child)
+    monkeypatch.setattr(broker, '_query_child', delayed_history)
+    broker.reconcile()
+    emergency = [c for c in broker.children() if c['kind'] == 'exit']
+    assert len(emergency) == 1 and emergency[0]['request']['reduceOnly'] is True
+    assert policy.halted(broker.conn)
+
+
+def test_late_original_timestamp_fee_correction_is_watched_after_day_seven(flat_incident):
+    i = flat_incident
+    transition(i)
+    broker = restarted(i)
+    for _ in range(8):
+        policy.monitor(broker, refresh=True)
+        assert not policy.halted(broker.conn)
+        i['now'][0] += 86400
+    i['exchange'].fills[0]['execFee'] = '.02'
+    policy.monitor(broker, refresh=True)
+    assert policy.halted(broker.conn)
+    assert any('archived_financial_sources' in e.get('evidence', {}) for e in policy._events(broker.conn, policy.HALT))
+    assert not broker.conn.execute('SELECT 1 FROM llm_scenario_settlements').fetchone()
+
+
+@pytest.mark.parametrize('gap_days', [6.5, 7.0])
+def test_rolling_overlap_never_pushes_covered_gap_beyond_api_window(flat_incident, gap_days):
+    i = flat_incident
+    transition(i)
+    broker = restarted(i)
+    for _ in range(3):
+        policy.monitor(broker, refresh=True)
+        assert not policy.halted(broker.conn)
+        i['now'][0] += 86400
+    previous = policy._events(broker.conn, policy.FINANCE_CURSOR)[-1]['body']['end_ms']
+    i['now'][0] = previous/1000 + gap_days*86400
+    policy.monitor(broker, refresh=True)
+    assert not policy.halted(broker.conn)
+    latest = policy._events(broker.conn, policy.FINANCE_CURSOR)[-1]['body']
+    assert latest['end_ms']-latest['start_ms'] <= 7*86400*1000
+    assert latest['start_ms'] <= previous

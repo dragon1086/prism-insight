@@ -192,6 +192,9 @@ def test_new_exchange_attempt_captures_unknown_not_fill(tmp_path):
     executor = Execution()
     executor.conn = conn
     executor.session = Session()
+    executor.clock = lambda: 1800000000.
+    conn.execute('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body TEXT)')
+    executor._init_execution(True)
     with audit.run_capture(conn):
         with pytest.raises(ValueError, match='submission_unknown'):
             executor._write('place_order', orderLinkId='child-1', qty='1')
@@ -218,6 +221,9 @@ def test_optional_audit_clock_failure_never_blocks_exchange_ack(monkeypatch):
     executor = Execution()
     executor.conn = sqlite3.connect(':memory:')
     executor.session = Session()
+    executor.clock = lambda: 1800000000.
+    executor.conn.execute('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body TEXT)')
+    executor._init_execution(True)
     monkeypatch.setattr(audit.time, 'time', fail)
     assert executor._write('place_order')['result']['orderId'] == 'ack'
     assert calls == ['identity', 'place_order']

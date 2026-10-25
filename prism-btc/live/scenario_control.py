@@ -21,9 +21,15 @@ def read_control(conn):
         raise ValueError("scenario_control_missing")
     value=json.loads(row[0])
     if (not isinstance(value,dict) or value.get("state") not in {"transition","active","paused"}
-            or value.get("version") != 1 or not isinstance(value.get("main_uid"),str)
+            or value.get("version") not in {1, 2} or not isinstance(value.get("main_uid"),str)
             or not value["main_uid"].isascii() or not value["main_uid"].isdigit()):
         raise ValueError("scenario_control_invalid")
+    if value['version'] == 2:
+        if (set(value) != {'version', 'state', 'main_uid', 'epoch_id', 'approval_sha256', 'epoch_protocol'}
+                or value['state'] not in {'active', 'paused'} or value['epoch_protocol'] != 1
+                or not isinstance(value['epoch_id'], str) or not value['epoch_id']
+                or not isinstance(value['approval_sha256'], str) or len(value['approval_sha256']) != 64):
+            raise ValueError('scenario_epoch_control_invalid')
     return value
 
 
@@ -38,7 +44,7 @@ def legacy_management_allowed(conn):
     # Malformed policy fences all writes: never let old code touch a new position.
     try:
         control=read_control(conn)
-        return control is None or control["state"] == "transition"
+        return control is None or control['version'] == 1 and control["state"] == "transition"
     except Exception:
         return False
 
@@ -88,7 +94,8 @@ def flat_handoff_probe(conn,broker,swing_session,expected_swing_uid,*,clock=time
     identity=swing_session.get_api_key_information()
     if identity.get("retCode")!=0 or str(identity.get("result",{}).get("userID"))!=expected_swing_uid:
         raise ValueError("swing_identity_not_confirmed")
-    call=lambda method,**params:getattr(swing_session,method)(**params)
+    def call(method, **params):
+        return getattr(swing_session, method)(**params)
     positions=read_complete(call,"get_positions",category="linear",symbol="BTCUSDT")
     orders=read_complete(call,"get_open_orders",category="linear",symbol="BTCUSDT")
     if positions is None or orders is None:

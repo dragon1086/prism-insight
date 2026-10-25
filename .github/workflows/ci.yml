@@ -309,6 +309,8 @@ jobs:
             prism-btc/tests/test_scenario_limit_price_execution.py \
             prism-btc/tests/test_scenario_runner.py \
             prism-btc/tests/test_scenario_provenance.py \
+            prism-btc/tests/test_scenario_incident_epoch.py \
+            prism-btc/tests/test_incident_epoch_legacy_blocker.py \
             prism-btc/tests/test_review_policy_imports.py \
             prism-btc/tests/test_scenario_model_input.py \
             prism-btc/tests/test_scenario_model_input_gaps.py \

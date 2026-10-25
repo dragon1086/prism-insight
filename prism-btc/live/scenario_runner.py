@@ -131,6 +131,8 @@ def record_health(conn,result,*,snapshot=None,loop=None,clock=time.time):
     # Separate latest outcomes: protection success must not overwrite a failed
     # decision loop, and a legacy heartbeat is never this evidence.
     if loop in {"decision", "protection"}:
+        from live.scenario_incident_epoch import historical
+        excluded = historical(conn)
         management = {}
         authority = result.get('management_quarantine')
         if (loop == 'decision' and status == 'wait' and result.get('market_observation_only') is not True
@@ -148,6 +150,7 @@ def record_health(conn,result,*,snapshot=None,loop=None,clock=time.time):
                        if result.get('market_observation_only') is True else {})
         tracking.set_meta(conn,"scenario_health_"+loop,json.dumps({
             "at":clock(),"status":status,"reason":result.get("reason"),
+            "historical_unsettled":excluded,
             "verified_flat_halt":result.get("verified_flat_halt") is True,
             "verified_flat":result.get("verified_flat") is True, **observation, **management},allow_nan=False),"demo")
     if (snapshot is not None and snapshot.get("valid") is True

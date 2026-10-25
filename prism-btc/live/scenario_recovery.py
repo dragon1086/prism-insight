@@ -146,8 +146,11 @@ def record_model_wire(raw_text, *, model=None, effort=None, fast=None):
 
 def hard_guards(state, ctx):
     breaker = state.get("breaker", {})
-    return (breaker.get("blocked") is True
-            and set(breaker.get("reasons", [])) == {"three_losses"}
+    permitted_breaker = (breaker.get("blocked") is True
+                         and set(breaker.get("reasons", [])) == {"three_losses"})
+    if state.get('incident_epoch') and not breaker.get('blocked') and not breaker.get('reasons'):
+        permitted_breaker = True
+    return (permitted_breaker
             and ctx.get("legacy_fenced") is False
             and ctx.get("protection_ok") is True
             and ctx.get("accounting_status") == "confirmed"
@@ -369,6 +372,9 @@ def migrate(conn, state, ctx, now):
 def offered_stage(recovery):
     stage = recovery.get("stage", 0)
     evidence = recovery.get("stage_evidence", {})
+    if recovery.get('auto_promotion') is False:
+        if stage != 0:
+            raise ValueError('incident_epoch_stage_invalid')
     if not isinstance(evidence, dict):
         raise ValueError("normalization_state_invalid")
     if recovery.get("policy_version") == 2 and evidence.get("promotion_rule_version") == 3:
@@ -383,7 +389,8 @@ def offered_stage(recovery):
         equity = evidence.get("stage_start_equity")
         if (equity is None and evidence["window"]) or (equity is not None and (not _number(equity) or equity <= 0)):
             raise ValueError("normalization_state_invalid")
-        if (stage < 2 and metrics["positive_count"] >= 2 and metrics["net_pnl"] > 0
+        if (recovery.get('auto_promotion') is not False and stage < 2
+                and metrics["positive_count"] >= 2 and metrics["net_pnl"] > 0
                 and metrics["max_realized_drawdown"] <= STAGE_FRACTIONS[stage]*equity):
             return stage+1
         return stage
@@ -420,6 +427,8 @@ def offered_stage(recovery):
 
 def offered_fraction(state):
     recovery = state.get("recovery", {})
+    if state.get('incident_epoch'):
+        return min(.005, recovery['risk_fraction'])
     return STAGE_FRACTIONS[offered_stage(recovery)] if recovery.get("policy_version") == 2 else RISK_FRACTION
 
 
@@ -523,6 +532,9 @@ def prepare_input(conn, state, context, snapshot, slot, now):
                             "prospective_filled_closed_confirmed_net_pnl_positive"),
                         risk_fraction=offered_fraction(state), one_attempt_only=False,
                         automatic_normal_resume=True, policy_version=2)
+        if recovery.get('auto_promotion') is False:
+            metadata.update(automatic_stage_promotion=False, required_positive_settlements=None,
+                            promotion_basis='DISABLED_INCIDENT_EPOCH')
     context["recovery"] = metadata
     context["recovery_contract_version"] = recovery.get("policy_version", 1)
     context["scenario_risk_fraction"] = metadata["risk_fraction"]
@@ -625,6 +637,8 @@ def consume(conn, state, payload, context, slot, now):
 
 def risk_fraction(state, scenario_id):
     recovery = state.get("recovery", {})
+    if state.get('incident_epoch'):
+        return min(.005, recovery['risk_fraction'])
     if (scenario_id and recovery.get("scenario_id") == scenario_id
             and recovery.get("policy_version", 1) == 1
             and recovery.get("phase") in {"CONSUMED", "DONE_REVIEW_REQUIRED"}):
@@ -646,8 +660,11 @@ def managed_permit(state, active):
             or permit.get("initial_equity") != active.get("initial_equity")):
         return None
     fraction = permit.get("risk_fraction", RISK_FRACTION)
+    incident_fraction = bool(state.get('incident_epoch') == permit.get('epoch_id')
+        and permit.get('auto_promotion') is False and permit.get('stage') == 0
+        and _number(fraction) and 0 < fraction <= .005)
     equity = permit.get("initial_equity")
-    if (not _number(equity) or equity <= 0 or fraction not in STAGE_FRACTIONS
+    if (not _number(equity) or equity <= 0 or (fraction not in STAGE_FRACTIONS and not incident_fraction)
             or not _number(permit.get("budget"))
             or not math.isclose(permit["budget"], equity * fraction, abs_tol=1e-8)):
         return None
@@ -657,7 +674,7 @@ def managed_permit(state, active):
         return None
     if permit.get("policy_version") == 2 and (
             type(permit.get("stage")) is not int or permit["stage"] not in range(3)
-            or fraction != STAGE_FRACTIONS[permit["stage"]]):
+            or (fraction != STAGE_FRACTIONS[permit["stage"]] and not incident_fraction)):
         return None
     return permit
 
@@ -669,6 +686,8 @@ def normal_permission(state, active, ctx):
 
 
 def authorize_pending(state, active, now, *, waiting_deadline=None):
+    if state.get('incident_halted'):
+        return False
     permit = managed_permit(state, active)
     breaker = state.get("breaker", {})
     deadline = (active.get("expires_at") if permit and permit.get("policy_version") == 2
@@ -677,9 +696,10 @@ def authorize_pending(state, active, now, *, waiting_deadline=None):
     # authorize_entry never supplies this argument, preserving submission limits.
     if waiting_deadline is not None:
         deadline = waiting_deadline
-    return bool(permit
-                and breaker.get("blocked") is True
-                and set(breaker.get("reasons", [])) == {"three_losses"}
+    permitted_breaker = (breaker.get("blocked") is True and set(breaker.get("reasons", [])) == {"three_losses"})
+    if state.get('incident_epoch') and not breaker.get('blocked') and not breaker.get('reasons'):
+        permitted_breaker = True
+    return bool(permit and permitted_breaker
                 and permit.get("scenario_id") == active.get("scenario_id")
                 and permit.get("side") == active.get("side")
                 and permit.get("initial_equity") == active.get("initial_equity")
@@ -773,6 +793,8 @@ def settled(conn, state, settlement, now):
                 now, scenario_id=settlement["scenario_id"])
         previous = {"permit_id": recovery["permit_id"], "scenario_id": recovery["scenario_id"]}
         keep = {key: recovery[key] for key in ("policy_version", "epoch_id", "stage", "stage_evidence", "started_at", "epoch_start_equity")}
+        if recovery.get('auto_promotion') is False:
+            keep.update(auto_promotion=False, risk_fraction=recovery['risk_fraction'])
         if "bootstrap_evidence_event_id" in recovery:
             keep["bootstrap_evidence_event_id"] = recovery["bootstrap_evidence_event_id"]
         keep.update(phase="OBSERVING", previous_permit_id=previous["permit_id"],

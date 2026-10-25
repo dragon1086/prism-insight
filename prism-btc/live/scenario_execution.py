@@ -74,6 +74,8 @@ class ScenarioExecution:
 
     def _init_execution(self, enabled):
         self.execution_enabled = enabled is True
+        from live.scenario_incident_epoch import epoch
+        self._incident_epoch_bound = epoch(self.conn)
         initialize_pending_leases(self.conn)
         self.conn.execute("""CREATE TABLE IF NOT EXISTS llm_scenario_children(
             link_id TEXT PRIMARY KEY, intent_id TEXT NOT NULL, scenario_id TEXT NOT NULL,
@@ -128,9 +130,32 @@ class ScenarioExecution:
             item["request"] = json.loads(item["request"])
             item["evidence"] = json.loads(item["evidence"]) if item["evidence"] else None
             result.append(item)
+        if scenario_id is None:
+            from live.scenario_incident_epoch import sealed
+            result = [c for c in result if not sealed(self.conn, c['scenario_id'])]
         return result
 
     def _write(self, method, *, _restore_rejection=False, _single_attempt=False, **params):
+        from live.shared_entry_coordinator import mutation_lock
+        from live.scenario_incident_epoch import guard_write, TRANSPORT
+        from live.scenario_management_quarantine import _append
+        with mutation_lock(self.conn):
+            guard_write(self, method, params)
+            call_id = uuid.uuid4().hex
+            import os
+            _append(self.conn, TRANSPORT, dict(call_id=call_id, state='SENDING',
+                epoch_id=self._incident_epoch_bound, owner_pid=os.getpid(), method=method), self.clock())
+            self.conn.commit()
+            self._incident_transport_active = True
+            try:
+                return self._write_transport(method, _restore_rejection=_restore_rejection,
+                    _single_attempt=_single_attempt, **params)
+            finally:
+                self._incident_transport_active = False
+                _append(self.conn, TRANSPORT, dict(call_id=call_id, state='RETURNED'), self.clock())
+                self.conn.commit()
+
+    def _write_transport(self, method, *, _restore_rejection=False, _single_attempt=False, **params):
         if not self.execution_enabled:
             self._fail("scenario_execution_disabled")
         self._identity()  # Includes endpoint recheck on every mutation.
@@ -166,6 +191,8 @@ class ScenarioExecution:
                         previous_retry_settings[name] = getattr(self.session, name, absent)
                         setattr(self.session, name, value)
                 operation = getattr(self.session, method)
+                from live.scenario_incident_epoch import guard_write
+                guard_write(self, method, params)  # No REST after this final freshness check.
                 attempted = True
                 response = operation(**params)
             finally:
@@ -294,6 +321,10 @@ class ScenarioExecution:
         rows = result["result"]["list"]
         if not rows:
             rows = read_evidence_pages(self._call,"get_order_history",category="linear",symbol="BTCUSDT",**exact)
+        from live.scenario_incident_epoch import sealed, record_late
+        historical = sealed(self.conn, child['scenario_id'])
+        if not rows and historical and child['status'] == 'UNKNOWN':
+            return child  # Absence never becomes a terminal assertion.
         if len(rows)!=1:
             self._fail("exact_order_not_found_or_ambiguous")
         order = rows[0]
@@ -339,6 +370,11 @@ class ScenarioExecution:
             self._fail("order_remaining_quantity_unreconciled")
         evidence = dict(order=order,executions=executions)
         status = "TERMINAL" if order["orderStatus"] in TERMINAL else "LIVE"
+        if historical:
+            result = dict(child, status=status, order_id=order['orderId'], evidence=evidence)
+            if result != child:
+                record_late(self, dict(link_id=link, evidence=evidence, scenario_id=child['scenario_id']))
+            return result
         self.conn.execute("UPDATE llm_scenario_children SET status=?,order_id=?,evidence=? WHERE link_id=?",
             (status,order["orderId"],encoded(evidence),link))
         self.conn.commit()
@@ -414,6 +450,8 @@ class ScenarioExecution:
             known.add(oid)
 
     def _submit(self, payload, intent_id, kind, local_id, request, *, single_attempt=False):
+        from live.scenario_incident_epoch import sealed, require
+        require(not sealed(self.conn, payload['scenario_id']), 'sealed_scenario')
         link = stable_link(intent_id,kind,local_id)
         request = dict(request,category="linear",symbol="BTCUSDT",positionIdx=0,orderLinkId=link)
         previous = next((c for c in self.children() if c["link_id"]==link),None)
@@ -441,6 +479,8 @@ class ScenarioExecution:
         return self._query_child(next(c for c in self.children() if c["link_id"]==link))
 
     def _cancel(self, child, *, before_cancel=None):
+        from live.scenario_incident_epoch import sealed, require
+        require(not sealed(self.conn, child['scenario_id']), 'sealed_scenario')
         child = self._query_child(child)
         if child["status"] == "TERMINAL":
             return child
@@ -572,9 +612,10 @@ class ScenarioExecution:
             self._fail("stop_revision_stale_input_or_protection")
         accounting = self._risk_accounting(observed, active, own)
         pending = [self._pending_entry(c) for c in own if c["kind"] == "entry" and c["status"] != "TERMINAL"]
-        unknown = any(c["status"] == "UNKNOWN" or not c["evidence"] for c in own) or bool(self.conn.execute(
-            "SELECT 1 FROM llm_scenario_intents WHERE id!=? AND status='PENDING' LIMIT 1", (intent_id,)).fetchone())
-        hard_blocked = not self._new_risk_enabled() or not self._daily(observed).get("new_risk_allowed", False)
+        from live.scenario_incident_epoch import pending as pending_intents, new_risk_blocked
+        unknown = any(c["status"] == "UNKNOWN" or not c["evidence"] for c in own) or bool(
+            set(pending_intents(self.conn, ('PENDING',))) - {intent_id})
+        hard_blocked = new_risk_blocked(self) or not self._new_risk_enabled() or not self._daily(observed).get("new_risk_allowed", False)
         breaker = state.get("breaker", {})
         permit_valid = not breaker.get("blocked", False) or bool(
             set(breaker.get("reasons", [])) == {"three_losses"} and managed_permit(state, active))
@@ -696,7 +737,8 @@ class ScenarioExecution:
                 observed["position"].get("side") != ("Buy" if side == "LONG" else "Sell")):
             self._fail("opposite_entry_forbidden")
         state=json.loads(self.conn.execute("SELECT body FROM llm_scenario_state WHERE id=1").fetchone()[0])
-        hard_blocked = not self._new_risk_enabled() or not self._daily(observed).get("new_risk_allowed",False)
+        from live.scenario_incident_epoch import new_risk_blocked
+        hard_blocked = new_risk_blocked(self) or not self._new_risk_enabled() or not self._daily(observed).get("new_risk_allowed",False)
         if hard_blocked:
             self._fail("new_risk_halted")
         if not stop_revision and ((side=="LONG" and stop<decimal(active["hard_stop"])) or (side=="SHORT" and stop>decimal(active["hard_stop"]))):

@@ -18,7 +18,7 @@ import sys
 import time
 import uuid
 import ast
-from live import scenario_immediate_reduce, scenario_management_quarantine
+from live import scenario_immediate_reduce, scenario_management_quarantine, scenario_incident_epoch
 import types
 import importlib.metadata
 import inspect
@@ -72,6 +72,7 @@ def review_policy_binding(*, research_mode="legacy"):
         'live/scenario_position_flow.py': scenario_position_flow,
         'live/scenario_immediate_reduce.py': scenario_immediate_reduce,
         'live/scenario_management_quarantine.py': scenario_management_quarantine,
+        'live/scenario_incident_epoch.py': scenario_incident_epoch,
         'live/scenario_provenance.py': sys.modules[__name__],
     }
     if research_mode not in {"legacy", "allocation-single", "allocation-calculated",
@@ -193,6 +194,7 @@ def _manifest():
                     'live/scenario_runner_economics.py',
                     'live/scenario_fee_projection.py',
                     'live/scenario_management_quarantine.py',
+                    'live/scenario_incident_epoch.py',
                     'live/scenario_entry_thesis.py',
                     'live/scenario_entry_contract.py',
                     'live/scenario_entry_goal.py',
@@ -246,6 +248,8 @@ def _manifest():
     # Management-only authority affects both allowed judgment and EXIT execution.
     execution['live/scenario_management_quarantine.py'] = policy['live/scenario_management_quarantine.py']
     execution_parity['live/scenario_management_quarantine.py'] = judgment_parity['live/scenario_management_quarantine.py']
+    execution['live/scenario_incident_epoch.py'] = policy['live/scenario_incident_epoch.py']
+    execution_parity['live/scenario_incident_epoch.py'] = judgment_parity['live/scenario_incident_epoch.py']
     for name in ('core/scenario_pending_renewal.py', 'live/scenario_pending_renewal.py', 'live/scenario_entry_goal.py',
                  'engine/scenario_ma_context.py', 'engine/scenario_snapshot.py'):
         execution[name] = policy[name]

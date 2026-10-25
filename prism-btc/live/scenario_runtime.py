@@ -20,6 +20,7 @@ import sqlite3
 import time
 import uuid
 from live import scenario_management_quarantine as quarantine
+from live import scenario_incident_epoch as incident_epoch
 from contextlib import ExitStack, contextmanager
 
 from core.llm_scenario import update_circuit_breaker
@@ -175,7 +176,7 @@ class ScenarioRuntime:
         database_path(conn)  # In-memory state cannot provide restart safety.
         self.conn, self.broker = conn, broker
         self.propose, self.snapshot, self.clock = propose, snapshot, clock
-        self.recovery_enabled = recovery_enabled or automatic_normalization_enabled
+        self.recovery_enabled = recovery_enabled or automatic_normalization_enabled or bool(incident_epoch.epoch(conn))
         self.automatic_normalization_enabled = automatic_normalization_enabled
         self.calculated_review_enabled = calculated_review_enabled
         self.calculated_review_propose = calculated_review_propose
@@ -355,12 +356,14 @@ class ScenarioRuntime:
                     state["version"] += 1
                 self.conn.execute("UPDATE llm_scenario_intents SET status='LIVE_RECONCILED', evidence=? WHERE id=?", (encoded, ident))
         for (ident,) in self.conn.execute("SELECT id FROM llm_scenario_intents WHERE status='LIVE_RECONCILED'").fetchall():
+            if ident not in incident_epoch.pending(self.conn, ('LIVE_RECONCILED',)):
+                continue
             if ident not in seen_live:
                 self.conn.execute("UPDATE llm_scenario_intents SET status='PENDING' WHERE id=?", (ident,))
                 state["version"] += 1
         settlement = result.get("settlement")
         active = state["active"]
-        pending = self.conn.execute("SELECT count(*) FROM llm_scenario_intents WHERE status!='TERMINAL'").fetchone()[0]
+        pending = incident_epoch.unresolved(self.conn)
         if settlement and active and not pending:
             required = ("gross_pnl", "fees", "funding_net", "net_pnl")
             valid = (settlement.get("scenario_id") == active["scenario_id"]
@@ -416,8 +419,7 @@ class ScenarioRuntime:
         if ('immediate_reduce_v1' in self.broker.capabilities
                 and callable(getattr(self.broker, 'prepare_reduce', None))):
             ctx['immediate_reduce_version'] = 1
-            ctx['unknown_intents'] = bool(self.conn.execute(
-                "SELECT 1 FROM llm_scenario_intents WHERE status='PENDING' OR status IS NULL").fetchone())
+            ctx['unknown_intents'] = bool(incident_epoch.pending(self.conn))
         hard_risk_blocked = ctx.get("new_risk_blocked")
         for flag in ("legacy_fenced", "protection_ok", "new_risk_blocked"):
             if type(ctx.get(flag)) is not bool:
@@ -426,7 +428,9 @@ class ScenarioRuntime:
             raise ValueError("missing_account_version")
         # Every known live remainder must reserve its exact quantity and price.
         pending = {o["id"]: o for o in ctx["pending_entries"]}
-        for (body,) in self.conn.execute("SELECT evidence FROM llm_scenario_intents WHERE status='LIVE_RECONCILED'"):
+        for ident, body in self.conn.execute("SELECT id,evidence FROM llm_scenario_intents WHERE status='LIVE_RECONCILED'"):
+            if ident not in incident_epoch.pending(self.conn, ('LIVE_RECONCILED',)):
+                continue
             for order in json.loads(body)["open_entries"]:
                 if pending.get(order["id"]) != order:
                     raise ValueError("live_order_risk_not_reserved")
@@ -508,7 +512,7 @@ class ScenarioRuntime:
             if self.automatic_normalization_enabled:
                 recovery.migrate(self.conn, state, ctx, self.clock() if observed_at is None else observed_at)
             allowed = recovery.observing_allowed(state, ctx)
-            no_intents = not self.conn.execute("SELECT 1 FROM llm_scenario_intents WHERE status IS NULL OR status!='TERMINAL'").fetchone()
+            no_intents = not incident_epoch.unresolved(self.conn)
             if allowed and no_intents:
                 ctx["recovery_observing"] = True
                 ctx["scenario_risk_fraction"] = recovery.offered_fraction(state)
@@ -554,8 +558,7 @@ class ScenarioRuntime:
                 and recovery.managed_permit(state, active)),
             accounting_status=ctx.get("accounting_status"), protection_ok=ctx.get("protection_ok"),
             legacy_fenced=ctx.get("legacy_fenced"), pending_entries=ctx.get("pending_entries"),
-            positions=ctx.get("positions"), unknown_intents=bool(self.conn.execute(
-                "SELECT 1 FROM llm_scenario_intents WHERE status='PENDING' OR status IS NULL").fetchone())))
+            positions=ctx.get("positions"), unknown_intents=bool(incident_epoch.pending(self.conn))))
         if state["breaker"].get("blocked") and not state.get("halt_notified"):
             stamp=state.setdefault("halted_at",self.clock() if observed_at is None else observed_at)
             reasons=set(state["breaker"].get("reasons",[]))
@@ -633,7 +636,7 @@ class ScenarioRuntime:
             return None
         if ctx["legacy_fenced"] or not ctx["protection_ok"]:
             return dict(status="fenced")
-        if (self.conn.execute("SELECT 1 FROM llm_scenario_intents WHERE status='PENDING' OR status IS NULL").fetchone()
+        if (incident_epoch.pending(self.conn)
                 and not quarantine.pending_allowed(self.broker, ctx)):
             return dict(status="intent_pending")
         for body, in self.conn.execute("SELECT payload FROM llm_scenario_intents WHERE scenario_id=? AND status!='TERMINAL'",
@@ -710,8 +713,8 @@ class ScenarioRuntime:
                             "verified_flat_halt": (ctx.get("positions") == []
                                 and ctx.get("pending_entries") == []
                                 and ctx.get("accounting_status") == "confirmed"
-                                and not self.conn.execute("SELECT 1 FROM llm_scenario_intents WHERE status IS NULL OR status!='TERMINAL'").fetchone())}
-                if (self.conn.execute("SELECT 1 FROM llm_scenario_intents WHERE status='PENDING' OR status IS NULL").fetchone()
+                                and not incident_epoch.unresolved(self.conn))}
+                if (incident_epoch.pending(self.conn)
                         and not quarantine.pending_allowed(self.broker, ctx)):
                     return {"status": "intent_pending"}
                 contract_exit = self._entry_contract_exit(state, ctx, slot)

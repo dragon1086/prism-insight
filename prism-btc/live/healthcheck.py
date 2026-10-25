@@ -287,7 +287,8 @@ def _intentional_flat_halt(conn, now: datetime) -> bool:
         state = json.loads(conn.execute("SELECT body FROM llm_scenario_state WHERE id=1").fetchone()[0])
         if "active" not in state or state["active"] is not None:
             return False
-        if conn.execute("SELECT 1 FROM llm_scenario_intents WHERE status IS NULL OR status!='TERMINAL'").fetchone():
+        from live.scenario_incident_epoch import unresolved
+        if unresolved(conn):
             return False
         values = {}
         for lane, max_age in (("decision", 600), ("protection", 180)):
@@ -385,10 +386,20 @@ def _check_execution_stalled(conn, mode: str, now: datetime) -> dict | None:
             return dict(level='alert',code='management_release_required',msg=(
                 '관리 승인 해제 검토가 필요하여 새 판단이 보류되어 있습니다. '
                 '거래소 근거·정산·보호 상태를 대조한 뒤 별도 해제해야 하며, 정상 매매 재개를 뜻하지 않습니다.'))
-        if not conn.execute("SELECT 1 FROM llm_scenario_intents WHERE status='PENDING' LIMIT 1").fetchone():
+        from live.scenario_incident_epoch import pending, historical, _events, HALT
+        excluded = historical(conn)
+        if excluded and _events(conn, HALT):
+            return dict(level='alert', code='incident_epoch_halted', msg=(
+                '과거 미정산 사건의 새 증거나 계좌 조회 공백으로 신규 진입을 중단했습니다. 현재 포지션 보호는 유지합니다.'))
+        current_pending = set(pending(conn, ('PENDING',)))
+        if not current_pending:
+            if excluded:
+                return dict(level='warn', code='historical_unsettled_excluded', msg=(
+                    '과거 미정산 사건 1건을 별도 보존하고 성과 통계에서 제외합니다. 새 관측 구간과 정산 완료를 혼동하지 않습니다.'))
             return None
-        unknown = conn.execute("SELECT c.created_at FROM llm_scenario_children c JOIN llm_scenario_intents i "
+        unknown_rows = conn.execute("SELECT c.intent_id,c.created_at FROM llm_scenario_children c JOIN llm_scenario_intents i "
             "ON i.id=c.intent_id WHERE i.status='PENDING' AND c.status='UNKNOWN'").fetchall()
+        unknown = [(stamp,) for ident, stamp in unknown_rows if ident in current_pending]
         stamps = [r[0] for r in unknown]
         if not stamps:
             row = conn.execute('SELECT slot FROM llm_scenario_decisions ORDER BY slot DESC LIMIT 1').fetchone()
