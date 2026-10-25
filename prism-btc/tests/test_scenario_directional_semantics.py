@@ -84,6 +84,6 @@ def test_non_boolean_recovery_metadata_stays_unknown():
 
 
 def test_interpretation_prompt_versions_pinned():
-    # 2026-10-23: confirmed holding paths, recorded net once, optional partial SL.
-    assert hashlib.sha256(DRAFT_PROMPT.encode()).hexdigest() == "0c0ab78a2f2bed838ad1eca1519a1371f81cc8a5cb743731203f1457264ea886"
-    assert hashlib.sha256(SELECT_PROMPT.encode()).hexdigest() == "27d852f3b409437a6d0e7432cbc1e0474d769c736ac571aed2f9fd730c8464d0"
+    # 2026-10-25 candidate: scoped entry preference and forming/weakening distinctions.
+    assert hashlib.sha256(DRAFT_PROMPT.encode()).hexdigest() == "7d3c48d4ca4ccf739f6ccfe35e58856f36fe4038d07902b4b8585e29a9d699ba"
+    assert hashlib.sha256(SELECT_PROMPT.encode()).hexdigest() == "85d89d6cd18750a9f98b3ecc3aa8c1d00b485b7a3d630eeff3fe2e9ef6b75c29"

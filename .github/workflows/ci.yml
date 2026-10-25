@@ -313,6 +313,9 @@ jobs:
             prism-btc/tests/test_scenario_model_input.py \
             prism-btc/tests/test_scenario_model_input_gaps.py \
             prism-btc/tests/test_scenario_calculated_review.py \
+            prism-btc/tests/test_scenario_entry_selection_preference.py \
+            prism-btc/tests/test_scenario_weakening_evidence_semantics.py \
+            prism-btc/tests/test_scenario_directional_semantics.py \
             prism-btc/tests/test_scenario_review_guard.py \
             prism-btc/tests/test_scenario_risk_allocation.py \
             prism-btc/tests/test_scenario_allocation_chase.py \

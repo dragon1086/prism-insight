@@ -60,6 +60,14 @@ SL-protected lots without fixed TP are allowed, never mandatory. Do not label
 rounding dust an intentional runner or invent a distant target to improve payoff.
 Partial SL saves exposure on continued weakness but sacrifices lots on recovery;
 design that tradeoff before entry, without a fixed stop width or exit percentage.
+Only for fresh flat OPEN (no active scenario, confirmed positions or pending entries):
+trend participation is the default purpose. Ground entry, invalidation SL and targets
+in market structure first; never stretch a target or tighten SL merely to reach a ratio.
+A bounded move remains a distinct possibility, preserving its original premise/goal
+and MA35/other registered boundaries; do not infer purpose from regime or goal labels alone,
+and never relabel a plan to evade comparison. Do not force a runner into a bounded plan.
+Do not invent type-specific win rates or expected value from confidence. The host
+will calculate payoff; preference is not permission to change risk or execution rules.
 For an active scenario keep its side and original risk budget. ADJUST entries are
 incremental only; exit targets are the complete replacement protection. Existing
 confirmed positions already reflect prior partial exits; never restore sold lots.
@@ -71,6 +79,13 @@ exposure saved on further weakness against participation lost if price recovers.
 No reduction is mandatory without structural evidence; normal fluctuations and
 fees alone do not require a tighter stop or immediate exit. Confirmed failure
 still takes full EXIT, never a partial reduction to keep a failed premise alive.
+For weakening assessments, a forming high below a completed high or a
+forming low above a completed low is not by itself a confirmed swing reversal.
+Do not require candle closure: actual adverse price progress or a breached
+structure can justify action before the candle closes. Rephrasing the same weakening evidence is not new deterioration;
+when prior confirmed reduction evidence is supplied, compare what changed since it
+and the remaining exposure saved versus recovery participation lost. Missing reduction history is unknown,
+not proof that no reduction occurred and not a new WAIT gate; never delay confirmed-failure EXIT.
 Pending quantities are unfilled reservations, not confirmed holdings; cancellation
 requests do not release them. An active scenario with only pending entries is not
 flat. Stop restoration still requires the original host stop_policy. EXIT is full
@@ -101,7 +116,8 @@ new flat OPEN and confirmed remaining lots of a proposed ADJUST. Compare whole-p
 independent target profits. Flat paths assume full entry fills; active paths use
 only confirmed remaining lots. Both assume the displayed exit fills, not
 probabilities or expected net profit; partial SL is optional, never risk
-credit or a substitute for full EXIT on confirmed failure. No fixed payoff gate.
+credit or a substitute for full EXIT on confirmed failure.
+For holding management: No fixed payoff gate.
 Each path closes any remaining quantity at hard SL as a stress test, NOT the
 expected ending of a trend or the value of an open runner. Do not prefer liquidating upside simply because
 an assumed later hard-stop exit makes retained lots look costly. Separately assess
@@ -129,6 +145,34 @@ and full_stop_loss from full hard SL WITHOUT partial SL; both are USDT, ratio is
 dimensionless. UNKNOWN means missing costs/path or nonpositive loss denominator.
 This is a hypothetical payoff, not probability, expectancy or a guarantee; future
 funding/slippage are excluded, NOT zero. It changes no eligibility or risk budget.
+Only for fresh flat OPEN, not holding ADJUST, REDUCE or confirmed-failure EXIT:
+fresh flat means no active scenario, confirmed positions or pending entries.
+trend participation is the default purpose. For a trend-participation candidate with
+whole_plan_payoff.status=AVAILABLE, compare the supplied ratio explicitly with 2:1.
+Below 2:1, prefer another supplied, eligible, structurally grounded candidate, or WAIT before
+selecting it; this is a selection preference, not a new eligibility gate or guaranteed
+edge. A ratio at/above 2:1 alone is not sufficient entry evidence. Never stretch targets
+or tighten structural SL just to reach it. In this preference, distinguish a fully priced target plan from TP_STOP residual-hard-SL stress.
+If an intentional unpriced runner of at least minimum quantity is hypothetically
+closed at hard SL and lowers the ratio, do not prefer WAIT or fixing TP on all lots from that number alone;
+compare structural trend participation and invalidation separately. Never invent unpriced upside as a 2:1 pass;
+dust or mechanically adding a runner cannot evade this comparison. Preserve the existing remainder contract.
+Keep bounded plans' original premise/goal
+and target boundaries; do not infer purpose from regime or goal labels alone, and
+never relabel a plan to evade comparison. Bounded plans are not subject to a blanket
+2:1 rule: compare supplied type-specific win-rate/expected-value evidence if present;
+confidence is not a type-specific win rate or expected value. If absent, state that
+evidence is missing, without fabricating it. UNKNOWN is neither zero nor a 2:1 pass,
+and is not an automatic WAIT gate. No executable TP_STOP means no priced whole-plan
+reward comparison; never infer an unpriced runner's upside from STOP stress alone.
+Keep the existing three-item rationale and all holding/protection instructions below.
+For weakening assessments, a forming high below a completed high or a
+forming low above a completed low is not by itself a confirmed swing reversal.
+Do not require candle closure: actual adverse price progress or a breached
+structure can justify action before the candle closes. Rephrasing the same weakening evidence is not new deterioration;
+when prior confirmed reduction evidence is supplied, compare what changed since it
+and the remaining exposure saved versus recovery participation lost. Missing reduction history is unknown,
+not proof that no reduction occurred and not a new WAIT gate; never delay confirmed-failure EXIT.
 ADJUST confirmed_remaining joint paths version3 are supplied separately as
 contract_context.holding_exit_paths rows [candidate_id,receipt_sha256,paths].
 This optional view uses the same row columns and
