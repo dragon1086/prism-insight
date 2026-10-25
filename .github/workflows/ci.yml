@@ -327,6 +327,7 @@ jobs:
             prism-btc/tests/test_scenario_flat_fee_evidence.py \
             prism-btc/tests/test_scenario_restore_rejection.py \
             prism-btc/tests/test_pending_market_health.py \
+            prism-btc/tests/test_scenario_entry_selection_preference.py \
             prism-btc/tests/test_scenario_management_prompt_contract.py \
             prism-btc/tests/test_scenario_forward_packet.py \
             prism-btc/tests/test_scenario_notice.py \
