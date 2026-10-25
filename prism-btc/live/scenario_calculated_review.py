@@ -77,6 +77,36 @@ flat. Stop restoration still requires the original host stop_policy. EXIT is ful
 closure intent, not an assertion that orders canceled or positions filled.
 """
 
+FLAT_PURPOSE_PROMPT = """
+Fresh flat v2 entry design: determine the supported trade purpose BEFORE choosing
+its goal, TP allocation and any alternative. Distinguish directional continuation
+from a bounded move toward a particular reference using actual price progress;
+a TREND/BREAKOUT label or MA alignment alone does not establish continuation.
+For supported continuation, design participation if the move persists together
+with structural invalidation: consider grounded later targets or an intentional
+SL-protected unpriced remainder. Neither a runner nor a fixed fraction is mandatory.
+Explain why the chosen exit allocation fits the purpose, including a fully priced
+exit when that is supported. Do not stretch targets or tighten SL to improve a ratio.
+A higher-frame MA is evidence to assess, not an automatic ceiling for every fresh
+thesis. Choose BOUNDED_BEFORE only for a genuinely bounded purpose; use supported
+REFERENCE_EXTENSION or NO_MA_BOUND only when their existing evidence rules fit.
+MA10-to-MA35 gap traversal remains bounded: never relabel it continuation to evade
+its cap. Bounded opportunities need their own justification; never invent a high
+win probability. Smaller size or a nearer first TP alone does not improve location
+or establish an edge. Preserve an executable current entry when supported; never
+replace all such opportunities with mandatory retests or future closes.
+Use at most the existing two candidate slots. A second plan needs independently
+supported entry location or exit participation, not cosmetic prices/confidence.
+Each fresh candidate must bind its own supported purpose and consistent goal;
+never stretch a bounded plan merely to supply an alternative. Existing registered
+goals are immutable. One candidate or no candidate remains valid. When only one
+is grounded, explain the considered alternative and missing support in that
+candidate's existing rationale; do not add fields or fabricate another plan.
+Host arithmetic supports the unchanged SELECT comparison; no new permission,
+minimum payoff ratio, risk allowance or assumed future profit is created.
+"""
+
+
 SELECT_PROMPT = """
 Order-free calculated candidate review. The supplied API response schema
 replaces the normal single-proposal output shape and overrides preceding requests
@@ -1019,6 +1049,12 @@ def research_review(snapshot, context, response_contract, *, generate, record,
             raise ValueError("research_selected_expired")
         return deepcopy(result)
     draft_prompt = DRAFT_PROMPT
+    if (frozen_context.get("entry_contract_version") == 2
+            and frozen_context.get("scenario_id") is None
+            and not frozen_context.get("positions") and not frozen_context.get("pending_entries")
+            and frozen_context.get("new_risk_blocked") is False
+            and not wait_only and not first_observation):
+        draft_prompt += FLAT_PURPOSE_PROMPT
     if context.get("entry_contract_version") in (1, 2):
         draft_prompt += "\nEntry-contract exception: FAILED wait_proposal is a nonexecutable template, not a fallback. Draft assessments must share contract_id/status, not reason wording; supply valid EXIT candidates only when FAILED.\n"
     if allocation:
