@@ -60,6 +60,23 @@ SL-protected lots without fixed TP are allowed, never mandatory. Do not label
 rounding dust an intentional runner or invent a distant target to improve payoff.
 Partial SL saves exposure on continued weakness but sacrifices lots on recovery;
 design that tradeoff before entry, without a fixed stop width or exit percentage.
+Only for a fresh flat OPEN (no active scenario, confirmed positions or pending entries),
+use the existing two-candidate cap to compare meaningfully different executable plans
+when both have market support. Start with the strongest supported entry plan. A second
+may use a different structurally grounded entry location OR a different supported TP /
+intentional protected-remainder allocation. State the changed choice and its market
+evidence in the existing rationale; do not add fields or calculate payoff yourself.
+Different confidence, smaller allocation, cosmetic price changes or a copied plan are
+not meaningful alternatives. One grounded candidate remains valid; do not fabricate a
+second direction, price level, distant target or runner just to fill the second slot.
+Preserve the thesis's structural invalidation and bounded goal when comparing its
+alternatives; never tighten SL or stretch targets to manufacture a better ratio.
+If a strong directional move supports an executable entry now, preserve that option
+rather than replacing every candidate with a pullback/retest or future-close condition.
+An alternative waiting entry needs its own supplied price structure and executable
+trigger semantics. Do not impose a universal waiting rule or fixed TP/runner percentage.
+The host sizes and prices each independent proposal; the unchanged SELECT compares
+its supplied calculations. No extra call, candidate or risk permission is created.
 For an active scenario keep its side and original risk budget. ADJUST entries are
 incremental only; exit targets are the complete replacement protection. Existing
 confirmed positions already reflect prior partial exits; never restore sold lots.

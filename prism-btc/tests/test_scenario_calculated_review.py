@@ -163,6 +163,31 @@ def test_candidate_limit_and_no_candidate_reason():
         run(candidates=[], mutate=mutate)
 
 
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('alternative', ['entry_location', 'protected_remainder'])
+def test_distinct_entry_alternatives_select_one_unchanged_plan(side, alternative):
+    ctx = context()
+    primary = wire(ctx, side)
+    second = deepcopy(primary)
+    if alternative == 'entry_location':
+        second['entries'][0]['price'] += -40 if side == 'LONG' else 40
+    else:
+        second['take_profits'][0]['fraction'] = .25
+    candidates = [primary, second]
+    before = deepcopy(candidates)
+    def choose_second(result, phase, request):
+        if phase == 2:
+            rows = json.loads(request['user_prompt'])['calculated_candidates']['candidates']
+            assert len(rows) == 2 and all(row['eligible'] for row in rows)
+            assert rows[0]['receipt_sha256'] != rows[1]['receipt_sha256']
+            result['selection_token'] = 'c1:' + rows[1]['receipt_sha256']
+    result, _, calls = run(ctx=ctx, candidates=candidates, mutate=choose_second)
+    assert len(calls) == 2 and result['selection']['selection'] == 'c1'
+    assert result['selected']['raw_proposal'] == second
+    assert candidates == before
+    assert result['orders_submitted'] == 0
+
+
 def test_deadline_not_renewed_and_stale_account_between_calls():
     for elapsed in (76, 71):
         now = [1000.]
