@@ -124,6 +124,7 @@ class ScenarioDemoBroker(ScenarioExecution):
         with mutation_lock(conn):
             conn.execute("""CREATE TABLE IF NOT EXISTS llm_scenario_broker_evidence (
                 kind TEXT NOT NULL, captured_at REAL NOT NULL, body TEXT NOT NULL)""")
+            conn.execute("CREATE INDEX IF NOT EXISTS llm_scenario_broker_evidence_kind ON llm_scenario_broker_evidence(kind)")
             conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_broker_notices(event_id TEXT PRIMARY KEY,scenario_id TEXT NOT NULL,body TEXT NOT NULL)")
             conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_broker_incidents(scenario_id TEXT PRIMARY KEY,episode INTEGER NOT NULL,active INTEGER NOT NULL)")
             conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_notice_positions(scenario_id TEXT PRIMARY KEY,revision INTEGER NOT NULL,body TEXT NOT NULL)")

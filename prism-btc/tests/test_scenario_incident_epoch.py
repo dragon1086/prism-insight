@@ -684,3 +684,104 @@ def test_rolling_overlap_never_pushes_covered_gap_beyond_api_window(flat_inciden
     latest = policy._events(broker.conn, policy.FINANCE_CURSOR)[-1]['body']
     assert latest['end_ms']-latest['start_ms'] <= 7*86400*1000
     assert latest['start_ms'] <= previous
+
+
+@pytest.fixture
+def inactive_history(tmp_path):
+    from live.scenario_control import _write
+    from tests.test_scenario_broker import Session
+    conn = sqlite3.connect(tmp_path / 'inactive-history.db')
+    broker = ScenarioDemoBroker(conn, session=Session(), expected_main_uid='123', execution_enabled=True)
+    _write(conn, dict(version=1, state='active', main_uid='123'))
+    conn.executemany('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)',
+        [('account', 1., json.dumps(dict(padding='x'*1024)))]*4000)
+    conn.executemany('INSERT INTO llm_scenario_children VALUES(?,?,?,?,?,?,?,?,?,?)',
+        [(str(n), str(n), 'old-'+str(n), 'entry', 'entry', '{}', 'TERMINAL', str(n), None, 1.)
+         for n in range(200)])
+    conn.commit()
+    yield broker
+    conn.close()
+
+
+@pytest.mark.parametrize('indexed', [False, True])
+def test_inactive_children_read_receipt_once_not_per_historical_child(inactive_history, indexed):
+    broker = inactive_history
+    conn = broker.conn
+    if not indexed:
+        conn.execute('DROP INDEX llm_scenario_broker_evidence_kind')
+    statements = []
+    steps = []
+    conn.set_trace_callback(statements.append)
+    conn.set_progress_handler(lambda: steps.append(1) or 0, 1000)
+    try:
+        children = broker.children()
+    finally:
+        conn.set_progress_handler(None, 0)
+        conn.set_trace_callback(None)
+    assert len(children) == 200
+    assert {c['scenario_id'] for c in children} == {'old-'+str(n) for n in range(200)}
+    lookups = [sql for sql in statements if sql.startswith('SELECT body FROM llm_scenario_broker_evidence WHERE kind=')]
+    assert len(lookups) == 1
+    # 200 child rows plus at most one 4,000-row evidence scan, never 200 scans.
+    assert len(steps)*1000 < 40000
+    if indexed:
+        assert len(steps)*1000 < 10000
+        plan = conn.execute('EXPLAIN QUERY PLAN SELECT body FROM llm_scenario_broker_evidence WHERE kind=? ORDER BY rowid', (policy.KIND,)).fetchall()
+        assert any('SEARCH' in row[3] and 'llm_scenario_broker_evidence_kind' in row[3] for row in plan)
+        assert not any('SCAN llm_scenario_broker_evidence' in row[3] for row in plan)
+
+
+def test_evidence_index_is_initialized_under_lock_once_before_epoch_lookup(tmp_path):
+    from live import shared_entry_coordinator
+    from tests.test_scenario_broker import Session
+    path = tmp_path / 'index-init.db'
+    conn = sqlite3.connect(path)
+    conn.execute('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body TEXT)')
+    conn.execute("INSERT INTO llm_scenario_broker_evidence VALUES('account',1,'{}')")
+    conn.commit()
+    trace = []
+    lock_checks = []
+    def observe(sql):
+        if sql.startswith('CREATE INDEX'):
+            key = (os.getpid(), str(path.resolve())+'.btc-execution.lock')
+            lock_checks.append(key in shared_entry_coordinator._held.keys)
+        trace.append(sql)
+    conn.set_trace_callback(observe)
+    ScenarioDemoBroker(conn, session=Session(), expected_main_uid='123')
+    conn.set_trace_callback(None)
+    assert lock_checks == [True]
+    index_at = next(n for n, sql in enumerate(trace) if sql.startswith('CREATE INDEX'))
+    epoch_at = next(n for n, sql in enumerate(trace) if sql.startswith('SELECT body FROM llm_scenario_broker_evidence WHERE kind='))
+    assert index_at < epoch_at
+    schema_version = conn.execute('PRAGMA schema_version').fetchone()[0]
+    index_root = conn.execute("SELECT rootpage FROM sqlite_master WHERE name='llm_scenario_broker_evidence_kind'").fetchone()[0]
+    ScenarioDemoBroker(conn, session=Session(), expected_main_uid='123')
+    assert conn.execute('PRAGMA schema_version').fetchone()[0] == schema_version
+    assert conn.execute("SELECT rootpage FROM sqlite_master WHERE name='llm_scenario_broker_evidence_kind'").fetchone()[0] == index_root
+    assert conn.execute('SELECT * FROM llm_scenario_broker_evidence').fetchall() == [('account', 1., '{}')]
+    conn.close()
+
+
+def test_readonly_children_do_not_attempt_missing_index_migration(inactive_history):
+    broker = inactive_history
+    broker.conn.execute('DROP INDEX llm_scenario_broker_evidence_kind')
+    broker.conn.commit()
+    path = broker.conn.execute('PRAGMA database_list').fetchone()[2]
+    from types import SimpleNamespace
+    from live.scenario_execution import ScenarioExecution
+    with sqlite3.connect('file:'+path+'?mode=ro', uri=True) as reader:
+        statements = []
+        reader.set_trace_callback(statements.append)
+        assert len(ScenarioExecution.children(SimpleNamespace(conn=reader))) == 200
+        assert reader.total_changes == 0
+        assert not any(sql.startswith(('CREATE', 'UPDATE', 'INSERT', 'DELETE')) for sql in statements)
+    assert not broker.conn.execute("SELECT 1 FROM sqlite_master WHERE name='llm_scenario_broker_evidence_kind'").fetchone()
+
+
+def test_children_do_not_cache_absent_receipt_across_cutover(flat_incident):
+    i = flat_incident
+    before = i['broker'].children()
+    assert before
+    transition(i)
+    assert i['broker'].children() == []
+    assert i['broker'].children('s1') == before
