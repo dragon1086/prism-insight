@@ -26,6 +26,7 @@ from live.scenario_explanation import (enabled as explanation_enabled, rationale
 
 
 DRAFT_PROMPT = """
+Emit compact JSON without formatting whitespace outside strings; retain every required field and complete string content.
 Order-free candidate research. The supplied API response schema replaces
 the normal single-proposal output shape and overrides preceding instructions to
 personally compute costs/reward/risk. All trading safety rules remain unchanged.
