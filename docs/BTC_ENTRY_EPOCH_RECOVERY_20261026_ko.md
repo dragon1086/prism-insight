@@ -39,3 +39,19 @@
 
 구현 후 변경 범위6개 테스트 파일의 오프라인398개 검사가 통과했다. 본문에 적은
 실제 전환·정기 실행·24시간 관측은 아직 이 테스트 결과에 포함되지 않는다.
+
+## 실제 전환 결과 (2026-10-26 KST)
+
+- PR1133 head9d345d7d의 상태 검사8개 전부 SUCCESS 후5e4a0f0a로 병합·배포했다(10:42:41).
+- 10:44:34 추가 전환 COMMITTED. epoch `orca-entry-20261026-1792979064888243035`.
+  두 사건 snapshot과 원 UNKNOWN 보존, 현재 pending 차단0, cron 전후 동일을 확인했다.
+- 10:45 정기 WAIT와10:50 배치의10:51 WAIT가 확인됐다. 후속 tape에서도 first_observation=false,
+  초안/선택2호출 COMPLETE·WAIT를 확인했다. 실제 체결을 만들기 위해 주문을 강제로 내지 않았다.
+- 실제 첫 검증 서비스는 Result=success/exit0/JSON PASS: 새 UNKNOWN0, HALT0, 오류0이었다.
+  검증을 끝낸 첫 timer는 중지했고24시간 단발 timer는 active다(10/27 10:44 KST 이후).
+- 원 관측 구간은 실행 정체가 재발해 실패한 것으로 보존하고 구24시간 timer를 중지했다.
+  새24시간 결과는 아직 미래다. 현재 복구와24시간 안정성 완료를 구분한다.
+
+서버 근거: `/root/prism-ops/btc-entry-epoch-20261026/`의 deployment.json, verification-baseline.json,
+post-cutover.json, verification-first.json, second-observation.json, preservation-audit.json, schedules.json.
+로컬 사본은 `tasks/btc-entry-epoch-20261026/`에 있다. 이 기록은 과거 거래소 거절/취소/정산 증명이 아니다.
