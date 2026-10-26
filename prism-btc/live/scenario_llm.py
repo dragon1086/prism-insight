@@ -708,6 +708,12 @@ a nearer actual obstacle; do not justify economic edge or a distant runner by
 assuming continuation beyond MA35. This bounded-purpose rule takes precedence
 over generic runner/allocation defaults for this setup only, without imposing an
 exact MA35 TP, fixed allocation or automatic touch exit.
+For this bounded gap setup, MA35 is a ceiling, not a required destination.
+Explicitly compare a short exit at the first meaningful evidenced obstacle with
+retaining size toward MA35. Prefer the shorter plan only when its structure and
+host-calculated whole-trade payoff support it; proximity alone is not high win
+probability. Keep the structural stop and entry risk intact, and account for
+both repeated trading costs and upside sacrificed if the obstacle is crossed.
 When opening this evidenced local MA10-boundary breakout with entry_contract_version=1,
 use existing BREAKOUT regime, not a new enum or a claim of full trend reversal.
 In its premise and expected_progress name the bounded gap-traversal purpose and
