@@ -107,3 +107,21 @@ def test_framing_excluded_outside_fresh_v2_open(state):
         review.research_review(snap, ctx, response_contract(ctx), generate=capture,
             record=lambda _: None, clock=lambda: ctx['now'], research_mode='economic-reject-calculated-v1')
     assert len(calls)==1 and review.FLAT_PURPOSE_PROMPT not in calls[0]['system_prompt']
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_band_location_objectives_and_conditional_entry_reach_draft(side):
+    _, calls = run_pair(side, count=1)
+    prompt = ' '.join(calls[0]['system_prompt'].split())
+    for phrase in (
+        'Inside the band, the design hypothesis is greater range/chop risk',
+        'Missing measured win-rate data remains unknown',
+        'Outside the band, when the existing directional trend-following conditions',
+        'seek favorable whole-trade payoff and participation in a larger move',
+        'Band exit alone is not an entry signal',
+        'a loose limit cap outside the band alone does not establish an outside entry',
+        'its activation must require the claimed passage',
+        'MA10-to-MA35 gap traversal remains bounded',
+    ):
+        assert phrase in prompt
+    assert review.FLAT_PURPOSE_PROMPT not in calls[1]['system_prompt']

@@ -78,10 +78,28 @@ closure intent, not an assertion that orders canceled or positions filled.
 """
 
 FLAT_PURPOSE_PROMPT = """
-Fresh flat v2 entry design: determine the supported trade purpose BEFORE choosing
-its goal, TP allocation and any alternative. Distinguish directional continuation
-from a bounded move toward a particular reference using actual price progress;
-a TREND/BREAKOUT label or MA alignment alone does not establish continuation.
+Fresh flat v2 entry design: relate price to the MA10/MA35 band BEFORE choosing
+purpose, goal, TP allocation and alternatives. Name the relevant timeframe and
+confirmed/forming phase; distinguish 30m/1h disagreement and use 4h context under
+the existing rules, not an invented requirement that every frame agree.
+Inside the band, the design hypothesis is greater range/chop risk: seek a bounded
+move whose price structure supports the hit-rate hypothesis, with costs compatible
+with the short room. Missing measured win-rate data remains unknown, not proof
+for or against a particular candidate.
+High hit rate is an objective to validate, never an observed probability supplied
+by band location. Do not assume a distant trend runner for an inside-band traverse.
+Outside the band, when the existing directional trend-following conditions are
+supported, seek favorable whole-trade payoff and participation in a larger move;
+do not automatically carry an inside-band short-TP template into that setup.
+Band exit alone is not an entry signal: failed breaks, overextension, price
+progress and existing invalidation still matter. At a boundary, with conflicting
+frames or missing evidence, explain the uncertainty rather than forcing a label.
+Distinguish current price from a conditional plan's activation and entry cap.
+Current price inside the band does not forbid a supported conditional breakout,
+but a loose limit cap outside the band alone does not establish an outside entry:
+its activation must require the claimed passage. Do not anticipate host rounding.
+Location frames the objective; actual evidence must still support each candidate.
+A TREND/BREAKOUT label or MA alignment alone does not establish continuation.
 For supported continuation, design participation if the move persists together
 with structural invalidation: consider grounded later targets or an intentional
 SL-protected unpriced remainder. Neither a runner nor a fixed fraction is mandatory.
