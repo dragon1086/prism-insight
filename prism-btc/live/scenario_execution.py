@@ -131,10 +131,9 @@ class ScenarioExecution:
             item["evidence"] = json.loads(item["evidence"]) if item["evidence"] else None
             result.append(item)
         if scenario_id is None:
-            from live.scenario_incident_epoch import receipt
-            historical = receipt(self.conn)
-            if historical:
-                result = [c for c in result if c['scenario_id'] != historical['scenario_id']]
+            from live.scenario_incident_epoch import receipts
+            historical = {r['scenario_id'] for r in receipts(self.conn)}
+            result = [c for c in result if c['scenario_id'] not in historical]
         return result
 
     def _write(self, method, *, _restore_rejection=False, _single_attempt=False, _before_send=None, **params):

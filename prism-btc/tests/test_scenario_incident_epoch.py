@@ -807,7 +807,7 @@ def test_inactive_children_read_receipt_once_not_per_historical_child(inactive_h
         conn.set_trace_callback(None)
     assert len(children) == 200
     assert {c['scenario_id'] for c in children} == {'old-'+str(n) for n in range(200)}
-    lookups = [sql for sql in statements if sql.startswith('SELECT body FROM llm_scenario_broker_evidence WHERE kind=')]
+    lookups = [sql for sql in statements if sql.startswith('SELECT kind,body FROM llm_scenario_broker_evidence WHERE kind IN')]
     assert len(lookups) == 1
     # 200 child rows plus at most one 4,000-row evidence scan, never 200 scans.
     assert len(steps)*1000 < 40000
@@ -838,7 +838,7 @@ def test_evidence_index_is_initialized_under_lock_once_before_epoch_lookup(tmp_p
     conn.set_trace_callback(None)
     assert lock_checks == [True]
     index_at = next(n for n, sql in enumerate(trace) if sql.startswith('CREATE INDEX'))
-    epoch_at = next(n for n, sql in enumerate(trace) if sql.startswith('SELECT body FROM llm_scenario_broker_evidence WHERE kind='))
+    epoch_at = next(n for n, sql in enumerate(trace) if sql.startswith('SELECT kind,body FROM llm_scenario_broker_evidence WHERE kind IN'))
     assert index_at < epoch_at
     schema_version = conn.execute('PRAGMA schema_version').fetchone()[0]
     index_root = conn.execute("SELECT rootpage FROM sqlite_master WHERE name='llm_scenario_broker_evidence_kind'").fetchone()[0]

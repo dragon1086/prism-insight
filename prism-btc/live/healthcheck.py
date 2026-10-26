@@ -395,7 +395,7 @@ def _check_execution_stalled(conn, mode: str, now: datetime) -> dict | None:
         if not current_pending:
             if excluded:
                 return dict(level='warn', code='historical_unsettled_excluded', msg=(
-                    '과거 미정산 사건 1건을 별도 보존하고 성과 통계에서 제외합니다. 새 관측 구간과 정산 완료를 혼동하지 않습니다.'))
+                    f'과거 미정산 사건 {len(excluded)}건을 별도 보존하고 성과 통계에서 제외합니다. 새 관측 구간과 정산 완료를 혼동하지 않습니다.'))
             return None
         unknown_rows = conn.execute("SELECT c.intent_id,c.created_at FROM llm_scenario_children c JOIN llm_scenario_intents i "
             "ON i.id=c.intent_id WHERE i.status='PENDING' AND c.status='UNKNOWN'").fetchall()
