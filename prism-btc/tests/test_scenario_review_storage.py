@@ -82,3 +82,18 @@ def test_compressed_recovery_wire_preserves_replay_and_fails_closed():
         _runtime_event_hash(conn)
     with pytest.raises(ValueError):
         _single_pass_audit_rows(conn, 1)
+
+def test_recovery_wire_writer_preserves_text_and_other_events():
+    import json
+    from live import scenario_recovery
+    conn = sqlite3.connect(':memory:')
+    scenario_recovery.ensure_schema(conn)
+    original = {'user_prompt': 'market-data-' * 200, 'input_id': 'input-1'}
+    scenario_recovery.journal(conn, 'MODEL_REQUEST', original, 1)
+    scenario_recovery.journal(conn, 'MODEL_RAW', {'raw': 'response-' * 200}, 2)
+    scenario_recovery.journal(conn, 'OTHER', original, 3)
+    rows = conn.execute('SELECT kind,body FROM llm_scenario_recovery_events ORDER BY rowid').fetchall()
+    assert isinstance(rows[0][1], bytes) and rows[0][1].startswith(MAGIC)
+    assert json.loads(review_text(rows[0][1])) == original
+    assert isinstance(rows[1][1], bytes) and json.loads(review_text(rows[1][1]))['raw'] == 'response-' * 200
+    assert isinstance(rows[2][1], str) and json.loads(rows[2][1]) == original
