@@ -108,3 +108,18 @@ def test_recovery_wire_limit_applies_before_compression():
     with pytest.raises(ValueError, match='recovery_journal_bound'):
         scenario_recovery.journal(conn, 'MODEL_REQUEST', {'user_prompt': '가' * 100_000}, 1)
     assert conn.execute('SELECT COUNT(*) FROM llm_scenario_recovery_events').fetchone()[0] == 0
+
+
+def test_recovery_compression_error_preserves_missing_evidence(monkeypatch):
+    from live import scenario_recovery
+    conn = sqlite3.connect(':memory:')
+    scenario_recovery.ensure_schema(conn)
+    conn.execute('CREATE TABLE llm_scenario_decisions(slot INTEGER, context TEXT)')
+    conn.commit()
+    def fail(_):
+        raise OSError('compression unavailable')
+    monkeypatch.setattr(scenario_recovery, 'review_storage', fail)
+    with scenario_recovery.capture_wire(conn, 1, lambda: 1):
+        scenario_recovery.record_model_request(system_prompt='x', user_prompt='x', response_schema={})
+        scenario_recovery.record_model_wire('x')
+    assert conn.execute('SELECT COUNT(*) FROM llm_scenario_recovery_events').fetchone()[0] == 0
