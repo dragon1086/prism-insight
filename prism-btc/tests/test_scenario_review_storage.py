@@ -99,3 +99,12 @@ def test_recovery_wire_writer_preserves_text_and_other_events():
     assert isinstance(rows[1][1], bytes) and json.loads(review_text(rows[1][1]))['raw'] == 'response-' * 200
     assert isinstance(rows[2][1], str) and json.loads(rows[2][1]) == original
     assert isinstance(rows[3][1], str) and json.loads(rows[3][1]) == {'raw': 'x'}
+
+
+def test_recovery_wire_limit_applies_before_compression():
+    from live import scenario_recovery
+    conn = sqlite3.connect(':memory:')
+    scenario_recovery.ensure_schema(conn)
+    with pytest.raises(ValueError, match='recovery_journal_bound'):
+        scenario_recovery.journal(conn, 'MODEL_REQUEST', {'user_prompt': '가' * 100_000}, 1)
+    assert conn.execute('SELECT COUNT(*) FROM llm_scenario_recovery_events').fetchone()[0] == 0
