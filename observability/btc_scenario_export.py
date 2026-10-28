@@ -166,6 +166,72 @@ def _facts(value, prefix='', depth=0):
     return out
 
 
+def _ticker_observation(body, captured_at):
+    """Keep market fields and their observation times, not account payloads."""
+    result = {'status': 'UNKNOWN', 'basis': 'HTTP_RESPONSE_NOT_QUOTE_UPDATE_OR_FILL'}
+    ticker = body.get('ticker') if isinstance(body, dict) else None
+    timing = body.get('ticker_timing') if isinstance(body, dict) else None
+    if not isinstance(ticker, dict) or ticker.get('symbol') != 'BTCUSDT':
+        return result
+    prices = {}
+    for key in ('markPrice', 'lastPrice', 'bid1Price', 'ask1Price'):
+        value = ticker.get(key)
+        if type(value) not in (str, int, float) or len(str(value)) > 80:
+            continue
+        try:
+            parsed = Decimal(str(value))
+        except InvalidOperation:
+            continue
+        if parsed.is_finite() and parsed > 0:
+            prices[key] = value
+    if ('bid1Price' in prices and 'ask1Price' in prices
+            and Decimal(str(prices['bid1Price'])) > Decimal(str(prices['ask1Price']))):
+        prices.pop('bid1Price')
+        prices.pop('ask1Price')
+        result['book_status'] = 'CROSSED_UNKNOWN'
+    result['prices'] = prices
+    if isinstance(timing, dict):
+        started, received = timing.get('request_started_at'), timing.get('response_received_at')
+        if (type(started) in (int, float) and type(received) in (int, float)
+                and type(captured_at) in (int, float) and 0 < started <= received <= captured_at < 2**53):
+            result['local_request_started_at'] = started
+            result['local_response_received_at'] = received
+        server_ms = timing.get('exchange_response_time_ms')
+        if type(server_ms) is int and 0 < server_ms < 2**53:
+            result['exchange_response_time_ms'] = server_ms
+    if prices:
+        result['status'] = ('OBSERVED' if len(prices) == 4 and 'local_response_received_at' in result
+                            and 'exchange_response_time_ms' in result else 'PARTIAL')
+    return result
+
+
+def _exchange_observation(body):
+    """The local wrapper starts before the final guard, not at HTTP send."""
+    result = {'status': 'UNKNOWN', 'basis': 'LOCAL_WRAPPER_NOT_HTTP_SEND_OR_FILL'}
+    if not isinstance(body, dict):
+        return result
+    method = body.get('method')
+    if not isinstance(method, str) or method not in {'place_order', 'cancel_order', 'set_trading_stop', 'amend_order'}:
+        return result
+    result['method'] = method
+    started, ended = body.get('started_at'), body.get('ended_at')
+    if type(started) in (int, float) and type(ended) in (int, float) and 0 < started <= ended < 2**53:
+        result.update(status='OBSERVED', local_started_at=started, local_ended_at=ended)
+    response_status = body.get('status')
+    if isinstance(response_status, str) and response_status in {'ACK_ONLY', 'UNKNOWN'}:
+        result['response_status'] = response_status
+    request = body.get('request')
+    if isinstance(request, dict):
+        for key, target in (('orderLinkId', 'order_link_ref'), ('orderId', 'request_order_ref')):
+            value = request.get(key)
+            if isinstance(value, str) and 0 < len(value) <= 256:
+                result[target] = _hash(value)
+    response_order = body.get('order_id')
+    if isinstance(response_order, str) and 0 < len(response_order) <= 256:
+        result['response_order_ref'] = _hash(response_order)
+    return result
+
+
 def _identity(path):
     stat = path.stat()
     return _hash(f'{path.resolve()}:{stat.st_dev}:{stat.st_ino}')
@@ -529,6 +595,10 @@ def _capture(source, state, identity, stream, row, manifest_cache=None):
              'body_sha256': _hash(raw), 'facts': _facts(body), 'policy_evidence': 'UNKNOWN'}
     attrs['facts_scope'] = 'ALLOWLISTED_SUBSET_RAW_SOURCE_RETAINED'
     attrs['granular_fill_coverage'] = 'UNKNOWN_NOT_EXTRACTED'
+    if stream == 'llm_scenario_broker_evidence' and kind == 'account':
+        attrs['ticker_observation'] = _ticker_observation(body, row['captured_at'])
+    if stream == 'llm_scenario_audit_events' and kind == 'exchange_call':
+        attrs['exchange_observation'] = _exchange_observation(body)
     stamp = row['observed_at'] if 'observed_at' in row.keys() else row['captured_at']
     slot = row['slot'] if 'slot' in row.keys() else row['decision_slot'] if 'decision_slot' in row.keys() else None
     if slot is not None:
