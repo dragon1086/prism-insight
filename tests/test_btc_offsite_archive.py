@@ -323,6 +323,41 @@ def test_git_boundary_uses_fixed_executable_without_shell(monkeypatch, tmp_path)
     assert calls[0][1]['shell'] is False
 
 
+def test_embedded_receiver_resolves_recovery_references_and_rejects_missing(tmp_path):
+    from utils.btc_recovery_references import MAGIC, canonical, compact, pack
+
+    path = tmp_path / 'source.sqlite'
+    event = {'kind': 'MODEL_RAW', 'raw': 'x' * 1000, 'git_revision': 'd' * 40}
+    review = json.dumps(event, sort_keys=True)
+    recovery = canonical(dict(event, calculated_review_version=1, input_id='fixture'))
+    candidate = compact(review, recovery, 7, 0)
+    assert candidate != recovery
+    with sqlite3.connect(path) as conn:
+        conn.executescript('CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT);'
+                           'CREATE TABLE llm_scenario_recovery_events(slot INTEGER,kind TEXT,body BLOB);')
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (7, 0, review))
+        conn.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?)',
+                     (7, 'MODEL_RAW', pack(candidate)))
+    helper = Path(archive.__file__).with_name('btc_recovery_references.py').read_text()
+    source = Path(archive.__file__).read_text()
+    child_script = ("import sys,types; m=types.ModuleType('btc_recovery_refs_embedded'); "
+                    "exec(compile(%r,'<refs>','exec'),m.__dict__); "
+                    "sys.modules['btc_recovery_refs_embedded']=m; ns={'__name__':'receiver'}; "
+                    "exec(compile(%r,'<archive>','exec'),ns); "
+                    "print(ns['referenced_commits'](ns['Path'](sys.argv[1]))[0][0])" % (helper, source))
+    child = subprocess.run([os.sys.executable, '-I', '-c', child_script, str(path)], cwd=tmp_path,
+                           capture_output=True, text=True, timeout=15, check=True)
+    assert child.stdout.strip() == 'd' * 40
+    with sqlite3.connect(path) as conn:
+        conn.execute('DELETE FROM llm_scenario_review_events')
+    with pytest.raises(ValueError, match='reference_recovery_unresolved'):
+        archive.referenced_commits(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute('UPDATE llm_scenario_recovery_events SET body=?', (MAGIC + b'bad',))
+    with pytest.raises(ValueError, match='reference_recovery_unresolved'):
+        archive.referenced_commits(path)
+
+
 def test_archive_revision_scan_handles_compressed_review_and_corruption(tmp_path):
     import gzip
     from observability.review_storage import MAGIC

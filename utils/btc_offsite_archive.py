@@ -95,13 +95,17 @@ def ssh_archive(host, needed, *, stream=None):
     source = Path(__file__).read_text()
     refs_source = Path(__file__).with_name('btc_review_references.py').read_text()
     audit_source = Path(__file__).with_name('btc_audit_references.py').read_text()
+    recovery_source = Path(__file__).with_name('btc_recovery_references.py').read_text()
     prelude = ("import sys,types\n"
                "_btc_refs=types.ModuleType('btc_review_refs_embedded')\n"
                "exec(compile(" + repr(refs_source) + ",'<btc_review_refs>','exec'),_btc_refs.__dict__)\n"
                "sys.modules['btc_review_refs_embedded']=_btc_refs\n"
                "_btc_audit=types.ModuleType('btc_audit_refs_embedded')\n"
                "exec(compile(" + repr(audit_source) + ",'<btc_audit_refs>','exec'),_btc_audit.__dict__)\n"
-               "sys.modules['btc_audit_refs_embedded']=_btc_audit\n")
+               "sys.modules['btc_audit_refs_embedded']=_btc_audit\n"
+               "_btc_recovery=types.ModuleType('btc_recovery_refs_embedded')\n"
+               "exec(compile(" + repr(recovery_source) + ",'<btc_recovery_refs>','exec'),_btc_recovery.__dict__)\n"
+               "sys.modules['btc_recovery_refs_embedded']=_btc_recovery\n")
     suffix = ('\nprivate_root(REMOTE_ROOT); space(REMOTE_ROOT, ' + str(needed) + '); print("READY")\n'
               if stream is None else '\nprint(json.dumps(receive(sys.stdin.buffer, REMOTE_ROOT, ' + str(needed) + ')))\n')
     command = '/usr/bin/python3 -c ' + shlex.quote(
@@ -212,14 +216,18 @@ def referenced_commits(raw):
                     continue
                 with_slot = table == 'llm_scenario_review_tapes' and 'slot' in cols
                 with_audit = table == 'llm_scenario_audit_events' and {'kind', 'decision_slot'} <= set(cols)
+                with_recovery = table == 'llm_scenario_recovery_events' and {'kind', 'slot'} <= set(cols)
                 selected_query = ('SELECT slot,body FROM llm_scenario_review_tapes' if with_slot else
-                                  'SELECT kind,decision_slot,body FROM llm_scenario_audit_events' if with_audit else query)
+                                  'SELECT kind,decision_slot,body FROM llm_scenario_audit_events' if with_audit else
+                                  'SELECT kind,slot,body FROM llm_scenario_recovery_events' if with_recovery else query)
                 for row in db.execute(selected_query):
-                    kind, slot, value = row if with_audit else (None, *row) if with_slot else (None, None, row[0])
+                    kind, slot, value = row if with_audit or with_recovery else (None, *row) if with_slot else (None, None, row[0])
                     is_reference = (table == 'llm_scenario_review_tapes' and isinstance(value, bytes)
                                     and value.startswith(b'PRISM_REVIEW_REFS_V1\x00'))
                     is_audit_reference = (kind == 'decision_input' and isinstance(value, str)
                                           and '$btc_audit_input_refs_v1' in value)
+                    is_recovery_reference = (table == 'llm_scenario_recovery_events' and isinstance(value, bytes)
+                                             and value.startswith(b'PRISM_RECOVERY_REFS_V1\x00'))
                     if time.monotonic() > deadline:
                         raise TimeoutError('commit_scan_deadline')
                     if value is None or value == '':
@@ -243,7 +251,18 @@ def referenced_commits(raw):
                                 else:
                                     from btc_audit_references import read_audit
                                 value = read_audit(value, db, slot)
-                            elif table in ('llm_scenario_review_events', 'llm_scenario_review_tapes', 'llm_scenario_recovery_events'):
+                            elif table == 'llm_scenario_recovery_events':
+                                if kind is None or kind in ('MODEL_REQUEST', 'MODEL_RAW'):
+                                    if 'btc_recovery_refs_embedded' in sys.modules:
+                                        from btc_recovery_refs_embedded import read_recovery
+                                    elif __package__:
+                                        from .btc_recovery_references import read_recovery
+                                    else:
+                                        from btc_recovery_references import read_recovery
+                                    value = read_recovery(value, db, slot, decode_legacy=review_text)
+                                else:
+                                    value = review_text(value)
+                            elif table in ('llm_scenario_review_events', 'llm_scenario_review_tapes'):
                                 value = review_text(value)
                             parsed = json.loads(value)
                         except (TypeError, ValueError, sqlite3.Error) as exc:
@@ -251,6 +270,8 @@ def referenced_commits(raw):
                                 raise ValueError('reference_tape_unresolved') from exc
                             if is_audit_reference:
                                 raise ValueError('reference_audit_unresolved') from exc
+                            if is_recovery_reference:
+                                raise ValueError('reference_recovery_unresolved') from exc
                             parsed = None
                             coverage['malformed_evidence_rows'] += 1
                     if table == 'llm_scenario_audit_manifests' and (

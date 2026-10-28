@@ -94,6 +94,7 @@ def _runtime_event_hash(conn):
     from utils.btc_review_references import read_tape
     from utils.btc_financial_references import restore as restore_financial
     from utils.btc_audit_references import read_audit
+    from utils.btc_recovery_references import read_recovery
     event_tables = {}
     for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'llm_scenario%' ORDER BY name"):
         # Schema completeness is part of the hash contract, not optional coverage.
@@ -102,11 +103,20 @@ def _runtime_event_hash(conn):
         cursor = conn.execute(RUNTIME_EVENT_QUERIES[name])
         columns = [field[0] for field in cursor.description]
         rows = cursor.fetchall()
-        if name in ('llm_scenario_review_events', 'llm_scenario_review_tapes', 'llm_scenario_recovery_events') and 'body' in columns:
+        if name in ('llm_scenario_review_events', 'llm_scenario_review_tapes') and 'body' in columns:
             index = columns.index('body')
             slot_index = columns.index('slot') if name == 'llm_scenario_review_tapes' else None
             rows = [tuple((read_tape(value, conn, row[slot_index], decode_legacy=review_text)
                            if slot_index is not None else review_text(value)) if i == index else value
+                          for i, value in enumerate(row)) for row in rows]
+        if name == 'llm_scenario_recovery_events' and 'body' in columns:
+            index = columns.index('body')
+            slot_index = columns.index('slot') if 'slot' in columns else None
+            kind_index = columns.index('kind') if 'kind' in columns else None
+            rows = [tuple((read_recovery(value, conn, row[slot_index] if slot_index is not None else None,
+                                         decode_legacy=review_text)
+                           if kind_index is None or row[kind_index] in ('MODEL_REQUEST', 'MODEL_RAW') else review_text(value))
+                          if i == index else value
                           for i, value in enumerate(row)) for row in rows]
         if name == 'llm_scenario_broker_evidence' and {'body', 'kind'} <= set(columns):
             index = columns.index('body')
@@ -372,8 +382,9 @@ class Driver:
 
 def _single_pass_audit_rows(conn, slot):
     from live.scenario_review_storage import review_text
+    from utils.btc_recovery_references import read_recovery
     rows = conn.execute("SELECT kind,body FROM llm_scenario_recovery_events WHERE slot=? AND kind IN ('MODEL_REQUEST','MODEL_RAW') ORDER BY rowid", (slot,)).fetchall()
-    rows = [(kind, review_text(body)) for kind, body in rows]
+    rows = [(kind, read_recovery(body, conn, slot, decode_legacy=review_text)) for kind, body in rows]
     groups = {kind: [body for row_kind, body in rows if row_kind == kind]
               for kind in ('MODEL_REQUEST', 'MODEL_RAW')}
     if (any(len(group) > 1 for group in groups.values())

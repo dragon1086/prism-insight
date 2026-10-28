@@ -21,6 +21,7 @@ from .review_storage import review_text
 from utils.btc_review_references import read_tape
 from utils.btc_financial_references import restore as restore_financial
 from utils.btc_audit_references import read_audit
+from utils.btc_recovery_references import read_recovery
 
 STREAMS = ('llm_scenario_audit_events', 'llm_scenario_recovery_events',
            'llm_scenario_broker_evidence', 'llm_scenario_outbox', 'llm_scenario_review_events',
@@ -41,7 +42,7 @@ STREAM_SQL = {
         'SELECT rowid AS source_rowid,* FROM llm_scenario_audit_events WHERE rowid>? ORDER BY rowid LIMIT ?'),
     'llm_scenario_recovery_events': (
         'SELECT MAX(rowid) FROM llm_scenario_recovery_events',
-        'SELECT body FROM llm_scenario_recovery_events WHERE rowid=?',
+        'SELECT slot,kind,body FROM llm_scenario_recovery_events WHERE rowid=?',
         'SELECT rowid AS source_rowid,* FROM llm_scenario_recovery_events WHERE rowid>? ORDER BY rowid LIMIT ?'),
     'llm_scenario_broker_evidence': (
         'SELECT MAX(rowid) FROM llm_scenario_broker_evidence',
@@ -351,7 +352,11 @@ def _model_metadata(body):
 def _source_text(stream, row, source=None):
     if stream == 'llm_scenario_review_tapes':
         return read_tape(row['body'], source, row['slot'], decode_legacy=review_text)
-    if stream in ('llm_scenario_review_events', 'llm_scenario_recovery_events'):
+    if stream == 'llm_scenario_review_events':
+        return review_text(row['body'])
+    if stream == 'llm_scenario_recovery_events':
+        if row['kind'] in ('MODEL_REQUEST', 'MODEL_RAW'):
+            return read_recovery(row['body'], source, row['slot'], decode_legacy=review_text)
         return review_text(row['body'])
     if stream == 'llm_scenario_broker_evidence' and row['kind'] == 'financial':
         return restore_financial(row['body'])
@@ -364,7 +369,7 @@ def _anchor_hash(stream, row, source=None):
     if row is None:
         return None
     if stream == 'llm_scenario_recovery_events':
-        return _hash(review_text(row['body']))
+        return _hash(_source_text(stream, row, source))
     if stream == 'llm_scenario_review_events':
         return _hash(_json([row['slot'], row['sequence'], review_text(row['body'])]))
     if stream == 'llm_scenario_review_tapes':
