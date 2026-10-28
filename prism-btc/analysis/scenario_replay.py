@@ -92,6 +92,7 @@ RUNTIME_EVENT_QUERIES = {
 def _runtime_event_hash(conn):
     from live.scenario_review_storage import review_text
     from utils.btc_review_references import read_tape
+    from utils.btc_financial_references import restore as restore_financial
     event_tables = {}
     for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'llm_scenario%' ORDER BY name"):
         # Schema completeness is part of the hash contract, not optional coverage.
@@ -105,6 +106,11 @@ def _runtime_event_hash(conn):
             slot_index = columns.index('slot') if name == 'llm_scenario_review_tapes' else None
             rows = [tuple((read_tape(value, conn, row[slot_index], decode_legacy=review_text)
                            if slot_index is not None else review_text(value)) if i == index else value
+                          for i, value in enumerate(row)) for row in rows]
+        if name == 'llm_scenario_broker_evidence' and {'body', 'kind'} <= set(columns):
+            index = columns.index('body')
+            kind_index = columns.index('kind')
+            rows = [tuple(restore_financial(value) if i == index and row[kind_index] == 'financial' else value
                           for i, value in enumerate(row)) for row in rows]
         event_tables[name] = dict(columns=columns, rows=rows)
     return digest(event_tables)
