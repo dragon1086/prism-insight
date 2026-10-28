@@ -165,7 +165,7 @@ def _facts(value, prefix='', depth=0):
     return out
 
 
-def _ticker_observation(body):
+def _ticker_observation(body, captured_at):
     """Keep market fields and their observation times, not account payloads."""
     result = {'status': 'UNKNOWN', 'basis': 'HTTP_RESPONSE_NOT_QUOTE_UPDATE_OR_FILL'}
     ticker = body.get('ticker') if isinstance(body, dict) else None
@@ -192,7 +192,7 @@ def _ticker_observation(body):
     if isinstance(timing, dict):
         started, received = timing.get('request_started_at'), timing.get('response_received_at')
         if (type(started) in (int, float) and type(received) in (int, float)
-                and 0 < started <= received < 2**53):
+                and type(captured_at) in (int, float) and 0 < started <= received <= captured_at < 2**53):
             result['local_request_started_at'] = started
             result['local_response_received_at'] = received
         server_ms = timing.get('exchange_response_time_ms')
@@ -591,7 +591,7 @@ def _capture(source, state, identity, stream, row, manifest_cache=None):
     attrs['facts_scope'] = 'ALLOWLISTED_SUBSET_RAW_SOURCE_RETAINED'
     attrs['granular_fill_coverage'] = 'UNKNOWN_NOT_EXTRACTED'
     if stream == 'llm_scenario_broker_evidence' and kind == 'account':
-        attrs['ticker_observation'] = _ticker_observation(body)
+        attrs['ticker_observation'] = _ticker_observation(body, row['captured_at'])
     if stream == 'llm_scenario_audit_events' and kind == 'exchange_call':
         attrs['exchange_observation'] = _exchange_observation(body)
     stamp = row['observed_at'] if 'observed_at' in row.keys() else row['captured_at']

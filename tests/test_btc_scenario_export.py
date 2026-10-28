@@ -119,17 +119,17 @@ def test_account_ticker_observation_exports_only_market_fields_and_times(lane):
 
 
 def test_invalid_missing_and_crossed_ticker_stay_unknown_or_partial():
-    assert export._ticker_observation({}) == {'status': 'UNKNOWN', 'basis': 'HTTP_RESPONSE_NOT_QUOTE_UPDATE_OR_FILL'}
+    assert export._ticker_observation({}, 10) == {'status': 'UNKNOWN', 'basis': 'HTTP_RESPONSE_NOT_QUOTE_UPDATE_OR_FILL'}
     body = {'ticker': {'symbol': 'BTCUSDT', 'markPrice': 'NaN', 'lastPrice': '-1',
                        'bid1Price': '102', 'ask1Price': '101'},
             'ticker_timing': {'request_started_at': 2, 'response_received_at': 1,
                               'exchange_response_time_ms': True}}
-    observed = export._ticker_observation(body)
+    observed = export._ticker_observation(body, 10)
     assert observed['status'] == 'UNKNOWN' and observed['prices'] == {}
     assert observed['book_status'] == 'CROSSED_UNKNOWN'
     assert 'local_response_received_at' not in observed and 'exchange_response_time_ms' not in observed
     body['ticker']['markPrice'] = '100'
-    assert export._ticker_observation(body)['status'] == 'PARTIAL'
+    assert export._ticker_observation(body, 10)['status'] == 'PARTIAL'
 
 
 def test_quote_observation_does_not_use_server_clock_as_local_clock():
@@ -137,9 +137,20 @@ def test_quote_observation_does_not_use_server_clock_as_local_clock():
                        'bid1Price': '99', 'ask1Price': '101'},
             'ticker_timing': {'request_started_at': 100, 'response_received_at': 101,
                               'exchange_response_time_ms': 999999999999}}
-    observed = export._ticker_observation(body)
+    observed = export._ticker_observation(body, 102)
     assert observed['status'] == 'OBSERVED'
     assert observed['local_response_received_at'] == 101
+    assert observed['exchange_response_time_ms'] == 999999999999
+
+
+def test_ticker_local_clock_regression_is_not_a_valid_quote_time():
+    body = {'ticker': {'symbol': 'BTCUSDT', 'markPrice': '100', 'lastPrice': '100',
+                       'bid1Price': '99', 'ask1Price': '101'},
+            'ticker_timing': {'request_started_at': 100, 'response_received_at': 101,
+                              'exchange_response_time_ms': 999999999999}}
+    observed = export._ticker_observation(body, 99)
+    assert observed['status'] == 'PARTIAL'
+    assert 'local_request_started_at' not in observed and 'local_response_received_at' not in observed
     assert observed['exchange_response_time_ms'] == 999999999999
 
 
