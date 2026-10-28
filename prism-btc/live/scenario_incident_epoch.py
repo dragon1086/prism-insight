@@ -261,12 +261,14 @@ def monitor(broker, *, refresh=False):
                                             source_sha256=digest(observed_bodies))
     except Exception as exc:
         reason = str(exc) if isinstance(exc, ValueError) and str(exc).startswith('incident_epoch_') else 'observation_failed'
-        record_late(broker, dict(status='HISTORICAL_MONITOR_OR_COVERAGE_GAP',
-                                error_type=type(exc).__name__, reason=reason))
-        if reason in {'incident_epoch_monitor_child_lookup_deadline',
-                      'incident_epoch_monitor_finance_deadline',
-                      'incident_epoch_monitor_account_deadline'}:
-            # The durable halt must survive logging failures.
+        if reason not in {'incident_epoch_monitor_child_lookup_deadline',
+                          'incident_epoch_monitor_finance_deadline',
+                          'incident_epoch_monitor_account_deadline'}:
+            record_late(broker, dict(status='HISTORICAL_MONITOR_OR_COVERAGE_GAP',
+                                    error_type=type(exc).__name__, reason=reason))
+        else:
+            # A late observation only blocks this cycle (no fresh observation);
+            # the next one re-reads from the last cursor, so nothing is skipped.
             with suppress(Exception):
                 started_ms = (int(started * 1000) if type(started) in (int, float)
                               and math.isfinite(started) else None)
