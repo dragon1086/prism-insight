@@ -71,3 +71,18 @@ def tape_storage(conn, slot, text):
         return original
     original_size = len(original.encode('utf-8')) if isinstance(original, str) else len(original)
     return encoded if len(encoded) < original_size else original
+
+
+def validate_tape_for_commit(conn, slot, text, encoded):
+    """Hold the write lock while checking the references that the tape will use."""
+    from utils.btc_review_references import MAGIC as REFERENCE_MAGIC, read_tape
+    if not isinstance(encoded, bytes) or not encoded.startswith(REFERENCE_MAGIC):
+        return encoded
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    try:
+        if read_tape(encoded, conn, slot, decode_legacy=review_text) == text:
+            return encoded
+    except ValueError:
+        pass
+    return review_storage(text)
