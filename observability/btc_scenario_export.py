@@ -205,8 +205,8 @@ def _ticker_observation(body):
 
 
 def _exchange_observation(body):
-    """Expose captured local call timing without asserting exchange execution."""
-    result = {'status': 'UNKNOWN', 'basis': 'LOCAL_CALL_NOT_FILL_OR_EXCHANGE_TIME'}
+    """The local wrapper starts before the final guard, not at HTTP send."""
+    result = {'status': 'UNKNOWN', 'basis': 'LOCAL_WRAPPER_NOT_HTTP_SEND_OR_FILL'}
     if not isinstance(body, dict):
         return result
     method = body.get('method')

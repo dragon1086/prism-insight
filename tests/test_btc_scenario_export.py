@@ -157,7 +157,7 @@ def test_exchange_call_timing_is_sanitized_and_not_a_fill(lane):
     assert export.export_once(db, state, spool)['captured'] == 1
     row = next(r for r in events(spool) if r.get('attributes', {}).get('source_kind') == 'exchange_call')
     observed = row['attributes']['exchange_observation']
-    assert observed == {'status': 'OBSERVED', 'basis': 'LOCAL_CALL_NOT_FILL_OR_EXCHANGE_TIME',
+    assert observed == {'status': 'OBSERVED', 'basis': 'LOCAL_WRAPPER_NOT_HTTP_SEND_OR_FILL',
                         'method': 'place_order', 'local_started_at': 1700000000.1,
                         'local_ended_at': 1700000000.4, 'response_status': 'ACK_ONLY',
                         'order_link_ref': export._hash('PRIVATE_LINK'),
@@ -167,7 +167,7 @@ def test_exchange_call_timing_is_sanitized_and_not_a_fill(lane):
 
 
 def test_exchange_call_missing_invalid_and_unrecognized_are_not_fills():
-    base = {'status': 'UNKNOWN', 'basis': 'LOCAL_CALL_NOT_FILL_OR_EXCHANGE_TIME'}
+    base = {'status': 'UNKNOWN', 'basis': 'LOCAL_WRAPPER_NOT_HTTP_SEND_OR_FILL'}
     assert export._exchange_observation({'method': []}) == base
     assert export._exchange_observation({'method': 'other', 'started_at': 1, 'ended_at': 2}) == base
     row = export._exchange_observation({'method': 'place_order', 'started_at': 2, 'ended_at': 1,
@@ -197,7 +197,7 @@ def test_quote_and_request_keep_separate_local_observation_times(lane):
     call = next(r['attributes']['exchange_observation'] for r in rows if r.get('attributes', {}).get('source_kind') == 'exchange_call')
     assert market['local_response_received_at'] < call['local_started_at']
     assert market['basis'] == 'HTTP_RESPONSE_NOT_QUOTE_UPDATE_OR_FILL'
-    assert call['basis'] == 'LOCAL_CALL_NOT_FILL_OR_EXCHANGE_TIME'
+    assert call['basis'] == 'LOCAL_WRAPPER_NOT_HTTP_SEND_OR_FILL'
 
 
 def test_busy_source_has_no_business_write(lane):
