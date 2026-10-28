@@ -70,7 +70,7 @@ def _reference_storage(conn, kind, slot, sequence, original, fallback):
         if read_recovery(candidate, conn, slot, decode_legacy=review_text, expected_kind=kind) == original:
             return candidate
     except Exception:
-        pass
+        return fallback
     return fallback
 
 
