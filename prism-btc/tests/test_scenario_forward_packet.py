@@ -423,6 +423,27 @@ def audit_event(db, kind, body, *, event_id="event", sid="private-scenario"):
                      (event_id, kind, sid, manifest_id, json.dumps(dict(schema_version=1, **body))))
 
 
+def test_audit_reference_preserves_complete_forward_packet(db):
+    from utils.btc_audit_references import canonical, compact, sha
+
+    snapshot, context = {'data': 'x' * 5000}, {'input_id': 'input-1', 'data': 'y' * 5000}
+    event = {'snapshot': snapshot, 'context': context, 'input_id': 'input-1',
+             'snapshot_hash': sha(canonical(snapshot)), 'context_hash': sha(canonical(context)), 'schema_version': 1}
+    audit_event(db, 'decision_input', {})
+    s, c, raw = json.dumps(snapshot, sort_keys=True), json.dumps(context, sort_keys=True), canonical(event)
+    with sqlite3.connect(db) as conn:
+        conn.execute('UPDATE llm_scenario_decisions SET snapshot=?,context=? WHERE slot=1', (s, c))
+        conn.execute("UPDATE llm_scenario_audit_events SET body=? WHERE kind='decision_input'", (raw,))
+    before = packet.build_packet(db)
+    assert before['status'] == 'AVAILABLE'
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE llm_scenario_audit_events SET body=? WHERE kind='decision_input'", (compact(raw, s, c),))
+    assert packet.build_packet(db) == before
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE llm_scenario_decisions SET snapshot='{}' WHERE slot=1")
+    assert packet.build_packet(db)['status'] == 'INPUT_UNAVAILABLE'
+
+
 def accounting_body(db):
     children, owned, trades = [], [], []
     with sqlite3.connect(db) as conn:

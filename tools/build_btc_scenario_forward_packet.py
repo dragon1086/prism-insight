@@ -14,6 +14,10 @@ import importlib.util
 import json
 from pathlib import Path
 import sqlite3
+import sys
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from utils.btc_audit_references import read_audit  # noqa: E402
 
 
 QUERIES = {
@@ -86,7 +90,12 @@ def _read(db):
         data = {name: sorted((dict(r) for r in conn.execute(query)), key=canonical)
                 for name, query in QUERIES.items()}
         for name, query in OPTIONAL.items():
-            data[name] = sorted((dict(r) for r in conn.execute(query)), key=canonical) if name in names else []
+            rows = [dict(r) for r in conn.execute(query)] if name in names else []
+            if name == 'llm_scenario_audit_events':
+                for row in rows:
+                    if row.get('kind') == 'decision_input':
+                        row['body'] = read_audit(row['body'], conn, row.get('decision_slot'))
+            data[name] = sorted(rows, key=canonical)
         data["binding"] = [dict(r) for r in conn.execute(
             "SELECT value FROM btc_meta WHERE mode='demo' AND key='shared_entry_policy_v1'")]
         conn.rollback()

@@ -397,3 +397,37 @@ def test_archive_resolves_reference_tape_without_losing_revision_coverage(tmp_pa
         db.execute('DELETE FROM llm_scenario_review_events')
     with pytest.raises(ValueError, match='reference_tape_unresolved'):
         archive.referenced_commits(raw)
+
+
+def test_archive_resolves_audit_reference_in_standalone_receiver(tmp_path):
+    from utils.btc_audit_references import canonical, compact, sha
+
+    path = tmp_path / 'audit.sqlite'
+    snapshot = {'source_commit': 'c' * 40, 'blob': 'x' * 5000}
+    context = {'input_id': 'fixture', 'blob': 'y' * 5000}
+    event = {'snapshot': snapshot, 'context': context, 'input_id': 'fixture',
+             'snapshot_hash': sha(canonical(snapshot)), 'context_hash': sha(canonical(context))}
+    s, c, original = json.dumps(snapshot, sort_keys=True), json.dumps(context, sort_keys=True), canonical(event)
+    with sqlite3.connect(path) as conn:
+        conn.execute('CREATE TABLE llm_scenario_decisions(slot INTEGER,snapshot TEXT,context TEXT)')
+        conn.execute('CREATE TABLE llm_scenario_audit_events(kind TEXT,decision_slot INTEGER,body TEXT)')
+        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?)', (1, s, c))
+        conn.execute('INSERT INTO llm_scenario_audit_events VALUES(?,?,?)', ('decision_input', 1, original))
+    baseline = archive.referenced_commits(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute('UPDATE llm_scenario_audit_events SET body=?', (compact(original, s, c),))
+    assert archive.referenced_commits(path) == baseline
+    helper = Path(archive.__file__).with_name('btc_audit_references.py').read_text()
+    source = Path(archive.__file__).read_text()
+    child_script = ("import sys,types; m=types.ModuleType('btc_audit_refs_embedded'); "
+                    "exec(compile(%r,'<refs>','exec'),m.__dict__); "
+                    "sys.modules['btc_audit_refs_embedded']=m; ns={'__name__':'receiver'}; "
+                    "exec(compile(%r,'<archive>','exec'),ns); "
+                    "print(ns['referenced_commits'](ns['Path'](sys.argv[1]))[0][0])" % (helper, source))
+    child = subprocess.run([os.sys.executable, '-I', '-c', child_script, str(path)], cwd=tmp_path,
+                           capture_output=True, text=True, timeout=15, check=True)
+    assert child.stdout.strip() == 'c' * 40
+    with sqlite3.connect(path) as conn:
+        conn.execute('DELETE FROM llm_scenario_decisions')
+    with pytest.raises(ValueError, match='reference_audit_unresolved'):
+        archive.referenced_commits(path)
