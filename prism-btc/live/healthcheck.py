@@ -255,7 +255,8 @@ def _recovered_input_size_burst(conn, errors, last_error: datetime, now: datetim
                 row = matches[0]
                 if (not valid_time(row['observed_at']) or not stamp <= row['observed_at'] <= health['decision']['at']):
                     return False
-                body = json.loads(read_recovery(row['body'], conn, row['slot'], decode_legacy=review_text))
+                body = json.loads(read_recovery(row['body'], conn, row['slot'], decode_legacy=review_text,
+                                                expected_kind=row['kind']))
                 if body.get('input_id') != input_id:
                     return False
                 records[kind] = (row['observed_at'], body)

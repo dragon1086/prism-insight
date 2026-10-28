@@ -82,7 +82,7 @@ def pack(encoded):
     return MAGIC + gzip.compress(encoded.encode('utf-8'), compresslevel=1, mtime=0)
 
 
-def read_recovery(value, conn, slot, *, decode_legacy):
+def read_recovery(value, conn, slot, *, decode_legacy, expected_kind=None):
     """Resolve an explicitly tagged reference, preserving all legacy text."""
     if not isinstance(value, bytes) or not value.startswith(MAGIC):
         return decode_legacy(value)
@@ -104,4 +104,7 @@ def read_recovery(value, conn, slot, *, decode_legacy):
                         (slot, sequence)).fetchall()
     if len(rows) != 1:
         raise ValueError('recovery_reference_source_missing')
-    return restore(raw, decode_legacy(rows[0][0]), slot, sequence)
+    restored = restore(raw, decode_legacy(rows[0][0]), slot, sequence)
+    if expected_kind not in ('MODEL_REQUEST', 'MODEL_RAW') or json.loads(restored).get('kind') != expected_kind:
+        raise ValueError('recovery_reference_kind_mismatch')
+    return restored

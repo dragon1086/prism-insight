@@ -259,7 +259,8 @@ def referenced_commits(raw):
                                         from .btc_recovery_references import read_recovery
                                     else:
                                         from btc_recovery_references import read_recovery
-                                    value = read_recovery(value, db, slot, decode_legacy=review_text)
+                                    value = read_recovery(value, db, slot, decode_legacy=review_text,
+                                                          expected_kind=kind)
                                 else:
                                     value = review_text(value)
                             elif table in ('llm_scenario_review_events', 'llm_scenario_review_tapes'):
