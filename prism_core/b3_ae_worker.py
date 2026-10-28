@@ -482,6 +482,15 @@ def us_providers():
         return dict(extra, **{k: row[k] for k in ("open", "high", "low", "close", "volume")})
 
     def add_inputs(symbol, now, phase, plan, pace_above=None):
+        try:
+            return _add_inputs(symbol, now, phase, plan, pace_above)
+        except ValueError as error:
+            # One Yahoo miss is missing input the plan waits on, not a fault (FRSH/BKH, 2026-10-28 03:10).
+            if not (str(error).startswith("US_") and str(error).endswith("_UNAVAILABLE")):
+                raise
+            return dict(status="MISSING", reason=str(error))
+
+    def _add_inputs(symbol, now, phase, plan, pace_above=None):
         """Add-plan evidence from yfinance: completed daily bars, today's regular 5m bars, quote, volume pace.
 
         Prior sessions (daily bars and their 5m volume) are fetched once per symbol and trading day.

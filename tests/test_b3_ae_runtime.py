@@ -250,6 +250,18 @@ def test_us_market_snapshot_timeout_is_retried_not_kept(monkeypatch):
     assert market() == {"observed_at": "2026-10-22T13:31:00+00:00"}
 
 
+def test_us_add_inputs_bar_miss_is_missing_input_not_an_error(monkeypatch):
+    """2026-10-28 03:10: one Yahoo 5m miss failed FRSH/BKH add plans as ERROR instead of waiting."""
+    from prism_core import b3_ae_worker
+    from tools import collect_trend_replay_data
+
+    monkeypatch.setattr(collect_trend_replay_data, "fetch", lambda request: {"status": "failed"})
+    add_inputs = b3_ae_worker.us_providers()["add_inputs"]
+    now = datetime(2026, 10, 27, 15, 0, tzinfo=timezone.utc)  # Tuesday 11:00 New York
+    evidence = add_inputs("FRSH", now.isoformat(), "INTRADAY", {})
+    assert evidence == dict(status="MISSING", reason="US_1d_UNAVAILABLE")
+
+
 def test_us_quote_printed_during_the_fetch_is_not_a_future_quote(monkeypatch):
     """2026-10-23: the clock was read before the 2-4s fetch, so a trade printed meanwhile failed as FUTURE."""
     from prism_core import b3_ae_worker, oneil_runtime_inputs
