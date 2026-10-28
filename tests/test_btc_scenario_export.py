@@ -143,6 +143,63 @@ def test_quote_observation_does_not_use_server_clock_as_local_clock():
     assert observed['exchange_response_time_ms'] == 999999999999
 
 
+def test_exchange_call_timing_is_sanitized_and_not_a_fill(lane):
+    db, state, spool = lane
+    with sqlite3.connect(db) as conn:
+        conn.execute('CREATE TABLE llm_scenario_audit_events(event_id TEXT,run_id TEXT,kind TEXT,observed_at REAL,scenario_id TEXT,intent_id TEXT,decision_slot INTEGER,manifest_id TEXT,body TEXT)')
+    export.export_once(db, state, spool)
+    body = {'method': 'place_order', 'started_at': 1700000000.1, 'ended_at': 1700000000.4,
+            'status': 'ACK_ONLY', 'request': {'orderLinkId': 'PRIVATE_LINK', 'orderId': 'PRIVATE_REQUEST'},
+            'order_id': 'PRIVATE_RESPONSE', 'unexpected_secret': 'SECRET'}
+    with sqlite3.connect(db) as conn:
+        conn.execute('INSERT INTO llm_scenario_audit_events VALUES(?,?,?,?,?,?,?,?,?)',
+                     ('e1', 'r1', 'exchange_call', 1700000000.5, None, None, None, None, json.dumps(body)))
+    assert export.export_once(db, state, spool)['captured'] == 1
+    row = next(r for r in events(spool) if r.get('attributes', {}).get('source_kind') == 'exchange_call')
+    observed = row['attributes']['exchange_observation']
+    assert observed == {'status': 'OBSERVED', 'basis': 'LOCAL_CALL_NOT_FILL_OR_EXCHANGE_TIME',
+                        'method': 'place_order', 'local_started_at': 1700000000.1,
+                        'local_ended_at': 1700000000.4, 'response_status': 'ACK_ONLY',
+                        'order_link_ref': export._hash('PRIVATE_LINK'),
+                        'request_order_ref': export._hash('PRIVATE_REQUEST'),
+                        'response_order_ref': export._hash('PRIVATE_RESPONSE')}
+    assert 'PRIVATE_' not in spool.read_text() and 'SECRET' not in spool.read_text()
+
+
+def test_exchange_call_missing_invalid_and_unrecognized_are_not_fills():
+    base = {'status': 'UNKNOWN', 'basis': 'LOCAL_CALL_NOT_FILL_OR_EXCHANGE_TIME'}
+    assert export._exchange_observation({'method': []}) == base
+    assert export._exchange_observation({'method': 'other', 'started_at': 1, 'ended_at': 2}) == base
+    row = export._exchange_observation({'method': 'place_order', 'started_at': 2, 'ended_at': 1,
+                                        'status': ['FILLED'], 'request': {'orderLinkId': 'x' * 257}})
+    assert row == dict(base, method='place_order')
+
+
+def test_quote_and_request_keep_separate_local_observation_times(lane):
+    db, state, spool = lane
+    with sqlite3.connect(db) as conn:
+        conn.executescript('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body TEXT);'
+                           'CREATE TABLE llm_scenario_audit_events(event_id TEXT,run_id TEXT,kind TEXT,observed_at REAL,scenario_id TEXT,intent_id TEXT,decision_slot INTEGER,manifest_id TEXT,body TEXT);')
+    export.export_once(db, state, spool)
+    quote = {'ticker': {'symbol': 'BTCUSDT', 'markPrice': '100', 'lastPrice': '100',
+                        'bid1Price': '99', 'ask1Price': '101'},
+             'ticker_timing': {'request_started_at': 100.1, 'response_received_at': 100.2,
+                               'exchange_response_time_ms': 999999}}
+    request = {'method': 'place_order', 'started_at': 100.3, 'ended_at': 100.4,
+               'status': 'ACK_ONLY', 'request': {'orderLinkId': 'LINK'}}
+    with sqlite3.connect(db) as conn:
+        conn.execute('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)', ('account', 100.25, json.dumps(quote)))
+        conn.execute('INSERT INTO llm_scenario_audit_events VALUES(?,?,?,?,?,?,?,?,?)',
+                     ('e1', 'r1', 'exchange_call', 100.5, None, None, None, None, json.dumps(request)))
+    assert export.export_once(db, state, spool)['captured'] == 2
+    rows = events(spool)
+    market = next(r['attributes']['ticker_observation'] for r in rows if r.get('attributes', {}).get('source_kind') == 'account')
+    call = next(r['attributes']['exchange_observation'] for r in rows if r.get('attributes', {}).get('source_kind') == 'exchange_call')
+    assert market['local_response_received_at'] < call['local_started_at']
+    assert market['basis'] == 'HTTP_RESPONSE_NOT_QUOTE_UPDATE_OR_FILL'
+    assert call['basis'] == 'LOCAL_CALL_NOT_FILL_OR_EXCHANGE_TIME'
+
+
 def test_busy_source_has_no_business_write(lane):
     before = lane[0].read_bytes()
     c = sqlite3.connect(lane[0])

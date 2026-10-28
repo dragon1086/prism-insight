@@ -204,6 +204,33 @@ def _ticker_observation(body):
     return result
 
 
+def _exchange_observation(body):
+    """Expose captured local call timing without asserting exchange execution."""
+    result = {'status': 'UNKNOWN', 'basis': 'LOCAL_CALL_NOT_FILL_OR_EXCHANGE_TIME'}
+    if not isinstance(body, dict):
+        return result
+    method = body.get('method')
+    if not isinstance(method, str) or method not in {'place_order', 'cancel_order', 'set_trading_stop', 'amend_order'}:
+        return result
+    result['method'] = method
+    started, ended = body.get('started_at'), body.get('ended_at')
+    if type(started) in (int, float) and type(ended) in (int, float) and 0 < started <= ended < 2**53:
+        result.update(status='OBSERVED', local_started_at=started, local_ended_at=ended)
+    response_status = body.get('status')
+    if isinstance(response_status, str) and response_status in {'ACK_ONLY', 'UNKNOWN'}:
+        result['response_status'] = response_status
+    request = body.get('request')
+    if isinstance(request, dict):
+        for key, target in (('orderLinkId', 'order_link_ref'), ('orderId', 'request_order_ref')):
+            value = request.get(key)
+            if isinstance(value, str) and 0 < len(value) <= 256:
+                result[target] = _hash(value)
+    response_order = body.get('order_id')
+    if isinstance(response_order, str) and 0 < len(response_order) <= 256:
+        result['response_order_ref'] = _hash(response_order)
+    return result
+
+
 def _identity(path):
     stat = path.stat()
     return _hash(f'{path.resolve()}:{stat.st_dev}:{stat.st_ino}')
@@ -565,6 +592,8 @@ def _capture(source, state, identity, stream, row, manifest_cache=None):
     attrs['granular_fill_coverage'] = 'UNKNOWN_NOT_EXTRACTED'
     if stream == 'llm_scenario_broker_evidence' and kind == 'account':
         attrs['ticker_observation'] = _ticker_observation(body)
+    if stream == 'llm_scenario_audit_events' and kind == 'exchange_call':
+        attrs['exchange_observation'] = _exchange_observation(body)
     stamp = row['observed_at'] if 'observed_at' in row.keys() else row['captured_at']
     slot = row['slot'] if 'slot' in row.keys() else row['decision_slot'] if 'decision_slot' in row.keys() else None
     if slot is not None:
