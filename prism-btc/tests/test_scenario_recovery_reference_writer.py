@@ -78,3 +78,17 @@ def test_source_change_between_prepare_and_lock_preserves_original(tmp_path, mon
     assert not (isinstance(stored, bytes) and stored.startswith(refs.MAGIC))
     assert review_text(stored) == recovery.encoded(dict(event, calculated_review_version=1, input_id='test'))
     conn.close()
+
+
+def test_reference_source_cannot_change_before_journal_commit(tmp_path):
+    conn, event = fixture(tmp_path)
+    recovery.journal(conn, 'MODEL_REQUEST', dict(event, calculated_review_version=1), 1, slot=7, review_sequence=3)
+    assert conn.in_transaction
+    other = sqlite3.connect(tmp_path / 'source.sqlite', timeout=0)
+    with pytest.raises(sqlite3.OperationalError, match='locked'):
+        other.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=7 AND sequence=3', ('{}',))
+    conn.commit()
+    other.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=7 AND sequence=3', ('{}',))
+    other.rollback()
+    other.close()
+    conn.close()
