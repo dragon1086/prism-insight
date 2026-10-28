@@ -83,6 +83,46 @@ def test_compressed_recovery_wire_preserves_replay_and_fails_closed():
     with pytest.raises(ValueError):
         _single_pass_audit_rows(conn, 1)
 
+def test_recovery_wire_writer_preserves_text_and_other_events():
+    import json
+    from live import scenario_recovery
+    conn = sqlite3.connect(':memory:')
+    scenario_recovery.ensure_schema(conn)
+    original = {'user_prompt': 'market-data-' * 200, 'input_id': 'input-1'}
+    scenario_recovery.journal(conn, 'MODEL_REQUEST', original, 1)
+    scenario_recovery.journal(conn, 'MODEL_RAW', {'raw': 'response-' * 200}, 2)
+    scenario_recovery.journal(conn, 'OTHER', original, 3)
+    scenario_recovery.journal(conn, 'MODEL_RAW', {'raw': 'x'}, 4)
+    rows = conn.execute('SELECT kind,body FROM llm_scenario_recovery_events ORDER BY rowid').fetchall()
+    assert isinstance(rows[0][1], bytes) and rows[0][1].startswith(MAGIC)
+    assert json.loads(review_text(rows[0][1])) == original
+    assert isinstance(rows[1][1], bytes) and json.loads(review_text(rows[1][1]))['raw'] == 'response-' * 200
+    assert isinstance(rows[2][1], str) and json.loads(rows[2][1]) == original
+    assert isinstance(rows[3][1], str) and json.loads(rows[3][1]) == {'raw': 'x'}
+
+
+def test_recovery_wire_limit_applies_before_compression():
+    from live import scenario_recovery
+    conn = sqlite3.connect(':memory:')
+    scenario_recovery.ensure_schema(conn)
+    with pytest.raises(ValueError, match='recovery_journal_bound'):
+        scenario_recovery.journal(conn, 'MODEL_REQUEST', {'user_prompt': '가' * 100_000}, 1)
+    assert conn.execute('SELECT COUNT(*) FROM llm_scenario_recovery_events').fetchone()[0] == 0
+
+
+def test_recovery_compression_error_preserves_missing_evidence(monkeypatch):
+    from live import scenario_recovery
+    conn = sqlite3.connect(':memory:')
+    scenario_recovery.ensure_schema(conn)
+    conn.execute('CREATE TABLE llm_scenario_decisions(slot INTEGER, context TEXT)')
+    conn.commit()
+    def fail(_):
+        raise OSError('compression unavailable')
+    monkeypatch.setattr(scenario_recovery, 'review_storage', fail)
+    with scenario_recovery.capture_wire(conn, 1, lambda: 1):
+        scenario_recovery.record_model_request(system_prompt='x', user_prompt='x', response_schema={})
+        scenario_recovery.record_model_wire('x')
+    assert conn.execute('SELECT COUNT(*) FROM llm_scenario_recovery_events').fetchone()[0] == 0
 
 def test_referenced_tape_keeps_runtime_hash_and_fails_if_source_disappears():
     import json

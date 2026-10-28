@@ -313,3 +313,20 @@ def test_compressed_recovery_anchor_and_corruption(lane):
     with sqlite3.connect(lane[0]) as c:
         c.execute('UPDATE llm_scenario_recovery_events SET body=?', (MAGIC+b'bad',))
     assert export.export_once(*lane)['status'] == 'UNAVAILABLE'
+
+def test_compressed_recovery_budget_counts_original_bytes_and_resumes(lane):
+    import gzip
+    from observability.review_storage import MAGIC
+    assert export.export_once(*lane)['captured'] == 0
+    body = json.dumps({'user_prompt': 'x' * 250_000})
+    packed = MAGIC + gzip.compress(body.encode(), mtime=0)
+    with sqlite3.connect(lane[0]) as c:
+        c.executemany('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?,?,?)',
+                      [(str(n), n, 'scenario', 'MODEL_REQUEST', 1700000000+n, packed)
+                       for n in range(1, 18)])
+    first = export.export_once(*lane)
+    assert first['captured'] == 16 and first['source_errors'][0]['error_type'] == 'SOURCE_BYTE_BUDGET'
+    assert first['source_bytes'] == len(body.encode()) * 16
+    second = export.export_once(*lane)
+    assert second['captured'] == 1 and second['status'] != 'UNAVAILABLE'
+    assert 'xxxxx' not in lane[2].read_text()

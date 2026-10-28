@@ -15,6 +15,7 @@ import math
 from pathlib import Path
 import uuid
 from live.scenario_analysis_frames import allowed_evidence_path
+from live.scenario_review_storage import review_storage
 
 RISK_FRACTION = .005
 STAGE_FRACTIONS = (.005, .01, .02)
@@ -53,8 +54,10 @@ def journal(conn, kind, body, now, *, slot=None, scenario_id=None):
         if row and row[0]:
             body = dict(body, input_id=json.loads(row[0]).get("input_id"))
     event_id = str(uuid.uuid4())
+    text = encoded(body)
+    stored = review_storage(text) if kind in {"MODEL_REQUEST", "MODEL_RAW"} else text
     conn.execute("INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?,?,?)",
-                 (event_id, slot, scenario_id, kind, now, encoded(body)))
+                 (event_id, slot, scenario_id, kind, now, stored))
     return event_id
 
 
