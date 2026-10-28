@@ -19,6 +19,7 @@ import time
 from .events import build_event
 from .review_storage import review_text
 from utils.btc_review_references import read_tape
+from utils.btc_financial_references import restore as restore_financial
 
 STREAMS = ('llm_scenario_audit_events', 'llm_scenario_recovery_events',
            'llm_scenario_broker_evidence', 'llm_scenario_outbox', 'llm_scenario_review_events',
@@ -285,6 +286,8 @@ def _source_text(stream, row, source=None):
         return read_tape(row['body'], source, row['slot'], decode_legacy=review_text)
     if stream in ('llm_scenario_review_events', 'llm_scenario_recovery_events'):
         return review_text(row['body'])
+    if stream == 'llm_scenario_broker_evidence':
+        return restore_financial(row['body'])
     return row['body']
 
 
@@ -297,6 +300,8 @@ def _anchor_hash(stream, row, source=None):
         return _hash(_json([row['slot'], row['sequence'], review_text(row['body'])]))
     if stream == 'llm_scenario_review_tapes':
         return _hash(_json([row['slot'], _source_text(stream, row, source)]))
+    if stream == 'llm_scenario_broker_evidence':
+        return _hash(restore_financial(row['body']))
     return _hash(row['body'])
 
 
