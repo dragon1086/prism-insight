@@ -15,7 +15,7 @@ import math
 from pathlib import Path
 import uuid
 from live.scenario_analysis_frames import allowed_evidence_path
-from live.scenario_review_storage import review_storage
+from live.scenario_review_storage import review_storage, review_text
 
 RISK_FRACTION = .005
 STAGE_FRACTIONS = (.005, .01, .02)
@@ -48,7 +48,33 @@ def ensure_schema(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS llm_scenario_recovery_source_lookup ON llm_scenario_recovery_events(scenario_id,kind)")
 
 
-def journal(conn, kind, body, now, *, slot=None, scenario_id=None):
+def _reference_storage(conn, slot, sequence, original, fallback):
+    """Use a reference only after its durable source is rechecked under the write lock."""
+    if type(slot) is not int or slot < 0 or type(sequence) is not int or sequence < 0:
+        return fallback
+    try:
+        from utils.btc_recovery_references import compact, pack, read_recovery
+        rows = conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=? AND sequence=? LIMIT 2',
+                            (slot, sequence)).fetchall()
+        if len(rows) != 1:
+            return fallback
+        candidate = compact(review_text(rows[0][0]), original, slot, sequence)
+        if candidate == original:
+            return fallback
+        candidate = pack(candidate)
+        fallback_bytes = len(fallback.encode('utf-8')) if isinstance(fallback, str) else len(fallback)
+        if len(candidate) >= fallback_bytes:
+            return fallback
+        if not conn.in_transaction:
+            conn.execute('BEGIN IMMEDIATE')
+        if read_recovery(candidate, conn, slot, decode_legacy=review_text) == original:
+            return candidate
+    except Exception:
+        pass
+    return fallback
+
+
+def journal(conn, kind, body, now, *, slot=None, scenario_id=None, review_sequence=None):
     if slot is not None and "input_id" not in body:
         row = conn.execute("SELECT context FROM llm_scenario_decisions WHERE slot=?", (slot,)).fetchone()
         if row and row[0]:
@@ -56,6 +82,8 @@ def journal(conn, kind, body, now, *, slot=None, scenario_id=None):
     event_id = str(uuid.uuid4())
     text = encoded(body)
     stored = review_storage(text) if kind in {"MODEL_REQUEST", "MODEL_RAW"} else text
+    if kind in {"MODEL_REQUEST", "MODEL_RAW"} and body.get('calculated_review_version') == 1:
+        stored = _reference_storage(conn, slot, review_sequence, text, stored)
     conn.execute("INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?,?,?)",
                  (event_id, slot, scenario_id, kind, now, stored))
     return event_id

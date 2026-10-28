@@ -241,8 +241,10 @@ def test_recovery_journal_keeps_real_phase_response_not_host_payload(tmp_path):
     outcome = r.tick()
     assert outcome["status"] == "intent_pending", outcome
     from live.scenario_review_storage import review_text
-    rows = [json.loads(review_text(row[0])) for row in r.conn.execute(
-        "SELECT body FROM llm_scenario_recovery_events WHERE kind='MODEL_RAW' ORDER BY rowid")]
+    from utils.btc_recovery_references import MAGIC, read_recovery
+    stored = r.conn.execute("SELECT slot,body FROM llm_scenario_recovery_events WHERE kind='MODEL_RAW' ORDER BY rowid").fetchall()
+    assert any(isinstance(row[1], bytes) and row[1].startswith(MAGIC) for row in stored)
+    rows = [json.loads(read_recovery(body, r.conn, slot, decode_legacy=review_text)) for slot, body in stored]
     assert len(rows) == 2
     assert all(row["calculated_review_version"] == 1 for row in rows)
     assert "wait_proposal" in json.loads(rows[0]["raw"])
