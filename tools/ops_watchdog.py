@@ -539,7 +539,8 @@ def run(now_kst=None, *, state_path=STATE_PATH, sender=None, dry_run=False, jobs
 
 def disk_used_pct():
     usage = shutil.disk_usage(ROOT)
-    return 100 * usage.used / usage.total
+    # Same as df Use%: root's reserved blocks are not free space for the jobs (83% here when total said 80%).
+    return 100 * usage.used / (usage.used + usage.free)
 
 
 def disk_alert(state, now_kst):
