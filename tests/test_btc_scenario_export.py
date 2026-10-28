@@ -91,6 +91,58 @@ def test_source_replacement_and_anchor_change_fail_closed(lane):
     assert export.export_once(*lane)['status'] == 'UNAVAILABLE'
 
 
+def test_account_ticker_observation_exports_only_market_fields_and_times(lane):
+    db, state, spool = lane
+    with sqlite3.connect(db) as conn:
+        conn.execute('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body TEXT)')
+    export.export_once(db, state, spool)
+    body = {'ticker': {'symbol': 'BTCUSDT', 'markPrice': '100.1', 'lastPrice': '100.2',
+                       'bid1Price': '100.0', 'ask1Price': '100.3', 'private': 'SECRET'},
+            'ticker_timing': {'request_started_at': 1700000000.1, 'response_received_at': 1700000000.3,
+                              'exchange_response_time_ms': 1699999000000},
+            'wallet': {'api_key': 'SECRET'}}
+    with sqlite3.connect(db) as conn:
+        conn.execute('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)', ('account', 1700000001, json.dumps(body)))
+    assert export.export_once(db, state, spool)['captured'] == 1
+    row = next(r for r in events(spool) if r.get('attributes', {}).get('source_kind') == 'account')
+    observed = row['attributes']['ticker_observation']
+    assert observed == {'status': 'OBSERVED', 'basis': 'HTTP_RESPONSE_NOT_QUOTE_UPDATE_OR_FILL',
+                        'prices': {'markPrice': '100.1', 'lastPrice': '100.2', 'bid1Price': '100.0', 'ask1Price': '100.3'},
+                        'local_request_started_at': 1700000000.1, 'local_response_received_at': 1700000000.3,
+                        'exchange_response_time_ms': 1699999000000}
+    assert 'SECRET' not in spool.read_text()
+    from observability.shipper import build_otlp_payload
+    payload = build_otlp_payload([row])
+    record = payload['resourceLogs'][0]['scopeLogs'][0]['logRecords'][0]
+    assert json.loads(record['body']['stringValue'])['attributes']['ticker_observation'] == observed
+    assert 'SECRET' not in json.dumps(payload)
+
+
+def test_invalid_missing_and_crossed_ticker_stay_unknown_or_partial():
+    assert export._ticker_observation({}) == {'status': 'UNKNOWN', 'basis': 'HTTP_RESPONSE_NOT_QUOTE_UPDATE_OR_FILL'}
+    body = {'ticker': {'symbol': 'BTCUSDT', 'markPrice': 'NaN', 'lastPrice': '-1',
+                       'bid1Price': '102', 'ask1Price': '101'},
+            'ticker_timing': {'request_started_at': 2, 'response_received_at': 1,
+                              'exchange_response_time_ms': True}}
+    observed = export._ticker_observation(body)
+    assert observed['status'] == 'UNKNOWN' and observed['prices'] == {}
+    assert observed['book_status'] == 'CROSSED_UNKNOWN'
+    assert 'local_response_received_at' not in observed and 'exchange_response_time_ms' not in observed
+    body['ticker']['markPrice'] = '100'
+    assert export._ticker_observation(body)['status'] == 'PARTIAL'
+
+
+def test_quote_observation_does_not_use_server_clock_as_local_clock():
+    body = {'ticker': {'symbol': 'BTCUSDT', 'markPrice': '100', 'lastPrice': '100',
+                       'bid1Price': '99', 'ask1Price': '101'},
+            'ticker_timing': {'request_started_at': 100, 'response_received_at': 101,
+                              'exchange_response_time_ms': 999999999999}}
+    observed = export._ticker_observation(body)
+    assert observed['status'] == 'OBSERVED'
+    assert observed['local_response_received_at'] == 101
+    assert observed['exchange_response_time_ms'] == 999999999999
+
+
 def test_busy_source_has_no_business_write(lane):
     before = lane[0].read_bytes()
     c = sqlite3.connect(lane[0])

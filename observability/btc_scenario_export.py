@@ -165,6 +165,45 @@ def _facts(value, prefix='', depth=0):
     return out
 
 
+def _ticker_observation(body):
+    """Keep market fields and their observation times, not account payloads."""
+    result = {'status': 'UNKNOWN', 'basis': 'HTTP_RESPONSE_NOT_QUOTE_UPDATE_OR_FILL'}
+    ticker = body.get('ticker') if isinstance(body, dict) else None
+    timing = body.get('ticker_timing') if isinstance(body, dict) else None
+    if not isinstance(ticker, dict) or ticker.get('symbol') != 'BTCUSDT':
+        return result
+    prices = {}
+    for key in ('markPrice', 'lastPrice', 'bid1Price', 'ask1Price'):
+        value = ticker.get(key)
+        if type(value) not in (str, int, float) or len(str(value)) > 80:
+            continue
+        try:
+            parsed = Decimal(str(value))
+        except InvalidOperation:
+            continue
+        if parsed.is_finite() and parsed > 0:
+            prices[key] = value
+    if ('bid1Price' in prices and 'ask1Price' in prices
+            and Decimal(str(prices['bid1Price'])) > Decimal(str(prices['ask1Price']))):
+        prices.pop('bid1Price')
+        prices.pop('ask1Price')
+        result['book_status'] = 'CROSSED_UNKNOWN'
+    result['prices'] = prices
+    if isinstance(timing, dict):
+        started, received = timing.get('request_started_at'), timing.get('response_received_at')
+        if (type(started) in (int, float) and type(received) in (int, float)
+                and 0 < started <= received < 2**53):
+            result['local_request_started_at'] = started
+            result['local_response_received_at'] = received
+        server_ms = timing.get('exchange_response_time_ms')
+        if type(server_ms) is int and 0 < server_ms < 2**53:
+            result['exchange_response_time_ms'] = server_ms
+    if prices:
+        result['status'] = ('OBSERVED' if len(prices) == 4 and 'local_response_received_at' in result
+                            and 'exchange_response_time_ms' in result else 'PARTIAL')
+    return result
+
+
 def _identity(path):
     stat = path.stat()
     return _hash(f'{path.resolve()}:{stat.st_dev}:{stat.st_ino}')
@@ -524,6 +563,8 @@ def _capture(source, state, identity, stream, row, manifest_cache=None):
              'body_sha256': _hash(raw), 'facts': _facts(body), 'policy_evidence': 'UNKNOWN'}
     attrs['facts_scope'] = 'ALLOWLISTED_SUBSET_RAW_SOURCE_RETAINED'
     attrs['granular_fill_coverage'] = 'UNKNOWN_NOT_EXTRACTED'
+    if stream == 'llm_scenario_broker_evidence' and kind == 'account':
+        attrs['ticker_observation'] = _ticker_observation(body)
     stamp = row['observed_at'] if 'observed_at' in row.keys() else row['captured_at']
     slot = row['slot'] if 'slot' in row.keys() else row['decision_slot'] if 'decision_slot' in row.keys() else None
     if slot is not None:
