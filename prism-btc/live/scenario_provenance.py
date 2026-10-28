@@ -49,6 +49,7 @@ def review_policy_binding(*, research_mode="legacy"):
     from core import scenario_limit_prices, llm_scenario, scenario_stop_policy, scenario_convergence
     from core import scenario_pending_renewal as pending_renewal_core
     from engine import scenario_ma_context, scenario_snapshot
+    from utils import btc_review_references
 
     root = Path(__file__).resolve().parents[1]
     modules = {
@@ -72,6 +73,7 @@ def review_policy_binding(*, research_mode="legacy"):
         'engine/scenario_snapshot.py': scenario_snapshot,
         'live/scenario_runtime.py': scenario_runtime,
         'live/scenario_review_storage.py': scenario_review_storage,
+        'utils/btc_review_references.py': btc_review_references,
         'live/scenario_entry_contract.py': scenario_entry_contract,
         'live/scenario_entry_goal.py': scenario_entry_goal,
         'live/scenario_entry_display.py': scenario_entry_display,
@@ -96,7 +98,7 @@ def review_policy_binding(*, research_mode="legacy"):
     for name, module in modules.items():
         if sys.modules.get(name.removesuffix('.py').replace('/', '.')) is not module:
             raise ValueError('review_mixed_loaded_policy')
-        source = (root / name).read_text()
+        source = ((root.parent if name.startswith('utils/') else root) / name).read_text()
         sources[name] = hashlib.sha256(source.encode()).hexdigest()
         parity[name] = _loaded_parity(name, source)
     if set(parity.values()) != {'VERIFIED'}:
@@ -248,6 +250,15 @@ def _manifest():
             judgment_parity[name] = _loaded_parity(name, source, {context_name})
             execution_parity[name] = _loaded_parity(name, source, execution_names)
         parity[name] = _loaded_parity(name, source, selected_names)
+    # Pending-renewal execution may resolve a referenced review tape through this module.
+    from utils import btc_review_references
+    helper_name = 'utils/btc_review_references.py'
+    if sys.modules.get('utils.btc_review_references') is not btc_review_references:
+        raise ValueError('review_mixed_loaded_policy')
+    helper_source = (root.parent / helper_name).read_text()
+    sources[helper_name] = hashlib.sha256(helper_source.encode()).hexdigest()
+    execution[helper_name] = ast.dump(ast.parse(helper_source), include_attributes=False)
+    execution_parity[helper_name] = parity[helper_name] = _loaded_parity(helper_name, helper_source)
     # Recovery contains both judgment evidence and execution authorization.
     execution['live/scenario_recovery.py'] = policy['live/scenario_recovery.py']
     execution_parity['live/scenario_recovery.py'] = judgment_parity['live/scenario_recovery.py']
