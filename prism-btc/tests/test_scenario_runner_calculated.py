@@ -1,3 +1,4 @@
+from utils.btc_review_references import read_tape
 from live.scenario_review_storage import review_text
 """Operational opt-in stays demo-only, durable, no-retry and default-off."""
 from copy import deepcopy
@@ -104,7 +105,7 @@ def test_operational_row_factory_records_real_review_without_legacy_fallback(tmp
         assert outcome["status"] == ("blocked" if failure else "wait"), outcome
         assert len(requests) == 1
         assert broker.executed == []
-        envelope = json.loads(review_text(conn.execute("SELECT body FROM llm_scenario_review_tapes").fetchone()[0]))
+        envelope = json.loads(read_tape(conn.execute("SELECT body FROM llm_scenario_review_tapes").fetchone()[0], conn, conn.execute("SELECT slot FROM llm_scenario_review_tapes").fetchone()[0], decode_legacy=review_text))
         assert envelope["outcome"]["status"] == ("FAILED" if failure else "COMPLETE")
         assert envelope["inputs"]["bindings"]["policy"] == runner.CALCULATED_REVIEW_MODE
         assert conn.execute("SELECT COUNT(*) FROM llm_scenario_intents").fetchone()[0] == 0
