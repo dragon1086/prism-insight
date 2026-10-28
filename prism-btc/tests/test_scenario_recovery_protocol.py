@@ -82,7 +82,8 @@ def test_actual_request_and_invalid_raw_are_durable_before_parse(tmp_path):
         with pytest.raises(ScenarioModelError):
             propose({'valid':True,'as_of_ms':1000000},c,response_contract(c),
                     generate=lambda **kw:SimpleNamespace(text='not JSON'),clock=lambda:1000)
-    rows={kind:json.loads(body) for kind,body in conn.execute('SELECT kind,body FROM llm_scenario_recovery_events')}
+    from live.scenario_review_storage import review_text
+    rows={kind:json.loads(review_text(body)) for kind,body in conn.execute('SELECT kind,body FROM llm_scenario_recovery_events')}
     assert rows['MODEL_RAW']['raw']=='not JSON'
     assert json.loads(rows['MODEL_REQUEST']['user_prompt'])['contract_context']['input_id']==c['input_id']
     assert rows['MODEL_REQUEST']['model']=='gpt-6.1-sol'

@@ -340,9 +340,10 @@ def test_exact_assembled_request_envelope_and_identity_scope_restore(tmp_path):
         assert request['input_projection']
         assert row['raw_response']['wire_metadata']==dict(model='gpt-6.1-sol',effort='low',fast=True)
     journals=[]
+    from live.scenario_review_storage import review_text
     for name in ('audit','audit-frozen'):
         with sqlite3.connect(tmp_path/name/'replay.sqlite') as conn:
-            journals.append([(kind,json.loads(body)) for kind,body in conn.execute(
+            journals.append([(kind,json.loads(review_text(body))) for kind,body in conn.execute(
                 "SELECT kind,body FROM llm_scenario_recovery_events WHERE kind IN ('MODEL_REQUEST','MODEL_RAW') ORDER BY rowid")])
     assert journals[0]==journals[1]
     with pytest.raises(ValueError):
