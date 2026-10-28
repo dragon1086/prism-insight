@@ -82,3 +82,27 @@ def test_compressed_recovery_wire_preserves_replay_and_fails_closed():
         _runtime_event_hash(conn)
     with pytest.raises(ValueError):
         _single_pass_audit_rows(conn, 1)
+
+
+def test_referenced_tape_keeps_runtime_hash_and_fails_if_source_disappears():
+    import json
+    from utils.btc_review_references import canonical, compact, pack
+
+    conn = sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE llm_scenario_decisions(slot INTEGER,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT)')
+    conn.execute('CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT)')
+    conn.execute('CREATE TABLE llm_scenario_review_tapes(slot INTEGER,body TEXT)')
+    snapshot, context = {'z': 1, 'a': 2}, {'input_id': 'fixture'}
+    event = {'kind': 'MODEL_RAW', 'raw': 'fixture'}
+    body = {'inputs': {'snapshot': snapshot, 'context': context}, 'operations': [{'kind': 'record', 'event': event}]}
+    original = json.dumps(body)
+    s, c, e = map(canonical, (snapshot, context, event))
+    conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)', (1, s, c, None, None))
+    conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 0, e))
+    conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (1, original))
+    expected = _runtime_event_hash(conn)
+    conn.execute('UPDATE llm_scenario_review_tapes SET body=?', (pack(compact(original, s, c, [e])),))
+    assert _runtime_event_hash(conn) == expected
+    conn.execute('DELETE FROM llm_scenario_review_events')
+    with pytest.raises(ValueError):
+        _runtime_event_hash(conn)

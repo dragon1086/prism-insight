@@ -890,7 +890,9 @@ class ScenarioExecution:
             decision_slot, context_body, proposal_body = decisions[0]
             original_context, decision = json.loads(context_body), json.loads(proposal_body)
             tape = self.conn.execute('SELECT body FROM llm_scenario_review_tapes WHERE slot=?', (decision_slot,)).fetchone()
-            outcome = json.loads(review_text(tape[0])).get('outcome', {}) if tape else {}
+            from utils.btc_review_references import read_tape
+            outcome = json.loads(read_tape(tape[0], self.conn, decision_slot,
+                                           decode_legacy=review_text)).get('outcome', {}) if tape else {}
             reviewed = outcome.get('result', {})
             selected = reviewed.get('selected', {})
             if (outcome.get('status') != 'COMPLETE' or reviewed.get('calls') != 2
