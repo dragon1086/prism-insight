@@ -855,9 +855,11 @@ class ScenarioRuntime:
                 envelope_body = json.dumps(review_envelope, allow_nan=False)
                 if len(envelope_body.encode()) > MAX_BYTES:
                     raise ValueError("review_tape_bound")
-                from live.scenario_review_storage import review_storage
+                from live.scenario_review_storage import tape_storage, validate_tape_for_commit
+                stored_tape = tape_storage(self.conn, slot, envelope_body)
+                stored_tape = validate_tape_for_commit(self.conn, slot, envelope_body, stored_tape)
                 self.conn.execute("INSERT INTO llm_scenario_review_tapes VALUES(?,?)",
-                                  (slot, review_storage(envelope_body)))
+                                  (slot, stored_tape))
                 self.conn.commit()
                 stored_input = self.conn.execute(
                     "SELECT snapshot,context FROM llm_scenario_decisions WHERE slot=?", (slot,)).fetchone()
