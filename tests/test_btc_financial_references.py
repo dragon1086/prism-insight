@@ -68,6 +68,19 @@ def test_plain_and_overlarge_evidence_do_not_change():
         restore(overlarge)
 
 
+def test_noncanonical_tag_cannot_hide_and_nested_legacy_tag_stays_plain():
+    original = serialized(fixture())
+    wrapped = json.loads(compact(original))
+    reordered = json.dumps({'body': wrapped['body'], 'sha256': wrapped['sha256'], TAG: 1}, indent=2)
+    assert restore(reordered) == original
+    reordered_body = json.loads(reordered)
+    reordered_body[TAG] = 2
+    with pytest.raises(ValueError):
+        restore(json.dumps(reordered_body))
+    legacy = serialized({'other': 'ordinary text mentioning ' + TAG})
+    assert restore(legacy) == legacy
+
+
 def test_export_restores_original_and_keeps_anchor(tmp_path):
     from observability import btc_scenario_export as export
     db, state, spool = (tmp_path / name for name in ('source.sqlite', 'state.sqlite', 'spool.jsonl'))

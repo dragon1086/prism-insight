@@ -81,7 +81,7 @@ def compact(text):
 def restore(text):
     if not isinstance(text, str):
         raise ValueError('financial_body_invalid')
-    if not text.startswith('{"' + TAG + '":'):
+    if TAG not in text:
         return text
     if len(text.encode('utf-8')) > MAX_BYTES:
         raise ValueError('financial_body_invalid')
