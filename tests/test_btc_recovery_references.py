@@ -22,10 +22,14 @@ def fixture():
 
 def test_reference_roundtrip_and_compressed_legacy():
     conn, review, recovery, candidate = fixture()
-    assert read_recovery(pack(candidate), conn, 7, decode_legacy=review_text) == recovery
+    assert read_recovery(pack(candidate), conn, 7, decode_legacy=review_text, expected_kind='MODEL_REQUEST') == recovery
     assert read_recovery(LEGACY_MAGIC + gzip.compress(recovery.encode()), conn, 7, decode_legacy=review_text) == recovery
     assert read_recovery(recovery, None, None, decode_legacy=review_text) == recovery
     assert restore(candidate, review, 7, 2) == recovery
+    with pytest.raises(ValueError, match='kind_mismatch'):
+        read_recovery(pack(candidate), conn, 7, decode_legacy=review_text, expected_kind='MODEL_RAW')
+    with pytest.raises(ValueError, match='kind_mismatch'):
+        read_recovery(pack(candidate), conn, 7, decode_legacy=review_text)
     conn.close()
 
 

@@ -114,7 +114,8 @@ def _runtime_event_hash(conn):
             slot_index = columns.index('slot') if 'slot' in columns else None
             kind_index = columns.index('kind') if 'kind' in columns else None
             rows = [tuple((read_recovery(value, conn, row[slot_index] if slot_index is not None else None,
-                                         decode_legacy=review_text)
+                                         decode_legacy=review_text,
+                                         expected_kind=row[kind_index] if kind_index is not None else None)
                            if kind_index is None or row[kind_index] in ('MODEL_REQUEST', 'MODEL_RAW') else review_text(value))
                           if i == index else value
                           for i, value in enumerate(row)) for row in rows]
@@ -384,7 +385,7 @@ def _single_pass_audit_rows(conn, slot):
     from live.scenario_review_storage import review_text
     from utils.btc_recovery_references import read_recovery
     rows = conn.execute("SELECT kind,body FROM llm_scenario_recovery_events WHERE slot=? AND kind IN ('MODEL_REQUEST','MODEL_RAW') ORDER BY rowid", (slot,)).fetchall()
-    rows = [(kind, read_recovery(body, conn, slot, decode_legacy=review_text)) for kind, body in rows]
+    rows = [(kind, read_recovery(body, conn, slot, decode_legacy=review_text, expected_kind=kind)) for kind, body in rows]
     groups = {kind: [body for row_kind, body in rows if row_kind == kind]
               for kind in ('MODEL_REQUEST', 'MODEL_RAW')}
     if (any(len(group) > 1 for group in groups.values())

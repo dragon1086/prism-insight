@@ -349,6 +349,11 @@ def test_embedded_receiver_resolves_recovery_references_and_rejects_missing(tmp_
                            capture_output=True, text=True, timeout=15, check=True)
     assert child.stdout.strip() == 'd' * 40
     with sqlite3.connect(path) as conn:
+        conn.execute("UPDATE llm_scenario_recovery_events SET kind='MODEL_REQUEST'")
+    with pytest.raises(ValueError, match='reference_recovery_unresolved'):
+        archive.referenced_commits(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("UPDATE llm_scenario_recovery_events SET kind='MODEL_RAW'")
         conn.execute('DELETE FROM llm_scenario_review_events')
     with pytest.raises(ValueError, match='reference_recovery_unresolved'):
         archive.referenced_commits(path)

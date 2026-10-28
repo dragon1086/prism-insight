@@ -356,7 +356,8 @@ def _source_text(stream, row, source=None):
         return review_text(row['body'])
     if stream == 'llm_scenario_recovery_events':
         if row['kind'] in ('MODEL_REQUEST', 'MODEL_RAW'):
-            return read_recovery(row['body'], source, row['slot'], decode_legacy=review_text)
+            return read_recovery(row['body'], source, row['slot'], decode_legacy=review_text,
+                                 expected_kind=row['kind'])
         return review_text(row['body'])
     if stream == 'llm_scenario_broker_evidence' and row['kind'] == 'financial':
         return restore_financial(row['body'])
