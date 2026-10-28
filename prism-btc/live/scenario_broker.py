@@ -202,6 +202,7 @@ class ScenarioDemoBroker(ScenarioExecution):
     def _save(self, kind, body):
         text = json.dumps(body, allow_nan=False, sort_keys=True)
         if kind == 'financial':
+            original = text
             try:
                 from utils.btc_financial_references import compact, restore
                 candidate = compact(text)
@@ -209,7 +210,7 @@ class ScenarioDemoBroker(ScenarioExecution):
                     text = candidate
             except Exception:
                 # Optional deduplication must never interrupt broker evidence or protection.
-                pass
+                text = original
         self.conn.execute("INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)",
                           (kind, self.clock(), text))
         self.conn.commit()
