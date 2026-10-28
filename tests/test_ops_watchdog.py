@@ -19,6 +19,7 @@ def _job(key):
 def _setup(tmp_path, monkeypatch):
     monkeypatch.setattr(W, "ROOT", tmp_path)
     monkeypatch.setattr(W, "_journalctl", lambda unit, cursor: None)    # hermetic: no journal on the test host
+    monkeypatch.setattr(W, "disk_used_pct", lambda: 50.0)                # hermetic: not the test host disk
     (tmp_path / "logs").mkdir()
     return tmp_path / "runtime" / "state.json"
 
@@ -302,6 +303,7 @@ def test_b3_journal_run_alerts_failures_and_a_stopped_worker(tmp_path, monkeypat
 def test_missing_journalctl_skips_the_journal_jobs_without_alerts(tmp_path, monkeypatch):
     monkeypatch.setattr(W, "ROOT", tmp_path)             # the real _journalctl, but no journalctl binary
     monkeypatch.setattr(W, "_is_session", lambda market, day: True)
+    monkeypatch.setattr(W, "disk_used_pct", lambda: 50.0)
     state = tmp_path / "runtime" / "state.json"
 
     def missing(*args, **kwargs):
@@ -354,3 +356,20 @@ def test_job_definitions_are_consistent(job):
     if job.heartbeat:
         re.compile(job.heartbeat)
         assert job.market in W.TZ and (job.every_min and job.window or job.deadline)
+
+
+def test_disk_alert_fires_above_the_limit_holds_repeats_and_resets(tmp_path, monkeypatch):
+    state = _setup(tmp_path, monkeypatch)
+    sent, t0 = [], datetime(2026, 10, 28, 23, 0, tzinfo=KST)
+    send = lambda m: sent.append(m) or True  # noqa: E731
+    W.run(t0, state_path=state, sender=send)
+    monkeypatch.setattr(W, "disk_used_pct", lambda: 97.0)
+    W.run(t0.replace(minute=5), state_path=state, sender=send)
+    assert len(sent) == 1 and sent[0].startswith("[장애] PRISM 서버 저장공간 부족") and "97%" in sent[0]
+    W.run(t0.replace(minute=10), state_path=state, sender=send)
+    assert len(sent) == 1                                                  # held back inside REPEAT_HOURS
+    monkeypatch.setattr(W, "disk_used_pct", lambda: 80.0)
+    W.run(t0.replace(minute=15), state_path=state, sender=send)
+    monkeypatch.setattr(W, "disk_used_pct", lambda: 95.0)
+    W.run(t0.replace(minute=20), state_path=state, sender=send)
+    assert len(sent) == 2                                                  # a new episode alerts again

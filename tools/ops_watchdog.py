@@ -28,6 +28,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess  # nosec B404 - fixed journalctl argv, no shell
 import sys
 from dataclasses import dataclass
@@ -48,6 +49,7 @@ SUMMARY_AT = os.getenv("OPS_WATCHDOG_SUMMARY_AT", "08:30")      # KST
 MAX_READ_BYTES = 50 * 1024 * 1024
 EXAMPLES_PER_GROUP = 3
 MESSAGE_LIMIT = 3400
+DISK_ALERT_PCT = float(os.getenv("OPS_WATCHDOG_DISK_ALERT_PCT", "90"))
 JOURNAL_MAX_ENTRIES = 5000             # per unit and run (oldest first); the rest is read on the next run
 JOURNAL_TIMEOUT_S = 30
 B3_CONTRACT = '"contract": "b3-ae-worker-v1"'   # the B3 worker's tick line (printed every minute, all day)
@@ -507,6 +509,9 @@ def run(now_kst=None, *, state_path=STATE_PATH, sender=None, dry_run=False, jobs
         sent.pop(sig)
 
     messages = []
+    disk = disk_alert(state, now_kst)
+    if disk:
+        messages.append(disk)
     alert = build_alert(to_send, stale_new, recovered, now_kst, jobs)
     if alert:
         messages.append(alert)
@@ -530,6 +535,28 @@ def run(now_kst=None, *, state_path=STATE_PATH, sender=None, dry_run=False, jobs
         tmp.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(state_path)
     return messages
+
+
+def disk_used_pct():
+    usage = shutil.disk_usage(ROOT)
+    return 100 * usage.used / usage.total
+
+
+def disk_alert(state, now_kst):
+    """A full disk stopped Codex and MCP startups for a day (db-server, 2026-10-28): warn before that."""
+    pct = disk_used_pct()
+    last = state.get("disk_alert")
+    if pct < DISK_ALERT_PCT:
+        state.pop("disk_alert", None)
+        return None
+    if last and now_kst - datetime.fromisoformat(last) < timedelta(hours=REPEAT_HOURS):
+        return None
+    state["disk_alert"] = now_kst.isoformat()
+    free_gb = shutil.disk_usage(ROOT).free / 1e9
+    return (f"[장애] PRISM 서버 저장공간 부족 {now_kst:%m/%d %H:%M} KST\n"
+            f"■ 디스크 {pct:.0f}% 사용 (남은 공간 {free_gb:.1f}GB, 기준 {DISK_ALERT_PCT:g}%)\n"
+            f"  가득 차면 AI 판단·뉴스 검색이 시작되지 않습니다. 큰 파일: du -xh --max-depth=1 / | sort -rh | head\n"
+            f"{REPEAT_HOURS:g}시간 뒤에도 기준 이상이면 다시 보냅니다.")
 
 
 def _source(job):
