@@ -48,7 +48,7 @@ def ensure_schema(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS llm_scenario_recovery_source_lookup ON llm_scenario_recovery_events(scenario_id,kind)")
 
 
-def _reference_storage(conn, slot, sequence, original, fallback):
+def _reference_storage(conn, kind, slot, sequence, original, fallback):
     """Use a reference only after its durable source is rechecked under the write lock."""
     if type(slot) is not int or slot < 0 or type(sequence) is not int or sequence < 0:
         return fallback
@@ -67,7 +67,7 @@ def _reference_storage(conn, slot, sequence, original, fallback):
             return fallback
         if not conn.in_transaction:
             conn.execute('BEGIN IMMEDIATE')
-        if read_recovery(candidate, conn, slot, decode_legacy=review_text) == original:
+        if read_recovery(candidate, conn, slot, decode_legacy=review_text, expected_kind=kind) == original:
             return candidate
     except Exception:
         pass
@@ -83,7 +83,7 @@ def journal(conn, kind, body, now, *, slot=None, scenario_id=None, review_sequen
     text = encoded(body)
     stored = review_storage(text) if kind in {"MODEL_REQUEST", "MODEL_RAW"} else text
     if kind in {"MODEL_REQUEST", "MODEL_RAW"} and body.get('calculated_review_version') == 1:
-        stored = _reference_storage(conn, slot, review_sequence, text, stored)
+        stored = _reference_storage(conn, kind, slot, review_sequence, text, stored)
     conn.execute("INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?,?,?)",
                  (event_id, slot, scenario_id, kind, now, stored))
     return event_id

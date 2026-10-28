@@ -31,12 +31,12 @@ def test_writer_stores_reference_that_restores_original(tmp_path):
     stored = conn.execute('SELECT body FROM llm_scenario_recovery_events').fetchone()[0]
     expected = recovery.encoded(dict(event, calculated_review_version=1, input_id='test'))
     assert isinstance(stored, bytes) and stored.startswith(refs.MAGIC)
-    assert refs.read_recovery(stored, conn, 7, decode_legacy=review_text) == expected
+    assert refs.read_recovery(stored, conn, 7, decode_legacy=review_text, expected_kind='MODEL_REQUEST') == expected
     assert len(stored) < len(review_text(expected).encode())
     conn.close()
 
 
-@pytest.mark.parametrize('fault', ['missing', 'mismatch', 'duplicate', 'invalid_sequence', 'codec_error'])
+@pytest.mark.parametrize('fault', ['missing', 'mismatch', 'duplicate', 'invalid_sequence', 'codec_error', 'kind_mismatch'])
 def test_writer_falls_back_to_original_for_optional_reference_failures(tmp_path, monkeypatch, fault):
     conn, event = fixture(tmp_path)
     if fault == 'missing':
@@ -51,7 +51,8 @@ def test_writer_falls_back_to_original_for_optional_reference_failures(tmp_path,
         monkeypatch.setattr(refs, 'compact', broken)
     conn.commit()
     sequence = True if fault == 'invalid_sequence' else 3
-    recovery.journal(conn, 'MODEL_REQUEST', dict(event, calculated_review_version=1), 1, slot=7, review_sequence=sequence)
+    kind = 'MODEL_RAW' if fault == 'kind_mismatch' else 'MODEL_REQUEST'
+    recovery.journal(conn, kind, dict(event, calculated_review_version=1), 1, slot=7, review_sequence=sequence)
     conn.commit()
     stored = conn.execute('SELECT body FROM llm_scenario_recovery_events').fetchone()[0]
     assert not (isinstance(stored, bytes) and stored.startswith(refs.MAGIC))
