@@ -11,6 +11,7 @@ from live.scenario_broker import ScenarioDemoBroker
 from live.scenario_control import _write
 from live.scenario_pending_renewal import load, receipt
 from live.scenario_review_adapter import make_calculated_review_proposer
+from utils.btc_review_references import read_tape
 from live.scenario_runtime import ScenarioRuntime
 from live.scenario_model_input import restore_model_input
 from tests.test_scenario_execution import Exchange
@@ -311,8 +312,8 @@ def test_two_trade_alternatives_plus_renewal_are_lossless_and_decline_is_availab
     assert r.tick()['status'] == 'intent_pending'
     e.now += 301
     outcome = r.tick()
-    assert outcome['status'] == 'intent_pending', (outcome, [json.loads(review_text(row[0]))['outcome']
-        for row in r.conn.execute('SELECT body FROM llm_scenario_review_tapes')])
+    assert outcome['status'] == 'intent_pending', (outcome, [json.loads(read_tape(row[1], r.conn, row[0], decode_legacy=review_text))['outcome']
+        for row in r.conn.execute('SELECT slot,body FROM llm_scenario_review_tapes')])
     projected = json.loads(calls[-1]['user_prompt'])
     restored = restore_model_input(projected)
     choices = restored['calculated_candidates']
@@ -546,7 +547,7 @@ def test_pending_renewal_reads_compressed_selected_tape(tmp_path, monkeypatch, c
     def compressed(payload, ident):
         slot = r.conn.execute('SELECT slot FROM llm_scenario_decisions WHERE json_extract(proposal, "$.action_id")=?', (ident,)).fetchone()[0]
         body = r.conn.execute('SELECT body FROM llm_scenario_review_tapes WHERE slot=?', (slot,)).fetchone()[0]
-        value = MAGIC + (b'broken' if corrupt else gzip.compress(review_text(body).encode(), mtime=0))
+        value = MAGIC + (b'broken' if corrupt else gzip.compress(read_tape(body, r.conn, slot, decode_legacy=review_text).encode(), mtime=0))
         r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (value, slot))
         r.conn.commit()
         return original(payload, ident)
@@ -582,12 +583,14 @@ def test_runtime_durable_event_comparison_reads_compressed_events(tmp_path, monk
 
 def test_new_review_tape_is_compressed_and_preserves_complete_envelope(tmp_path):
     from backtest.scenario_tape import digest
-    from live.scenario_review_storage import MAGIC, review_text
+    from live.scenario_review_storage import review_text
+    from utils.btc_review_references import MAGIC
     r, _, _, _, _ = renewal_runtime(tmp_path)
     assert r.tick()['status'] == 'intent_pending'
     stored = r.conn.execute('SELECT body FROM llm_scenario_review_tapes').fetchone()[0]
     assert isinstance(stored, bytes) and stored.startswith(MAGIC)
-    envelope = json.loads(review_text(stored))
+    slot = r.conn.execute('SELECT slot FROM llm_scenario_review_tapes').fetchone()[0]
+    envelope = json.loads(read_tape(stored, r.conn, slot, decode_legacy=review_text))
     assert envelope['outcome']['status'] == 'COMPLETE' and envelope['executable'] is False
     assert envelope['sha256'] == digest({k: v for k, v in envelope.items() if k != 'sha256'})
 
@@ -602,7 +605,8 @@ def test_runtime_compressed_tape_exports_with_matching_original_seal(tmp_path):
     assert r.tick()['status'] == 'intent_pending'
     db = Path(r.conn.execute('PRAGMA database_list').fetchone()[2])
     stored = r.conn.execute('SELECT body FROM llm_scenario_review_tapes').fetchone()[0]
-    original = review_text(stored)
+    slot = r.conn.execute('SELECT slot FROM llm_scenario_review_tapes').fetchone()[0]
+    original = read_tape(stored, r.conn, slot, decode_legacy=review_text)
     state, spool = tmp_path / 'export-state.sqlite', tmp_path / 'export.jsonl'
     btc_scenario_export.export_once(db, state, spool)
     btc_scenario_export.export_once(db, state, spool)
@@ -627,7 +631,7 @@ def test_pending_renewal_reads_referenced_tape_and_rejects_changed_source(tmp_pa
         stored = r.conn.execute('SELECT body FROM llm_scenario_review_tapes WHERE slot=?', (slot,)).fetchone()[0]
         snapshot, context = r.conn.execute('SELECT snapshot,context FROM llm_scenario_decisions WHERE slot=?', (slot,)).fetchone()
         events = [review_text(row[0]) for row in r.conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence', (slot,))]
-        value = pack(compact(review_text(stored), snapshot, context, events))
+        value = pack(compact(read_tape(stored, r.conn, slot, decode_legacy=review_text), snapshot, context, events))
         r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (value, slot))
         if corrupt:
             r.conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=? AND sequence=0', ('{}', slot))

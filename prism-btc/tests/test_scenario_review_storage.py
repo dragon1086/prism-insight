@@ -106,3 +106,32 @@ def test_referenced_tape_keeps_runtime_hash_and_fails_if_source_disappears():
     conn.execute('DELETE FROM llm_scenario_review_events')
     with pytest.raises(ValueError):
         _runtime_event_hash(conn)
+
+
+def test_tape_writer_deduplicates_only_complete_recoverable_evidence():
+    import hashlib
+    import json
+    from live.scenario_review_storage import review_storage, tape_storage
+    from utils.btc_review_references import MAGIC as REF_MAGIC, canonical, read_tape
+
+    conn = sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE llm_scenario_decisions(slot INTEGER,snapshot TEXT,context TEXT)')
+    conn.execute('CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT)')
+    text = ''.join(hashlib.sha256(str(i).encode()).hexdigest() for i in range(2000))
+    snapshot, context, event = {'z': text, 'a': 1}, {'z': 2, 'a': text}, {'raw': text}
+    tape = {'inputs': {'snapshot': snapshot, 'context': context},
+            'operations': [{'kind': 'record', 'event': event}], 'outcome': {'status': 'COMPLETE'}}
+    raw = json.dumps(tape)
+    conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?)',
+                 (1, canonical(snapshot), canonical(context)))
+    conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 0, canonical(event)))
+    encoded = tape_storage(conn, 1, raw)
+    assert encoded.startswith(REF_MAGIC) and len(encoded) < len(review_storage(raw))
+    assert read_tape(encoded, conn, 1, decode_legacy=review_text) == raw
+    conn.execute('DELETE FROM llm_scenario_review_events')
+    assert review_text(tape_storage(conn, 1, raw)) == raw
+    conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 1, canonical(event)))
+    assert review_text(tape_storage(conn, 1, raw)) == raw
+    tape['outcome']['status'] = 'FAILED'
+    failed = json.dumps(tape)
+    assert review_text(tape_storage(conn, 1, failed)) == failed

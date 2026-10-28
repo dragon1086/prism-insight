@@ -31,3 +31,43 @@ def review_text(value):
     if len(raw) > MAX_BYTES or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
         raise ValueError('review_body_compression_invalid')
     return raw.decode('utf-8')
+
+
+def tape_storage(conn, slot, text):
+    """Use references only when already durable evidence restores the exact tape."""
+    from utils.btc_review_references import MAX_REFERENCES, compact, pack, restore
+    import json
+
+    original = review_storage(text)
+    tape = json.loads(text)
+    if tape.get('outcome', {}).get('status') != 'COMPLETE':
+        return original
+    decision = conn.execute('SELECT snapshot,context FROM llm_scenario_decisions WHERE slot=?',
+                            (slot,)).fetchone()
+    if decision is None:
+        return original
+    try:
+        count = sum(op.get('kind') == 'record' for op in tape['operations'])
+        if count > MAX_REFERENCES - 2:
+            return original
+        rows = conn.execute('SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? '
+                            'ORDER BY sequence LIMIT ?', (slot, count))
+        events, size = [], 0
+        for sequence, body in rows:
+            if sequence != len(events):
+                return original
+            event = review_text(body)
+            size += len(event.encode('utf-8'))
+            if size > MAX_BYTES:
+                return original
+            events.append(event)
+        if len(events) != count:
+            return original
+        bundle = compact(text, decision[0], decision[1], events)
+        if restore(bundle, decision[0], decision[1], events) != text:
+            return original
+        encoded = pack(bundle)
+    except (ValueError, TypeError, KeyError, IndexError):
+        return original
+    original_size = len(original.encode('utf-8')) if isinstance(original, str) else len(original)
+    return encoded if len(encoded) < original_size else original

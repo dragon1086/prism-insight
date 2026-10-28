@@ -1,3 +1,4 @@
+from utils.btc_review_references import read_tape
 from live.scenario_review_storage import review_text
 from copy import deepcopy
 import json
@@ -111,7 +112,7 @@ def test_optin_complete_proof_before_simulated_intent(tmp_path):
     outcome = r.tick()
     assert outcome["status"] == "intent_pending", outcome
     assert len(calls) == 2 and len(broker.executed) == 1
-    tape = json.loads(review_text(r.conn.execute("SELECT body FROM llm_scenario_review_tapes").fetchone()[0]))
+    tape = json.loads(read_tape(r.conn.execute("SELECT body FROM llm_scenario_review_tapes").fetchone()[0], r.conn, r.conn.execute("SELECT slot FROM llm_scenario_review_tapes").fetchone()[0], decode_legacy=review_text))
     proposal = json.loads(r.conn.execute("SELECT proposal FROM llm_scenario_decisions").fetchone()[0])
     assert tape["outcome"]["status"] == "COMPLETE"
     assert proposal["action"] == "OPEN" and "operations" not in proposal
@@ -130,7 +131,7 @@ def test_exit_with_hold_selection_prose_keeps_candidate_reason_in_saved_plan_and
     r,broker,calls=runtime(tmp_path,candidate_action='EXIT',selection_reason=reason)
     assert r.tick()['status']=='intent_pending'
     assert len(calls)==2
-    tape=json.loads(review_text(r.conn.execute('SELECT body FROM llm_scenario_review_tapes').fetchone()[0]))
+    tape=json.loads(read_tape(r.conn.execute('SELECT body FROM llm_scenario_review_tapes').fetchone()[0], r.conn, r.conn.execute('SELECT slot FROM llm_scenario_review_tapes').fetchone()[0], decode_legacy=review_text))
     selected=tape['outcome']['result']['selected']['raw_proposal']
     proposal=json.loads(r.conn.execute('SELECT proposal FROM llm_scenario_decisions').fetchone()[0])
     intent=json.loads(r.conn.execute('SELECT payload FROM llm_scenario_intents').fetchone()[0])
@@ -154,7 +155,7 @@ def test_pre_call_oversize_keeps_failed_tape_but_reports_actual_input_error(tmp_
     assert result == dict(status='blocked', reason='llm_input_preparation_failed',
         failure_stage='model_input_preparation', failure_code='input_size', model_called=False)
     assert calls == [] and broker.executed == []
-    tape = json.loads(review_text(r.conn.execute('SELECT body FROM llm_scenario_review_tapes').fetchone()[0]))
+    tape = json.loads(read_tape(r.conn.execute('SELECT body FROM llm_scenario_review_tapes').fetchone()[0], r.conn, r.conn.execute('SELECT slot FROM llm_scenario_review_tapes').fetchone()[0], decode_legacy=review_text))
     assert tape['outcome']['error'] == dict(type='ValueError', message='research_input_size')
     assert tape['calls'] == 0
 
@@ -188,7 +189,7 @@ def test_failed_second_call_persists_failed_tape_and_raw_first_phase(tmp_path):
     r, broker, calls = runtime(tmp_path, fail_second=True)
     assert r.tick()["status"] == "blocked"
     assert len(calls) == 2 and broker.executed == []
-    tape = json.loads(review_text(r.conn.execute("SELECT body FROM llm_scenario_review_tapes").fetchone()[0]))
+    tape = json.loads(read_tape(r.conn.execute("SELECT body FROM llm_scenario_review_tapes").fetchone()[0], r.conn, r.conn.execute("SELECT slot FROM llm_scenario_review_tapes").fetchone()[0], decode_legacy=review_text))
     assert tape["outcome"]["status"] == "FAILED"
     events = [json.loads(x[0]) for x in r.conn.execute("SELECT body FROM llm_scenario_review_events")]
     assert any(e["kind"] == "MODEL_RAW" and e["phase"] == "candidate" for e in events)
@@ -409,7 +410,7 @@ def test_persisted_review_replays_order_sensitive_recovery_projection(tmp_path, 
     assert projected['$recovery_changes'] == 'baseline-current-v1'
     assert projected['key_order'] != sorted(projected['key_order'])
     if storage == 'runtime':
-        saved = json.loads(review_text(r.conn.execute('SELECT body FROM llm_scenario_review_tapes').fetchone()[0]))
+        saved = json.loads(read_tape(r.conn.execute('SELECT body FROM llm_scenario_review_tapes').fetchone()[0], r.conn, r.conn.execute('SELECT slot FROM llm_scenario_review_tapes').fetchone()[0], decode_legacy=review_text))
     else:
         path = tmp_path / 'economic.jsonl'
         recorded = EconomicTape(path, 'record', {'purpose': 'ordered review persistence'})
