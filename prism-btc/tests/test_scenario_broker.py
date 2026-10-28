@@ -142,6 +142,44 @@ def test_funding_sign_and_execution_cashflow_join(setup):
     assert result["funding_complete"] is False
 
 
+def test_financial_record_deduplicates_without_changing_returned_evidence(setup, tmp_path):
+    import json
+    from utils.btc_financial_references import TAG, restore
+    from observability import btc_scenario_export
+    b, s = setup
+    db = tmp_path / 'broker.db'
+    state, spool = tmp_path / 'export.sqlite', tmp_path / 'spool.jsonl'
+    btc_scenario_export.export_once(db, state, spool)
+    s.get_executions = lambda **kw: reply([dict(execId='trade1', orderId='order1', symbol='BTCUSDT',
+        execType='Trade', execQty='1', execPrice='100', execFee='.05', execTime='1799999500000', extra='x'*4000)])
+    s.get_transaction_log = lambda **kw: reply([
+        dict(id='t1', type='TRADE', symbol='BTCUSDT', currency='USDT', tradeId='trade1', orderId='order1',
+             cashFlow='5', fee='.05', funding='', transactionTime='1799999500000', extra='y'*4000),
+        dict(id='f1', type='SETTLEMENT', symbol='BTCUSDT', currency='USDT', funding='-2', fee='0',
+             cashFlow='0', transactionTime='1799999600000', extra='z'*4000)])
+    result = b.capture_financial_evidence(1799999000000, 1800000000000)
+    stored = b.conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='financial'").fetchone()[0]
+    assert json.loads(stored)[TAG] == 1
+    assert json.loads(restore(stored)) == result
+    assert result['trades'][0]['raw_execution']['execId'] == 'trade1'
+    assert result['funding'][0]['raw']['id'] == 'f1'
+    assert btc_scenario_export.export_once(db, state, spool)['captured'] == 1
+    events = [json.loads(line) for line in spool.read_text().splitlines() if line.strip()]
+    event = next(row for row in events if row.get('attributes', {}).get('source_kind') == 'financial')
+    assert event['attributes']['body_sha256'] == btc_scenario_export._hash(restore(stored))
+
+
+def test_financial_deduplication_failure_keeps_full_evidence(setup, monkeypatch):
+    import json
+    from utils import btc_financial_references as refs
+    b, _ = setup
+    original = {'trades': [], 'funding': [], 'raw_executions': [], 'raw_transactions': []}
+    monkeypatch.setattr(refs, 'compact', lambda _: (_ for _ in ()).throw(RuntimeError('failed')))
+    b._save('financial', original)
+    stored = b.conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='financial'").fetchone()[0]
+    assert json.loads(stored) == original
+
+
 def funding_capture_fixture(session):
     executions, transactions = [], []
     for eid, oid, side, when, price, pnl in (
