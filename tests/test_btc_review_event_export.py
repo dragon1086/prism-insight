@@ -95,6 +95,27 @@ def test_only_exact_decision_input_manifest_not_protect_or_exporter_head(lane,co
     assert event['attributes']['policy_evidence'].startswith('UNKNOWN') == (conflict is not None)
 
 
+def test_referenced_decision_input_keeps_review_manifest_link(lane):
+    from utils.btc_audit_references import canonical, compact, sha
+
+    manifest_tables(lane[0])
+    create_review(lane[0])
+    snapshot, context = {'blob': 'x' * 5000}, {'input_id': 'input', 'blob': 'y' * 5000}
+    event = {'snapshot': snapshot, 'context': context, 'input_id': 'input',
+             'snapshot_hash': sha(canonical(snapshot)), 'context_hash': sha(canonical(context))}
+    raw, s, c = canonical(event), json.dumps(snapshot, sort_keys=True), json.dumps(context, sort_keys=True)
+    with sqlite3.connect(lane[0]) as conn:
+        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)', (100, s, c, None, None))
+        conn.execute("UPDATE llm_scenario_audit_events SET body=? WHERE kind='decision_input'", (compact(raw, s, c),))
+    export.export_once(*lane)
+    add_review(lane[0], 1, dict(kind='MODEL_REQUEST', phase='candidate', request=dict(
+        user_prompt=json.dumps(dict(contract_context=dict(input_id='input'))))))
+    assert export.export_once(*lane)['status'] == 'OK'
+    recorded = review_events(lane)[-1]
+    assert recorded['git_sha'] == 'a' * 40
+    assert not recorded['attributes']['policy_evidence'].startswith('UNKNOWN')
+
+
 def test_review_identity_anchor_detects_changed_sequence(lane):
     create_review(lane[0])
     export.export_once(*lane)

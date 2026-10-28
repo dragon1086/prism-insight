@@ -196,7 +196,7 @@ jobs:
           # Offline research logging: no broker, model, or channel calls.
           python -m pytest tests/test_observability_events.py tests/test_observability_shipper.py \
             tests/test_btc_scenario_export.py tests/test_btc_scenario_export_shapes.py \
-            tests/test_btc_review_event_export.py tests/test_btc_review_references.py tests/test_btc_financial_references.py tests/test_btc_offsite_archive.py \
+            tests/test_btc_review_event_export.py tests/test_btc_review_references.py tests/test_btc_financial_references.py tests/test_btc_audit_references.py tests/test_btc_offsite_archive.py \
             tests/test_btc_shipper_integration.py tests/test_sqlite_snapshot.py -q
 
   dashboard:
@@ -309,6 +309,7 @@ jobs:
             prism-btc/tests/test_scenario_pending_renewal_runtime.py \
             prism-btc/tests/test_scenario_review_storage.py \
             prism-btc/tests/test_scenario_financial_storage.py \
+            prism-btc/tests/test_scenario_audit_storage.py \
             prism-btc/tests/test_scenario_safety_detail.py \
             prism-btc/tests/test_scenario_limit_prices.py \
             prism-btc/tests/test_scenario_limit_price_execution.py \

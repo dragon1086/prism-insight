@@ -20,6 +20,7 @@ from .events import build_event
 from .review_storage import review_text
 from utils.btc_review_references import read_tape
 from utils.btc_financial_references import restore as restore_financial
+from utils.btc_audit_references import read_audit
 
 STREAMS = ('llm_scenario_audit_events', 'llm_scenario_recovery_events',
            'llm_scenario_broker_evidence', 'llm_scenario_outbox', 'llm_scenario_review_events',
@@ -36,7 +37,7 @@ STREAM_SQL = {
         'SELECT rowid AS source_rowid,* FROM llm_scenario_review_events WHERE rowid>? ORDER BY rowid LIMIT ?'),
     'llm_scenario_audit_events': (
         'SELECT MAX(rowid) FROM llm_scenario_audit_events',
-        'SELECT body FROM llm_scenario_audit_events WHERE rowid=?',
+        'SELECT kind,decision_slot,body FROM llm_scenario_audit_events WHERE rowid=?',
         'SELECT rowid AS source_rowid,* FROM llm_scenario_audit_events WHERE rowid>? ORDER BY rowid LIMIT ?'),
     'llm_scenario_recovery_events': (
         'SELECT MAX(rowid) FROM llm_scenario_recovery_events',
@@ -288,6 +289,8 @@ def _source_text(stream, row, source=None):
         return review_text(row['body'])
     if stream == 'llm_scenario_broker_evidence' and row['kind'] == 'financial':
         return restore_financial(row['body'])
+    if stream == 'llm_scenario_audit_events' and row['kind'] == 'decision_input':
+        return read_audit(row['body'], source, row['decision_slot'])
     return row['body']
 
 
@@ -301,6 +304,8 @@ def _anchor_hash(stream, row, source=None):
     if stream == 'llm_scenario_review_tapes':
         return _hash(_json([row['slot'], _source_text(stream, row, source)]))
     if stream == 'llm_scenario_broker_evidence' and row['kind'] == 'financial':
+        return _hash(_source_text(stream, row, source))
+    if stream == 'llm_scenario_audit_events' and row['kind'] == 'decision_input':
         return _hash(_source_text(stream, row, source))
     return _hash(row['body'])
 
