@@ -477,7 +477,20 @@ def _flush(capture):
                 if not row or json.loads(row[0]) != body['settlement']:
                     _gap()
                     continue
-            conn.execute('INSERT OR IGNORE INTO llm_scenario_audit_events VALUES (?,?,?,?,?,?,?,?,?)', event)
+            stored_event = event
+            if event[2] == 'decision_input' and type(event[6]) is int:
+                try:
+                    from utils.btc_audit_references import compact, read_audit
+                    row = conn.execute('SELECT snapshot,context FROM llm_scenario_decisions WHERE slot=?',
+                                       (event[6],)).fetchone()
+                    if row:
+                        candidate = compact(event[8], row[0], row[1])
+                        if candidate != event[8] and read_audit(candidate, conn, event[6]) == event[8]:
+                            stored_event = (*event[:8], candidate)
+                except Exception:
+                    # Optional deduplication must not discard the original audit.
+                    stored_event = event
+            conn.execute('INSERT OR IGNORE INTO llm_scenario_audit_events VALUES (?,?,?,?,?,?,?,?,?)', stored_event)
             written.append(event)
     # Committed rows only; the ClickStack copy is a bounded, ID-free summary.
     try:
