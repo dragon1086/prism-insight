@@ -29,3 +29,11 @@ def test_replay_hash_is_independent_of_financial_encoding():
     conn.execute('UPDATE llm_scenario_broker_evidence SET body=?', (json.dumps(bad, sort_keys=True),))
     with pytest.raises(ValueError):
         _runtime_event_hash(conn)
+
+
+def test_replay_leaves_other_evidence_unmodified():
+    conn = sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE llm_scenario_broker_evidence(kind,captured_at,body)')
+    conn.execute('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)',
+                 ('account', 1, '{"$btc_financial_refs_v1": 1}'))
+    assert isinstance(_runtime_event_hash(conn), str)
