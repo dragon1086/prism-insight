@@ -359,3 +359,41 @@ def test_archive_scans_compressed_recovery_wire_and_marks_corruption(tmp_path):
     commits, coverage = archive.referenced_commits(raw)
     assert commits == ['b' * 40]
     assert coverage['malformed_evidence_rows'] == 1
+
+
+def test_archive_resolves_reference_tape_without_losing_revision_coverage(tmp_path):
+    from utils.btc_review_references import canonical, compact, pack
+
+    raw = tmp_path / 'references.sqlite'
+    snapshot, context = {'z': 1, 'a': 2}, {'input_id': 'fixture'}
+    event = {'kind': 'MODEL_RAW', 'source_commit': 'b' * 40}
+    tape = {'inputs': {'snapshot': snapshot, 'context': context},
+            'operations': [{'kind': 'record', 'event': event}]}
+    text = json.dumps(tape)
+    s, c, e = map(canonical, (snapshot, context, event))
+    with sqlite3.connect(raw) as db:
+        db.execute('CREATE TABLE llm_scenario_decisions(slot INTEGER,snapshot TEXT,context TEXT)')
+        db.execute('CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT)')
+        db.execute('CREATE TABLE llm_scenario_review_tapes(slot INTEGER,body TEXT)')
+        db.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?)', (1, s, c))
+        db.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 0, e))
+        db.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (1, text))
+    original = archive.referenced_commits(raw)
+    with sqlite3.connect(raw) as db:
+        db.execute('UPDATE llm_scenario_review_tapes SET body=?', (pack(compact(text, s, c, [e])),))
+    assert archive.referenced_commits(raw) == original
+    reference_source = Path(archive.__file__).with_name('btc_review_references.py').read_text()
+    receiver_source = Path(archive.__file__).read_text()
+    child_script = ("import sys,types; module=types.ModuleType('btc_review_refs_embedded'); "
+                    "exec(compile(%r,'<refs>','exec'),module.__dict__); "
+                    "sys.modules['btc_review_refs_embedded']=module; ns={'__name__':'receiver'}; "
+                    "exec(compile(%r,'<archive>','exec'),ns); "
+                    "print(ns['referenced_commits'](ns['Path'](sys.argv[1]))[0][0])" %
+                    (reference_source, receiver_source))
+    child = subprocess.run([os.sys.executable, '-I', '-c', child_script, str(raw)], cwd=tmp_path,
+                           capture_output=True, text=True, timeout=15, check=True)
+    assert child.stdout.strip() == 'b' * 40
+    with sqlite3.connect(raw) as db:
+        db.execute('DELETE FROM llm_scenario_review_events')
+    with pytest.raises(ValueError, match='reference_tape_unresolved'):
+        archive.referenced_commits(raw)
