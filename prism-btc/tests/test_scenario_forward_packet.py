@@ -75,6 +75,31 @@ def scenario(db):
     return result["scenarios"][0]
 
 
+def test_financial_reference_preserves_forward_packet_business_facts(db):
+    import sys
+    sys.path.append(str(Path(__file__).resolve().parents[2]))
+    from utils.btc_financial_references import compact
+
+    execution = {'execId': 'fixture', 'private': 'x' * 4000}
+    transaction = {'tradeId': 'fixture', 'private': 'y' * 4000}
+    body = {'raw_executions': [execution], 'raw_transactions': [transaction], 'funding': [],
+            'trades': [{'execution_id': 'fixture', 'raw_execution': execution, 'raw_transaction': transaction}]}
+    raw = json.dumps(body, sort_keys=True)
+    encoded = compact(raw)
+    assert encoded != raw
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO llm_scenario_broker_evidence VALUES('financial',1001,?)", (raw,))
+    original = packet.build_packet(db)
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE llm_scenario_broker_evidence SET body=? WHERE kind='financial'", (encoded,))
+    referenced = packet.build_packet(db)
+    assert original['status'] == referenced['status'] == 'AVAILABLE'
+    assert original['input_sha256'] != referenced['input_sha256']
+    assert original['packet_id'] != referenced['packet_id']
+    assert {k: v for k, v in original.items() if k not in {'input_sha256', 'packet_id'}} == {
+        k: v for k, v in referenced.items() if k not in {'input_sha256', 'packet_id'}}
+
+
 def test_missing_database_never_created(tmp_path):
     path = tmp_path / "absent"
     result = packet.build_packet(path)

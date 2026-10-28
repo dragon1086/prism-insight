@@ -200,8 +200,19 @@ class ScenarioDemoBroker(ScenarioExecution):
             raise BrokerNotReady("main_uid_mismatch")
 
     def _save(self, kind, body):
+        text = json.dumps(body, allow_nan=False, sort_keys=True)
+        if kind == 'financial':
+            original = text
+            try:
+                from utils.btc_financial_references import compact, restore
+                candidate = compact(text)
+                if restore(candidate) == text:
+                    text = candidate
+            except Exception:
+                # Optional deduplication must never interrupt broker evidence or protection.
+                text = original
         self.conn.execute("INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)",
-                          (kind, self.clock(), json.dumps(body, allow_nan=False, sort_keys=True)))
+                          (kind, self.clock(), text))
         self.conn.commit()
 
     def _legacy_local(self):
