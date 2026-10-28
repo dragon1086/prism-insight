@@ -250,6 +250,7 @@ class ScenarioRuntime:
                           (slot, sequence, body))
         if commit:
             self.conn.commit()
+        return sequence
 
     def _assert_calculated_review_time(self, envelope, context, fresh, payload, *, observed_at=None):
         # Durable journal I/O is inside the original budget, not a new lease.
@@ -849,8 +850,11 @@ class ScenarioRuntime:
                 from live.scenario_provenance import review_policy_binding
                 from analysis.scenario_review_tape import MAX_BYTES
                 review_bindings = review_policy_binding(research_mode=self.research_review_mode)
+                review_record_sequences = []
+                def record_review(event):
+                    review_record_sequences.append(self._record_calculated_review(slot, event))
                 review_envelope = self.calculated_review_propose(snap, ctx,
-                    record=lambda event: self._record_calculated_review(slot, event))
+                    record=record_review)
                 # Input projection records insertion order; sorting loses replay evidence.
                 envelope_body = json.dumps(review_envelope, allow_nan=False)
                 if len(envelope_body.encode()) > MAX_BYTES:
@@ -958,11 +962,17 @@ class ScenarioRuntime:
                     if self.recovery_enabled:
                         # These are original phase texts, never a host-normalized
                         # proposal disguised as a model response.
+                        record_index = 0
                         for operation in review_envelope["operations"]:
-                            if operation["kind"] == "record" and operation["event"]["kind"] in {"MODEL_REQUEST", "MODEL_RAW"}:
-                                event = operation["event"]
+                            if operation["kind"] != "record":
+                                continue
+                            sequence = (review_record_sequences[record_index]
+                                        if record_index < len(review_record_sequences) else None)
+                            record_index += 1
+                            event = operation["event"]
+                            if event["kind"] in {"MODEL_REQUEST", "MODEL_RAW"}:
                                 recovery.journal(self.conn, event["kind"], dict(event, calculated_review_version=1),
-                                                 self.clock(), slot=slot)
+                                                 self.clock(), slot=slot, review_sequence=sequence)
                         recovery.journal(self.conn, "CALCULATED_REVIEW_SELECTION", guarded["receipt"],
                                          self.clock(), slot=slot)
                         self.conn.commit()
