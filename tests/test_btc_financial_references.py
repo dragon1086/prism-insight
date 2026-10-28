@@ -89,8 +89,8 @@ def test_export_restores_original_and_keeps_anchor(tmp_path):
     export.export_once(db, state, spool)
     original = serialized(fixture())
     encoded = compact(original)
-    assert export._anchor_hash('llm_scenario_broker_evidence', {'body': original}) == export._anchor_hash(
-        'llm_scenario_broker_evidence', {'body': encoded})
+    assert export._anchor_hash('llm_scenario_broker_evidence', {'kind': 'financial', 'body': original}) == export._anchor_hash(
+        'llm_scenario_broker_evidence', {'kind': 'financial', 'body': encoded})
     with sqlite3.connect(db) as conn:
         conn.execute('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)', ('financial', 1700000000, encoded))
     assert export.export_once(db, state, spool)['captured'] == 1
@@ -104,3 +104,11 @@ def test_export_restores_original_and_keeps_anchor(tmp_path):
     with sqlite3.connect(db) as conn:
         conn.execute('UPDATE llm_scenario_broker_evidence SET body=?', (serialized(broken),))
     assert export.export_once(db, state, spool)['status'] == 'UNAVAILABLE'
+
+
+def test_other_broker_evidence_never_interprets_financial_marker():
+    from observability import btc_scenario_export as export
+    original = serialized({TAG: 1, 'body': 'unrelated account payload'})
+    row = {'kind': 'account', 'body': original}
+    assert export._source_text('llm_scenario_broker_evidence', row) == original
+    assert export._anchor_hash('llm_scenario_broker_evidence', row) == export._hash(original)

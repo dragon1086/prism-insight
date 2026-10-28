@@ -44,7 +44,7 @@ STREAM_SQL = {
         'SELECT rowid AS source_rowid,* FROM llm_scenario_recovery_events WHERE rowid>? ORDER BY rowid LIMIT ?'),
     'llm_scenario_broker_evidence': (
         'SELECT MAX(rowid) FROM llm_scenario_broker_evidence',
-        'SELECT body FROM llm_scenario_broker_evidence WHERE rowid=?',
+        'SELECT kind,body FROM llm_scenario_broker_evidence WHERE rowid=?',
         'SELECT rowid AS source_rowid,* FROM llm_scenario_broker_evidence WHERE rowid>? ORDER BY rowid LIMIT ?'),
     'llm_scenario_outbox': (
         'SELECT MAX(rowid) FROM llm_scenario_outbox',
@@ -286,7 +286,7 @@ def _source_text(stream, row, source=None):
         return read_tape(row['body'], source, row['slot'], decode_legacy=review_text)
     if stream in ('llm_scenario_review_events', 'llm_scenario_recovery_events'):
         return review_text(row['body'])
-    if stream == 'llm_scenario_broker_evidence':
+    if stream == 'llm_scenario_broker_evidence' and row['kind'] == 'financial':
         return restore_financial(row['body'])
     return row['body']
 
@@ -300,8 +300,8 @@ def _anchor_hash(stream, row, source=None):
         return _hash(_json([row['slot'], row['sequence'], review_text(row['body'])]))
     if stream == 'llm_scenario_review_tapes':
         return _hash(_json([row['slot'], _source_text(stream, row, source)]))
-    if stream == 'llm_scenario_broker_evidence':
-        return _hash(restore_financial(row['body']))
+    if stream == 'llm_scenario_broker_evidence' and row['kind'] == 'financial':
+        return _hash(_source_text(stream, row, source))
     return _hash(row['body'])
 
 

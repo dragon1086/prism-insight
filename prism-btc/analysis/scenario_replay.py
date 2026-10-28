@@ -107,9 +107,10 @@ def _runtime_event_hash(conn):
             rows = [tuple((read_tape(value, conn, row[slot_index], decode_legacy=review_text)
                            if slot_index is not None else review_text(value)) if i == index else value
                           for i, value in enumerate(row)) for row in rows]
-        if name == 'llm_scenario_broker_evidence' and 'body' in columns:
+        if name == 'llm_scenario_broker_evidence' and {'body', 'kind'} <= set(columns):
             index = columns.index('body')
-            rows = [tuple(restore_financial(value) if i == index else value
+            kind_index = columns.index('kind')
+            rows = [tuple(restore_financial(value) if i == index and row[kind_index] == 'financial' else value
                           for i, value in enumerate(row)) for row in rows]
         event_tables[name] = dict(columns=columns, rows=rows)
     return digest(event_tables)
