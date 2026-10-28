@@ -240,7 +240,8 @@ def test_recovery_journal_keeps_real_phase_response_not_host_payload(tmp_path):
     r, broker, _ = runtime(tmp_path, recovery=True)
     outcome = r.tick()
     assert outcome["status"] == "intent_pending", outcome
-    rows = [json.loads(row[0]) for row in r.conn.execute(
+    from live.scenario_review_storage import review_text
+    rows = [json.loads(review_text(row[0])) for row in r.conn.execute(
         "SELECT body FROM llm_scenario_recovery_events WHERE kind='MODEL_RAW' ORDER BY rowid")]
     assert len(rows) == 2
     assert all(row["calculated_review_version"] == 1 for row in rows)
