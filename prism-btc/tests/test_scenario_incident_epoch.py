@@ -1020,7 +1020,10 @@ def test_monitor_deadline_records_only_safe_stage_and_keeps_halt(flat_incident, 
     assert len(messages) == 1
     assert f"started_ms={int((i['now'][0] - 11) * 1000)}" in messages[0]
     timing = json.loads(messages[0].split(' calls=', 1)[1])
-    assert set(timing) == {'calls', 'dropped', 'measurement_failures'}
+    assert set(timing) == {'calls', 'dropped', 'measurement_failures', 'phases'}
+    assert timing['phases'] and len(timing['phases']) <= 24
+    assert all(set(item) == {'stage', 'elapsed_ms'} and item['elapsed_ms'] >= 0
+               for item in timing['phases'])
     assert timing['dropped'] == timing['measurement_failures'] == 0
     assert timing['calls'] and len(timing['calls']) <= 64
     for call in timing['calls']:
@@ -1062,6 +1065,33 @@ def test_monitor_timing_logging_failure_cannot_clear_halt(flat_incident, monkeyp
     assert i['exchange'].writes == []
     from live.scenario_broker import _MONITOR_CALL_TIMING
     assert _MONITOR_CALL_TIMING.get() is None
+
+
+def test_phase_clock_failure_does_not_change_monitor_halt(flat_incident, monkeypatch, caplog):
+    from types import SimpleNamespace
+
+    i = flat_incident
+    transition(i)
+    broker = restarted(i)
+    original = broker._query_child
+
+    def delayed(*args, **kwargs):
+        result = original(*args, **kwargs)
+        i['now'][0] += 11
+        return result
+
+    def broken_clock():
+        raise RuntimeError('clock unavailable')
+
+    monkeypatch.setattr(policy, 'time', SimpleNamespace(perf_counter_ns=broken_clock))
+    monkeypatch.setattr(broker, '_query_child', delayed)
+    caplog.set_level(logging.WARNING, logger=policy.__name__)
+    assert policy.monitor(broker, refresh=True) is None
+    assert policy.halted(broker.conn)
+    assert policy._events(broker.conn, policy.HALT)[-1]['evidence']['reason'] == 'incident_epoch_monitor_child_lookup_deadline'
+    message = next(r.getMessage() for r in caplog.records if r.getMessage().startswith('incident_monitor_call_timing '))
+    assert json.loads(message.split(' calls=', 1)[1])['phases'] == []
+    assert i['exchange'].writes == []
 
 
 def test_successful_monitor_restores_outer_trace_without_warning(flat_incident, caplog):

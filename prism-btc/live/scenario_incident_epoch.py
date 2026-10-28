@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import os
+import time
 from contextlib import suppress
 from pathlib import Path
 
@@ -204,19 +205,34 @@ def monitor(broker, *, refresh=False):
     started = broker.clock()
     broker._incident_observation = None
     from live.scenario_broker import _MONITOR_CALL_TIMING
-    timing = dict(calls=[], dropped=0, measurement_failures=0)
+    timing = dict(calls=[], dropped=0, measurement_failures=0, phases=[])
+    origin = None
+    with suppress(Exception):
+        origin = time.perf_counter_ns()
+
+    def mark(name):
+        with suppress(Exception):
+            if origin is not None and len(timing['phases']) < 24:
+                elapsed = time.perf_counter_ns() - origin
+                if elapsed >= 0:
+                    timing['phases'].append(dict(stage=name, elapsed_ms=round(elapsed / 1_000_000, 3)))
+
     token = _MONITOR_CALL_TIMING.set(timing)
     try:
         observed_bodies = []
         all_cursors = _events(broker.conn, FINANCE_CURSOR)
+        mark('cursors_read')
         values = receipts(broker.conn)
         for cursor in all_cursors:
             require(cursor.get('sha256') == digest(cursor.get('body'))
                     and cursor['body']['epoch_id'] in {r['epoch_id'] for r in values}, 'finance_cursor_corrupt')
+        mark('cursors_verified')
         for value in values:
             children = broker.children(value['scenario_id'])
             child = next(c for c in children if c['link_id'] == value['approval']['unknown_link_id'])
+            mark('child_loaded')
             broker._query_child(child)
+            mark('child_checked')
             require(0 <= broker.clock()-started <= 10, 'monitor_child_lookup_deadline')
             cursors = [r for r in all_cursors if r['body']['epoch_id'] == value['epoch_id']]
             previous = cursors[-1] if cursors else None
@@ -234,6 +250,7 @@ def monitor(broker, *, refresh=False):
             archive = (finance if start_ms == value['financial_start_ms'] and end_ms == value['financial_end_ms'] else
                 historical_finance(broker, value['financial_start_ms'], value['financial_end_ms'],
                     children, initial=False))
+            mark('finance_checked')
             if archive != value['financial_sources']:
                 record_late(broker, dict(archived_financial_sources=archive, scenario_id=value['scenario_id']))
             baseline = {digest(row) for rows in value['financial_sources'].values() for row in rows}
@@ -245,8 +262,10 @@ def monitor(broker, *, refresh=False):
                         end_ms=end_ms, source_sha256=digest(finance))
             _append(broker.conn, FINANCE_CURSOR, dict(body=body, sha256=digest(body)), broker.clock())
             broker.conn.commit()
+            mark('cursor_saved')
             observed_bodies.append(body)
         sources = account_sources(broker)
+        mark('account_checked')
         owned_ids = {c['order_id'] for c in broker.children() if c['order_id']}
         active = broker._active()
         for source in sources:
