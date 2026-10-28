@@ -612,3 +612,32 @@ def test_runtime_compressed_tape_exports_with_matching_original_seal(tmp_path):
     assert exported[0]['attributes']['tape_hash_status'] == 'MATCH'
     assert exported[0]['attributes']['body_sha256'] == btc_scenario_export._hash(original)
     r.conn.close()
+
+
+@pytest.mark.parametrize('corrupt', [False, True])
+def test_pending_renewal_reads_referenced_tape_and_rejects_changed_source(tmp_path, monkeypatch, corrupt):
+    from utils.btc_review_references import compact, pack
+
+    r, b, e, _, _ = renewal_runtime(tmp_path)
+    assert r.tick()['status'] == 'intent_pending'
+    original = b._renew_pending
+
+    def referenced(payload, ident):
+        slot = r.conn.execute('SELECT slot FROM llm_scenario_decisions WHERE json_extract(proposal, "$.action_id")=?', (ident,)).fetchone()[0]
+        stored = r.conn.execute('SELECT body FROM llm_scenario_review_tapes WHERE slot=?', (slot,)).fetchone()[0]
+        snapshot, context = r.conn.execute('SELECT snapshot,context FROM llm_scenario_decisions WHERE slot=?', (slot,)).fetchone()
+        events = [review_text(row[0]) for row in r.conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence', (slot,))]
+        value = pack(compact(review_text(stored), snapshot, context, events))
+        r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (value, slot))
+        if corrupt:
+            r.conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=? AND sequence=0', ('{}', slot))
+        r.conn.commit()
+        return original(payload, ident)
+
+    monkeypatch.setattr(b, '_renew_pending', referenced)
+    e.now += 301
+    r.tick()
+    lease = load(r.conn, r.state()['active'])
+    assert lease['revision'] == (0 if corrupt else 1)
+    status = json.loads(r.conn.execute('SELECT body FROM llm_scenario_pending_renewals').fetchone()[0])['status']
+    assert status == ('REJECTED' if corrupt else 'APPLIED')

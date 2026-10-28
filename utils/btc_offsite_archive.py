@@ -93,10 +93,15 @@ def ssh_archive(host, needed, *, stream=None):
     if type(needed) is not int or not 0 <= needed <= 4 * RAW_CAP:
         raise ValueError('invalid_space_requirement')
     source = Path(__file__).read_text()
+    refs_source = Path(__file__).with_name('btc_review_references.py').read_text()
+    prelude = ("import sys,types\n"
+               "_btc_refs=types.ModuleType('btc_review_refs_embedded')\n"
+               "exec(compile(" + repr(refs_source) + ",'<btc_review_refs>','exec'),_btc_refs.__dict__)\n"
+               "sys.modules['btc_review_refs_embedded']=_btc_refs\n")
     suffix = ('\nprivate_root(REMOTE_ROOT); space(REMOTE_ROOT, ' + str(needed) + '); print("READY")\n'
               if stream is None else '\nprint(json.dumps(receive(sys.stdin.buffer, REMOTE_ROOT, ' + str(needed) + ')))\n')
     command = '/usr/bin/python3 -c ' + shlex.quote(
-        "exec(compile(" + repr(source + suffix) + ", '<archive>', 'exec'), {'__name__':'offsite_receiver'})")
+        "exec(compile(" + repr(prelude + source + suffix) + ", '<archive>', 'exec'), {'__name__':'offsite_receiver'})")
     # Only this repository's receiver source and a bounded integer reach the remote command.
     return subprocess.run(['/usr/bin/ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',  # nosec B603  # nosemgrep
                            '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=15',
@@ -201,7 +206,12 @@ def referenced_commits(raw):
             for col, query in queries.items():
                 if col not in cols:
                     continue
-                for (value,) in db.execute(query):
+                with_slot = table == 'llm_scenario_review_tapes' and 'slot' in cols
+                selected_query = ('SELECT slot,body FROM llm_scenario_review_tapes' if with_slot else query)
+                for row in db.execute(selected_query):
+                    slot, value = row if with_slot else (None, row[0])
+                    is_reference = (table == 'llm_scenario_review_tapes' and isinstance(value, bytes)
+                                    and value.startswith(b'PRISM_REVIEW_REFS_V1\x00'))
                     if time.monotonic() > deadline:
                         raise TimeoutError('commit_scan_deadline')
                     if value is None or value == '':
@@ -209,10 +219,20 @@ def referenced_commits(raw):
                         coverage['missing_evidence_values'] += 1
                     else:
                         try:
-                            if table in ('llm_scenario_review_events', 'llm_scenario_review_tapes', 'llm_scenario_recovery_events'):
+                            if is_reference:
+                                if 'btc_review_refs_embedded' in sys.modules:
+                                    from btc_review_refs_embedded import read_tape
+                                elif __package__:
+                                    from .btc_review_references import read_tape
+                                else:
+                                    from btc_review_references import read_tape
+                                value = read_tape(value, db, slot, decode_legacy=review_text)
+                            elif table in ('llm_scenario_review_events', 'llm_scenario_review_tapes', 'llm_scenario_recovery_events'):
                                 value = review_text(value)
                             parsed = json.loads(value)
-                        except (TypeError, ValueError):
+                        except (TypeError, ValueError) as exc:
+                            if is_reference:
+                                raise ValueError('reference_tape_unresolved') from exc
                             parsed = None
                             coverage['malformed_evidence_rows'] += 1
                     if table == 'llm_scenario_audit_manifests' and (

@@ -18,6 +18,7 @@ import time
 
 from .events import build_event
 from .review_storage import review_text
+from utils.btc_review_references import read_tape
 
 STREAMS = ('llm_scenario_audit_events', 'llm_scenario_recovery_events',
            'llm_scenario_broker_evidence', 'llm_scenario_outbox', 'llm_scenario_review_events',
@@ -279,7 +280,15 @@ def _model_metadata(body):
     return result
 
 
-def _anchor_hash(stream, row):
+def _source_text(stream, row, source=None):
+    if stream == 'llm_scenario_review_tapes':
+        return read_tape(row['body'], source, row['slot'], decode_legacy=review_text)
+    if stream in ('llm_scenario_review_events', 'llm_scenario_recovery_events'):
+        return review_text(row['body'])
+    return row['body']
+
+
+def _anchor_hash(stream, row, source=None):
     if row is None:
         return None
     if stream == 'llm_scenario_recovery_events':
@@ -287,7 +296,7 @@ def _anchor_hash(stream, row):
     if stream == 'llm_scenario_review_events':
         return _hash(_json([row['slot'], row['sequence'], review_text(row['body'])]))
     if stream == 'llm_scenario_review_tapes':
-        return _hash(_json([row['slot'], review_text(row['body'])]))
+        return _hash(_json([row['slot'], _source_text(stream, row, source)]))
     return _hash(row['body'])
 
 
@@ -498,7 +507,7 @@ def _capture(source, state, identity, stream, row, manifest_cache=None):
         return
     if stream in ('llm_scenario_review_events', 'llm_scenario_review_tapes', 'llm_scenario_recovery_events'):
         row = dict(row)
-        row['body'] = review_text(row['body'])
+        row['body'] = _source_text(stream, row, source)
     raw = row['body']
     body = json.loads(raw)
     if not isinstance(body, dict):
@@ -639,7 +648,7 @@ def export_once(db_path, state_path, spool_path, limit=100):
                 cutover = 0 if backfill else maximum
                 _query(state, 'save_cursor', parameters=(stream, cutover))
                 anchor = _query(source, (stream, 1), parameters=(cutover,)).fetchone()
-                _query(state, 'save_anchor', parameters=(stream, _anchor_hash(stream, anchor)))
+                _query(state, 'save_anchor', parameters=(stream, _anchor_hash(stream, anchor, source)))
                 _queue(state, identity, 'coverage:' + stream, 'coverage',
                        {'stream': stream, 'coverage_start_after_rowid': cutover,
                         'historical_backfill': backfill,
@@ -651,7 +660,7 @@ def export_once(db_path, state_path, spool_path, limit=100):
                 raise ValueError('source_rowid_regressed')
             anchor = _query(source, (stream, 1), parameters=(cursor[0],)).fetchone()
             expected = _query(state, 'anchor', parameters=(stream,)).fetchone()
-            if not expected or expected[0] != _anchor_hash(stream, anchor):
+            if not expected or expected[0] != _anchor_hash(stream, anchor, source):
                 raise ValueError('source_anchor_changed')
             if state.execute('SELECT COUNT(*) FROM outbox').fetchone()[0] >= 1000:
                 break
@@ -661,8 +670,7 @@ def export_once(db_path, state_path, spool_path, limit=100):
                     break
                 state.execute('SAVEPOINT source_row')
                 try:
-                    raw_body = (review_text(row['body']) if stream in
-                                ('llm_scenario_review_events', 'llm_scenario_review_tapes', 'llm_scenario_recovery_events') else row['body'])
+                    raw_body = _source_text(stream, row, source)
                     if raw_body is not row['body']:
                         row = dict(row)
                         row['body'] = raw_body
@@ -674,7 +682,7 @@ def export_once(db_path, state_path, spool_path, limit=100):
                         break
                     _capture(source, state, identity, stream, row, manifest_cache)
                     _query(state, 'update_cursor', parameters=(row['source_rowid'], stream))
-                    _query(state, 'update_anchor', parameters=(_anchor_hash(stream, row), stream))
+                    _query(state, 'update_anchor', parameters=(_anchor_hash(stream, row, source), stream))
                     state.execute('RELEASE source_row')
                     counts['captured'] += 1
                     counts['source_bytes'] += size
