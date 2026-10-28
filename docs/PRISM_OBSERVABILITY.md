@@ -221,6 +221,13 @@ One `trace_id` reads a decision end to end. Read it with `tools/clickstack_query
   twice. Suggested cron (KST): `10 16 * * 1-5 … --market KR`, `10 7 * * 2-6 … --market US`.
 - **BTC**: `btc.scenario.*` share `sha256("scenario:<id>")`. A `decision_input` joins the
   scenario trace when its run touched exactly one scenario (`scenario_inferred=true`).
+- **BTC replay observations**: new `btc.research.source` account events may include
+  `ticker_observation` with only BTCUSDT Mark, Last, bid, ask, and the local HTTP request/response
+  times plus Bybit's response timestamp. `exchange_call` events may include `exchange_observation`
+  with local wrapper times and hashed order references. The wrapper starts before the final guard;
+  neither timestamp is an exchange fill time, and proximity alone does not link a quote to an order.
+  Clock regression, missing prices, or crossed quotes remain partial/unknown. The exporter does not
+  backfill historical account or audit events; this is prospective evidence, not fill or P&L proof.
 - Not linked by design: `broker.order_request` (HTTP layer; join by ticker, time and
   `execution_profile_ref`) and `job.run_completed` (run level).
 

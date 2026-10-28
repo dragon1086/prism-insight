@@ -715,7 +715,7 @@ def test_runtime_overlong_historical_observation_skips_model_and_all_new_posts(f
     assert outcome['status'] == 'blocked', outcome
     assert calls == []
     assert i['exchange'].writes == []
-    assert policy.halted(broker.conn)
+    assert not policy.halted(broker.conn)  # this cycle only; the next tick re-observes
 
 
 def test_owned_emergency_exit_fallback_precedes_delayed_historical_observation(flat_incident, monkeypatch):
@@ -738,7 +738,7 @@ def test_owned_emergency_exit_fallback_precedes_delayed_historical_observation(f
     broker.reconcile()
     emergency = [c for c in broker.children() if c['kind'] == 'exit']
     assert len(emergency) == 1 and emergency[0]['request']['reduceOnly'] is True
-    assert policy.halted(broker.conn)
+    assert broker._incident_observation is None and not policy.halted(broker.conn)
 
 
 def test_late_original_timestamp_fee_correction_is_watched_after_day_seven(flat_incident):
@@ -990,7 +990,7 @@ def test_corrupt_monitor_release_cannot_hide_halt(flat_incident):
 
 
 @pytest.mark.parametrize('stage', ['child_lookup', 'finance', 'account'])
-def test_monitor_deadline_records_only_safe_stage_and_keeps_halt(flat_incident, monkeypatch, caplog, stage):
+def test_monitor_deadline_blocks_only_this_cycle(flat_incident, monkeypatch, caplog, stage):
     i = flat_incident
     transition(i)
     broker = restarted(i)
@@ -1010,11 +1010,10 @@ def test_monitor_deadline_records_only_safe_stage_and_keeps_halt(flat_incident, 
             i['now'][0] += 11
             return result
         monkeypatch.setattr(policy, name, delayed)
+    halts = copy.deepcopy(policy._events(broker.conn, policy.HALT))
     assert policy.monitor(broker, refresh=True) is None
-    assert policy.halted(broker.conn)
-    evidence = policy._events(broker.conn, policy.HALT)[-1]['evidence']
-    assert evidence == dict(status='HISTORICAL_MONITOR_OR_COVERAGE_GAP',
-                            error_type='ValueError', reason='incident_epoch_monitor_' + stage + '_deadline')
+    assert not policy.halted(broker.conn) and policy._events(broker.conn, policy.HALT) == halts
+    assert policy.new_risk_blocked(broker)  # no fresh observation in this cycle
     messages = [r.getMessage() for r in caplog.records if r.name == policy.__name__
                 and r.getMessage().startswith('incident_monitor_call_timing ')]
     assert len(messages) == 1
@@ -1035,14 +1034,13 @@ def test_monitor_deadline_records_only_safe_stage_and_keeps_halt(flat_incident, 
         monkeypatch.setattr(broker, '_query_child', original)
     else:
         monkeypatch.setattr(policy, name, original)
-    before = copy.deepcopy(policy._events(broker.conn, policy.HALT))
-    policy.release_monitor_gap(broker, expected_halts_sha256=digest(before))
-    assert not policy.halted(broker.conn)
-    assert policy._events(broker.conn, policy.HALT) == before
+    assert policy.monitor(broker, refresh=True) is not None
+    assert not policy.new_risk_blocked(broker)
+    assert policy._events(broker.conn, policy.HALT) == halts
     assert i['exchange'].writes == []
 
 
-def test_monitor_timing_logging_failure_cannot_clear_halt(flat_incident, monkeypatch):
+def test_monitor_timing_logging_failure_still_fails_closed(flat_incident, monkeypatch):
     i = flat_incident
     transition(i)
     broker = restarted(i)
@@ -1057,8 +1055,7 @@ def test_monitor_timing_logging_failure_cannot_clear_halt(flat_incident, monkeyp
     monkeypatch.setattr(policy.logging.getLogger(policy.__name__), 'warning',
                         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('logger failed')))
     assert policy.monitor(broker, refresh=True) is None
-    assert policy.halted(broker.conn)
-    assert policy._events(broker.conn, policy.HALT)[-1]['evidence']['reason'] == 'incident_epoch_monitor_account_deadline'
+    assert policy.new_risk_blocked(broker) and not policy.halted(broker.conn)
     assert i['exchange'].writes == []
     from live.scenario_broker import _MONITOR_CALL_TIMING
     assert _MONITOR_CALL_TIMING.get() is None
