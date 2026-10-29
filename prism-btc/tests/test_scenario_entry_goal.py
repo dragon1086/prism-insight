@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from live.scenario_review_storage import review_text
 from live.scenario_entry_goal import (
     GoalConsistencyRejection, goal_schema, prepare_goal_source, resolve_goal, validate_goal_plan,
 )
@@ -682,8 +683,8 @@ def test_host_link_preserves_fresh_economic_receipt_and_final_lease_hash(tmp_pat
     payload = json.loads(r.conn.execute('SELECT payload FROM llm_scenario_intents WHERE id=?',
         (record['origin']['action_id'],)).fetchone()[0])
     economic = {k: v for k, v in payload.items() if k != 'host_entry_contract_id'}
-    event = json.loads(r.conn.execute("SELECT body FROM llm_scenario_review_events "
-        "WHERE body LIKE '%FINAL_FRESH_REVIEW_RECEIPT%'").fetchone()[0])
+    events = (json.loads(review_text(row[0])) for row in r.conn.execute('SELECT body FROM llm_scenario_review_events'))
+    event = next(item for item in events if item['kind'] == 'FINAL_FRESH_REVIEW_RECEIPT')
     assert receipt_hash(economic) == event['receipt']['validated_sha256']
     assert _digest(economic) == record['origin']['plan_sha256']
     assert receipt_hash(economic) != _digest(economic)  # Unicode vs ASCII JSON encoding is intentional.
