@@ -17,7 +17,7 @@ def test_snapshot_model_validation_end_to_end_no_broker():
     assert r['orders_submitted']==0
     assert r['account_source']=='HYPOTHETICAL_NOT_BROKER'
     assert r['proposal']['action']=='WAIT'
-    assert (r['model'],r['effort']) == ('gpt-6.1-sol','low')
+    assert (r['model'],r['effort']) == ('gpt-6.1-terra','low')
 
 
 def test_collection_failure_no_model_or_orders():

@@ -109,7 +109,7 @@ def generate_scenario(*, system_prompt, user_prompt, model, reasoning_effort,
                       retry_transport=False):
     if type(retry_transport) is not bool:
         raise ValueError("scenario_retry_policy")
-    if ((model, reasoning_effort) not in (("gpt-6.1-sol", "low"), ("gpt-6-luna", "high"), ("gpt-6-luna", "xhigh"))
+    if ((model, reasoning_effort) not in (("gpt-6.1-terra", "low"), ("gpt-6.1-sol", "low"), ("gpt-6-luna", "high"), ("gpt-6-luna", "xhigh"))
             or fast_tier is not True or mcp_profile is not None):
         raise ValueError("scenario_model_policy")
     if type(timeout) not in (int,float) or not math.isfinite(timeout) or not 0 < timeout <= 75:

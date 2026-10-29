@@ -98,7 +98,7 @@ def test_two_phase_exact_selection_no_order_and_audit():
         ("MODEL_REQUEST", "candidate"), ("MODEL_RAW", "candidate"),
         ("CALCULATED_CANDIDATES", None), ("MODEL_REQUEST", "selection")]
     assert all(c["retry_transport"] is False and c["timeout"] <= 75 for c in calls)
-    assert all(c["model"] == "gpt-6.1-sol" and c["reasoning_effort"] == "low" and c["mcp_profile"] is None for c in calls)
+    assert all(c["model"] == "gpt-6.1-terra" and c["reasoning_effort"] == "low" and c["mcp_profile"] is None for c in calls)
 
 
 def test_no_candidates_wait_is_one_call():
