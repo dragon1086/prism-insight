@@ -117,7 +117,7 @@ def _runtime_event_hash(conn):
             rows = [tuple((read_recovery(value, conn, row[slot_index] if slot_index is not None else None,
                                          decode_legacy=review_text,
                                          expected_kind=row[kind_index] if kind_index is not None else None)
-                           if kind_index is None or row[kind_index] in ('MODEL_REQUEST', 'MODEL_RAW') else review_text(value))
+                           if kind_index is None or row[kind_index] in ('MODEL_REQUEST', 'MODEL_RAW', 'INPUT') else review_text(value))
                           if i == index else value
                           for i, value in enumerate(row)) for row in rows]
         if name == 'llm_scenario_broker_evidence' and {'body', 'kind'} <= set(columns):

@@ -141,7 +141,7 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
                 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
                 from utils.btc_offsite_archive import referenced_commits
                 from utils.btc_review_retention import read_cursor, snapshot_index
-            commits, coverage = referenced_commits(raw)
+            commits, coverage = referenced_commits(raw, deadline=deadline)
             after_slot = read_cursor(retention_cursor, source_identity) if retention_cursor is not None else -1
             with closing(sqlite3.connect(raw.resolve().as_uri() + '?mode=ro', uri=True)) as index_conn:
                 retention_index = snapshot_index(index_conn, int(started), after_slot=after_slot,

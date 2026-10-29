@@ -14,6 +14,28 @@ import pytest
 from utils import btc_offsite_archive as archive
 
 
+def test_commit_scan_rejects_expired_outer_deadline(tmp_path):
+    raw = tmp_path / 'snapshot.sqlite'
+    sqlite3.connect(raw).close()
+    with pytest.raises(TimeoutError, match='commit_scan_deadline'):
+        archive.referenced_commits(raw, deadline=0)
+
+
+def test_scan_does_not_classify_deadline_interruption_as_malformed(tmp_path, monkeypatch):
+    raw = tmp_path / 'snapshot.sqlite'
+    with sqlite3.connect(raw) as db:
+        db.execute('CREATE TABLE llm_scenario_review_events(body TEXT)')
+        db.execute("INSERT INTO llm_scenario_review_events VALUES ('{}')")
+    now = [10]
+    monkeypatch.setattr(archive.time, 'monotonic', lambda: now[0])
+    def interrupted(_):
+        now[0] = 30
+        raise sqlite3.OperationalError('interrupted')
+    monkeypatch.setattr(archive, 'review_text', interrupted)
+    with pytest.raises(TimeoutError, match='commit_scan_deadline'):
+        archive.referenced_commits(raw, deadline=20)
+
+
 def git(repo, *args):
     return subprocess.run(['/usr/bin/git', *args], cwd=repo, capture_output=True,
                           check=True, text=True, timeout=30).stdout.strip()
@@ -162,7 +184,14 @@ def test_captured_references_avoid_sender_restore_but_receiver_verifies(payload,
 
     path, _, _, repo = payload
     snapshot = path / 'fresh.sqlite.gz'
+    scan = archive.referenced_commits
+    received_deadlines = []
+    def checked_scan(raw, *, deadline=None):
+        received_deadlines.append(deadline)
+        return scan(raw, deadline=deadline)
+    monkeypatch.setattr(archive, 'referenced_commits', checked_scan)
     manifest = backup_database(path / 'source.sqlite', snapshot, reserve_bytes=0, capture_references=True)
+    assert received_deadlines and received_deadlines[0] is not None
     assert manifest['code_reference_scan']['commits']
     monkeypatch.setattr(archive, 'backend_host', lambda _: 'fixture')
     monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=100 * archive.CAP))
@@ -517,6 +546,37 @@ def test_embedded_receiver_resolves_recovery_references_and_rejects_missing(tmp_
         archive.referenced_commits(path)
     with sqlite3.connect(path) as conn:
         conn.execute('UPDATE llm_scenario_recovery_events SET body=?', (MAGIC + b'bad',))
+    with pytest.raises(ValueError, match='reference_recovery_unresolved'):
+        archive.referenced_commits(path)
+
+
+def test_archive_resolves_recovery_input_reference(tmp_path):
+    from utils.btc_recovery_references import canonical, compact_input, pack
+
+    path = tmp_path / 'input.sqlite'
+    recovery = {'baseline': 'x' * 1000, 'git_revision': 'e' * 40}
+    context = canonical({'recovery': recovery})
+    original = canonical({'decision_slot': 7, 'recovery': recovery})
+    candidate = compact_input(context, original, 7)
+    assert candidate != original
+    with sqlite3.connect(path) as conn:
+        conn.executescript('CREATE TABLE llm_scenario_decisions(slot INTEGER,context TEXT);'
+                           'CREATE TABLE llm_scenario_recovery_events(slot INTEGER,kind TEXT,body BLOB);')
+        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?)', (7, context))
+        conn.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?)', (7, 'INPUT', pack(candidate)))
+    assert 'e' * 40 in archive.referenced_commits(path)[0]
+    helper = Path(archive.__file__).with_name('btc_recovery_references.py').read_text()
+    source = Path(archive.__file__).read_text()
+    child_script = ("import sys,types; m=types.ModuleType('btc_recovery_refs_embedded'); "
+                    "exec(compile(%r,'<refs>','exec'),m.__dict__); "
+                    "sys.modules['btc_recovery_refs_embedded']=m; ns={'__name__':'receiver'}; "
+                    "exec(compile(%r,'<archive>','exec'),ns); "
+                    "print(ns['referenced_commits'](ns['Path'](sys.argv[1]))[0][0])" % (helper, source))
+    child = subprocess.run([os.sys.executable, '-I', '-c', child_script, str(path)], cwd=tmp_path,
+                           capture_output=True, text=True, timeout=15, check=True)
+    assert child.stdout.strip() == 'e' * 40
+    with sqlite3.connect(path) as conn:
+        conn.execute('DELETE FROM llm_scenario_decisions')
     with pytest.raises(ValueError, match='reference_recovery_unresolved'):
         archive.referenced_commits(path)
 

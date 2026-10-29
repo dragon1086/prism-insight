@@ -5,6 +5,7 @@ import json
 import zlib
 
 TAG = '$btc_recovery_review_ref_v1'
+INPUT_TAG = '$btc_recovery_input_ref_v1'
 MAGIC = b'PRISM_RECOVERY_REFS_V1\x00'
 MAX_BYTES = 256 * 1024
 
@@ -15,6 +16,29 @@ def canonical(value):
 
 def sha(value):
     return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+
+def compact_input(context_raw, recovery_raw, slot):
+    """Reference the identical recovery field in the same decision input."""
+    if not isinstance(context_raw, str) or not isinstance(recovery_raw, str) or type(slot) is not int or slot < 0:
+        return recovery_raw
+    if max(len(context_raw.encode()), len(recovery_raw.encode())) > MAX_BYTES:
+        return recovery_raw
+    try:
+        context, recovery = json.loads(context_raw), json.loads(recovery_raw)
+        if (not isinstance(context, dict) or not isinstance(recovery, dict)
+                or INPUT_TAG in recovery or canonical(recovery) != recovery_raw
+                or not isinstance(recovery.get('recovery'), dict)
+                or context.get('recovery') != recovery['recovery']):
+            return recovery_raw
+        rest = dict(recovery)
+        source = canonical(rest.pop('recovery'))
+        marker = {INPUT_TAG: 1, 'slot': slot, 'recovery_sha256': sha(recovery_raw),
+                  'source_sha256': sha(source), 'rest': rest}
+        result = canonical(marker)
+        return result if len(result.encode()) < len(recovery_raw.encode()) else recovery_raw
+    except (TypeError, ValueError, OverflowError):
+        return recovery_raw
 
 
 def compact(review_raw, recovery_raw, slot, sequence):
@@ -77,7 +101,7 @@ def pack(encoded):
     if not isinstance(encoded, str) or len(encoded.encode('utf-8')) > MAX_BYTES:
         raise ValueError('recovery_reference_invalid')
     marker = json.loads(encoded)
-    if not isinstance(marker, dict) or type(marker.get(TAG)) is not int or marker[TAG] != 1:
+    if not isinstance(marker, dict) or not any(type(marker.get(tag)) is int and marker[tag] == 1 for tag in (TAG, INPUT_TAG)):
         raise ValueError('recovery_reference_invalid')
     return MAGIC + gzip.compress(encoded.encode('utf-8'), compresslevel=1, mtime=0)
 
@@ -95,7 +119,30 @@ def read_recovery(value, conn, slot, *, decode_legacy, expected_kind=None):
         marker = json.loads(raw)
     except (zlib.error, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError('recovery_reference_compression_invalid') from exc
-    if not isinstance(marker, dict) or TAG not in marker:
+    if not isinstance(marker, dict):
+        raise ValueError('recovery_reference_invalid')
+    if INPUT_TAG in marker:
+        if (set(marker) != {INPUT_TAG, 'slot', 'recovery_sha256', 'source_sha256', 'rest'}
+                or type(marker[INPUT_TAG]) is not int or marker[INPUT_TAG] != 1
+                or type(slot) is not int or slot < 0 or type(marker['slot']) is not int
+                or marker['slot'] != slot or not isinstance(marker['rest'], dict)
+                or 'recovery' in marker['rest'] or expected_kind != 'INPUT' or conn is None):
+            raise ValueError('recovery_reference_invalid')
+        rows = conn.execute('SELECT context FROM llm_scenario_decisions WHERE slot=? LIMIT 2', (slot,)).fetchall()
+        if len(rows) != 1 or not isinstance(rows[0][0], str) or len(rows[0][0].encode()) > MAX_BYTES:
+            raise ValueError('recovery_reference_source_missing')
+        try:
+            context = json.loads(rows[0][0])
+            recovery = context['recovery']
+            if not isinstance(recovery, dict) or sha(canonical(recovery)) != marker['source_sha256']:
+                raise ValueError('recovery_reference_changed')
+            restored = canonical(dict(marker['rest'], recovery=recovery))
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise ValueError('recovery_reference_changed') from exc
+        if len(restored.encode()) > MAX_BYTES or sha(restored) != marker['recovery_sha256']:
+            raise ValueError('recovery_reference_changed')
+        return restored
+    if TAG not in marker:
         raise ValueError('recovery_reference_invalid')
     sequence = marker.get('sequence')
     if conn is None or type(slot) is not int or slot < 0 or type(sequence) is not int or sequence < 0:

@@ -42,6 +42,23 @@ def test_runtime_event_hash_literal_queries_preserve_all_columns_and_rowid_order
         assert _runtime_event_hash(conn)==digest(expected)
 
 
+def test_runtime_event_hash_preserves_recovery_input_reference():
+    from analysis.scenario_replay import _runtime_event_hash
+    from utils.btc_recovery_references import canonical, compact_input, pack
+    with sqlite3.connect(':memory:') as conn:
+        conn.execute('CREATE TABLE llm_scenario_decisions(slot INTEGER, context TEXT)')
+        conn.execute('CREATE TABLE llm_scenario_recovery_events(slot INTEGER, kind TEXT, body TEXT)')
+        context = canonical({'recovery': {'baseline': 'x' * 2000}})
+        original = canonical({'decision_slot': 7, 'recovery': json.loads(context)['recovery']})
+        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?)', (7, context))
+        conn.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?)', (7, 'INPUT', original))
+        before = _runtime_event_hash(conn)
+        compacted = compact_input(context, original, 7)
+        assert compacted != original
+        conn.execute('UPDATE llm_scenario_recovery_events SET body=?', (pack(compacted),))
+        assert _runtime_event_hash(conn) == before
+
+
 @pytest.mark.parametrize("create_statement", [
     'CREATE TABLE llm_scenario_unknown (value INTEGER)',
     'CREATE TABLE "llm_scenario_unknown""quote" (value INTEGER)',
