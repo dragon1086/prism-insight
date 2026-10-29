@@ -253,8 +253,14 @@ def verified_archive_index(manifest_bytes, ack, source_identity):
         raise ValueError('retention_archive_unverified') from exc
 
 
+def _window_delay(second):
+    if 25 <= second <= 49:
+        return 0
+    return 25 - second if second < 25 else 85 - second
+
+
 @contextmanager
-def locked_remote_archive(ack):
+def locked_remote_archive(ack, *, align=False):
     """Verify the archive while holding the receiver's lock until cleanup ends."""
     if (not isinstance(ack, dict) or ack.get('status') != 'VERIFIED'
             or ack.get('retention_index_verified') is not True
@@ -304,7 +310,7 @@ record=json.loads(receipt.read_text())
 if record.get('status')!='VERIFIED' or record.get('retention_index_verified') is not True or any(record.get(k)!=v for k,v in expected.items() if k!='archive'):
     raise ValueError('archive_receipt_mismatch')
 print('VERIFIED',flush=True)
-select.select([sys.stdin],[],[],30)
+select.select([sys.stdin],[],[],90)
 '''
     from utils.btc_offsite_archive import backend_host
     host = backend_host(Path('/etc/prism-observability/tunnel.env'))
@@ -320,6 +326,12 @@ select.select([sys.stdin],[],[],30)
         readable, _, _ = select.select([proc.stdout], [], [], 45)
         if not readable or proc.stdout.readline().strip() != 'VERIFIED' or proc.poll() is not None:
             raise ValueError('retention_archive_unverified')
+        if align:
+            delay = _window_delay(time.localtime().tm_sec)
+            if delay:
+                readable, _, _ = select.select([proc.stdout], [], [], delay)
+                if readable or proc.poll() is not None:
+                    raise ValueError('retention_archive_lease_lost')
         yield lambda: proc.poll() is None
     finally:
         proc.stdin.close()
@@ -478,7 +490,7 @@ def cleanup(backup_dir, *, now=None):
             return {'status': 'DEFERRED', 'removed': 0}
         removed = []
         try:
-            with locked_remote_archive(ack) as lease, closing(sqlite3.connect(
+            with locked_remote_archive(ack, align=True) as lease, closing(sqlite3.connect(
                     EXPORT_STATE.resolve().as_uri() + '?mode=rw', uri=True, timeout=.1)) as exporter:
                 def guard():
                     return _resource_guard(SOURCE, identity) and _runtime_safe(conn)

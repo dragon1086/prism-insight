@@ -132,6 +132,12 @@ def test_backup_guard_rejects_snapshot_and_streamed_database_reader(tmp_path):
     assert _backup_idle(source, proc)
 
 
+@pytest.mark.parametrize('second,delay', [(0, 25), (24, 1), (25, 0), (49, 0), (50, 35), (59, 26)])
+def test_single_idle_window_delay_is_bounded(second, delay):
+    from utils.btc_review_retention import _window_delay
+    assert _window_delay(second) == delay
+
+
 def test_snapshot_and_delivery_must_match_each_candidate():
     identity = 'a' * 64
     first = {'rowid': 7, 'slot': 7, 'tape_sha256': 'b' * 64, 'decision_sha256': 'c' * 64}
@@ -233,6 +239,26 @@ def test_remote_archive_rechecks_files_and_rejects_tampering(tmp_path, monkeypat
     with (root / '.receive.lock').open('r+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(lock, fcntl.LOCK_UN)
+    from types import SimpleNamespace
+    real_select = btc_review_retention.select.select
+    calls = []
+    def align_once(readers, writers, errors, timeout):
+        if timeout == 1:
+            calls.append(timeout)
+            return [], [], []
+        return real_select(readers, writers, errors, timeout)
+    monkeypatch.setattr(btc_review_retention.time, 'localtime', lambda *_: SimpleNamespace(tm_sec=24))
+    monkeypatch.setattr(btc_review_retention.select, 'select', align_once)
+    with btc_review_retention.locked_remote_archive(ack, align=True) as alive:
+        assert alive() and calls == [1]
+    def lost_during_alignment(readers, writers, errors, timeout):
+        if timeout == 1:
+            return readers, [], []
+        return real_select(readers, writers, errors, timeout)
+    monkeypatch.setattr(btc_review_retention.select, 'select', lost_during_alignment)
+    with pytest.raises(ValueError, match='retention_archive_lease_lost'):
+        with btc_review_retention.locked_remote_archive(ack, align=True):
+            pass
     (target / 'snapshot.sqlite.gz').write_bytes(b'tampered')
     with pytest.raises(ValueError, match='retention_archive_unverified'):
         verify_remote_archive(ack)
@@ -357,7 +383,7 @@ def test_cleanup_uses_backup_ack_delivery_lease_and_transaction(tmp_path, monkey
                  'event_type': 'btc.research.review_tape', 'source_identity': source_identity,
                  'body_sha256': row['tape_sha256'], 'tape_hash_status': 'MATCH'} for row in rows]
     @contextmanager
-    def lease(_):
+    def lease(_, *, align=False):
         yield lambda: True
     monkeypatch.setattr(retention, 'SOURCE', source_path)
     monkeypatch.setattr(retention, 'EXPORT_STATE', state_path)
@@ -419,7 +445,7 @@ def test_cleanup_processes_four_batches_and_resumes_cursor(tmp_path, monkeypatch
                  'event_type': 'btc.research.review_tape', 'source_identity': source_identity,
                  'body_sha256': row['tape_sha256'], 'tape_hash_status': 'MATCH'} for row in rows]
     @contextmanager
-    def lease(_):
+    def lease(_, *, align=False):
         yield lambda: True
     monkeypatch.setattr(retention, 'SOURCE', source_path)
     monkeypatch.setattr(retention, 'EXPORT_STATE', state_path)
@@ -502,6 +528,7 @@ def test_cleanup_with_independently_restored_archive_and_real_lease(tmp_path, mo
     monkeypatch.setattr(retention, '_resource_guard', lambda *_: True)
     monkeypatch.setattr(retention, '_runtime_safe', lambda *_: True)
     monkeypatch.setattr(retention, 'fetch_deliveries', delivery)
+    monkeypatch.setattr(retention.time, 'localtime', lambda *_: SimpleNamespace(tm_sec=30))
     assert retention.cleanup(directory) == {'status': 'COMPLETE', 'removed': 1}
     with sqlite3.connect(source_path) as db:
         assert db.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(2,)]
