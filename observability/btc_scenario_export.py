@@ -21,6 +21,7 @@ from .review_storage import review_text
 from utils.btc_review_references import read_tape
 from utils.btc_financial_references import restore as restore_financial
 from utils.btc_audit_references import read_audit
+from utils.btc_accounting_audit_references import read_accounting
 from utils.btc_recovery_references import read_recovery
 
 STREAMS = ('llm_scenario_audit_events', 'llm_scenario_recovery_events',
@@ -363,6 +364,8 @@ def _source_text(stream, row, source=None):
         return restore_financial(row['body'])
     if stream == 'llm_scenario_audit_events' and row['kind'] == 'decision_input':
         return read_audit(row['body'], source, row['decision_slot'])
+    if stream == 'llm_scenario_audit_events' and row['kind'] == 'accounting_observation':
+        return read_accounting(row['body'], source)
     return row['body']
 
 
@@ -378,6 +381,8 @@ def _anchor_hash(stream, row, source=None):
     if stream == 'llm_scenario_broker_evidence' and row['kind'] == 'financial':
         return _hash(_source_text(stream, row, source))
     if stream == 'llm_scenario_audit_events' and row['kind'] == 'decision_input':
+        return _hash(_source_text(stream, row, source))
+    if stream == 'llm_scenario_audit_events' and row['kind'] == 'accounting_observation':
         return _hash(_source_text(stream, row, source))
     return _hash(row['body'])
 
