@@ -1,5 +1,6 @@
 import gzip
 import json
+import logging
 import os
 from pathlib import Path
 import sqlite3
@@ -9,7 +10,8 @@ import pytest
 from utils.sqlite_snapshot import backup_database
 
 
-def test_online_backup_includes_committed_wal_and_roundtrips(tmp_path):
+def test_online_backup_includes_committed_wal_and_roundtrips(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger='utils.sqlite_snapshot')
     source = tmp_path / 'source.sqlite'
     live = sqlite3.connect(source)
     try:
@@ -35,6 +37,9 @@ def test_online_backup_includes_committed_wal_and_roundtrips(tmp_path):
             assert db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
         assert json.loads(Path(str(target)+'.manifest.json').read_text())['raw_bytes'] == restored.stat().st_size
         assert live.execute('SELECT count(*) FROM evidence').fetchone()[0] == 1
+        for stage in ('copy', 'integrity', 'hash', 'compress', 'verify', 'publish'):
+            assert 'snapshot_stage=' + stage in caplog.text
+        assert '정확한 원본' not in caplog.text
     finally:
         live.close()
 

@@ -6,6 +6,7 @@ from contextlib import closing
 import gzip
 import hashlib
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -40,7 +41,7 @@ def _unlink_owned(path, identity):
 def _compress_in_place(path, raw_bytes, progress):
     """Compress a disposable snapshot without overwriting unread input."""
     consumed = written = 0
-    compressor = zlib.compressobj(level=6, wbits=31)
+    compressor = zlib.compressobj(level=3, wbits=31)
     with path.open('r+b', buffering=0) as stream:
         def write(data):
             nonlocal written
@@ -113,21 +114,25 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
             if shutil.disk_usage(destination.parent).free < reserve_bytes:
                 raise OSError("snapshot_space_reserve_lost")
 
+        logging.getLogger(__name__).info('snapshot_stage=copy')
         with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)) as src:
             src.execute("PRAGMA query_only=ON")
             with closing(sqlite3.connect(raw)) as dst:
                 src.backup(dst, pages=256, progress=progress, sleep=0.05)
                 progress(None, None, None)
+                logging.getLogger(__name__).info('snapshot_stage=integrity')
                 dst.execute("PRAGMA journal_mode=DELETE")
                 dst.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
                 if dst.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
                     raise ValueError("snapshot_integrity_failed")
                 progress(None, None, None)
                 dst.commit()
+        logging.getLogger(__name__).info('snapshot_stage=hash')
         with raw.open("rb") as stream:
             raw_hash, raw_bytes = _hash_stream(stream, deadline)
         reference_scan = None
         if capture_references:
+            logging.getLogger(__name__).info('snapshot_stage=reference_scan')
             if __package__:
                 from .btc_offsite_archive import referenced_commits
             else:
@@ -136,8 +141,10 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
             commits, coverage = referenced_commits(raw)
             progress(None, None, None)
             reference_scan = {'commits': commits, 'coverage': coverage}
+        logging.getLogger(__name__).info('snapshot_stage=compress')
         _compress_in_place(raw, raw_bytes, progress)
         compressed = raw
+        logging.getLogger(__name__).info('snapshot_stage=verify')
         with gzip.open(compressed, "rb") as stream:
             restored_hash, restored_bytes = _hash_stream(stream, deadline)
         if (raw_hash, raw_bytes) != (restored_hash, restored_bytes):
@@ -158,6 +165,7 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
             stream.flush()
             os.fsync(stream.fileno())
         # Hard-link publishing is atomic and refuses overwriting a competing file.
+        logging.getLogger(__name__).info('snapshot_stage=publish')
         os.link(compressed, destination)
         stat = compressed.stat()
         published.append((destination, (stat.st_dev, stat.st_ino)))
@@ -183,6 +191,7 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--destination", type=Path, required=True)
