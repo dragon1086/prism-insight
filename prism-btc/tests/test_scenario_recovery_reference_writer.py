@@ -24,6 +24,39 @@ def fixture(tmp_path):
     return conn, event
 
 
+def test_input_reference_commits_with_decision_and_rolls_back_together(tmp_path):
+    conn, _ = fixture(tmp_path)
+    payload = {'input_id': 'test', 'decision_slot': 7, 'recovery': {'baseline': 'x' * 4000}}
+    original = recovery.encoded(payload)
+    event_id = recovery.journal(conn, 'INPUT', payload, 1, slot=7)
+    conn.execute('UPDATE llm_scenario_decisions SET context=? WHERE slot=7', (json.dumps(payload),))
+    assert recovery.compact_input_event(conn, event_id, 7)
+    stored = conn.execute('SELECT body FROM llm_scenario_recovery_events WHERE event_id=?', (event_id,)).fetchone()[0]
+    assert refs.read_recovery(stored, conn, 7, decode_legacy=review_text, expected_kind='INPUT') == original
+    conn.rollback()
+    assert conn.execute('SELECT 1 FROM llm_scenario_recovery_events WHERE event_id=?', (event_id,)).fetchone() is None
+    assert json.loads(conn.execute('SELECT context FROM llm_scenario_decisions WHERE slot=7').fetchone()[0]) == {'input_id': 'test'}
+    event_id = recovery.journal(conn, 'INPUT', payload, 1, slot=7)
+    conn.execute('UPDATE llm_scenario_decisions SET context=? WHERE slot=7', (json.dumps(payload),))
+    assert recovery.compact_input_event(conn, event_id, 7)
+    conn.commit()
+    stored = conn.execute('SELECT body FROM llm_scenario_recovery_events WHERE event_id=?', (event_id,)).fetchone()[0]
+    assert refs.read_recovery(stored, conn, 7, decode_legacy=review_text, expected_kind='INPUT') == original
+    conn.close()
+
+
+def test_input_reference_falls_back_when_source_mismatch(tmp_path):
+    conn, _ = fixture(tmp_path)
+    payload = {'input_id': 'test', 'decision_slot': 7, 'recovery': {'baseline': 'x' * 4000}}
+    event_id = recovery.journal(conn, 'INPUT', payload, 1, slot=7)
+    assert not recovery.compact_input_event(conn, event_id, 7)
+    assert conn.execute('SELECT body FROM llm_scenario_recovery_events WHERE event_id=?', (event_id,)).fetchone()[0] == recovery.encoded(payload)
+    conn.commit()
+    with pytest.raises(ValueError, match='transaction_required'):
+        recovery.compact_input_event(conn, event_id, 7)
+    conn.close()
+
+
 def test_writer_stores_reference_that_restores_original(tmp_path):
     conn, event = fixture(tmp_path)
     recovery.journal(conn, 'MODEL_REQUEST', dict(event, calculated_review_version=1), 1, slot=7, review_sequence=3)
