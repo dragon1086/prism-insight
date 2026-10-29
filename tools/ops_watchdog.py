@@ -114,9 +114,10 @@ FAILURES = (
     (re.compile(r" - ERROR - "), "오류 기록", "주의"),
 )
 # Known non-failures: yfinance's delisted/unknown-symbol notices (a peer candidate Yahoo lacks is dropped, LC 10/27),
-# the local OAuth proxy's timeout the OpenAI client retries (10/27), and skips we chose (one share over budget, 10/16).
+# the local OAuth proxy's timeout the OpenAI client retries (10/27), and skips we chose (one share over budget, 10/16;
+# its later sell finds no shares in the account, LLY 10/30).
 IGNORED = re.compile(r"possibly delisted|Quote not found for symbol|aiohttp\.server - ERROR - Error handling request"
-                     r"|below one share|quantity is 0|budget unavailable")
+                     r"|below one share|quantity is 0|not found in portfolio|budget unavailable")
 _EXCEPTION_LINE = re.compile(r"^[A-Za-z_][\w.]*(Error|Exception|Interrupt|Exit|Timeout)\b")
 _MARKET_TAG = re.compile(r"\[(KR|US)\]|\((KR|US)\)|market=(KR|US)\b|\b(KR|US) (summary|trading context)")
 # Broker client lines carry no market tag; their logger names it (a shared log's owner is the KR job, 2026-10-24).
