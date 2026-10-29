@@ -439,6 +439,23 @@ def _fetch_daily_bars(market: str, ticker: str) -> List[Dict[str, Any]]:
     return runner_hold_live.fetch_bars_safe(market, ticker)
 
 
+def on_entry_session(market: str, holding: Dict[str, Any], now: Optional[datetime] = None) -> bool:
+    """Whether the position was bought in the session that is still trading (no close since entry).
+
+    TIER1.5 is a daily-close rule; on the entry day it can only sell an intraday wiggle at the
+    50-day line the entry was bought next to (2026-10-29 108490 50MA -3.3% and 2026-10-30 LITE
+    50MA +1.0%, both re-entries sold at -0.6%/-1.5% within hours). The stop_loss and -7% stop
+    still apply that day. Unknown buy_date keeps TIER1.5 armed.
+    """
+    from prism_core import runner_hold
+    try:
+        entry = runner_hold.entry_session(market, holding.get("buy_date"))
+    except (TypeError, ValueError):
+        return False
+    tz = runner_hold._sessions()[str(market).upper()][0]
+    return entry >= (now or _now()).astimezone(tz).date()
+
+
 def ma50_exit_armed(market: str, holding: Dict[str, Any], bars: List[Dict[str, Any]],
                     now: Optional[datetime] = None) -> bool:
     """Whether TIER1.5 (below the 50-day MA while losing) applies to this position.
@@ -547,7 +564,8 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
     """
     summary = {"market": market, "checked": 0, "signaled": 0, "acted": 0,
                "sold": 0, "shadow": 0, "skipped": 0, "pyramided_skipped": 0,
-               "gated": 0, "runner_held": 0, "entry_below_ma50": 0}
+               "gated": 0, "runner_held": 0, "entry_below_ma50": 0,
+               "entry_day_ma50": 0}
     from cores.oneil_fallback import SellInputs, evaluate_oneil_sell
     from prism_core import runner_hold, runner_hold_live
     from prism_core.loop_row_split import (
@@ -646,6 +664,11 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                                 ma_50=ma_50,
                             )
                             should_sell, reason = evaluate_oneil_sell(inp)
+                            if should_sell and reason.startswith("TIER1.5_MA50") and on_entry_session(market, h):
+                                summary["entry_day_ma50"] += 1
+                                logger.info("[%s] %s bought this session -> TIER1.5 waits for a close, "
+                                            "stop_loss/-7%% manage it (%s)", market, ticker, reason)
+                                should_sell, reason = evaluate_oneil_sell(replace(inp, ma_50=0.0))
                             if should_sell and reason.startswith("TIER1.5_MA50"):
                                 if ticker not in daily_bars:
                                     daily_bars[ticker] = await asyncio.to_thread(

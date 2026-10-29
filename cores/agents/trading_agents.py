@@ -967,7 +967,7 @@ def create_sell_decision_agent(language: str = "ko"):
         **Core-4) Sell-signal priority (single source of truth):**
         - Tier 1: Absolute sell (live-price loss ≥ -7%, OR live price at or below stop_loss × 0.995 — executed automatically by the intraday hard stop).
         - Tier 2: Trailing-stop breach — on the latest confirmed close; today's breach is confirmed by the pre-close automatic check (only if activated per Core-3).
-        - System-run (not your decision): a position in loss (price below entry) at or below its 50-day MA × 0.995 is sold in full by the pre-close automatic check or after a breach over several consecutive days. Exception: a position bought below its 50-day MA is exempt until a completed daily close above the 50-day MA after entry; until then only its stop_loss and the -7% stop apply.
+        - System-run (not your decision): a position in loss (price below entry) at or below its 50-day MA × 0.995 is sold in full by the pre-close automatic check or after a breach over several consecutive days. Exception: a position bought below its 50-day MA is exempt until a completed daily close above the 50-day MA after entry; until then only its stop_loss and the -7% stop apply. On the entry day itself (before the first daily close after entry) this rule does not apply to any position.
         - Tier 3: Trend-weakness check (your judgement): 3 consecutive daily-closing declines + volume above its 20-day average + close below 20d MA — ALL three required. It counts only when all three declining closes are completed bars after the entry session (3+ sessions held); weakness that already existed before the buy was known at entry and is not a Tier-3 reason.
         - Time-based conditions are NOT sell triggers; they are trend-review checkpoints only. Sell decisions fire only via Tiers 1~3.
         - When the user message has the 'System-computed facts' block, use its trailing line, stop-raise eligibility, tier-3 conditions and sessions held as given.
@@ -1200,7 +1200,7 @@ def create_sell_decision_agent(language: str = "ko"):
         **핵심-4) 매도 신호 우선순위 (single source of truth):**
         - 1단계: 절대 매도 (장중 현재가 기준 -7% 이상 손실 OR 현재가 stop_loss×0.995 이하 — 장중 하드스탑이 자동 실행)
         - 2단계: trailing stop 이탈 — 최근 확정 종가 기준, 당일은 장 마감 직전 자동 점검이 확인 (활성화된 이후에만)
-        - 시스템 자동(AI 판단 아님): 손실 중(현재가 < 매수가)인 종목이 50일선×0.995 이하이면 장 마감 직전 자동 점검 또는 여러 날 연속 이탈 확인으로 전량 매도합니다. 단, 50일선 아래에서 매수한 종목은 매수 후 50일선 위 종가가 한 번 나오기 전까지 이 규칙을 적용하지 않고 손절가와 -7% 손절로만 관리합니다.
+        - 시스템 자동(AI 판단 아님): 손실 중(현재가 < 매수가)인 종목이 50일선×0.995 이하이면 장 마감 직전 자동 점검 또는 여러 날 연속 이탈 확인으로 전량 매도합니다. 단, 50일선 아래에서 매수한 종목은 매수 후 50일선 위 종가가 한 번 나오기 전까지 이 규칙을 적용하지 않고 손절가와 -7% 손절로만 관리합니다. 매수 당일(매수 후 첫 종가 전)에는 어떤 종목에도 이 규칙을 적용하지 않습니다.
         - 3단계: 추세 약화 점검(AI 판단) — 3거래일 연속 종가 하락 + 20일 평균 이상 거래량 + 20일선 종가 이탈, 3개 모두 충족. 하락한 3거래일이 모두 매수일 이후의 확정 일봉일 때만 셉니다(보유 3거래일 이상). 매수 전부터 있던 약세는 매수할 때 이미 알던 정보이므로 3단계 매도 사유가 아닙니다.
         - 시간 조건은 매도 트리거가 아닙니다. 추세 점검 시점일 뿐이며, 매도 결정은 위 1~3단계에서만 발동합니다.
         - 사용자 메시지에 '시스템 계산 사실' 블록이 있으면 트레일링 라인·손절선 상향 자격·3단계 조건·보유 거래일은 그 값을 그대로 쓰십시오.

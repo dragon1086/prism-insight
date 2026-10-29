@@ -122,6 +122,9 @@ def test_sell_factory_matches_reviewed_volume_prompt():
     # 2026-10-29 reviewed (user decision after 108490 was re-entered below its 50MA at 14:00 and sold by the MA50 exit at
     # 15:10): the system 50-day exit line adds its exception — a position bought below the 50-day MA is exempt until a
     # completed close above it (tools/trend_exit_seller.py ma50_exit_armed). KR/US x ko/en say the same.
+    # 2026-10-30 reviewed (user decision after the LITE re-entry, bought 1% above its 50MA, was sold by the MA50 exit
+    # two hours later): the MA50 exit also waits for the first close after entry (tools/trend_exit_seller.py
+    # on_entry_session); stop_loss and -7% still apply on the entry day. KR/US x ko/en say the same.
     source = SOURCE.read_text(encoding="utf-8")
     node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "create_sell_decision_agent")
-    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "17b362b139a47333708064ecc826ff68796a7fc3ba1f2478acefb30aafe5df56"
+    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "8cd664d3fc8ef25933ad7377bfd58e2745707339a0e0cb3e3d20b0557f629c3b"
