@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 import select
 import shlex
-import subprocess
+import subprocess  # nosec B404 - validated SSH host and fixed commands
 import sqlite3
 import stat
 import sys
@@ -202,16 +202,16 @@ def fetch_deliveries(rows, source_identity):
            "JSONExtractString(Body,'attributes','body_sha256') AS body_sha256, "
            "JSONExtractString(Body,'attributes','tape_hash_status') AS tape_hash_status "
            "FROM otel_logs WHERE LogAttributes['event.name']='btc.research.review_tape' "
-           "AND JSONExtractString(Body,'event_id') IN (" + ','.join("'" + item + "'" for item in sorted(ids)) + ') LIMIT 201')
+           "AND JSONExtractString(Body,'event_id') IN {ids:Array(String)} LIMIT 201")
     from tools.clickstack_query import build_program
     from utils.btc_offsite_archive import backend_host
     host = backend_host(Path('/etc/prism-observability/tunnel.env'))
     if host is None:
         raise ValueError('retention_backend_missing')
-    command = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', 'root@' + host,
-               'set -a; . /etc/prism-observability/reader.env; set +a; python3 -']
-    result = subprocess.run(command, input=build_program(sql, {}), text=True,
-                            capture_output=True, check=True, timeout=45)
+    result = subprocess.run(['/usr/bin/ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', 'root@' + host,
+                             'set -a; . /etc/prism-observability/reader.env; set +a; python3 -'],
+                            input=build_program(sql, {'ids': sorted(ids)}), text=True,
+                            capture_output=True, check=True, timeout=45)  # nosec B603  # nosemgrep
     delivered = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
     if len(delivered) > 200 or any(not isinstance(row, dict) or row.get('event_id') not in ids for row in delivered):
         raise ValueError('retention_delivery_invalid')
@@ -316,10 +316,10 @@ select.select([sys.stdin],[],[],90)
     host = backend_host(Path('/etc/prism-observability/tunnel.env'))
     if host is None:
         raise ValueError('retention_backend_missing')
-    command = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', 'root@' + host,
-               '/usr/bin/python3 -c ' + shlex.quote(remote)]
-    proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, text=True, bufsize=1)
+    proc = subprocess.Popen(['/usr/bin/ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', 'root@' + host,
+                             '/usr/bin/python3 -c ' + shlex.quote(remote)],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True, bufsize=1)  # nosec B603  # nosemgrep
     try:
         proc.stdin.write(json.dumps(expected) + '\n')
         proc.stdin.flush()

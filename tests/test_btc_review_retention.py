@@ -193,7 +193,7 @@ def test_clickstack_lookup_is_read_only_bounded_and_rejects_unexpected_rows(monk
         return SimpleNamespace(stdout=json.dumps(receipt) + '\n')
     monkeypatch.setattr(btc_review_retention.subprocess, 'run', execute)
     assert fetch_deliveries([{'rowid': 7}], identity) == [receipt]
-    assert calls[0][0][0] == 'ssh' and calls[0][1]['timeout'] == 45
+    assert calls[0][0][0] == '/usr/bin/ssh' and calls[0][1]['timeout'] == 45
     assert fetch_deliveries([], identity) == [] and len(calls) == 1
     with pytest.raises(ValueError, match='retention_query_invalid'):
         fetch_deliveries([{'rowid': '7 OR 1=1'}], identity)
