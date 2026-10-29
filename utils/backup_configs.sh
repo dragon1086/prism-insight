@@ -50,7 +50,7 @@ done
 if [ -f stock_tracking_db.sqlite ]; then
     python3 "$PROJECT_DIR/utils/sqlite_snapshot.py" \
         --source "$PROJECT_DIR/stock_tracking_db.sqlite" \
-        --destination "$BACKUP_DIR/stock_tracking_db.sqlite.gz" --timeout 600
+        --destination "$BACKUP_DIR/stock_tracking_db.sqlite.gz" --timeout 600 --capture-references
     log "✓ SQLite 온라인 스냅샷·압축·복원 해시 검증 완료"
 else
     log "오류: stock_tracking_db.sqlite 없음; 기존 DB 백업을 보존하고 종료"

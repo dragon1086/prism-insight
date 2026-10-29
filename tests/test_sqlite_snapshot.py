@@ -1,5 +1,6 @@
 import gzip
 import json
+import os
 from pathlib import Path
 import sqlite3
 
@@ -68,6 +69,44 @@ def test_low_space_refuses_before_reading_source(tmp_path, monkeypatch):
     with pytest.raises(OSError, match='insufficient_snapshot_space'):
         backup_database(source, tmp_path/'snapshot.gz')
     assert list(tmp_path.iterdir()) == [source]
+
+
+def test_snapshot_succeeds_with_space_for_only_one_copy(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from utils import sqlite_snapshot
+
+    source = tmp_path / 'source.sqlite'
+    with sqlite3.connect(source) as conn:
+        conn.execute('CREATE TABLE samples(body BLOB)')
+        payload = os.urandom(2 * 1024 * 1024)
+        conn.execute('INSERT INTO samples VALUES(?)', (payload,))
+    size = source.stat().st_size
+    monkeypatch.setattr(sqlite_snapshot.shutil, 'disk_usage', lambda _: SimpleNamespace(free=size + 1024))
+    target = tmp_path / 'snapshot.gz'
+    backup_database(source, target, reserve_bytes=0)
+    restored = tmp_path / 'restored.sqlite'
+    restored.write_bytes(gzip.decompress(target.read_bytes()))
+    with sqlite3.connect(restored) as conn:
+        assert conn.execute('SELECT body FROM samples').fetchone()[0] == payload
+    with sqlite3.connect(source) as conn:
+        assert conn.execute('SELECT body FROM samples').fetchone()[0] == payload
+
+
+def test_compression_never_overwrites_unread_snapshot(tmp_path, monkeypatch):
+    from utils import sqlite_snapshot
+
+    path = tmp_path / 'temporary.sqlite'
+    original = b'x' * (2 * 1024 * 1024)
+    path.write_bytes(original)
+    class Expanding:
+        def compress(self, chunk):
+            return chunk + b'x'
+        def flush(self):
+            return b''
+    monkeypatch.setattr(sqlite_snapshot.zlib, 'compressobj', lambda **_: Expanding())
+    with pytest.raises(OSError, match='overtook_input'):
+        sqlite_snapshot._compress_in_place(path, len(original), lambda *_: None)
+    assert path.read_bytes() == original
 
 
 def test_publish_failure_does_not_remove_competing_replacement(tmp_path, monkeypatch):
