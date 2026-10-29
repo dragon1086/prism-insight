@@ -1,6 +1,7 @@
 """Run one verified BTC review-retention batch after a successful backup."""
 import argparse
 import json
+import re
 
 from utils.btc_review_retention import cleanup
 
@@ -12,7 +13,10 @@ def main(argv=None):
     try:
         result = cleanup(args.backup_dir)
     except Exception as exc:
-        print(json.dumps({'status': 'ERROR', 'error_type': type(exc).__name__}))
+        result = {'status': 'ERROR', 'error_type': type(exc).__name__}
+        if isinstance(exc, ValueError) and re.fullmatch(r'retention_[a-z0-9_]{1,80}', str(exc)):
+            result['reason'] = str(exc)
+        print(json.dumps(result))
         return 1
     print(json.dumps(result))
     return 1 if result.get('status') == 'PARTIAL' else 0

@@ -129,6 +129,19 @@ def test_embedded_remote_restore_preserves_verified_archive(payload, monkeypatch
         archive.ssh_archive('fixture.local', 0, restore='../bad')
 
 
+def test_replay_restore_cleans_staging_when_disk_reserve_is_lost(payload, monkeypatch):
+    path, needed, _, _ = payload
+    monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=100 * archive.CAP))
+    root, output = path / 'remote', path / 'replays'
+    ack = archive.receive(transfer(path), root, needed)
+    calls = iter((100 * archive.CAP, archive.RESERVE - 1))
+    monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=next(calls)))
+    with pytest.raises(OSError, match='snapshot_restore_space_reserve_lost'):
+        archive.restore_archive(root, ack['archive'], output)
+    assert not list(output.glob('.restoring-*')) and not list(output.glob('restore-*'))
+    assert (root / ack['archive'] / 'receipt.json').is_file()
+
+
 def test_replay_restore_command_reports_status_without_private_errors(monkeypatch, capsys):
     from tools import restore_btc_replay_archive as runner
     name = 'archive-' + 'a' * 32

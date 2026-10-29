@@ -195,6 +195,8 @@ def restore_snapshot(zipped, manifest, raw):
             total += len(chunk)
             if total > manifest['raw_bytes'] or time.monotonic() > deadline:
                 raise ValueError('snapshot_expansion_bound')
+            if shutil.disk_usage(raw.parent).free < RESERVE:
+                raise OSError('snapshot_restore_space_reserve_lost')
             dst.write(chunk)
         dst.flush()
         os.fsync(dst.fileno())

@@ -528,3 +528,8 @@ def test_runner_reports_result_and_redacts_exception(monkeypatch, capsys):
     assert runner.main(['/fixture']) == 1
     output = json.loads(capsys.readouterr().out)
     assert output == {'status': 'ERROR', 'error_type': 'ValueError'}
+    def guarded(_):
+        raise ValueError('retention_guard_failed')
+    monkeypatch.setattr(runner, 'cleanup', guarded)
+    assert runner.main(['/fixture']) == 1
+    assert json.loads(capsys.readouterr().out)['reason'] == 'retention_guard_failed'
