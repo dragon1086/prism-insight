@@ -13,6 +13,7 @@ else:
 TAG = '$btc_accounting_refs_v1'
 ORIGINAL_HASH = '$btc_accounting_original_sha256'
 MAX_BYTES = 512 * 1024
+SOURCE_LIMIT = 8
 
 
 def canonical(value):
@@ -21,6 +22,46 @@ def canonical(value):
 
 def sha(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def compact(raw, conn, observed_at):
+    """Reference only exact earlier broker evidence; otherwise preserve the original."""
+    if (not isinstance(raw, str) or len(raw.encode()) > MAX_BYTES or conn is None
+            or type(observed_at) not in (int, float) or not math.isfinite(observed_at) or observed_at <= 0):
+        return raw
+    try:
+        event = json.loads(raw)
+        if not isinstance(event, dict) or TAG in event or ORIGINAL_HASH in event or canonical(event) != raw:
+            return raw
+        projected = copy.deepcopy(event)
+        for field, kind in (('observation', 'account'), ('financial_evidence', 'financial')):
+            if not isinstance(event.get(field), dict):
+                return raw
+            expected = canonical(event[field])
+            match = None
+            rows = conn.execute('SELECT rowid,captured_at,body FROM llm_scenario_broker_evidence '
+                                'WHERE kind=? AND captured_at<=? ORDER BY rowid DESC LIMIT ?',
+                                (kind, observed_at, SOURCE_LIMIT))
+            for rowid, captured_at, body in rows:
+                if (type(captured_at) not in (int, float) or not math.isfinite(captured_at) or captured_at <= 0
+                        or not isinstance(body, str) or len(body.encode()) > MAX_BYTES):
+                    continue
+                try:
+                    value = json.loads(restore_financial(body) if kind == 'financial' else body)
+                    if isinstance(value, dict) and canonical(value) == expected:
+                        match = (rowid, captured_at)
+                        break
+                except (ValueError, TypeError, KeyError, OverflowError):
+                    continue
+            if match is None or type(match[0]) is not int or match[0] <= 0:
+                return raw
+            projected[field] = {'rowid': match[0], 'captured_at': match[1], 'sha256': sha(expected)}
+        projected[TAG] = 1
+        projected[ORIGINAL_HASH] = sha(raw)
+        candidate = canonical(projected)
+        return candidate if len(candidate.encode()) < len(raw.encode()) else raw
+    except (ValueError, TypeError, KeyError, OverflowError):
+        return raw
 
 
 def read_accounting(raw, conn):

@@ -83,6 +83,38 @@ def test_verified_restore_and_exact_commit_no_settings_upload(payload, monkeypat
     assert (root / '.receive.lock').stat().st_mode & 0o077 == 0
 
 
+def test_captured_references_avoid_sender_restore_but_receiver_verifies(payload, monkeypatch):
+    from utils.sqlite_snapshot import backup_database
+
+    path, _, _, repo = payload
+    snapshot = path / 'fresh.sqlite.gz'
+    manifest = backup_database(path / 'source.sqlite', snapshot, reserve_bytes=0, capture_references=True)
+    assert manifest['code_reference_scan']['commits']
+    monkeypatch.setattr(archive, 'backend_host', lambda _: 'fixture')
+    monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=100 * archive.CAP))
+    root = path / 'remote-captured'
+    restored = []
+    real_restore = archive.restore_snapshot
+    def record_restore(zipped, metadata, raw):
+        restored.append(raw)
+        return real_restore(zipped, metadata, raw)
+    monkeypatch.setattr(archive, 'restore_snapshot', record_restore)
+    def ssh(_host, needed, *, stream=None):
+        if stream is None:
+            return SimpleNamespace(stdout=b'READY')
+        return SimpleNamespace(stdout=json.dumps(archive.receive(stream, root, needed)).encode())
+    monkeypatch.setattr(archive, 'ssh_archive', ssh)
+    ack = archive.archive(repo, snapshot, path / 'unused-config')
+    assert ack['status'] == 'VERIFIED'
+    assert len(restored) == 1 and root in restored[0].parents
+    manifest_path = Path(str(snapshot) + '.manifest.json')
+    damaged = json.loads(manifest_path.read_text())
+    damaged['code_reference_scan']['coverage']['malformed_evidence_rows'] += 1
+    manifest_path.write_text(json.dumps(damaged))
+    with pytest.raises(ValueError, match='archive_reference_coverage_mismatch'):
+        archive.archive(repo, snapshot, path / 'unused-config')
+
+
 @pytest.mark.parametrize('fault', ['checksum', 'partial', 'env', 'raw_hash', 'understated_space', 'missing_ref'])
 def test_failed_receive_preserves_old_archive_and_removes_only_staging(payload, monkeypatch, fault):
     path, needed, _, _ = payload
@@ -132,6 +164,19 @@ def test_space_reserve_and_capacity_are_fail_closed(tmp_path, monkeypatch):
     with pytest.raises(OSError, match='space'):
         archive.space(root, archive.CAP)
     assert old.read_bytes() == b'x'
+
+
+def test_temporary_restore_can_exceed_retained_cap_but_final_archive_cannot(payload, monkeypatch):
+    path, needed, _, _ = payload
+    monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=100 * 1024**3))
+    monkeypatch.setattr(archive, 'CAP', needed - 1)
+    root = path / 'remote-staging'
+    ack = archive.receive(transfer(path), root, needed)
+    assert ack['status'] == 'VERIFIED'
+    monkeypatch.setattr(archive, 'CAP', 1)
+    with pytest.raises(OSError, match='archive_space_limit'):
+        archive.receive(transfer(path), root, needed)
+    assert (root / ack['archive'] / 'receipt.json').exists()
 
 
 def test_root_and_host_safety(tmp_path):
