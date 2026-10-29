@@ -118,6 +118,58 @@ def matching_evidence(current, archived, delivered, source_identity):
     return approved
 
 
+def _delete_matched(conn, exporter, archived, delivered, source_identity, now, *, guard, lease_alive):
+    """Delete only rechecked rows; caller must verify archive and hold its lease."""
+    if (conn.in_transaction or exporter.in_transaction or not callable(guard) or not callable(lease_alive)
+            or not isinstance(archived.get('candidates'), list) or len(archived['candidates']) > 100):
+        raise ValueError('retention_transaction_invalid')
+    if guard() is not True or lease_alive() is not True:
+        raise ValueError('retention_guard_failed')
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        exporter.execute('BEGIN IMMEDIATE')
+        identity = exporter.execute("SELECT value FROM meta WHERE key='source_identity'").fetchone()
+        cursor = exporter.execute("SELECT seq FROM cursors WHERE stream='llm_scenario_review_tapes'").fetchone()
+        saved_anchor = exporter.execute("SELECT ref FROM anchors WHERE stream='llm_scenario_review_tapes'").fetchone()
+        pending = exporter.execute('SELECT COUNT(*) FROM outbox').fetchone()[0]
+        if (not identity or identity[0] != source_identity or not cursor or type(cursor[0]) is not int
+                or cursor[0] <= 0 or not saved_anchor or pending):
+            raise ValueError('retention_export_state_invalid')
+        anchor = conn.execute('SELECT slot,body FROM llm_scenario_review_tapes WHERE rowid=?', (cursor[0],)).fetchone()
+        from observability.btc_scenario_export import _anchor_hash
+        if not anchor or _anchor_hash('llm_scenario_review_tapes', {'slot': anchor[0], 'body': anchor[1]}, conn) != saved_anchor[0]:
+            raise ValueError('retention_export_anchor_changed')
+        current = []
+        for item in archived['candidates']:
+            slot = item['slot']
+            if type(slot) is not int or slot < 0:
+                raise ValueError('retention_source_invalid')
+            rows = candidates(conn, now, after_slot=slot - 1, limit=1)['candidates']
+            if rows and rows[0]['slot'] == slot:
+                current.append(rows[0])
+        matched = matching_evidence({'candidates': current}, archived, delivered, source_identity)
+        removed = []
+        for item in matched:
+            if item['rowid'] >= cursor[0]:
+                continue
+            if guard() is not True or lease_alive() is not True:
+                raise ValueError('retention_guard_failed')
+            changed = conn.execute('DELETE FROM llm_scenario_review_tapes WHERE rowid=? AND slot=?',
+                                   (item['rowid'], item['slot'])).rowcount
+            if changed != 1:
+                raise ValueError('retention_source_changed')
+            removed.append(item['slot'])
+        if guard() is not True or lease_alive() is not True:
+            raise ValueError('retention_guard_failed')
+        conn.commit()
+        exporter.rollback()
+        return removed
+    except BaseException:
+        conn.rollback()
+        exporter.rollback()
+        raise
+
+
 def fetch_deliveries(rows, source_identity):
     """Read a bounded set of ClickStack summaries using the SELECT-only account."""
     if (not isinstance(source_identity, str) or not re.fullmatch(r'[a-f0-9]{64}', source_identity)

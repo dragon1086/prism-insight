@@ -169,3 +169,80 @@ def test_remote_archive_rechecks_files_and_rejects_tampering(tmp_path, monkeypat
     (target / 'snapshot.sqlite.gz').write_bytes(b'tampered')
     with pytest.raises(subprocess.CalledProcessError):
         verify_remote_archive(ack)
+
+
+def transaction_fixture():
+    from observability.btc_scenario_export import _anchor_hash
+    source, exporter = sqlite3.connect(':memory:'), sqlite3.connect(':memory:')
+    source.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY, body TEXT);'
+                         'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY, context TEXT, proposal TEXT, outcome TEXT);')
+    context = {'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
+               'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False}
+    body = '{"kind":"WAIT"}'
+    for slot in (1, 2):
+        source.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (slot, body))
+        source.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?)',
+                       (slot, json.dumps(context), json.dumps({'action': 'WAIT'}), json.dumps({'status': 'wait'})))
+    source.commit()
+    identity = 'a' * 64
+    exporter.executescript('CREATE TABLE meta(key PRIMARY KEY,value);CREATE TABLE cursors(stream PRIMARY KEY,seq);'
+                           'CREATE TABLE anchors(stream PRIMARY KEY,ref);CREATE TABLE outbox(id PRIMARY KEY,body);')
+    exporter.execute('INSERT INTO meta VALUES(?,?)', ('source_identity', identity))
+    exporter.execute('INSERT INTO cursors VALUES(?,?)', ('llm_scenario_review_tapes', 2))
+    anchor = _anchor_hash('llm_scenario_review_tapes', {'slot': 2, 'body': body}, source)
+    exporter.execute('INSERT INTO anchors VALUES(?,?)', ('llm_scenario_review_tapes', anchor))
+    exporter.commit()
+    now = 7 * 86400 + 10 * 300
+    archived = candidates(source, now)
+    receipts = []
+    for row in archived['candidates']:
+        event = hashlib.sha256(f'{identity}:llm_scenario_review_tapes:{row["rowid"]}'.encode()).hexdigest()[:32]
+        receipts.append({'event_id': event, 'event_type': 'btc.research.review_tape', 'source_identity': identity,
+                         'body_sha256': row['tape_sha256'], 'tape_hash_status': 'MATCH'})
+    return source, exporter, identity, now, archived, receipts
+
+
+def test_transaction_deletes_only_delivered_nonanchor_and_preserves_decisions():
+    from utils.btc_review_retention import _delete_matched
+    source, exporter, identity, now, archived, receipts = transaction_fixture()
+    removed = _delete_matched(source, exporter, archived, receipts, identity, now,
+                              guard=lambda: True, lease_alive=lambda: True)
+    assert removed == [1]
+    assert source.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(2,)]
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_decisions').fetchone()[0] == 2
+    assert exporter.execute('SELECT seq FROM cursors').fetchone()[0] == 2
+    assert not source.in_transaction and not exporter.in_transaction
+
+
+def test_transaction_rolls_back_when_guard_or_export_anchor_fails():
+    from utils.btc_review_retention import _delete_matched
+    source, exporter, identity, now, archived, receipts = transaction_fixture()
+    checks = iter((True, True, False))
+    with pytest.raises(ValueError, match='retention_guard_failed'):
+        _delete_matched(source, exporter, archived, receipts, identity, now,
+                        guard=lambda: next(checks), lease_alive=lambda: True)
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 2
+    exporter.execute("UPDATE anchors SET ref='changed'")
+    exporter.commit()
+    with pytest.raises(ValueError, match='retention_export_anchor_changed'):
+        _delete_matched(source, exporter, archived, receipts, identity, now,
+                        guard=lambda: True, lease_alive=lambda: True)
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 2
+    assert not source.in_transaction and not exporter.in_transaction
+
+
+def test_transaction_preserves_changed_or_undelivered_rows_and_pending_outbox():
+    from utils.btc_review_retention import _delete_matched
+    source, exporter, identity, now, archived, receipts = transaction_fixture()
+    context = json.loads(source.execute('SELECT context FROM llm_scenario_decisions WHERE slot=1').fetchone()[0])
+    context['now'] = 1
+    source.execute('UPDATE llm_scenario_decisions SET context=? WHERE slot=1', (json.dumps(context),))
+    source.commit()
+    assert _delete_matched(source, exporter, archived, receipts, identity, now,
+                           guard=lambda: True, lease_alive=lambda: True) == []
+    exporter.execute('INSERT INTO outbox VALUES(?,?)', ('pending', '{}'))
+    exporter.commit()
+    with pytest.raises(ValueError, match='retention_export_state_invalid'):
+        _delete_matched(source, exporter, archived, receipts, identity, now,
+                        guard=lambda: True, lease_alive=lambda: True)
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 2
