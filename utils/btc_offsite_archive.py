@@ -290,7 +290,7 @@ def referenced_commits(raw):
                                     from btc_accounting_audit_references import read_accounting
                                 value = read_accounting(value, db)
                             elif table == 'llm_scenario_recovery_events':
-                                if kind is None or kind in ('MODEL_REQUEST', 'MODEL_RAW'):
+                                if kind is None or kind in ('MODEL_REQUEST', 'MODEL_RAW', 'INPUT'):
                                     if 'btc_recovery_refs_embedded' in sys.modules:
                                         from btc_recovery_refs_embedded import read_recovery
                                     elif __package__:

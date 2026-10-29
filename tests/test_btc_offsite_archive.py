@@ -408,6 +408,37 @@ def test_embedded_receiver_resolves_recovery_references_and_rejects_missing(tmp_
         archive.referenced_commits(path)
 
 
+def test_archive_resolves_recovery_input_reference(tmp_path):
+    from utils.btc_recovery_references import canonical, compact_input, pack
+
+    path = tmp_path / 'input.sqlite'
+    recovery = {'baseline': 'x' * 1000, 'git_revision': 'e' * 40}
+    context = canonical({'recovery': recovery})
+    original = canonical({'decision_slot': 7, 'recovery': recovery})
+    candidate = compact_input(context, original, 7)
+    assert candidate != original
+    with sqlite3.connect(path) as conn:
+        conn.executescript('CREATE TABLE llm_scenario_decisions(slot INTEGER,context TEXT);'
+                           'CREATE TABLE llm_scenario_recovery_events(slot INTEGER,kind TEXT,body BLOB);')
+        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?)', (7, context))
+        conn.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?)', (7, 'INPUT', pack(candidate)))
+    assert 'e' * 40 in archive.referenced_commits(path)[0]
+    helper = Path(archive.__file__).with_name('btc_recovery_references.py').read_text()
+    source = Path(archive.__file__).read_text()
+    child_script = ("import sys,types; m=types.ModuleType('btc_recovery_refs_embedded'); "
+                    "exec(compile(%r,'<refs>','exec'),m.__dict__); "
+                    "sys.modules['btc_recovery_refs_embedded']=m; ns={'__name__':'receiver'}; "
+                    "exec(compile(%r,'<archive>','exec'),ns); "
+                    "print(ns['referenced_commits'](ns['Path'](sys.argv[1]))[0][0])" % (helper, source))
+    child = subprocess.run([os.sys.executable, '-I', '-c', child_script, str(path)], cwd=tmp_path,
+                           capture_output=True, text=True, timeout=15, check=True)
+    assert child.stdout.strip() == 'e' * 40
+    with sqlite3.connect(path) as conn:
+        conn.execute('DELETE FROM llm_scenario_decisions')
+    with pytest.raises(ValueError, match='reference_recovery_unresolved'):
+        archive.referenced_commits(path)
+
+
 def test_archive_revision_scan_handles_compressed_review_and_corruption(tmp_path):
     import gzip
     from observability.review_storage import MAGIC
