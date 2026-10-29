@@ -168,10 +168,24 @@ def test_resource_guard_fails_closed_on_active_process_or_space(tmp_path, monkey
     identity = subject.source_identity(path)
     monkeypatch.setattr(subject.time, 'strftime', lambda *_: '30')
     monkeypatch.setattr(subject.os, 'statvfs', lambda *_: SimpleNamespace(f_bavail=5 * 1024**3, f_frsize=1))
-    monkeypatch.setattr(subject.subprocess, 'run', lambda *a, **kw: SimpleNamespace(returncode=1))
+    monkeypatch.setattr(subject, 'scenario_runner_idle', lambda: True)
     assert subject.resource_guard(path, identity) is True
-    monkeypatch.setattr(subject.subprocess, 'run', lambda *a, **kw: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(subject, 'scenario_runner_idle', lambda: False)
     assert subject.resource_guard(path, identity) is False
-    monkeypatch.setattr(subject.subprocess, 'run', lambda *a, **kw: SimpleNamespace(returncode=1))
+    monkeypatch.setattr(subject, 'scenario_runner_idle', lambda: True)
     monkeypatch.setattr(subject.os, 'statvfs', lambda *_: SimpleNamespace(f_bavail=subject.MIN_FREE-1, f_frsize=1))
     assert subject.resource_guard(path, identity) is False
+
+
+def test_process_scan_detects_python_and_scheduled_shell(tmp_path):
+    proc = tmp_path / 'proc'
+    proc.mkdir()
+    first = proc / '101'
+    first.mkdir()
+    (first / 'cmdline').write_bytes(b'python\x00-m\x00unrelated\x00')
+    assert subject.scenario_runner_idle(proc) is True
+    (first / 'cmdline').write_bytes(b'python\x00-m\x00live.scenario_runner\x00--protect-only\x00')
+    assert subject.scenario_runner_idle(proc) is False
+    (first / 'cmdline').write_bytes(b'bash\x00-c\x00sleep 15; python -m live.scenario_runner --protect-only\x00')
+    assert subject.scenario_runner_idle(proc) is False
+    assert subject.scenario_runner_idle(tmp_path / 'missing') is False

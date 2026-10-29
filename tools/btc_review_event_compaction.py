@@ -3,8 +3,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
-import subprocess
 import sys
 import time
 
@@ -83,6 +83,23 @@ def source_identity(path):
     return hashlib.sha256(f'{path.resolve()}:{stat.st_dev}:{stat.st_ino}'.encode()).hexdigest()
 
 
+def scenario_runner_idle(proc_root=Path('/proc')):
+    try:
+        for entry in proc_root.iterdir():
+            if not entry.name.isdecimal():
+                continue
+            try:
+                cmdline = (entry / 'cmdline').read_bytes().replace(b'\x00', b' ')
+            except FileNotFoundError:
+                continue
+            runner = re.search(rb'-m\s+live\.scenario_runner(?:\s|$)', cmdline)
+            if runner and b'python' in cmdline[:runner.start()]:
+                return False
+        return True
+    except OSError:
+        return False
+
+
 def resource_guard(path, identity):
     """Fail closed outside an idle decision window or if storage is constrained."""
     try:
@@ -92,10 +109,8 @@ def resource_guard(path, identity):
         wal = Path(str(path) + '-wal')
         if stats.f_bavail * stats.f_frsize < MIN_FREE or (wal.exists() and wal.stat().st_size >= MAX_WAL):
             return False
-        process = subprocess.run(['pgrep', '-f', '[p]ython.*-m live.scenario_runner'],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1)
-        return process.returncode == 1
-    except (OSError, subprocess.SubprocessError, ValueError):
+        return scenario_runner_idle()
+    except (OSError, ValueError):
         return False
 
 
