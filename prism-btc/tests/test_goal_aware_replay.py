@@ -7,6 +7,7 @@ import pytest
 
 from analysis.scenario_replay import contract_for, network_boundary, run_replay
 from live.scenario_model_input import restore_model_input
+from live.scenario_review_storage import review_text
 from tests.test_scenario_calculated_replay import wire
 from tests.test_scenario_replay import inputs
 
@@ -86,7 +87,7 @@ def test_goal_profile_registers_holds_and_replays_or_rejects_crossed_bound(tmp_p
                 tape_path=tmp_path/'tape', policy_profile='economic-reject-calculated-v1')
     with sqlite3.connect(tmp_path/'fresh/replay.sqlite') as conn:
         contracts = conn.execute('SELECT body FROM llm_scenario_entry_contracts').fetchall()
-        events = [json.loads(row[0]) for row in conn.execute('SELECT body FROM llm_scenario_review_events')]
+        events = [json.loads(review_text(row[0])) for row in conn.execute('SELECT body FROM llm_scenario_review_events')]
     from tools.compare_btc_scenario_replays import verify_economic_rejections
     verify_economic_rejections(tmp_path/'fresh', fresh)
     if goal_case == 'crossed':

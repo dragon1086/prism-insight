@@ -64,7 +64,7 @@ def runtime(tmp_path, *, change=None, tape_change=None, fail_second=False, empty
         assert request["retry_transport"] is False
         calls.append(deepcopy(request))
         with sqlite3.connect(path) as observed:
-            events = [json.loads(r[0]) for r in observed.execute(
+            events = [json.loads(review_text(r[0])) for r in observed.execute(
                 "SELECT body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence",
                 (int(now[0] // 300),))]
             assert events[-1]["kind"] == "MODEL_REQUEST"
@@ -107,6 +107,22 @@ def runtime(tmp_path, *, change=None, tape_change=None, fail_second=False, empty
     return r, broker, calls
 
 
+def test_review_event_storage_roundtrip_and_compression_failure_fallback(tmp_path, monkeypatch):
+    import live.scenario_review_storage as storage
+
+    r, _, _ = runtime(tmp_path)
+    event = {'kind': 'MODEL_REQUEST', 'content': 'abc' * 3000}
+    r._record_calculated_review(7, event)
+    first = r.conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=7 AND sequence=0').fetchone()[0]
+    assert isinstance(first, bytes) and json.loads(review_text(first)) == event
+    def fail(_):
+        raise RuntimeError('compression_unavailable')
+    monkeypatch.setattr(storage, 'review_storage', fail)
+    r._record_calculated_review(7, event)
+    second = r.conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=7 AND sequence=1').fetchone()[0]
+    assert isinstance(second, str) and json.loads(second) == event
+
+
 def test_optin_complete_proof_before_simulated_intent(tmp_path):
     r, broker, calls = runtime(tmp_path)
     outcome = r.tick()
@@ -121,7 +137,7 @@ def test_optin_complete_proof_before_simulated_intent(tmp_path):
     assert tape['outcome']['result']['selection']['rationale'] == '검산 확인'
     assert tape["outcome"]["result"]["selected"]["raw_proposal"]["rationale"] == "구조 판단"
     assert r.conn.execute("SELECT COUNT(*) FROM llm_scenario_intents").fetchone()[0] == 1
-    final_receipt = json.loads(r.conn.execute("SELECT body FROM llm_scenario_review_events ORDER BY sequence DESC LIMIT 1").fetchone()[0])
+    final_receipt = json.loads(review_text(r.conn.execute("SELECT body FROM llm_scenario_review_events ORDER BY sequence DESC LIMIT 1").fetchone()[0]))
     assert final_receipt["kind"] == "FINAL_FRESH_REVIEW_RECEIPT"
     assert final_receipt["atomic_with_intent"] is True
 
@@ -191,7 +207,7 @@ def test_failed_second_call_persists_failed_tape_and_raw_first_phase(tmp_path):
     assert len(calls) == 2 and broker.executed == []
     tape = json.loads(read_tape(r.conn.execute("SELECT body FROM llm_scenario_review_tapes").fetchone()[0], r.conn, r.conn.execute("SELECT slot FROM llm_scenario_review_tapes").fetchone()[0], decode_legacy=review_text))
     assert tape["outcome"]["status"] == "FAILED"
-    events = [json.loads(x[0]) for x in r.conn.execute("SELECT body FROM llm_scenario_review_events")]
+    events = [json.loads(review_text(x[0])) for x in r.conn.execute("SELECT body FROM llm_scenario_review_events")]
     assert any(e["kind"] == "MODEL_RAW" and e["phase"] == "candidate" for e in events)
     assert any(e["kind"] == "MODEL_ERROR" and e["phase"] == "selection" for e in events)
 

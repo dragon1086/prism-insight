@@ -239,15 +239,20 @@ class ScenarioRuntime:
 
     def _record_calculated_review(self, slot, event, *, commit=True):
         from analysis.scenario_review_tape import MAX_BYTES
+        from live.scenario_review_storage import review_storage
         body = _json(event)
         if len(body.encode()) > MAX_BYTES:
             raise ValueError("review_record_bound")
+        try:
+            stored = review_storage(body)
+        except Exception:
+            stored = body
         sequence = self.conn.execute(
             "SELECT COUNT(*) FROM llm_scenario_review_events WHERE slot=?", (slot,)).fetchone()[0]
         if sequence >= 128:
             raise ValueError("review_record_bound")
         self.conn.execute("INSERT INTO llm_scenario_review_events VALUES(?,?,?)",
-                          (slot, sequence, body))
+                          (slot, sequence, stored))
         if commit:
             self.conn.commit()
         return sequence
