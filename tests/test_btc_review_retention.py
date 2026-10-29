@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from utils.btc_review_retention import candidates, fetch_deliveries, matching_evidence, snapshot_index, verified_archive_index
+from utils.btc_review_retention import candidates, fetch_deliveries, matching_evidence, snapshot_index, verified_archive_index, verify_remote_archive
 
 
 def test_only_old_complete_flat_waits_become_candidates():
@@ -135,3 +135,37 @@ def test_clickstack_lookup_is_read_only_bounded_and_rejects_unexpected_rows(monk
     receipt['event_id'] = 'f' * 32
     with pytest.raises(ValueError, match='retention_delivery_invalid'):
         fetch_deliveries([{'rowid': 7}], identity)
+
+
+def test_remote_archive_rechecks_files_and_rejects_tampering(tmp_path, monkeypatch):
+    import os
+    import shlex
+    import subprocess
+    from utils import btc_offsite_archive, btc_review_retention
+
+    root = (tmp_path / 'archives').resolve()
+    root.mkdir(mode=0o700)
+    target = root / ('archive-' + 'a' * 32)
+    target.mkdir(mode=0o700)
+    files = {'snapshot.sqlite.gz': 'compressed_sha256', 'snapshot.manifest.json': 'manifest_sha256',
+             'history.bundle': 'bundle_sha256', 'archive.json': 'archive_metadata_sha256'}
+    ack = {'status': 'VERIFIED', 'retention_index_verified': True, 'archive': target.name, 'raw_sha256': 'b' * 64}
+    for name, key in files.items():
+        path = target / name
+        path.write_bytes(name.encode())
+        path.chmod(0o600)
+        ack[key] = hashlib.sha256(path.read_bytes()).hexdigest()
+    receipt = target / 'receipt.json'
+    receipt.write_text(json.dumps({k: v for k, v in ack.items() if k != 'archive'}))
+    receipt.chmod(0o600)
+    real_run = subprocess.run
+    def local_ssh(args, **kwargs):
+        command = shlex.split(args[-1])
+        code = command[2].replace('/root/prism-btc-archive', str(root))
+        return real_run([os.sys.executable, '-I', '-c', code], **kwargs)
+    monkeypatch.setattr(btc_offsite_archive, 'backend_host', lambda _: 'fixture.local')
+    monkeypatch.setattr(btc_review_retention.subprocess, 'run', local_ssh)
+    verify_remote_archive(ack)
+    (target / 'snapshot.sqlite.gz').write_bytes(b'tampered')
+    with pytest.raises(subprocess.CalledProcessError):
+        verify_remote_archive(ack)

@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 
@@ -178,3 +179,59 @@ def verified_archive_index(manifest_bytes, ack, source_identity):
         return index
     except (KeyError, TypeError, json.JSONDecodeError) as exc:
         raise ValueError('retention_archive_unverified') from exc
+
+
+def verify_remote_archive(ack):
+    """Recheck the private archive files and receiver receipt before any deletion."""
+    if (not isinstance(ack, dict) or ack.get('status') != 'VERIFIED'
+            or ack.get('retention_index_verified') is not True
+            or not isinstance(ack.get('archive'), str)
+            or not re.fullmatch(r'archive-[a-f0-9]{32}', ack['archive'])
+            or any(not isinstance(ack.get(key), str) or not re.fullmatch(r'[a-f0-9]{64}', ack[key])
+                   for key in ('raw_sha256', 'compressed_sha256', 'manifest_sha256',
+                               'bundle_sha256', 'archive_metadata_sha256'))):
+        raise ValueError('retention_archive_unverified')
+    expected = {key: ack[key] for key in ('archive', 'raw_sha256', 'compressed_sha256', 'manifest_sha256',
+                                           'bundle_sha256', 'archive_metadata_sha256')}
+    remote = r'''
+import hashlib,json,os,stat,sys,time
+from pathlib import Path
+expected=json.loads(sys.stdin.readline())
+root=Path('/root/prism-btc-archive'); target=root/expected['archive']
+if root.is_symlink() or target.is_symlink() or not target.is_dir() or target.resolve().parent!=root.resolve():
+    raise ValueError('archive_path_invalid')
+if target.stat().st_uid!=os.getuid() or target.stat().st_mode & 0o077:
+    raise ValueError('archive_permissions_invalid')
+deadline=time.monotonic()+35
+files={'snapshot.sqlite.gz':'compressed_sha256','snapshot.manifest.json':'manifest_sha256',
+       'history.bundle':'bundle_sha256','archive.json':'archive_metadata_sha256'}
+for name,key in files.items():
+    p=target/name; before=p.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_uid!=os.getuid() or before.st_mode & 0o077:
+        raise ValueError('archive_file_invalid')
+    h=hashlib.sha256()
+    with p.open('rb') as stream:
+        for chunk in iter(lambda:stream.read(1024*1024),b''):
+            if time.monotonic()>deadline:raise TimeoutError('archive_check_deadline')
+            h.update(chunk)
+    after=p.lstat()
+    if (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns)!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns) or h.hexdigest()!=expected[key]:
+        raise ValueError('archive_file_changed')
+receipt=target/'receipt.json'; st=receipt.lstat()
+if not stat.S_ISREG(st.st_mode) or st.st_uid!=os.getuid() or st.st_mode & 0o077 or st.st_size>65536:
+    raise ValueError('archive_receipt_invalid')
+record=json.loads(receipt.read_text())
+if record.get('status')!='VERIFIED' or record.get('retention_index_verified') is not True or any(record.get(k)!=v for k,v in expected.items() if k!='archive'):
+    raise ValueError('archive_receipt_mismatch')
+print('VERIFIED')
+'''
+    from utils.btc_offsite_archive import backend_host
+    host = backend_host(Path('/etc/prism-observability/tunnel.env'))
+    if host is None:
+        raise ValueError('retention_backend_missing')
+    command = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', 'root@' + host,
+               '/usr/bin/python3 -c ' + shlex.quote(remote)]
+    result = subprocess.run(command, input=json.dumps(expected) + '\n', text=True,
+                            capture_output=True, check=True, timeout=45)
+    if result.stdout.strip() != 'VERIFIED':
+        raise ValueError('retention_archive_unverified')
