@@ -1,0 +1,191 @@
+import hashlib
+import json
+import sqlite3
+from types import SimpleNamespace
+
+import pytest
+
+from live.scenario_review_storage import review_text
+from observability.btc_scenario_export import _anchor_hash
+from tools import btc_review_event_compaction as subject
+from utils.btc_recovery_references import canonical, compact, pack, read_recovery
+
+
+def fixture(tmp_path):
+    conn = sqlite3.connect(tmp_path / 'data.sqlite', timeout=0)
+    conn.row_factory = sqlite3.Row
+    conn.executescript('CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT);'
+                       'CREATE TABLE llm_scenario_recovery_events(slot INTEGER,kind TEXT,body BLOB);')
+    event = {'kind':'MODEL_REQUEST', 'request':'abc한글' * 3000}
+    raw = json.dumps(event, sort_keys=True)
+    recovery = canonical(dict(event, calculated_review_version=1, input_id='fixture'))
+    reference = pack(compact(raw, recovery, 7, 3))
+    conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (7, 3, raw))
+    conn.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?)', (7, 'MODEL_REQUEST', reference))
+    conn.commit()
+    return conn, raw, recovery
+
+
+def run(conn, raw, **override):
+    args = dict(rowid=1, slot=7, sequence=3, expected_type='text', expected_sha256=hashlib.sha256(raw.encode()).hexdigest(), guard=lambda:True)
+    args.update(override)
+    return subject.compact_one(conn, **args)
+
+
+def test_backed_event_preserves_recovery_and_export_anchor(tmp_path):
+    conn, raw, recovery = fixture(tmp_path)
+    def row():
+        return conn.execute('SELECT rowid AS source_rowid,slot,sequence,body FROM llm_scenario_review_events').fetchone()
+    def recovery_text():
+        body = conn.execute('SELECT body FROM llm_scenario_recovery_events').fetchone()[0]
+        return read_recovery(body, conn, 7, decode_legacy=review_text, expected_kind='MODEL_REQUEST')
+    anchor = _anchor_hash('llm_scenario_review_events', row(), conn)
+    assert run(conn, raw) == 'UPDATED'
+    assert row()['source_rowid'] == 1 and review_text(row()['body']) == raw
+    assert _anchor_hash('llm_scenario_review_events', row(), conn) == anchor
+    assert recovery_text() == recovery
+    assert run(conn, raw) == 'UNCHANGED'
+    conn.close()
+
+
+def test_mismatch_and_limits_do_not_mutate(tmp_path):
+    conn, raw, _ = fixture(tmp_path)
+    for override in ({'slot':8}, {'sequence':4}, {'expected_sha256':'0' * 64}):
+        assert run(conn, raw, **override) == 'SOURCE_CHANGED'
+    assert run(conn, raw, guard=lambda:False) == 'RESOURCE_LIMIT'
+    checks = iter([True, False])
+    assert run(conn, raw, guard=lambda:next(checks)) == 'RESOURCE_LIMIT'
+    assert conn.execute('SELECT body FROM llm_scenario_review_events').fetchone()[0] == raw
+    conn.close()
+
+
+def test_concurrent_update_stops_before_overwrite(tmp_path, monkeypatch):
+    conn, raw, _ = fixture(tmp_path)
+    original = subject.review_storage
+    def mutate(value):
+        other = sqlite3.connect(tmp_path / 'data.sqlite')
+        other.execute("UPDATE llm_scenario_review_events SET body='changed' WHERE rowid=1")
+        other.commit()
+        other.close()
+        return original(value)
+    monkeypatch.setattr(subject, 'review_storage', mutate)
+    assert run(conn, raw) == 'SOURCE_CHANGED'
+    assert conn.execute('SELECT body FROM llm_scenario_review_events').fetchone()[0] == 'changed'
+    conn.close()
+
+
+def test_concurrent_change_to_uncompressed_noop_stops(tmp_path, monkeypatch):
+    conn, _, _ = fixture(tmp_path)
+    raw = 'tiny'
+    conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE rowid=1', (raw,))
+    conn.commit()
+    def mutate(value):
+        other = sqlite3.connect(tmp_path / 'data.sqlite')
+        other.execute("UPDATE llm_scenario_review_events SET body='changed' WHERE rowid=1")
+        other.commit()
+        other.close()
+        return value
+    monkeypatch.setattr(subject, 'review_storage', mutate)
+    assert run(conn, raw) == 'SOURCE_CHANGED'
+    assert conn.execute('SELECT body FROM llm_scenario_review_events').fetchone()[0] == 'changed'
+    conn.close()
+
+
+def test_concurrent_change_to_previously_compressed_noop_stops(tmp_path, monkeypatch):
+    conn, raw, _ = fixture(tmp_path)
+    assert run(conn, raw) == 'UPDATED'
+    decode = subject.review_text
+    def mutate(value):
+        result = decode(value)
+        other = sqlite3.connect(tmp_path / 'data.sqlite')
+        other.execute("UPDATE llm_scenario_review_events SET body='changed' WHERE rowid=1")
+        other.commit()
+        other.close()
+        return result
+    monkeypatch.setattr(subject, 'review_text', mutate)
+    assert run(conn, raw) == 'SOURCE_CHANGED'
+    assert conn.execute('SELECT body FROM llm_scenario_review_events').fetchone()[0] == 'changed'
+    conn.close()
+
+
+@pytest.mark.parametrize('override', [{'rowid':True}, {'slot':-1}, {'sequence':2**63}, {'expected_type':'other'},
+                                      {'expected_sha256':'invalid'}, {'guard':None}])
+def test_invalid_context_is_rejected(tmp_path, override):
+    conn, raw, _ = fixture(tmp_path)
+    with pytest.raises(ValueError, match='invalid_compaction_context'):
+        run(conn, raw, **override)
+    assert conn.execute('SELECT body FROM llm_scenario_review_events').fetchone()[0] == raw
+    conn.close()
+
+
+def test_batch_prevalidates_and_resumes_after_resource_stop(tmp_path):
+    conn, raw, _ = fixture(tmp_path)
+    conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (8, 0, raw))
+    conn.commit()
+    base = {'expected_type':'text', 'expected_sha256':hashlib.sha256(raw.encode()).hexdigest()}
+    first = dict(base, rowid=1, slot=7, sequence=3)
+    second = dict(base, rowid=2, slot=8, sequence=0)
+    manifest = {'source_identity':'a' * 64, 'rows':[first,second]}
+    broken = {'source_identity':'a' * 64, 'rows':[first,dict(second, sequence=-1)]}
+    with pytest.raises(ValueError, match='invalid_manifest'):
+        subject.compact_batch(conn, broken, lambda: True)
+    assert isinstance(conn.execute('SELECT body FROM llm_scenario_review_events WHERE rowid=1').fetchone()[0], str)
+    checks = iter([True, True, False])
+    first_pass = subject.compact_batch(conn, manifest, lambda: next(checks))
+    assert first_pass['counts']['UPDATED'] == 1 and first_pass['counts']['RESOURCE_LIMIT'] == 1
+    assert first_pass['last_rowid'] == 1
+    resumed = subject.compact_batch(conn, manifest, lambda:True)
+    assert resumed['counts']['UNCHANGED'] == 1 and resumed['counts']['UPDATED'] == 1
+    conn.close()
+
+
+def test_source_identity_changes_on_file_replacement(tmp_path):
+    path = tmp_path / 'source.sqlite'
+    path.write_bytes(b'original')
+    before = subject.source_identity(path)
+    other = tmp_path / 'replacement.sqlite'
+    other.write_bytes(b'original')
+    other.replace(path)
+    assert subject.source_identity(path) != before
+
+
+def test_batch_stops_and_reports_unexpected_codec_failure(tmp_path, monkeypatch):
+    conn, raw, _ = fixture(tmp_path)
+    row = {'rowid':1,'slot':7,'sequence':3,'expected_type':'text',
+           'expected_sha256':hashlib.sha256(raw.encode()).hexdigest()}
+    def fail(_):
+        raise RuntimeError('codec failed')
+    monkeypatch.setattr(subject, 'review_storage', fail)
+    result = subject.compact_batch(conn, {'source_identity':'a'*64,'rows':[row]}, lambda: True)
+    assert result['counts']['ERROR'] == 1 and result['last_rowid'] is None
+    assert conn.execute('SELECT body FROM llm_scenario_review_events').fetchone()[0] == raw
+    conn.close()
+
+
+def test_resource_guard_fails_closed_on_active_process_or_space(tmp_path, monkeypatch):
+    path = tmp_path / 'source.sqlite'
+    path.write_bytes(b'fixture')
+    identity = subject.source_identity(path)
+    monkeypatch.setattr(subject.time, 'strftime', lambda *_: '30')
+    monkeypatch.setattr(subject.os, 'statvfs', lambda *_: SimpleNamespace(f_bavail=5 * 1024**3, f_frsize=1))
+    monkeypatch.setattr(subject, 'scenario_runner_idle', lambda: True)
+    assert subject.resource_guard(path, identity) is True
+    monkeypatch.setattr(subject, 'scenario_runner_idle', lambda: False)
+    assert subject.resource_guard(path, identity) is False
+    monkeypatch.setattr(subject, 'scenario_runner_idle', lambda: True)
+    monkeypatch.setattr(subject.os, 'statvfs', lambda *_: SimpleNamespace(f_bavail=subject.MIN_FREE-1, f_frsize=1))
+    assert subject.resource_guard(path, identity) is False
+
+
+def test_process_scan_detects_python_and_scheduled_shell(tmp_path):
+    proc = tmp_path / 'proc'
+    proc.mkdir()
+    first = proc / '101'
+    first.mkdir()
+    (first / 'cmdline').write_bytes(b'python\x00-m\x00unrelated\x00')
+    assert subject.scenario_runner_idle(proc) is True
+    (first / 'cmdline').write_bytes(b'python\x00-m\x00live.scenario_runner\x00--protect-only\x00')
+    assert subject.scenario_runner_idle(proc) is False
+    (first / 'cmdline').write_bytes(b'bash\x00-c\x00sleep 15; python -m live.scenario_runner --protect-only\x00')
+    assert subject.scenario_runner_idle(proc) is False
+    assert subject.scenario_runner_idle(tmp_path / 'missing') is False
