@@ -14,6 +14,13 @@ import pytest
 from utils import btc_offsite_archive as archive
 
 
+def test_commit_scan_rejects_expired_outer_deadline(tmp_path):
+    raw = tmp_path / 'snapshot.sqlite'
+    sqlite3.connect(raw).close()
+    with pytest.raises(TimeoutError, match='commit_scan_deadline'):
+        archive.referenced_commits(raw, deadline=0)
+
+
 def git(repo, *args):
     return subprocess.run(['/usr/bin/git', *args], cwd=repo, capture_output=True,
                           check=True, text=True, timeout=30).stdout.strip()
@@ -88,7 +95,14 @@ def test_captured_references_avoid_sender_restore_but_receiver_verifies(payload,
 
     path, _, _, repo = payload
     snapshot = path / 'fresh.sqlite.gz'
+    scan = archive.referenced_commits
+    received_deadlines = []
+    def checked_scan(raw, *, deadline=None):
+        received_deadlines.append(deadline)
+        return scan(raw, deadline=deadline)
+    monkeypatch.setattr(archive, 'referenced_commits', checked_scan)
     manifest = backup_database(path / 'source.sqlite', snapshot, reserve_bytes=0, capture_references=True)
+    assert received_deadlines and received_deadlines[0] is not None
     assert manifest['code_reference_scan']['commits']
     monkeypatch.setattr(archive, 'backend_host', lambda _: 'fixture')
     monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=100 * archive.CAP))
