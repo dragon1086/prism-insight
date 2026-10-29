@@ -109,6 +109,31 @@ def test_compression_never_overwrites_unread_snapshot(tmp_path, monkeypatch):
     assert path.read_bytes() == original
 
 
+def test_standalone_snapshot_resolves_accounting_references(tmp_path):
+    import subprocess
+    from utils.btc_accounting_audit_references import TAG, ORIGINAL_HASH, canonical, sha
+
+    source = tmp_path / 'source.sqlite'
+    account, financial = {'balance': 1}, {'fee': 2}
+    original = canonical({'observation': account, 'financial_evidence': financial})
+    marker = {TAG: 1, ORIGINAL_HASH: sha(original),
+              'observation': {'rowid': 1, 'captured_at': 1, 'sha256': sha(canonical(account))},
+              'financial_evidence': {'rowid': 2, 'captured_at': 2, 'sha256': sha(canonical(financial))}}
+    with sqlite3.connect(source) as conn:
+        conn.executescript('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body TEXT);'
+                           'CREATE TABLE llm_scenario_audit_events(decision_slot INTEGER,kind TEXT,body TEXT);')
+        conn.executemany('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)',
+                         [('account', 1, canonical(account)), ('financial', 2, canonical(financial))])
+        conn.execute('INSERT INTO llm_scenario_audit_events VALUES(?,?,?)',
+                     (7, 'accounting_observation', canonical(marker)))
+    script = Path(__file__).resolve().parents[1] / 'utils/sqlite_snapshot.py'
+    env = {key: value for key, value in os.environ.items() if key != 'PYTHONPATH'}
+    run = subprocess.run([os.sys.executable, str(script), '--source', str(source),
+                          '--destination', str(tmp_path / 'snapshot.gz'), '--capture-references'],
+                         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+
+
 def test_publish_failure_does_not_remove_competing_replacement(tmp_path, monkeypatch):
     from utils import sqlite_snapshot
     source = tmp_path / 'source.sqlite'

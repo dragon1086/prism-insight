@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import sys
 import tempfile
 import time
 import zlib
@@ -130,7 +131,8 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
             if __package__:
                 from .btc_offsite_archive import referenced_commits
             else:
-                from btc_offsite_archive import referenced_commits
+                sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+                from utils.btc_offsite_archive import referenced_commits
             commits, coverage = referenced_commits(raw)
             progress(None, None, None)
             reference_scan = {'commits': commits, 'coverage': coverage}
