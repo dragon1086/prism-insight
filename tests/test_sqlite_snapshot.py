@@ -1,5 +1,6 @@
 import gzip
 import json
+import os
 from pathlib import Path
 import sqlite3
 
@@ -68,6 +69,69 @@ def test_low_space_refuses_before_reading_source(tmp_path, monkeypatch):
     with pytest.raises(OSError, match='insufficient_snapshot_space'):
         backup_database(source, tmp_path/'snapshot.gz')
     assert list(tmp_path.iterdir()) == [source]
+
+
+def test_snapshot_succeeds_with_space_for_only_one_copy(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from utils import sqlite_snapshot
+
+    source = tmp_path / 'source.sqlite'
+    with sqlite3.connect(source) as conn:
+        conn.execute('CREATE TABLE samples(body BLOB)')
+        payload = os.urandom(2 * 1024 * 1024)
+        conn.execute('INSERT INTO samples VALUES(?)', (payload,))
+    size = source.stat().st_size
+    monkeypatch.setattr(sqlite_snapshot.shutil, 'disk_usage', lambda _: SimpleNamespace(free=size + 1024))
+    target = tmp_path / 'snapshot.gz'
+    backup_database(source, target, reserve_bytes=0)
+    restored = tmp_path / 'restored.sqlite'
+    restored.write_bytes(gzip.decompress(target.read_bytes()))
+    with sqlite3.connect(restored) as conn:
+        assert conn.execute('SELECT body FROM samples').fetchone()[0] == payload
+    with sqlite3.connect(source) as conn:
+        assert conn.execute('SELECT body FROM samples').fetchone()[0] == payload
+
+
+def test_compression_never_overwrites_unread_snapshot(tmp_path, monkeypatch):
+    from utils import sqlite_snapshot
+
+    path = tmp_path / 'temporary.sqlite'
+    original = b'x' * (2 * 1024 * 1024)
+    path.write_bytes(original)
+    class Expanding:
+        def compress(self, chunk):
+            return chunk + b'x'
+        def flush(self):
+            return b''
+    monkeypatch.setattr(sqlite_snapshot.zlib, 'compressobj', lambda **_: Expanding())
+    with pytest.raises(OSError, match='overtook_input'):
+        sqlite_snapshot._compress_in_place(path, len(original), lambda *_: None)
+    assert path.read_bytes() == original
+
+
+def test_standalone_snapshot_resolves_accounting_references(tmp_path):
+    import subprocess
+    from utils.btc_accounting_audit_references import TAG, ORIGINAL_HASH, canonical, sha
+
+    source = tmp_path / 'source.sqlite'
+    account, financial = {'balance': 1}, {'fee': 2}
+    original = canonical({'observation': account, 'financial_evidence': financial})
+    marker = {TAG: 1, ORIGINAL_HASH: sha(original),
+              'observation': {'rowid': 1, 'captured_at': 1, 'sha256': sha(canonical(account))},
+              'financial_evidence': {'rowid': 2, 'captured_at': 2, 'sha256': sha(canonical(financial))}}
+    with sqlite3.connect(source) as conn:
+        conn.executescript('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body TEXT);'
+                           'CREATE TABLE llm_scenario_audit_events(decision_slot INTEGER,kind TEXT,body TEXT);')
+        conn.executemany('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)',
+                         [('account', 1, canonical(account)), ('financial', 2, canonical(financial))])
+        conn.execute('INSERT INTO llm_scenario_audit_events VALUES(?,?,?)',
+                     (7, 'accounting_observation', canonical(marker)))
+    script = Path(__file__).resolve().parents[1] / 'utils/sqlite_snapshot.py'
+    env = {key: value for key, value in os.environ.items() if key != 'PYTHONPATH'}
+    run = subprocess.run([os.sys.executable, str(script), '--source', str(source),
+                          '--destination', str(tmp_path / 'snapshot.gz'), '--capture-references'],
+                         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
 
 
 def test_publish_failure_does_not_remove_competing_replacement(tmp_path, monkeypatch):
