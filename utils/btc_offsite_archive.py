@@ -96,7 +96,15 @@ def ssh_archive(host, needed, *, stream=None):
     refs_source = Path(__file__).with_name('btc_review_references.py').read_text()
     audit_source = Path(__file__).with_name('btc_audit_references.py').read_text()
     recovery_source = Path(__file__).with_name('btc_recovery_references.py').read_text()
+    financial_source = Path(__file__).with_name('btc_financial_references.py').read_text()
+    accounting_source = Path(__file__).with_name('btc_accounting_audit_references.py').read_text()
     prelude = ("import sys,types\n"
+               "_btc_financial=types.ModuleType('btc_financial_refs_embedded')\n"
+               "exec(compile(" + repr(financial_source) + ",'<btc_financial_refs>','exec'),_btc_financial.__dict__)\n"
+               "sys.modules['btc_financial_refs_embedded']=_btc_financial\n"
+               "_btc_accounting=types.ModuleType('btc_accounting_refs_embedded')\n"
+               "exec(compile(" + repr(accounting_source) + ",'<btc_accounting_refs>','exec'),_btc_accounting.__dict__)\n"
+               "sys.modules['btc_accounting_refs_embedded']=_btc_accounting\n"
                "_btc_refs=types.ModuleType('btc_review_refs_embedded')\n"
                "exec(compile(" + repr(refs_source) + ",'<btc_review_refs>','exec'),_btc_refs.__dict__)\n"
                "sys.modules['btc_review_refs_embedded']=_btc_refs\n"
@@ -226,6 +234,8 @@ def referenced_commits(raw):
                                     and value.startswith(b'PRISM_REVIEW_REFS_V1\x00'))
                     is_audit_reference = (kind == 'decision_input' and isinstance(value, str)
                                           and '$btc_audit_input_refs_v1' in value)
+                    is_accounting_reference = (kind == 'accounting_observation' and isinstance(value, str)
+                                               and '$btc_accounting_refs_v1' in value)
                     is_recovery_reference = (table == 'llm_scenario_recovery_events' and isinstance(value, bytes)
                                              and value.startswith(b'PRISM_RECOVERY_REFS_V1\x00'))
                     if time.monotonic() > deadline:
@@ -251,6 +261,14 @@ def referenced_commits(raw):
                                 else:
                                     from btc_audit_references import read_audit
                                 value = read_audit(value, db, slot)
+                            elif is_accounting_reference:
+                                if 'btc_accounting_refs_embedded' in sys.modules:
+                                    from btc_accounting_refs_embedded import read_accounting
+                                elif __package__:
+                                    from .btc_accounting_audit_references import read_accounting
+                                else:
+                                    from btc_accounting_audit_references import read_accounting
+                                value = read_accounting(value, db)
                             elif table == 'llm_scenario_recovery_events':
                                 if kind is None or kind in ('MODEL_REQUEST', 'MODEL_RAW'):
                                     if 'btc_recovery_refs_embedded' in sys.modules:
@@ -271,6 +289,8 @@ def referenced_commits(raw):
                                 raise ValueError('reference_tape_unresolved') from exc
                             if is_audit_reference:
                                 raise ValueError('reference_audit_unresolved') from exc
+                            if is_accounting_reference:
+                                raise ValueError('reference_accounting_unresolved') from exc
                             if is_recovery_reference:
                                 raise ValueError('reference_recovery_unresolved') from exc
                             parsed = None
