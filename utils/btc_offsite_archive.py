@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -98,6 +99,8 @@ def ssh_archive(host, needed, *, stream=None):
     recovery_source = Path(__file__).with_name('btc_recovery_references.py').read_text()
     financial_source = Path(__file__).with_name('btc_financial_references.py').read_text()
     accounting_source = Path(__file__).with_name('btc_accounting_audit_references.py').read_text()
+    storage_source = Path(__file__).resolve().parent.parent.joinpath('observability/review_storage.py').read_text()
+    retention_source = Path(__file__).with_name('btc_review_retention.py').read_text()
     prelude = ("import sys,types\n"
                "_btc_financial=types.ModuleType('btc_financial_refs_embedded')\n"
                "exec(compile(" + repr(financial_source) + ",'<btc_financial_refs>','exec'),_btc_financial.__dict__)\n"
@@ -108,6 +111,12 @@ def ssh_archive(host, needed, *, stream=None):
                "_btc_refs=types.ModuleType('btc_review_refs_embedded')\n"
                "exec(compile(" + repr(refs_source) + ",'<btc_review_refs>','exec'),_btc_refs.__dict__)\n"
                "sys.modules['btc_review_refs_embedded']=_btc_refs\n"
+               "_btc_storage=types.ModuleType('btc_review_storage_embedded')\n"
+               "exec(compile(" + repr(storage_source) + ",'<btc_review_storage>','exec'),_btc_storage.__dict__)\n"
+               "sys.modules['btc_review_storage_embedded']=_btc_storage\n"
+               "_btc_retention=types.ModuleType('btc_retention_embedded')\n"
+               "exec(compile(" + repr(retention_source) + ",'<btc_retention>','exec'),_btc_retention.__dict__)\n"
+               "sys.modules['btc_retention_embedded']=_btc_retention\n"
                "_btc_audit=types.ModuleType('btc_audit_refs_embedded')\n"
                "exec(compile(" + repr(audit_source) + ",'<btc_audit_refs>','exec'),_btc_audit.__dict__)\n"
                "sys.modules['btc_audit_refs_embedded']=_btc_audit\n"
@@ -208,6 +217,29 @@ def verify_streamed_snapshot(zipped, manifest):
             raw_hash.update(chunk)
     if total != manifest['raw_bytes'] or raw_hash.hexdigest() != manifest.get('raw_sha256'):
         raise ValueError('snapshot_raw_mismatch')
+
+
+def verify_retention_index(raw, manifest):
+    if 'btc_retention_index' not in manifest:
+        return False
+    started = manifest.get('started_at')
+    if type(started) not in (int, float) or not math.isfinite(started) or started <= 7 * 86400:
+        raise ValueError('retention_snapshot_time_invalid')
+    if 'btc_retention_embedded' in sys.modules:
+        from btc_retention_embedded import snapshot_index
+    elif __package__:
+        from .btc_review_retention import snapshot_index
+    else:
+        from btc_review_retention import snapshot_index
+    deadline = time.monotonic() + 600
+    def guard():
+        if time.monotonic() > deadline:
+            raise TimeoutError('retention_index_deadline')
+    with closing(sqlite3.connect(raw.as_uri() + '?mode=ro', uri=True)) as db:
+        db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
+        if snapshot_index(db, int(started), guard=guard) != manifest['btc_retention_index']:
+            raise ValueError('retention_index_mismatch')
+    return True
 
 
 def referenced_commits(raw):
@@ -384,6 +416,7 @@ def receive(stream, root, needed):
         space(root, needed - transferred, staging=True)
         raw = stage / 'restored.sqlite'
         restore_snapshot(stage / FILES[0], manifest, raw)
+        retention_verified = verify_retention_index(raw, manifest)
         actual, coverage = referenced_commits(raw)
         if actual != metadata['referenced_commits']:
             raise ValueError('archive_commit_manifest_mismatch')
@@ -406,6 +439,8 @@ def receive(stream, root, needed):
                    bundle_sha256=metadata['sha256'][FILES[2]],
                    archive_metadata_sha256=digest(stage / 'archive.json'),
                    referenced_commit_count=len(actual), code_reference_coverage=coverage)
+        if retention_verified:
+            ack['retention_index_verified'] = True
         with (stage / 'receipt.json').open('x') as dst:
             json.dump(ack, dst)
             dst.flush()
@@ -491,6 +526,8 @@ def archive(repo, snapshot, config):
                 ack.get('bundle_sha256') != hashes[FILES[2]] or ack.get('archive_metadata_sha256') != digest(meta) or
                 ack.get('referenced_commit_count') != len(commits) or ack.get('code_reference_coverage') != coverage):
             raise ValueError('archive_ack_mismatch')
+        if 'btc_retention_index' in manifest and ack.get('retention_index_verified') is not True:
+            raise ValueError('archive_retention_index_unverified')
         return ack
 
 

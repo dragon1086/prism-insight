@@ -130,10 +130,14 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
         if capture_references:
             if __package__:
                 from .btc_offsite_archive import referenced_commits
+                from .btc_review_retention import snapshot_index
             else:
                 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
                 from utils.btc_offsite_archive import referenced_commits
+                from utils.btc_review_retention import snapshot_index
             commits, coverage = referenced_commits(raw)
+            with closing(sqlite3.connect(raw.resolve().as_uri() + '?mode=ro', uri=True)) as index_conn:
+                retention_index = snapshot_index(index_conn, int(started), guard=lambda: progress(None, None, None))
             progress(None, None, None)
             reference_scan = {'commits': commits, 'coverage': coverage}
         _compress_in_place(raw, raw_bytes, progress)
@@ -152,6 +156,7 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
                       decompression_verified=True, source_writes=0)
         if reference_scan is not None:
             result['code_reference_scan'] = reference_scan
+            result['btc_retention_index'] = retention_index
         manifest = temp(".json")
         with manifest.open("w", encoding="utf-8") as stream:
             json.dump(result, stream, indent=2, allow_nan=False)

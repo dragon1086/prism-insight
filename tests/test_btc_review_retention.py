@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from utils.btc_review_retention import candidates, matching_evidence
+from utils.btc_review_retention import candidates, matching_evidence, snapshot_index
 
 
 def test_only_old_complete_flat_waits_become_candidates():
@@ -30,6 +30,8 @@ def test_only_old_complete_flat_waits_become_candidates():
                                      'decision_sha256': result['candidates'][0]['decision_sha256']}]
     assert candidates(conn, now, after_slot=1)['candidates'] == []
     assert candidates(conn, now, limit=1)['last_scanned_slot'] == 1
+    index = snapshot_index(conn, now)
+    assert index['scanned'] == 6 and index['candidates'] == result['candidates']
     assert conn.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 7
     old_digest = result['candidates'][0]['decision_sha256']
     conn.execute('UPDATE llm_scenario_decisions SET context=? WHERE slot=1',
@@ -47,6 +49,29 @@ def test_invalid_boundaries_fail_closed(kwargs):
     with sqlite3.connect(':memory:') as conn:
         with pytest.raises(ValueError, match='retention_input_invalid'):
             candidates(conn, **kwargs)
+
+
+def test_missing_or_partial_schema_is_not_an_empty_verified_index():
+    with sqlite3.connect(':memory:') as conn:
+        assert snapshot_index(conn, 700000) is None
+        conn.execute('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT)')
+        with pytest.raises(ValueError, match='retention_schema_incomplete'):
+            snapshot_index(conn, 700000)
+
+
+def test_snapshot_index_has_bounded_scan():
+    with sqlite3.connect(':memory:') as conn:
+        conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY, body TEXT);'
+                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY, context TEXT, proposal TEXT, outcome TEXT);')
+        conn.executemany('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', ((i, '{}') for i in range(1, 2002)))
+        index = snapshot_index(conn, 7 * 86400 + 300 * 3000)
+        assert index['scanned'] == 2000 and index['last_scanned_slot'] == 2000
+        assert index['truncated'] and index['candidates'] == []
+        def stop():
+            raise TimeoutError('fixture_limit')
+        with pytest.raises(TimeoutError, match='fixture_limit'):
+            snapshot_index(conn, 7 * 86400 + 300 * 3000, guard=stop)
+        assert conn.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 2001
 
 
 def test_snapshot_and_delivery_must_match_each_candidate():

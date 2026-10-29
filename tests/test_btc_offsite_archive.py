@@ -115,6 +115,45 @@ def test_captured_references_avoid_sender_restore_but_receiver_verifies(payload,
         archive.archive(repo, snapshot, path / 'unused-config')
 
 
+def test_standalone_receiver_recomputes_retention_index(payload, monkeypatch):
+    import shlex
+    from utils.sqlite_snapshot import backup_database
+
+    path, _, _, repo = payload
+    source = path / 'retention.sqlite'
+    ctx = {'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
+           'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False}
+    with sqlite3.connect(source) as conn:
+        conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
+                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,context TEXT,proposal TEXT,outcome TEXT);')
+        conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (1, '{"kind":"WAIT"}'))
+        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?)',
+                     (1, json.dumps(ctx), json.dumps({'action': 'WAIT'}), json.dumps({'status': 'wait'})))
+    snapshot = path / 'retention.sqlite.gz'
+    manifest = backup_database(source, snapshot, reserve_bytes=0, capture_references=True)
+    assert len(manifest['btc_retention_index']['candidates']) == 1
+    root = path / 'embedded-remote'
+    original_run = archive.subprocess.run
+    def local_ssh(args, **kwargs):
+        if args[0] != '/usr/bin/ssh':
+            return original_run(args, **kwargs)
+        command = shlex.split(args[-1])
+        assert command[:2] == ['/usr/bin/python3', '-c']
+        code = command[2].replace('/root/prism-btc-archive', str(root))
+        return original_run([os.sys.executable, '-I', '-c', code], **kwargs)
+    monkeypatch.setattr(archive.subprocess, 'run', local_ssh)
+    monkeypatch.setattr(archive, 'backend_host', lambda _: 'fixture')
+    ack = archive.archive(repo, snapshot, path / 'unused-config')
+    assert ack['retention_index_verified'] is True
+    manifest_path = Path(str(snapshot) + '.manifest.json')
+    altered = json.loads(manifest_path.read_text())
+    altered['btc_retention_index']['candidates'][0]['tape_sha256'] = '0' * 64
+    manifest_path.write_text(json.dumps(altered))
+    with pytest.raises(subprocess.CalledProcessError):
+        archive.archive(repo, snapshot, path / 'unused-config')
+    assert (root / ack['archive'] / 'receipt.json').is_file()
+
+
 @pytest.mark.parametrize('fault', ['checksum', 'partial', 'env', 'raw_hash', 'understated_space', 'missing_ref'])
 def test_failed_receive_preserves_old_archive_and_removes_only_staging(payload, monkeypatch, fault):
     path, needed, _, _ = payload
