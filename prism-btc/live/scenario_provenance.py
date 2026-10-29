@@ -490,6 +490,15 @@ def _flush(capture):
                 except Exception:
                     # Optional deduplication must not discard the original audit.
                     stored_event = event
+            elif event[2] == 'accounting_observation':
+                try:
+                    from utils.btc_accounting_audit_references import compact, read_accounting
+                    candidate = compact(event[8], conn, event[3])
+                    if candidate != event[8] and read_accounting(candidate, conn) == event[8]:
+                        stored_event = (*event[:8], candidate)
+                except Exception:
+                    # Optional deduplication must not discard the original audit.
+                    stored_event = event
             conn.execute('INSERT OR IGNORE INTO llm_scenario_audit_events VALUES (?,?,?,?,?,?,?,?,?)', stored_event)
             written.append(event)
     # Committed rows only; the ClickStack copy is a bounded, ID-free summary.
