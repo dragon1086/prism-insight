@@ -519,6 +519,9 @@ def test_runner_reports_result_and_redacts_exception(monkeypatch, capsys):
     monkeypatch.setattr(runner, 'cleanup', lambda _: {'status': 'NO_CANDIDATES', 'removed': 0})
     assert runner.main(['/fixture']) == 0
     assert json.loads(capsys.readouterr().out) == {'status': 'NO_CANDIDATES', 'removed': 0}
+    monkeypatch.setattr(runner, 'cleanup', lambda _: {'status': 'PARTIAL', 'removed': 1, 'error_type': 'TimeoutError'})
+    assert runner.main(['/fixture']) == 1
+    assert json.loads(capsys.readouterr().out)['removed'] == 1
     def fail(_):
         raise ValueError('private fixture content')
     monkeypatch.setattr(runner, 'cleanup', fail)
