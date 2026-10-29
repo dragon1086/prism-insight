@@ -2,12 +2,14 @@
 import copy
 import hashlib
 import json
+import math
 
 from utils.btc_financial_references import restore as restore_financial
 
 TAG = '$btc_accounting_refs_v1'
 ORIGINAL_HASH = '$btc_accounting_original_sha256'
 MAX_BYTES = 512 * 1024
+SOURCE_LIMIT = 8
 
 
 def canonical(value):
@@ -16,6 +18,46 @@ def canonical(value):
 
 def sha(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def compact(raw, conn, observed_at):
+    """Reference only exact earlier broker evidence; otherwise preserve the original."""
+    if (not isinstance(raw, str) or len(raw.encode()) > MAX_BYTES or conn is None
+            or type(observed_at) not in (int, float) or not math.isfinite(observed_at) or observed_at <= 0):
+        return raw
+    try:
+        event = json.loads(raw)
+        if not isinstance(event, dict) or TAG in event or ORIGINAL_HASH in event or canonical(event) != raw:
+            return raw
+        projected = copy.deepcopy(event)
+        for field, kind in (('observation', 'account'), ('financial_evidence', 'financial')):
+            if not isinstance(event.get(field), dict):
+                return raw
+            expected = canonical(event[field])
+            match = None
+            rows = conn.execute('SELECT rowid,captured_at,body FROM llm_scenario_broker_evidence '
+                                'WHERE kind=? AND captured_at<=? ORDER BY rowid DESC LIMIT ?',
+                                (kind, observed_at, SOURCE_LIMIT))
+            for rowid, captured_at, body in rows:
+                if (type(captured_at) not in (int, float) or not math.isfinite(captured_at) or captured_at <= 0
+                        or not isinstance(body, str) or len(body.encode()) > MAX_BYTES):
+                    continue
+                try:
+                    value = json.loads(restore_financial(body) if kind == 'financial' else body)
+                    if isinstance(value, dict) and canonical(value) == expected:
+                        match = (rowid, captured_at)
+                        break
+                except (ValueError, TypeError, KeyError, OverflowError):
+                    continue
+            if match is None or type(match[0]) is not int or match[0] <= 0:
+                return raw
+            projected[field] = {'rowid': match[0], 'captured_at': match[1], 'sha256': sha(expected)}
+        projected[TAG] = 1
+        projected[ORIGINAL_HASH] = sha(raw)
+        candidate = canonical(projected)
+        return candidate if len(candidate.encode()) < len(raw.encode()) else raw
+    except (ValueError, TypeError, KeyError, OverflowError):
+        return raw
 
 
 def read_accounting(raw, conn):
@@ -35,15 +77,17 @@ def read_accounting(raw, conn):
     result.pop(TAG)
     for field, kind in (('observation', 'account'), ('financial_evidence', 'financial')):
         marker = result.get(field)
-        if (not isinstance(marker, dict) or set(marker) != {'rowid', 'sha256'}
+        if (not isinstance(marker, dict) or set(marker) != {'rowid', 'sha256', 'captured_at'}
                 or type(marker['rowid']) is not int or marker['rowid'] <= 0
+                or type(marker['captured_at']) not in (int, float) or not math.isfinite(marker['captured_at'])
+                or marker['captured_at'] <= 0
                 or not isinstance(marker['sha256'], str)):
             raise ValueError('accounting_audit_reference_invalid')
-        row = conn.execute('SELECT kind,body FROM llm_scenario_broker_evidence WHERE rowid=?',
+        row = conn.execute('SELECT kind,captured_at,body FROM llm_scenario_broker_evidence WHERE rowid=?',
                            (marker['rowid'],)).fetchone()
-        if not row or row[0] != kind or not isinstance(row[1], str):
+        if not row or row[0] != kind or row[1] != marker['captured_at'] or not isinstance(row[2], str):
             raise ValueError('accounting_audit_source_missing')
-        value = json.loads(restore_financial(row[1]) if kind == 'financial' else row[1])
+        value = json.loads(restore_financial(row[2]) if kind == 'financial' else row[2])
         if not isinstance(value, dict) or sha(canonical(value)) != marker['sha256']:
             raise ValueError('accounting_audit_source_changed')
         result[field] = value

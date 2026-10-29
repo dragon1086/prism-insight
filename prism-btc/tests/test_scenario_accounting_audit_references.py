@@ -3,15 +3,15 @@ import sqlite3
 
 import pytest
 
-from utils.btc_accounting_audit_references import TAG, ORIGINAL_HASH, canonical, read_accounting, sha
+from utils.btc_accounting_audit_references import TAG, ORIGINAL_HASH, canonical, compact, read_accounting, sha
 
 
 def fixture(conn):
     conn.executescript('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body TEXT);'
                        'CREATE TABLE llm_scenario_audit_events(event_id TEXT,run_id TEXT,kind TEXT,observed_at REAL,'
                        'scenario_id TEXT,intent_id TEXT,decision_slot INTEGER,manifest_id TEXT,body TEXT);')
-    account = {'captured_at': 1, 'wallet': {'equity': '100'}, 'position': {'size': '0'}}
-    financial = {'raw_executions': [], 'raw_transactions': [], 'trades': [], 'funding': []}
+    account = {'captured_at': 1, 'wallet': {'equity': '100', 'detail': 'a' * 2000}, 'position': {'size': '0'}}
+    financial = {'raw_executions': [], 'raw_transactions': [], 'trades': [], 'funding': [], 'detail': 'b' * 2000}
     conn.executemany('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)',
                      [('account', 1, json.dumps(account, sort_keys=True)),
                       ('financial', 1, json.dumps(financial, sort_keys=True))])
@@ -19,9 +19,29 @@ def fixture(conn):
              'result': {'status': 'confirmed'}, 'children': []}
     raw = canonical(event)
     encoded = dict(event, **{TAG: 1, ORIGINAL_HASH: sha(raw)})
-    encoded['observation'] = {'rowid': 1, 'sha256': sha(canonical(account))}
-    encoded['financial_evidence'] = {'rowid': 2, 'sha256': sha(canonical(financial))}
+    encoded['observation'] = {'rowid': 1, 'captured_at': 1, 'sha256': sha(canonical(account))}
+    encoded['financial_evidence'] = {'rowid': 2, 'captured_at': 1, 'sha256': sha(canonical(financial))}
     return raw, canonical(encoded)
+
+
+def test_compact_removes_only_exact_earlier_duplicate_fields():
+    with sqlite3.connect(':memory:') as conn:
+        raw, _ = fixture(conn)
+        encoded = compact(raw, conn, 2)
+        assert len(encoded) < len(raw) and read_accounting(encoded, conn) == raw
+        assert json.loads(encoded)[TAG] == 1
+
+
+@pytest.mark.parametrize('failure', ['missing', 'changed', 'future', 'outside_bound'])
+def test_compact_keeps_original_when_sources_are_unusable(failure):
+    with sqlite3.connect(':memory:') as conn:
+        raw, _ = fixture(conn)
+        if failure == 'missing': conn.execute('DELETE FROM llm_scenario_broker_evidence WHERE kind="account"')
+        if failure == 'changed': conn.execute('UPDATE llm_scenario_broker_evidence SET body="{}" WHERE kind="account"')
+        if failure == 'future': conn.execute('UPDATE llm_scenario_broker_evidence SET captured_at=3')
+        if failure == 'outside_bound':
+            conn.executemany('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)', [('account', 1, '{}')] * 8)
+        assert compact(raw, conn, 2) == raw
 
 
 def test_reference_restores_exact_original_and_accepts_legacy():
@@ -53,7 +73,7 @@ def test_reference_accepts_already_compacted_financial_source():
         assert read_accounting(canonical(refs), conn) == raw
 
 
-@pytest.mark.parametrize('damage', ['missing', 'changed', 'wrong_kind', 'unknown_version', 'wrong_digest'])
+@pytest.mark.parametrize('damage', ['missing', 'changed', 'wrong_kind', 'timestamp', 'unknown_version', 'wrong_digest'])
 def test_missing_changed_or_invalid_reference_fails_closed(damage):
     with sqlite3.connect(':memory:') as conn:
         _, encoded = fixture(conn)
@@ -61,6 +81,7 @@ def test_missing_changed_or_invalid_reference_fails_closed(damage):
         if damage == 'missing': conn.execute('DELETE FROM llm_scenario_broker_evidence WHERE rowid=1')
         if damage == 'changed': conn.execute("UPDATE llm_scenario_broker_evidence SET body='{}' WHERE rowid=1")
         if damage == 'wrong_kind': conn.execute("UPDATE llm_scenario_broker_evidence SET kind='other' WHERE rowid=1")
+        if damage == 'timestamp': conn.execute("UPDATE llm_scenario_broker_evidence SET captured_at=3 WHERE rowid=1")
         if damage == 'unknown_version': data[TAG] = 2
         if damage == 'wrong_digest': data[ORIGINAL_HASH] = 'bad'
         with pytest.raises(ValueError): read_accounting(canonical(data), conn)
