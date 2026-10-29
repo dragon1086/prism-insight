@@ -91,7 +91,8 @@ def test_source_replacement_and_anchor_change_fail_closed(lane):
     assert export.export_once(*lane)['status'] == 'UNAVAILABLE'
 
 
-def test_account_ticker_observation_exports_only_market_fields_and_times(lane):
+@pytest.mark.parametrize('separators', [None, (',', ':')])
+def test_account_ticker_observation_exports_only_market_fields_and_times(lane, separators):
     db, state, spool = lane
     with sqlite3.connect(db) as conn:
         conn.execute('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body TEXT)')
@@ -102,7 +103,7 @@ def test_account_ticker_observation_exports_only_market_fields_and_times(lane):
                               'exchange_response_time_ms': 1699999000000},
             'wallet': {'api_key': 'SECRET'}}
     with sqlite3.connect(db) as conn:
-        conn.execute('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)', ('account', 1700000001, json.dumps(body)))
+        conn.execute('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)', ('account', 1700000001, json.dumps(body, separators=separators)))
     assert export.export_once(db, state, spool)['captured'] == 1
     row = next(r for r in events(spool) if r.get('attributes', {}).get('source_kind') == 'account')
     observed = row['attributes']['ticker_observation']
