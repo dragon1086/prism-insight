@@ -24,9 +24,13 @@ def fixture(conn):
     return raw, canonical(encoded)
 
 
-def test_compact_removes_only_exact_earlier_duplicate_fields():
+@pytest.mark.parametrize('compact_account', [False, True])
+def test_compact_removes_only_exact_earlier_duplicate_fields(compact_account):
     with sqlite3.connect(':memory:') as conn:
         raw, _ = fixture(conn)
+        if compact_account:
+            body = conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='account'").fetchone()[0]
+            conn.execute("UPDATE llm_scenario_broker_evidence SET body=? WHERE kind='account'", (canonical(json.loads(body)),))
         encoded = compact(raw, conn, 2)
         assert len(encoded) < len(raw) and read_accounting(encoded, conn) == raw
         assert json.loads(encoded)[TAG] == 1
