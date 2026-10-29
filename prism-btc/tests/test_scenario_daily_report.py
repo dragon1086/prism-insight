@@ -46,6 +46,16 @@ def test_legacy_two_trades_never_pollute_five_settled_scenarios(monkeypatch):
     assert '-999' not in text and '70' not in text and 'exchangefill' not in text
 
 
+def test_compact_account_produces_the_same_daily_report(monkeypatch):
+    conn = fixture()
+    monkeypatch.setattr('live.scenario_daily_report.time.time', lambda: NOW)
+    before = build_message(conn, 'demo')
+    raw = conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='account'").fetchone()[0]
+    conn.execute("UPDATE llm_scenario_broker_evidence SET body=? WHERE kind='account'",
+                 (json.dumps(json.loads(raw), sort_keys=True, separators=(',', ':')),))
+    assert build_message(conn, 'demo') == before
+
+
 @pytest.mark.parametrize('state', ['active','paused','transition'])
 def test_control_states_route_scenario_without_old_fallback(monkeypatch,state):
     conn=fixture()

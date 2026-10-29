@@ -200,7 +200,8 @@ class ScenarioDemoBroker(ScenarioExecution):
             raise BrokerNotReady("main_uid_mismatch")
 
     def _save(self, kind, body):
-        text = json.dumps(body, allow_nan=False, sort_keys=True)
+        text = json.dumps(body, allow_nan=False, sort_keys=True,
+                          separators=(',', ':') if kind == 'account' else None)
         if kind == 'financial':
             original = text
             try:

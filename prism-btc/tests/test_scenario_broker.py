@@ -80,6 +80,25 @@ def test_fresh_read_only_snapshot_has_no_fake_execution_capability(setup):
         b.execute({}, "intent")
 
 
+def test_account_evidence_omits_whitespace_without_losing_observation(setup):
+    import json
+    b, _ = setup
+    observed = b.capture_account()
+    stored = b.conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='account' ORDER BY rowid DESC LIMIT 1").fetchone()[0]
+    assert json.loads(stored) == json.loads(json.dumps(observed, allow_nan=False, sort_keys=True))
+    assert stored == json.dumps(observed, allow_nan=False, sort_keys=True, separators=(',', ':'))
+    assert len(stored) < len(json.dumps(observed, allow_nan=False, sort_keys=True))
+
+
+def test_other_broker_evidence_keeps_its_existing_serialization(setup):
+    import json
+    b, _ = setup
+    body = {'message': 'keep spaces', 'nested': [1, 2]}
+    b._save('other', body)
+    stored = b.conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='other'").fetchone()[0]
+    assert stored == json.dumps(body, allow_nan=False, sort_keys=True)
+
+
 def test_nonflat_legacy_exposure_is_not_adopted(setup):
     b, s = setup
     s.size = "1"
