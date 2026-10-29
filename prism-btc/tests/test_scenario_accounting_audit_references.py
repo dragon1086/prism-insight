@@ -75,6 +75,8 @@ def test_reference_accepts_already_compacted_financial_source():
         assert len(compacted) < len(source)
         conn.execute('UPDATE llm_scenario_broker_evidence SET body=? WHERE rowid=2', (compacted,))
         assert read_accounting(canonical(refs), conn) == raw
+        candidate = compact(raw, conn, 2)
+        assert len(candidate) < len(raw) and read_accounting(candidate, conn) == raw
 
 
 @pytest.mark.parametrize('damage', ['missing', 'changed', 'wrong_kind', 'timestamp', 'unknown_version', 'wrong_digest'])
