@@ -1,5 +1,6 @@
 import hashlib
 import json
+from pathlib import Path
 import sqlite3
 
 import pytest
@@ -10,7 +11,7 @@ from utils.btc_review_retention import candidates, fetch_deliveries, matching_ev
 def test_only_old_complete_flat_waits_become_candidates():
     conn = sqlite3.connect(':memory:')
     conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY, body TEXT);'
-                       'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY, context TEXT, proposal TEXT, outcome TEXT);')
+                       'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY, context TEXT, proposal TEXT, outcome TEXT, snapshot TEXT DEFAULT "{}");')
     context = {'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
                'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False}
     variants = [context, dict(context, positions=[{'quantity': 1}]),
@@ -19,7 +20,7 @@ def test_only_old_complete_flat_waits_become_candidates():
                 dict(context, unknown_intents=True), context]
     for slot, ctx in zip((1, 2, 3, 4, 5, 6, 20), variants):
         conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (slot, '{"tape":1}'))
-        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO llm_scenario_decisions(slot,context,proposal,outcome) VALUES(?,?,?,?)',
                      (slot, json.dumps(ctx), json.dumps({'action': 'WAIT'}), json.dumps({'status': 'wait'})))
     now = 7 * 86400 + 10 * 300
     result = candidates(conn, now)
@@ -34,6 +35,9 @@ def test_only_old_complete_flat_waits_become_candidates():
     assert index['scanned'] == 6 and index['candidates'] == result['candidates']
     assert conn.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 7
     old_digest = result['candidates'][0]['decision_sha256']
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=? WHERE slot=1', ('{"price":1}',))
+    assert candidates(conn, now)['candidates'][0]['decision_sha256'] != old_digest
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=? WHERE slot=1', ('{}',))
     conn.execute('UPDATE llm_scenario_decisions SET context=? WHERE slot=1',
                  (json.dumps(dict(context, now=1)),))
     assert candidates(conn, now)['candidates'][0]['decision_sha256'] != old_digest
@@ -54,14 +58,14 @@ def test_invalid_boundaries_fail_closed(kwargs):
 def test_documented_optional_recovery_flag_and_sealed_history():
     with sqlite3.connect(':memory:') as conn:
         conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY, body TEXT);'
-                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY, context TEXT, proposal TEXT, outcome TEXT);')
+                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY, context TEXT, proposal TEXT, outcome TEXT, snapshot TEXT DEFAULT "{}");')
         context = {'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
                    'historical_unsettled': [{'status': 'HISTORICAL_UNSETTLED', 'excluded_from_performance': True}],
                    'incident_epoch_blocked': False}
         for slot, ctx in ((1, context), (2, dict(context, recovery_observing=True)),
                           (3, dict(context, historical_unsettled=[{'status': 'UNKNOWN'}]))):
             conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (slot, '{}'))
-            conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?)',
+            conn.execute('INSERT INTO llm_scenario_decisions(slot,context,proposal,outcome) VALUES(?,?,?,?)',
                          (slot, json.dumps(ctx), '{"action":"WAIT"}', '{"status":"wait"}'))
         result = candidates(conn, 7 * 86400 + 10 * 300)
         assert [row['slot'] for row in result['candidates']] == [1]
@@ -78,7 +82,7 @@ def test_missing_or_partial_schema_is_not_an_empty_verified_index():
 def test_snapshot_index_has_bounded_scan():
     with sqlite3.connect(':memory:') as conn:
         conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY, body TEXT);'
-                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY, context TEXT, proposal TEXT, outcome TEXT);')
+                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY, context TEXT, proposal TEXT, outcome TEXT, snapshot TEXT DEFAULT "{}");')
         conn.executemany('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', ((i, '{}') for i in range(1, 2002)))
         index = snapshot_index(conn, 7 * 86400 + 300 * 3000)
         assert index['scanned'] == 2000 and index['last_scanned_slot'] == 2000
@@ -108,6 +112,24 @@ def test_cursor_is_private_bound_to_source_and_wraps(tmp_path, monkeypatch):
     assert retention.read_cursor(cursor, identity) == -1
     cursor.chmod(0o644)
     assert retention.read_cursor(cursor, identity) == -1
+
+
+def test_backup_guard_rejects_snapshot_and_streamed_database_reader(tmp_path):
+    from utils.btc_review_retention import _backup_idle
+    source = tmp_path / 'source.sqlite'
+    source.write_bytes(b'fixture')
+    proc = tmp_path / 'proc'
+    process = proc / '99999999'
+    fds = process / 'fd'
+    fds.mkdir(parents=True)
+    cmdline = process / 'cmdline'
+    cmdline.write_bytes(b'/usr/bin/python3\0/project/utils/sqlite_snapshot.py\0')
+    assert not _backup_idle(source, proc)
+    cmdline.write_bytes(b'/usr/bin/python3\0-\0')
+    (fds / '4').symlink_to(source)
+    assert not _backup_idle(source, proc)
+    (fds / '4').unlink()
+    assert _backup_idle(source, proc)
 
 
 def test_snapshot_and_delivery_must_match_each_candidate():
@@ -220,13 +242,13 @@ def transaction_fixture():
     from observability.btc_scenario_export import _anchor_hash
     source, exporter = sqlite3.connect(':memory:'), sqlite3.connect(':memory:')
     source.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY, body TEXT);'
-                         'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY, context TEXT, proposal TEXT, outcome TEXT);')
+                         'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY, context TEXT, proposal TEXT, outcome TEXT, snapshot TEXT DEFAULT "{}");')
     context = {'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
                'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False}
     body = '{"kind":"WAIT"}'
     for slot in (1, 2):
         source.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (slot, body))
-        source.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?)',
+        source.execute('INSERT INTO llm_scenario_decisions(slot,context,proposal,outcome) VALUES(?,?,?,?)',
                        (slot, json.dumps(context), json.dumps({'action': 'WAIT'}), json.dumps({'status': 'wait'})))
     source.commit()
     identity = 'a' * 64
@@ -419,6 +441,12 @@ def test_cleanup_with_independently_restored_archive_and_real_lease(tmp_path, mo
     with sqlite3.connect(source_path) as db:
         assert db.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(2,)]
     assert (remote_root / ack['archive'] / 'receipt.json').is_file()
+    monkeypatch.setattr(retention.subprocess, 'Popen', real_popen)
+    restored = archive.restore_archive(remote_root, ack['archive'], root / 'replay')
+    with sqlite3.connect(Path(restored['directory']) / 'snapshot.sqlite') as db:
+        assert db.execute('SELECT slot,body FROM llm_scenario_review_tapes WHERE slot=1').fetchone() == (1, '{"kind":"WAIT"}')
+    proof = json.loads((Path(restored['directory']) / 'restore-proof.json').read_text())
+    assert proof['raw_sha256'] == restored['raw_sha256'] and proof['source_head'] == restored['source_head']
 
 
 def test_runner_reports_result_and_redacts_exception(monkeypatch, capsys):

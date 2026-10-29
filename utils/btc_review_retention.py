@@ -36,11 +36,11 @@ def candidates(conn, now, *, after_slot=-1, limit=100, guard=None):
         raise ValueError('retention_input_invalid')
     cutoff_slot = int((now - 7 * 86400) // 300)
     rows = conn.execute(
-        'SELECT t.rowid,t.slot,t.body,d.context,d.proposal,d.outcome '
+        'SELECT t.rowid,t.slot,t.body,d.snapshot,d.context,d.proposal,d.outcome '
         'FROM llm_scenario_review_tapes t LEFT JOIN llm_scenario_decisions d ON d.slot=t.slot '
         'WHERE t.slot>? AND t.slot<? ORDER BY t.slot LIMIT ?', (after_slot, cutoff_slot, limit))
     found, last, scanned = [], after_slot, 0
-    for rowid, slot, tape, context, proposal, outcome in rows:
+    for rowid, slot, tape, snapshot, context, proposal, outcome in rows:
         if guard is not None:
             guard()
         if type(rowid) is not int or type(slot) is not int or slot < 0:
@@ -48,10 +48,10 @@ def candidates(conn, now, *, after_slot=-1, limit=100, guard=None):
         last = slot
         scanned += 1
         try:
-            ctx, plan, result = json.loads(context), json.loads(proposal), json.loads(outcome)
+            market, ctx, plan, result = json.loads(snapshot), json.loads(context), json.loads(proposal), json.loads(outcome)
         except (TypeError, ValueError):
             continue
-        if not all(isinstance(item, dict) for item in (ctx, plan, result)):
+        if not all(isinstance(item, dict) for item in (market, ctx, plan, result)):
             continue
         historical = ctx.get('historical_unsettled')
         if (not isinstance(historical, list) or any(
@@ -67,7 +67,7 @@ def candidates(conn, now, *, after_slot=-1, limit=100, guard=None):
             continue
         original = read_tape(tape, conn, slot, decode_legacy=review_text)
         digest = hashlib.sha256(original.encode('utf-8')).hexdigest()
-        decision = hashlib.sha256(json.dumps([context, proposal, outcome], ensure_ascii=True,
+        decision = hashlib.sha256(json.dumps([snapshot, context, proposal, outcome], ensure_ascii=True,
                                               separators=(',', ':')).encode()).hexdigest()
         found.append({'rowid': rowid, 'slot': slot, 'tape_sha256': digest, 'decision_sha256': decision})
     return {'cutoff_slot': cutoff_slot, 'last_scanned_slot': last, 'scanned': scanned, 'candidates': found}
@@ -405,7 +405,37 @@ def _runtime_safe(conn):
 
 def _resource_guard(source, identity):
     from tools.btc_review_event_compaction import resource_guard
-    return resource_guard(source, identity)
+    return resource_guard(source, identity) and _backup_idle(source)
+
+
+def _backup_idle(source, proc_root=Path('/proc')):
+    """Do not write while a snapshot or a streamed DB reader is active."""
+    try:
+        source_stat = source.stat()
+        names = {'sqlite_snapshot.py', 'btc_offsite_archive.py', 'backup_configs.sh'}
+        for process in proc_root.iterdir():
+            if not process.name.isdecimal() or int(process.name) == os.getpid():
+                continue
+            try:
+                args = (process / 'cmdline').read_bytes().split(b'\0')
+            except FileNotFoundError:
+                continue
+            if any(Path(os.fsdecode(arg)).name in names for arg in args if arg):
+                return False
+            if args and b'python' in args[0] and len(args) > 1 and args[1] == b'-':
+                try:
+                    for fd in (process / 'fd').iterdir():
+                        try:
+                            seen = fd.stat()
+                        except FileNotFoundError:
+                            continue
+                        if (seen.st_dev, seen.st_ino) == (source_stat.st_dev, source_stat.st_ino):
+                            return False
+                except FileNotFoundError:
+                    continue
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def cleanup(backup_dir, *, now=None):
