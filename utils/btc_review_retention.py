@@ -32,7 +32,7 @@ def candidates(conn, now, *, after_slot=-1, limit=100):
         if not all(isinstance(item, dict) for item in (ctx, plan, result)):
             continue
         if (ctx.get('scenario_id', True) is not None or ctx.get('positions') != []
-                or ctx.get('pending_entries') != [] or ctx.get('unknown_intents') != []
+                or ctx.get('pending_entries') != [] or ctx.get('unknown_intents') is not False
                 or ctx.get('historical_unsettled') != [] or ctx.get('incident_epoch_blocked') is not False
                 or ctx.get('recovery_observing') is not False or plan.get('action') != 'WAIT'
                 or result.get('status') != 'wait'):
