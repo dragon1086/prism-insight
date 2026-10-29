@@ -85,3 +85,17 @@ async def test_new_caller_with_old_loaded_helper_does_not_leak_metadata(monkeypa
     agent = caller.TelegramBotAgent.__new__(caller.TelegramBotAgent)
     agent.bot = object()
     assert await agent.send_message("chat", "message", msg_type="analysis") is True
+
+
+@pytest.mark.asyncio
+async def test_broadcast_resends_one_unknown_then_stops(isolated_spool):
+    # es channel read timeouts, 2026-10-29: translated broadcasts prefer a rare duplicate to a miss.
+    sent = SimpleNamespace(message_id=7)
+    bot = SimpleNamespace(send_message=AsyncMock(side_effect=[TimedOut("x"), sent]))
+    assert await send_message_once_or_rate_retry(bot, chat_id=1, text="t", resend_unknown_once=True) is sent
+    assert bot.send_message.await_count == 2
+
+    bot = SimpleNamespace(send_message=AsyncMock(side_effect=[TimedOut("x"), TimedOut("x"), sent]))
+    with pytest.raises(TelegramDeliveryUnknown):
+        await send_message_once_or_rate_retry(bot, chat_id=1, text="t", resend_unknown_once=True)
+    assert bot.send_message.await_count == 2

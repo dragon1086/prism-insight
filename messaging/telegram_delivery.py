@@ -49,8 +49,13 @@ def _delivery_record(status, *, chat_id, text, kind, category=None, message_id=N
     return ref
 
 
-async def send_message_once_or_rate_retry(bot, *, chat_id, text, attempts=4, message_kind=None, **kwargs):
-    """Retry only explicit rejection, never a lost network acknowledgement."""
+async def send_message_once_or_rate_retry(bot, *, chat_id, text, attempts=4, message_kind=None,
+                                          resend_unknown_once=False, **kwargs):
+    """Retry only explicit rejection, never a lost network acknowledgement.
+
+    resend_unknown_once: the caller (translated broadcast channels) prefers a rare
+    duplicate to a missing message, so one ambiguous loss is sent again once.
+    """
     if attempts < 1:
         raise ValueError("attempts must be positive")
     for attempt in range(attempts):
@@ -77,6 +82,10 @@ async def send_message_once_or_rate_retry(bot, *, chat_id, text, attempts=4, mes
             ref = _delivery_record("UNKNOWN", chat_id=chat_id, text=text, kind=message_kind,
                                    category=category)
             safe_error = TelegramDeliveryUnknown(category=category, message_ref=ref)
+            if resend_unknown_once:
+                logger.warning("%s; resending once to a broadcast channel", safe_error)
+                return await send_message_once_or_rate_retry(
+                    bot, chat_id=chat_id, text=text, attempts=attempts, message_kind=message_kind, **kwargs)
             logger.error("%s", safe_error)
             raise safe_error from None
 
