@@ -835,12 +835,14 @@ class ScenarioRuntime:
                 ctx["position_flow"] = build_position_flow(self.conn, current["active"], ctx, now)
                 ctx['last_closed_trade'] = build_closed_continuity(self.conn, current, now)
                 if ctx.get("recovery_observing"):
-                    recovery.prepare_input(self.conn, current, ctx, snap, slot, self.clock())
+                    recovery_input_event = recovery.prepare_input(self.conn, current, ctx, snap, slot, self.clock())
                     # Baseline, mandatory INPUT and the full decision input must
                     # share one commit. _save() would commit the baseline early.
                     self.conn.execute("UPDATE llm_scenario_state SET body=? WHERE id=1", (_json(current),))
                 self.conn.execute("UPDATE llm_scenario_decisions SET snapshot=?, context=? WHERE slot=?",
                                   (_json(snap), _json(ctx), slot))
+                if ctx.get("recovery_observing"):
+                    recovery.compact_input_event(self.conn, recovery_input_event, slot)
                 self.conn.commit()
                 if (self.convergence_entry_enabled and ctx['entry_convergence']['status'] == 'BLOCKED'
                         and ctx.get('pending_entries')):

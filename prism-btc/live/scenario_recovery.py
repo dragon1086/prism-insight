@@ -89,6 +89,32 @@ def journal(conn, kind, body, now, *, slot=None, scenario_id=None, review_sequen
     return event_id
 
 
+def compact_input_event(conn, event_id, slot):
+    """Compact only within the transaction that saved the matching decision input."""
+    if not conn.in_transaction:
+        raise ValueError('recovery_input_transaction_required')
+    row = conn.execute("SELECT r.body,d.context FROM llm_scenario_recovery_events r "
+                       "JOIN llm_scenario_decisions d ON d.slot=r.slot "
+                       "WHERE r.event_id=? AND r.slot=? AND r.kind='INPUT'", (event_id, slot)).fetchone()
+    if row is None:
+        return False
+    original, context = row
+    try:
+        from utils.btc_recovery_references import compact_input, pack, read_recovery
+        candidate = compact_input(context, original, slot)
+        if candidate == original:
+            return False
+        candidate = pack(candidate)
+        if len(candidate) >= len(original.encode('utf-8')):
+            return False
+        if read_recovery(candidate, conn, slot, decode_legacy=review_text, expected_kind='INPUT') != original:
+            return False
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return conn.execute("UPDATE llm_scenario_recovery_events SET body=? WHERE event_id=? AND body=?",
+                        (candidate, event_id, original)).rowcount == 1
+
+
 @contextmanager
 def capture_wire(conn, slot, clock):
     token = _wire.set((conn, slot, clock))
@@ -569,10 +595,10 @@ def prepare_input(conn, state, context, snapshot, slot, now):
     context["recovery"] = metadata
     context["recovery_contract_version"] = recovery.get("policy_version", 1)
     context["scenario_risk_fraction"] = metadata["risk_fraction"]
-    journal(conn, "INPUT", {"input_id": context["input_id"],
+    event_id = journal(conn, "INPUT", {"input_id": context["input_id"],
             "snapshot_hash": digest(snapshot), "context_hash": digest(context),
             "decision_slot": slot, "versions": version_evidence, "recovery": metadata}, now, slot=slot)
-    return metadata
+    return event_id
 
 
 def validate_metadata(value):
