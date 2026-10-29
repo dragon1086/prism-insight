@@ -92,3 +92,4 @@ async def send_message_once_or_rate_retry(bot, *, chat_id, text, attempts=4, mes
 
 # Capability handshake for mixed imports in already-running batch processes.
 send_message_once_or_rate_retry.supports_delivery_metadata = True
+send_message_once_or_rate_retry.supports_resend_unknown_once = True
