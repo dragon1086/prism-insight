@@ -5,6 +5,7 @@ This module never deletes data. A candidate is not proof of safe deletion.
 import hashlib
 import json
 import math
+import re
 import sys
 
 if 'btc_review_storage_embedded' in sys.modules:
@@ -112,3 +113,34 @@ def matching_evidence(current, archived, delivered, source_identity):
                 and receipt.get('tape_hash_status') == 'MATCH'):
             approved.append(row)
     return approved
+
+
+def verified_archive_index(manifest_bytes, ack, source_identity):
+    """Bind a candidate index to the receiver's independently verified archive."""
+    if not isinstance(manifest_bytes, bytes) or len(manifest_bytes) > 4 * 1024 * 1024:
+        raise ValueError('retention_manifest_invalid')
+    try:
+        manifest = json.loads(manifest_bytes)
+        started, completed = manifest['started_at'], manifest['completed_at']
+        index = manifest['btc_retention_index']
+        if (not isinstance(source_identity, str) or not re.fullmatch(r'[a-f0-9]{64}', source_identity)
+                or not isinstance(ack, dict) or ack.get('status') != 'VERIFIED'
+                or ack.get('retention_index_verified') is not True
+                or not isinstance(ack.get('archive'), str)
+                or not re.fullmatch(r'archive-[a-f0-9]{32}', ack['archive'])
+                or ack.get('manifest_sha256') != hashlib.sha256(manifest_bytes).hexdigest()
+                or manifest.get('source_identity_sha256') != source_identity
+                or any(not isinstance(manifest.get(key), str) or not re.fullmatch(r'[a-f0-9]{64}', manifest[key])
+                       or ack.get(label) != manifest[key] for key, label in
+                       (('raw_sha256', 'raw_sha256'), ('compressed_sha256', 'compressed_sha256')))
+                or type(started) not in (int, float) or type(completed) not in (int, float)
+                or not math.isfinite(started) or not math.isfinite(completed)
+                or started <= 7 * 86400 or completed < started
+                or not isinstance(index, dict) or type(index.get('version')) is not int
+                or index['version'] != 1 or type(index.get('as_of')) is not int or index['as_of'] != int(started)
+                or type(index.get('cutoff_slot')) is not int or index['cutoff_slot'] != int((started - 7 * 86400) // 300)
+                or not isinstance(index.get('candidates'), list)):
+            raise ValueError('retention_archive_unverified')
+        return index
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError('retention_archive_unverified') from exc

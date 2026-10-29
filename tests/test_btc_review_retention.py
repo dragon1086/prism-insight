@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from utils.btc_review_retention import candidates, matching_evidence, snapshot_index
+from utils.btc_review_retention import candidates, matching_evidence, snapshot_index, verified_archive_index
 
 
 def test_only_old_complete_flat_waits_become_candidates():
@@ -90,3 +90,23 @@ def test_snapshot_and_delivery_must_match_each_candidate():
         matching_evidence(current, archived, [receipt, dict(receipt, body_sha256='0' * 64)], identity)
     with pytest.raises(ValueError, match='identity_invalid'):
         matching_evidence(current, archived, [receipt], 'invalid')
+
+
+def test_verified_archive_index_requires_matching_receipt_and_source():
+    identity = 'a' * 64
+    started = 700000.5
+    index = {'version': 1, 'as_of': int(started),
+             'cutoff_slot': int((started - 7 * 86400) // 300), 'candidates': []}
+    data = json.dumps({'source_identity_sha256': identity, 'started_at': started,
+                       'completed_at': started + 1, 'raw_sha256': 'b' * 64,
+                       'compressed_sha256': 'c' * 64, 'btc_retention_index': index}).encode()
+    ack = {'status': 'VERIFIED', 'retention_index_verified': True, 'archive': 'archive-' + 'd' * 32,
+           'raw_sha256': 'b' * 64, 'compressed_sha256': 'c' * 64,
+           'manifest_sha256': hashlib.sha256(data).hexdigest()}
+    assert verified_archive_index(data, ack, identity) == index
+    for invalid in (dict(ack, retention_index_verified=False), dict(ack, archive='../wrong'),
+                    dict(ack, raw_sha256='0' * 64), dict(ack, manifest_sha256='0' * 64)):
+        with pytest.raises(ValueError, match='retention_archive_unverified'):
+            verified_archive_index(data, invalid, identity)
+    with pytest.raises(ValueError, match='retention_archive_unverified'):
+        verified_archive_index(data, ack, 'e' * 64)

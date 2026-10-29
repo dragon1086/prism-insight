@@ -89,7 +89,8 @@ log "백업 완료: $BACKUP_SIZE"
 
 # Only the verified database, its manifest and Git history go offsite, never settings.
 if python3 "$PROJECT_DIR/utils/btc_offsite_archive.py" \
-    --repo "$PROJECT_DIR" --snapshot "$BACKUP_DIR/stock_tracking_db.sqlite.gz" | tee -a "$LOG_FILE"; then
+    --repo "$PROJECT_DIR" --snapshot "$BACKUP_DIR/stock_tracking_db.sqlite.gz" \
+    | tee "$BACKUP_DIR/offsite_ack.json" | tee -a "$LOG_FILE"; then
     log "✓ 별도 서버 DB·Git 복원 검증 ACK 완료"
 else
     log "CRITICAL: 별도 서버 백업 미확인/비활성; 기존 백업 보존, 보존기간 삭제 중단"

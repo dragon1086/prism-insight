@@ -211,3 +211,51 @@ def test_missing_main_db_stops_retention_of_older_backups(tmp_path):
     run = subprocess.run(['bash',str(script)],env={**os.environ,'HOME':str(home)},capture_output=True,text=True)
     assert run.returncode != 0
     assert valuable.read_bytes() == b'keep older evidence'
+
+
+@pytest.mark.parametrize('archive_success', [True, False])
+def test_backup_records_archive_ack_and_preserves_old_on_failure(tmp_path, archive_success):
+    import subprocess
+    home = tmp_path / 'home'
+    project = home / 'prism-insight'
+    project.mkdir(parents=True)
+    (project / 'stock_tracking_db.sqlite').write_bytes(b'fixture')
+    old = home / 'prism_backups' / 'old'
+    old.mkdir(parents=True)
+    (old / 'evidence').write_bytes(b'keep')
+    os.utime(old, (1, 1))
+    tools = tmp_path / 'bin'
+    tools.mkdir()
+    fake = tools / 'python3'
+    fake.write_text('''#!/bin/sh
+case "$1" in
+  */sqlite_snapshot.py)
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--destination" ]; then shift; target="$1"; fi
+      shift
+    done
+    printf fixture > "$target"
+    printf '{}' > "$target.manifest.json"
+    ;;
+  */btc_offsite_archive.py)
+    if [ "$ARCHIVE_SUCCESS" = 1 ]; then
+      printf '{"status":"VERIFIED","retention_index_verified":true}\\n'
+    else
+      printf '{"status":"ERROR"}\\n'
+      exit 1
+    fi
+    ;;
+  *) exit 1 ;;
+esac
+''')
+    fake.chmod(0o755)
+    script = Path(__file__).resolve().parents[1] / 'utils/backup_configs.sh'
+    env = {**os.environ, 'HOME': str(home), 'PATH': str(tools) + ':' + os.environ['PATH'],
+           'ARCHIVE_SUCCESS': '1' if archive_success else '0'}
+    run = subprocess.run(['bash', str(script)], env=env, capture_output=True, text=True, timeout=30)
+    assert (run.returncode == 0) is archive_success
+    ack, = (home / 'prism_backups').glob('*/offsite_ack.json')
+    assert json.loads(ack.read_text())['status'] == ('VERIFIED' if archive_success else 'ERROR')
+    assert ack.stat().st_mode & 0o077 == 0
+    if not archive_success:
+        assert (old / 'evidence').read_bytes() == b'keep'
