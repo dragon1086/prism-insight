@@ -462,26 +462,33 @@ def cleanup(backup_dir, *, now=None):
             current = candidates(conn, at, after_slot=slot - 1, limit=1)['candidates']
             if current and current[0] == item:
                 selected.append(item)
-                if len(selected) == 100:
+                if len(selected) == 400:
                     break
         if not selected:
             _save_cursor(index, identity)
             return {'status': 'NO_CANDIDATES', 'removed': 0}
-        delivered = fetch_deliveries(selected, identity)
-        batch = {'candidates': selected}
-        with locked_remote_archive(ack) as lease, closing(sqlite3.connect(
-                EXPORT_STATE.resolve().as_uri() + '?mode=rw', uri=True, timeout=.1)) as exporter:
-            def guard():
-                return _resource_guard(SOURCE, identity) and _runtime_safe(conn)
-            removed = _delete_matched(conn, exporter, batch, delivered, identity, at,
-                                      guard=guard, lease_alive=lease)
-        remaining = False
-        for item in index['candidates']:
-            slot = item['slot']
-            current = candidates(conn, at, after_slot=slot - 1, limit=1)['candidates']
-            if current and current[0] == item:
-                remaining = True
-                break
-        if not remaining:
-            _save_cursor(index, identity)
+        delivered = []
+        for start in range(0, len(selected), 100):
+            delivered.extend(fetch_deliveries(selected[start:start + 100], identity))
+        matched = matching_evidence({'candidates': selected}, {'candidates': selected}, delivered, identity)
+        progress = ({'truncated': True, 'last_scanned_slot': selected[-1]['slot']}
+                    if len(selected) == 400 else index)
+        if not matched:
+            _save_cursor(progress, identity)
+            return {'status': 'DEFERRED', 'removed': 0}
+        removed = []
+        try:
+            with locked_remote_archive(ack) as lease, closing(sqlite3.connect(
+                    EXPORT_STATE.resolve().as_uri() + '?mode=rw', uri=True, timeout=.1)) as exporter:
+                def guard():
+                    return _resource_guard(SOURCE, identity) and _runtime_safe(conn)
+                for start in range(0, len(matched), 100):
+                    batch = {'candidates': matched[start:start + 100]}
+                    removed.extend(_delete_matched(conn, exporter, batch, delivered, identity, at,
+                                                   guard=guard, lease_alive=lease))
+        except Exception as exc:
+            if removed:
+                return {'status': 'PARTIAL', 'removed': len(removed), 'error_type': type(exc).__name__}
+            raise
+        _save_cursor(progress, identity)
         return {'status': 'COMPLETE', 'removed': len(removed)}

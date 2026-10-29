@@ -238,7 +238,7 @@ def test_remote_archive_rechecks_files_and_rejects_tampering(tmp_path, monkeypat
         verify_remote_archive(ack)
 
 
-def transaction_fixture():
+def transaction_fixture(count=2):
     from observability.btc_scenario_export import _anchor_hash
     source, exporter = sqlite3.connect(':memory:'), sqlite3.connect(':memory:')
     source.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY, body TEXT);'
@@ -246,7 +246,7 @@ def transaction_fixture():
     context = {'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
                'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False}
     body = '{"kind":"WAIT"}'
-    for slot in (1, 2):
+    for slot in range(1, count + 1):
         source.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (slot, body))
         source.execute('INSERT INTO llm_scenario_decisions(slot,context,proposal,outcome) VALUES(?,?,?,?)',
                        (slot, json.dumps(context), json.dumps({'action': 'WAIT'}), json.dumps({'status': 'wait'})))
@@ -255,11 +255,11 @@ def transaction_fixture():
     exporter.executescript('CREATE TABLE meta(key PRIMARY KEY,value);CREATE TABLE cursors(stream PRIMARY KEY,seq);'
                            'CREATE TABLE anchors(stream PRIMARY KEY,ref);CREATE TABLE outbox(id PRIMARY KEY,body);')
     exporter.execute('INSERT INTO meta VALUES(?,?)', ('source_identity', identity))
-    exporter.execute('INSERT INTO cursors VALUES(?,?)', ('llm_scenario_review_tapes', 2))
-    anchor = _anchor_hash('llm_scenario_review_tapes', {'slot': 2, 'body': body}, source)
+    exporter.execute('INSERT INTO cursors VALUES(?,?)', ('llm_scenario_review_tapes', count))
+    anchor = _anchor_hash('llm_scenario_review_tapes', {'slot': count, 'body': body}, source)
     exporter.execute('INSERT INTO anchors VALUES(?,?)', ('llm_scenario_review_tapes', anchor))
     exporter.commit()
-    now = 7 * 86400 + 10 * 300
+    now = 7 * 86400 + (count + 8) * 300
     archived = candidates(source, now)
     receipts = []
     for row in archived['candidates']:
@@ -364,8 +364,12 @@ def test_cleanup_uses_backup_ack_delivery_lease_and_transaction(tmp_path, monkey
     monkeypatch.setattr(retention, 'BACKUP_ROOT', root)
     monkeypatch.setattr(retention, '_resource_guard', lambda *_: True)
     monkeypatch.setattr(retention, '_runtime_safe', lambda *_: True)
-    monkeypatch.setattr(retention, 'fetch_deliveries', delivery)
     monkeypatch.setattr(retention, 'locked_remote_archive', lease)
+    monkeypatch.setattr(retention, 'fetch_deliveries', lambda *_: [])
+    assert retention.cleanup(directory, now=now) == {'status': 'DEFERRED', 'removed': 0}
+    with sqlite3.connect(source_path) as db:
+        assert db.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 2
+    monkeypatch.setattr(retention, 'fetch_deliveries', delivery)
     assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': 1}
     with sqlite3.connect(source_path) as db:
         assert db.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(2,)]
@@ -374,6 +378,67 @@ def test_cleanup_uses_backup_ack_delivery_lease_and_transaction(tmp_path, monkey
     os.chmod(ack_path, 0o644)
     with pytest.raises(ValueError, match='retention_private_file_invalid'):
         retention.cleanup(directory, now=now)
+
+
+def test_cleanup_processes_four_batches_and_resumes_cursor(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from observability.btc_scenario_export import _identity
+    from utils import btc_review_retention as retention
+
+    source, exporter, _, now, _, _ = transaction_fixture(count=402)
+    source_path, state_path = tmp_path / 'source.sqlite', tmp_path / 'exporter.sqlite'
+    with sqlite3.connect(source_path) as db:
+        source.backup(db)
+    with sqlite3.connect(state_path) as db:
+        exporter.backup(db)
+    identity = _identity(source_path)
+    with sqlite3.connect(state_path) as db:
+        db.execute("UPDATE meta SET value=? WHERE key='source_identity'", (identity,))
+    root, directory = tmp_path / 'backups', tmp_path / 'backups' / 'one'
+    root.mkdir(mode=0o700)
+    directory.mkdir(mode=0o700)
+    manifest_path = directory / 'stock_tracking_db.sqlite.gz.manifest.json'
+    ack_path = directory / 'offsite_ack.json'
+    def prepare(after_slot):
+        with sqlite3.connect(source_path) as db:
+            index = snapshot_index(db, now, after_slot=after_slot)
+        manifest = {'source_identity_sha256': identity, 'started_at': now, 'completed_at': now + 1,
+                    'raw_sha256': 'b' * 64, 'compressed_sha256': 'c' * 64, 'btc_retention_index': index}
+        raw = json.dumps(manifest).encode()
+        manifest_path.write_bytes(raw)
+        manifest_path.chmod(0o600)
+        ack = {'status': 'VERIFIED', 'retention_index_verified': True, 'archive': 'archive-' + 'd' * 32,
+               'raw_sha256': 'b' * 64, 'compressed_sha256': 'c' * 64,
+               'manifest_sha256': hashlib.sha256(raw).hexdigest()}
+        ack_path.write_text(json.dumps(ack))
+        ack_path.chmod(0o600)
+    calls = []
+    def delivery(rows, source_identity):
+        calls.append(len(rows))
+        return [{'event_id': hashlib.sha256(f'{source_identity}:llm_scenario_review_tapes:{row["rowid"]}'.encode()).hexdigest()[:32],
+                 'event_type': 'btc.research.review_tape', 'source_identity': source_identity,
+                 'body_sha256': row['tape_sha256'], 'tape_hash_status': 'MATCH'} for row in rows]
+    @contextmanager
+    def lease(_):
+        yield lambda: True
+    monkeypatch.setattr(retention, 'SOURCE', source_path)
+    monkeypatch.setattr(retention, 'EXPORT_STATE', state_path)
+    monkeypatch.setattr(retention, 'BACKUP_ROOT', root)
+    monkeypatch.setattr(retention, '_resource_guard', lambda *_: True)
+    monkeypatch.setattr(retention, '_runtime_safe', lambda *_: True)
+    monkeypatch.setattr(retention, 'fetch_deliveries', delivery)
+    monkeypatch.setattr(retention, 'locked_remote_archive', lease)
+    prepare(-1)
+    assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': 400}
+    assert calls == [100, 100, 100, 100]
+    cursor = root / '.btc-retention-cursor.json'
+    assert retention.read_cursor(cursor, identity) == 400
+    prepare(400)
+    assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': 1}
+    assert retention.read_cursor(cursor, identity) == -1
+    with sqlite3.connect(source_path) as db:
+        assert db.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(402,)]
+        assert db.execute('SELECT COUNT(*) FROM llm_scenario_decisions').fetchone()[0] == 402
 
 
 def test_cleanup_with_independently_restored_archive_and_real_lease(tmp_path, monkeypatch):

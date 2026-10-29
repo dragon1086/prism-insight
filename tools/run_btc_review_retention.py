@@ -15,7 +15,7 @@ def main(argv=None):
         print(json.dumps({'status': 'ERROR', 'error_type': type(exc).__name__}))
         return 1
     print(json.dumps(result))
-    return 0
+    return 1 if result.get('status') == 'PARTIAL' else 0
 
 
 if __name__ == '__main__':
