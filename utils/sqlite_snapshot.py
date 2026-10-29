@@ -138,7 +138,7 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
             else:
                 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
                 from utils.btc_offsite_archive import referenced_commits
-            commits, coverage = referenced_commits(raw)
+            commits, coverage = referenced_commits(raw, deadline=deadline)
             progress(None, None, None)
             reference_scan = {'commits': commits, 'coverage': coverage}
         logging.getLogger(__name__).info('snapshot_stage=compress')

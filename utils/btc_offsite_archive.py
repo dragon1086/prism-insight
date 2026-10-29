@@ -210,7 +210,7 @@ def verify_streamed_snapshot(zipped, manifest):
         raise ValueError('snapshot_raw_mismatch')
 
 
-def referenced_commits(raw):
+def referenced_commits(raw, *, deadline=None):
     """Find exact observed revisions in retained JSON; never manufacture missing refs."""
     found = set()
     coverage = dict(scope='WELL_FORMED_STORED_REVISIONS_IN_KNOWN_EVIDENCE_COLUMNS_ONLY',
@@ -231,7 +231,9 @@ def referenced_commits(raw):
         elif isinstance(x, list):
             for value in x:
                 walk(value)
-    deadline = time.monotonic() + 600
+    deadline = min(time.monotonic() + 600, deadline) if deadline is not None else time.monotonic() + 600
+    if time.monotonic() > deadline:
+        raise TimeoutError('commit_scan_deadline')
     with closing(sqlite3.connect(raw.as_uri() + '?mode=ro', uri=True)) as db:
         db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
         # Only known evidence columns, not unrelated application secrets/settings.
@@ -305,6 +307,8 @@ def referenced_commits(raw):
                                 value = review_text(value)
                             parsed = json.loads(value)
                         except (TypeError, ValueError, sqlite3.Error) as exc:
+                            if time.monotonic() > deadline:
+                                raise TimeoutError('commit_scan_deadline') from exc
                             if is_reference:
                                 raise ValueError('reference_tape_unresolved') from exc
                             if is_audit_reference:
@@ -319,6 +323,8 @@ def referenced_commits(raw):
                             not isinstance(parsed, dict) or 'git_revision' not in parsed):
                         coverage['missing_manifest_git_revision'] += 1
                     walk(parsed)
+                    if time.monotonic() > deadline:
+                        raise TimeoutError('commit_scan_deadline')
     coverage['unique_known_revision_count'] = len(found)
     return sorted(found), coverage
 
