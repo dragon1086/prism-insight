@@ -6,12 +6,17 @@ import hashlib
 import json
 import math
 from contextlib import contextmanager
+from contextlib import closing
+import os
 from pathlib import Path
 import re
 import select
 import shlex
 import subprocess
+import sqlite3
+import stat
 import sys
+import time
 
 if 'btc_review_storage_embedded' in sys.modules:
     from btc_review_storage_embedded import review_text
@@ -316,3 +321,79 @@ select.select([sys.stdin],[],[],30)
 def verify_remote_archive(ack):
     with locked_remote_archive(ack):
         pass
+
+
+SOURCE = Path('/root/prism-insight/stock_tracking_db.sqlite')
+EXPORT_STATE = Path('/root/prism-insight/logs/btc-research-export.sqlite')
+BACKUP_ROOT = Path('/root/prism_backups')
+
+
+def _private_read(path, maximum):
+    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                or before.st_mode & 0o077 or before.st_size > maximum):
+            raise ValueError('retention_private_file_invalid')
+        with os.fdopen(fd, 'rb', closefd=False) as stream:
+            data = stream.read(maximum + 1)
+        after = os.fstat(fd)
+        if (len(data) > maximum or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+            raise ValueError('retention_private_file_changed')
+        return data
+    finally:
+        os.close(fd)
+
+
+def _runtime_safe(conn):
+    from live.scenario_incident_epoch import active_halts, unresolved
+    row = conn.execute('SELECT body FROM llm_scenario_state WHERE id=1').fetchone()
+    if not row:
+        return False
+    state = json.loads(row[0])
+    return isinstance(state, dict) and 'active' in state and state['active'] is None and not active_halts(conn) and not unresolved(conn)
+
+
+def _resource_guard(source, identity):
+    from tools.btc_review_event_compaction import resource_guard
+    return resource_guard(source, identity)
+
+
+def cleanup(backup_dir, *, now=None):
+    """Apply one bounded batch only after archive, delivery and runtime rechecks."""
+    directory = Path(backup_dir)
+    if (BACKUP_ROOT.is_symlink() or directory.is_symlink() or not directory.is_dir()
+            or directory.resolve().parent != BACKUP_ROOT.resolve()
+            or directory.stat().st_uid != os.getuid() or directory.stat().st_mode & 0o077):
+        raise ValueError('retention_backup_directory_invalid')
+    if SOURCE.is_symlink() or EXPORT_STATE.is_symlink() or not SOURCE.is_file() or not EXPORT_STATE.is_file():
+        raise ValueError('retention_source_invalid')
+    from observability.btc_scenario_export import _identity
+    identity = _identity(SOURCE)
+    manifest = _private_read(directory / 'stock_tracking_db.sqlite.gz.manifest.json', 4 * 1024 * 1024)
+    ack = json.loads(_private_read(directory / 'offsite_ack.json', 65536))
+    index = verified_archive_index(manifest, ack, identity)
+    at = time.time() if now is None else now
+    with closing(sqlite3.connect(SOURCE.resolve().as_uri() + '?mode=rw', uri=True, timeout=.1)) as conn:
+        selected = []
+        for item in index['candidates']:
+            slot = item['slot']
+            if type(slot) is not int or slot < 0:
+                raise ValueError('retention_source_invalid')
+            current = candidates(conn, at, after_slot=slot - 1, limit=1)['candidates']
+            if current and current[0] == item:
+                selected.append(item)
+                if len(selected) == 100:
+                    break
+        if not selected:
+            return {'status': 'NO_CANDIDATES', 'removed': 0}
+        delivered = fetch_deliveries(selected, identity)
+        batch = {'candidates': selected}
+        with locked_remote_archive(ack) as lease, closing(sqlite3.connect(
+                EXPORT_STATE.resolve().as_uri() + '?mode=rw', uri=True, timeout=.1)) as exporter:
+            def guard():
+                return _resource_guard(SOURCE, identity) and _runtime_safe(conn)
+            removed = _delete_matched(conn, exporter, batch, delivered, identity, at,
+                                      guard=guard, lease_alive=lease)
+        return {'status': 'COMPLETE', 'removed': len(removed)}

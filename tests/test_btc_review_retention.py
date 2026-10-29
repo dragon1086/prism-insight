@@ -259,3 +259,126 @@ def test_transaction_preserves_changed_or_undelivered_rows_and_pending_outbox():
         _delete_matched(source, exporter, archived, receipts, identity, now,
                         guard=lambda: True, lease_alive=lambda: True)
     assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 2
+
+
+def test_cleanup_uses_backup_ack_delivery_lease_and_transaction(tmp_path, monkeypatch):
+    import os
+    from contextlib import contextmanager
+    from utils import btc_review_retention as retention
+    from observability.btc_scenario_export import _identity
+
+    source, exporter, _, now, _, _ = transaction_fixture()
+    source_path, state_path = tmp_path / 'source.sqlite', tmp_path / 'exporter.sqlite'
+    with sqlite3.connect(source_path) as db:
+        source.backup(db)
+    with sqlite3.connect(state_path) as db:
+        exporter.backup(db)
+    identity = _identity(source_path)
+    with sqlite3.connect(state_path) as db:
+        db.execute("UPDATE meta SET value=? WHERE key='source_identity'", (identity,))
+    with sqlite3.connect(source_path) as db:
+        index = snapshot_index(db, now)
+    root, directory = tmp_path / 'backups', tmp_path / 'backups' / 'one'
+    root.mkdir(mode=0o700)
+    directory.mkdir(mode=0o700)
+    manifest = {'source_identity_sha256': identity, 'started_at': now, 'completed_at': now + 1,
+                'raw_sha256': 'b' * 64, 'compressed_sha256': 'c' * 64, 'btc_retention_index': index}
+    manifest_bytes = json.dumps(manifest).encode()
+    manifest_path = directory / 'stock_tracking_db.sqlite.gz.manifest.json'
+    manifest_path.write_bytes(manifest_bytes)
+    manifest_path.chmod(0o600)
+    ack = {'status': 'VERIFIED', 'retention_index_verified': True, 'archive': 'archive-' + 'd' * 32,
+           'raw_sha256': 'b' * 64, 'compressed_sha256': 'c' * 64,
+           'manifest_sha256': hashlib.sha256(manifest_bytes).hexdigest()}
+    ack_path = directory / 'offsite_ack.json'
+    ack_path.write_text(json.dumps(ack))
+    ack_path.chmod(0o600)
+    def delivery(rows, source_identity):
+        return [{'event_id': hashlib.sha256(f'{source_identity}:llm_scenario_review_tapes:{row["rowid"]}'.encode()).hexdigest()[:32],
+                 'event_type': 'btc.research.review_tape', 'source_identity': source_identity,
+                 'body_sha256': row['tape_sha256'], 'tape_hash_status': 'MATCH'} for row in rows]
+    @contextmanager
+    def lease(_):
+        yield lambda: True
+    monkeypatch.setattr(retention, 'SOURCE', source_path)
+    monkeypatch.setattr(retention, 'EXPORT_STATE', state_path)
+    monkeypatch.setattr(retention, 'BACKUP_ROOT', root)
+    monkeypatch.setattr(retention, '_resource_guard', lambda *_: True)
+    monkeypatch.setattr(retention, '_runtime_safe', lambda *_: True)
+    monkeypatch.setattr(retention, 'fetch_deliveries', delivery)
+    monkeypatch.setattr(retention, 'locked_remote_archive', lease)
+    assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': 1}
+    with sqlite3.connect(source_path) as db:
+        assert db.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(2,)]
+        assert db.execute('SELECT COUNT(*) FROM llm_scenario_decisions').fetchone()[0] == 2
+    assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': 0}
+    os.chmod(ack_path, 0o644)
+    with pytest.raises(ValueError, match='retention_private_file_invalid'):
+        retention.cleanup(directory, now=now)
+
+
+def test_cleanup_with_independently_restored_archive_and_real_lease(tmp_path, monkeypatch):
+    import os
+    import shlex
+    import subprocess
+    from types import SimpleNamespace
+    from observability.btc_scenario_export import _identity
+    from utils import btc_offsite_archive as archive, btc_review_retention as retention
+    from utils.sqlite_snapshot import backup_database
+
+    root = tmp_path.resolve()
+    repo = root / 'repo'
+    repo.mkdir()
+    def git(*args):
+        subprocess.run(['/usr/bin/git', *args], cwd=repo, check=True, capture_output=True, text=True)
+    git('init')
+    git('config', 'user.name', 'fixture')
+    git('config', 'user.email', 'fixture@example.invalid')
+    (repo / 'source.py').write_text('fixture')
+    git('add', 'source.py')
+    git('commit', '-m', 'fixture')
+    source, exporter, _, now, _, _ = transaction_fixture()
+    source_path, state_path = root / 'source.sqlite', root / 'exporter.sqlite'
+    with sqlite3.connect(source_path) as db:
+        source.backup(db)
+    with sqlite3.connect(state_path) as db:
+        exporter.backup(db)
+    identity = _identity(source_path)
+    with sqlite3.connect(state_path) as db:
+        db.execute("UPDATE meta SET value=? WHERE key='source_identity'", (identity,))
+    backups, directory = root / 'backups', root / 'backups' / 'one'
+    backups.mkdir(mode=0o700)
+    directory.mkdir(mode=0o700)
+    snapshot = directory / 'stock_tracking_db.sqlite.gz'
+    backup_database(source_path, snapshot, reserve_bytes=0, capture_references=True)
+    remote_root = root / 'remote'
+    monkeypatch.setattr(archive, 'backend_host', lambda _: 'fixture.local')
+    monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=100 * 1024**3))
+    def transfer(_host, needed, *, stream=None):
+        return SimpleNamespace(stdout=b'READY' if stream is None else
+                               json.dumps(archive.receive(stream, remote_root, needed)).encode())
+    monkeypatch.setattr(archive, 'ssh_archive', transfer)
+    ack = archive.archive(repo, snapshot, root / 'unused')
+    ack_path = directory / 'offsite_ack.json'
+    ack_path.write_text(json.dumps(ack))
+    ack_path.chmod(0o600)
+    def delivery(rows, source_identity):
+        return [{'event_id': hashlib.sha256(f'{source_identity}:llm_scenario_review_tapes:{row["rowid"]}'.encode()).hexdigest()[:32],
+                 'event_type': 'btc.research.review_tape', 'source_identity': source_identity,
+                 'body_sha256': row['tape_sha256'], 'tape_hash_status': 'MATCH'} for row in rows]
+    real_popen = subprocess.Popen
+    def local_ssh(args, **kwargs):
+        command = shlex.split(args[-1])
+        code = command[2].replace('/root/prism-btc-archive', str(remote_root))
+        return real_popen([os.sys.executable, '-I', '-c', code], **kwargs)
+    monkeypatch.setattr(retention.subprocess, 'Popen', local_ssh)
+    monkeypatch.setattr(retention, 'SOURCE', source_path)
+    monkeypatch.setattr(retention, 'EXPORT_STATE', state_path)
+    monkeypatch.setattr(retention, 'BACKUP_ROOT', backups)
+    monkeypatch.setattr(retention, '_resource_guard', lambda *_: True)
+    monkeypatch.setattr(retention, '_runtime_safe', lambda *_: True)
+    monkeypatch.setattr(retention, 'fetch_deliveries', delivery)
+    assert retention.cleanup(directory) == {'status': 'COMPLETE', 'removed': 1}
+    with sqlite3.connect(source_path) as db:
+        assert db.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(2,)]
+    assert (remote_root / ack['archive'] / 'receipt.json').is_file()
