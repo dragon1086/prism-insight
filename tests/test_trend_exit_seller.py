@@ -186,7 +186,7 @@ def _row(id_, ticker, buy_price, stop_loss=0.0, target_price=0.0, highest_price=
 
 
 def _patch(monkeypatch, trader, agent_holder=None, make_agent_counter=None,
-           ma50=0.0, regime="moderate_bull"):
+           ma50=0.0, regime="moderate_bull", bars=None):
     from prism_core.execution_service import ExecutionService
     from prism_core.order_intents import IntentStore
 
@@ -199,6 +199,7 @@ def _patch(monkeypatch, trader, agent_holder=None, make_agent_counter=None,
     )
     # Network-free: fixed ma_50 + regime.
     monkeypatch.setattr(lb, "_fetch_ma50", lambda market, ticker: ma50)
+    monkeypatch.setattr(lb, "_fetch_daily_bars", lambda market, ticker: list(bars or []))
     monkeypatch.setattr(lb, "_compute_live_regime", lambda market: regime)
 
     async def _fake_make_agent(market):
@@ -312,6 +313,39 @@ def test_tier15_fires_when_below_ma50_and_losing(tmp_db, monkeypatch):
     assert summary["acted"] == 1
     assert summary["shadow"] == 1
     assert _inflight(tmp_db, "SHADOW") == 1
+
+
+def _bars(closes_before, closes_after=(), entry="2026-06-01"):
+    """Business-day bars: closes_before end the session before ``entry``, closes_after start on it."""
+    import pandas as pd
+    before = pd.bdate_range(end=pd.Timestamp(entry) - pd.Timedelta(days=1), periods=len(closes_before))
+    after = pd.bdate_range(start=entry, periods=len(closes_after))
+    return [{"date": d.date().isoformat(), "close": c}
+            for d, c in list(zip(before, closes_before)) + list(zip(after, closes_after))]
+
+
+def test_entry_below_ma50_disarms_tier15_until_a_close_above_it():
+    row = {"buy_price": 97.0, "buy_date": "2026-06-01 10:00:00"}
+    assert lb.ma50_exit_armed("KR", row, _bars([100.0] * 60)) is False   # bought 3% below the line
+    assert lb.ma50_exit_armed("KR", row, _bars([100.0] * 60, [97.0, 101.0])) is True  # closed above
+    assert lb.ma50_exit_armed("KR", dict(row, buy_price=100.5), _bars([100.0] * 60)) is True  # bought above
+    assert lb.ma50_exit_armed("KR", row, _bars([100.0] * 30)) is True    # unknown history keeps the rule
+    assert lb.ma50_exit_armed("KR", row, []) is True
+
+
+def test_reentry_bought_below_ma50_is_not_sold_by_tier15(tmp_db, monkeypatch):
+    # 2026-10-29 108490: bought below the 50MA, slightly red at the close window -> no TIER1.5 sell.
+    _enable(monkeypatch, live=False, confirm=1, close_window=True)
+    _seed(tmp_db, [_row(1, "005930", 100.0, stop_loss=96.0)])
+    calls = []
+    trader = FakeTrader({"005930": 99.4}, calls=calls)
+    _patch(monkeypatch, trader, agent_holder=FakeAgent(calls), ma50=105.0, bars=_bars([105.0] * 60))
+
+    summary = asyncio.run(lb.run_market("KR", "run1"))
+
+    assert summary["entry_below_ma50"] == 1
+    assert summary["signaled"] == 0 and summary["acted"] == 0
+    assert calls == []
 
 
 # ── breach_streak: increments once/day, resets on recovery ─────────────────────

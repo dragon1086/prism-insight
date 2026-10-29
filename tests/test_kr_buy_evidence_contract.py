@@ -119,6 +119,9 @@ def test_sell_factory_matches_reviewed_volume_prompt():
     # 2026-10-22 reviewed (user decision after the FRO re-entry was sold 57 minutes after the buy): Tier 3 counts only
     # when all three lower closes are completed bars after the entry session; KR/US x ko/en and the stored
     # scenario trigger say the same (tests/test_sell_facts.py). Hard stop, -7%, trailing and the MA50 exit unchanged.
+    # 2026-10-29 reviewed (user decision after 108490 was re-entered below its 50MA at 14:00 and sold by the MA50 exit at
+    # 15:10): the system 50-day exit line adds its exception — a position bought below the 50-day MA is exempt until a
+    # completed close above it (tools/trend_exit_seller.py ma50_exit_armed). KR/US x ko/en say the same.
     source = SOURCE.read_text(encoding="utf-8")
     node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "create_sell_decision_agent")
-    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "fefd48a873c8b131d88427af3f6096cf0c826507b037eae5dcdbcb97ef8e2e76"
+    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "17b362b139a47333708064ecc826ff68796a7fc3ba1f2478acefb30aafe5df56"
