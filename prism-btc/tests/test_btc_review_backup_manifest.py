@@ -56,3 +56,19 @@ def test_changed_backup_is_rejected_without_output(tmp_path):
     with pytest.raises(ValueError, match='backup_artifact_changed'):
         subject.create_manifest(directory, directory / 'event-fingerprints.json')
     assert not (directory / 'event-fingerprints.json').exists()
+
+
+def test_archive_change_during_scan_is_rejected(tmp_path, monkeypatch):
+    directory = fixture(tmp_path)
+    original_connect = sqlite3.connect
+    class Connection:
+        def __enter__(self):
+            self.conn = original_connect((directory / 'restored.sqlite').resolve().as_uri() + '?mode=ro', uri=True)
+            return self.conn
+        def __exit__(self, *args):
+            self.conn.close()
+            (directory / 'backup.typed.gz').write_bytes(b'changed during scan')
+    monkeypatch.setattr(subject.sqlite3, 'connect', lambda *a, **kw: Connection())
+    with pytest.raises(ValueError, match='backup_artifact_changed'):
+        subject.create_manifest(directory, directory / 'event-fingerprints.json')
+    assert not (directory / 'event-fingerprints.json').exists()

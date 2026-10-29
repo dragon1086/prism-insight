@@ -59,11 +59,11 @@ def create_manifest(directory, output):
             rows.append({'rowid':rowid, 'slot':slot, 'sequence':sequence,
                          'expected_type':'text' if isinstance(body,str) else 'blob',
                          'expected_sha256':hashlib.sha256(raw).hexdigest()})
-    current = restored.stat()
-    before = originals[restored]
-    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
-            current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns):
-        raise ValueError('backup_artifact_changed')
+    for path, before in originals.items():
+        current = path.stat()
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+                current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns):
+            raise ValueError('backup_artifact_changed')
     if output.parent.resolve() != directory.resolve():
         raise ValueError('manifest_must_be_in_backup_directory')
     fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
