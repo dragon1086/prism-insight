@@ -434,17 +434,16 @@ def _backup_idle(source, proc_root=Path('/proc')):
                 continue
             if any(Path(os.fsdecode(arg)).name in names for arg in args if arg):
                 return False
-            if args and b'python' in args[0] and len(args) > 1 and args[1] == b'-':
-                try:
-                    for fd in (process / 'fd').iterdir():
-                        try:
-                            seen = fd.stat()
-                        except FileNotFoundError:
-                            continue
-                        if (seen.st_dev, seen.st_ino) == (source_stat.st_dev, source_stat.st_ino):
-                            return False
-                except FileNotFoundError:
-                    continue
+            try:
+                for fd in (process / 'fd').iterdir():
+                    try:
+                        seen = fd.stat()
+                    except FileNotFoundError:
+                        continue
+                    if (seen.st_dev, seen.st_ino) == (source_stat.st_dev, source_stat.st_ino):
+                        return False
+            except FileNotFoundError:
+                continue
         return True
     except (OSError, ValueError):
         return False

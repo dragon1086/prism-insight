@@ -128,6 +128,10 @@ def test_backup_guard_rejects_snapshot_and_streamed_database_reader(tmp_path):
     cmdline.write_bytes(b'/usr/bin/python3\0-\0')
     (fds / '4').symlink_to(source)
     assert not _backup_idle(source, proc)
+    cmdline.write_bytes(b'/usr/bin/python3\0-c\0pass\0')
+    assert not _backup_idle(source, proc)
+    cmdline.write_bytes(b'/usr/bin/sqlite3\0source.sqlite\0')
+    assert not _backup_idle(source, proc)
     (fds / '4').unlink()
     assert _backup_idle(source, proc)
 
