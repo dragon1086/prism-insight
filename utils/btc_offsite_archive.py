@@ -114,7 +114,7 @@ def ssh_archive(host, needed, *, stream=None):
                "_btc_recovery=types.ModuleType('btc_recovery_refs_embedded')\n"
                "exec(compile(" + repr(recovery_source) + ",'<btc_recovery_refs>','exec'),_btc_recovery.__dict__)\n"
                "sys.modules['btc_recovery_refs_embedded']=_btc_recovery\n")
-    suffix = ('\nprivate_root(REMOTE_ROOT); space(REMOTE_ROOT, ' + str(needed) + '); print("READY")\n'
+    suffix = ('\nprivate_root(REMOTE_ROOT); space(REMOTE_ROOT, ' + str(needed) + ', staging=True); print("READY")\n'
               if stream is None else '\nprint(json.dumps(receive(sys.stdin.buffer, REMOTE_ROOT, ' + str(needed) + ')))\n')
     command = '/usr/bin/python3 -c ' + shlex.quote(
         "exec(compile(" + repr(prelude + source + suffix) + ", '<archive>', 'exec'), {'__name__':'offsite_receiver'})")
@@ -150,7 +150,7 @@ def private_root(root):
         raise ValueError('archive_root_not_private')
 
 
-def space(root, needed):
+def space(root, needed, *, staging=False):
     if not isinstance(needed, int) or not 0 <= needed <= 4 * RAW_CAP:
         raise ValueError('invalid_space_requirement')
     usage = 0
@@ -159,7 +159,7 @@ def space(root, needed):
             raise ValueError('archive_symlink')
         if p.is_file():
             usage += p.stat().st_size
-    if usage + needed > CAP or shutil.disk_usage(root).free < RESERVE + needed:
+    if usage + (0 if staging else needed) > CAP or shutil.disk_usage(root).free < RESERVE + needed:
         raise OSError('archive_space_limit')
 
 
@@ -188,6 +188,26 @@ def restore_snapshot(zipped, manifest, raw):
         db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
         if db.execute('PRAGMA quick_check').fetchall() != [('ok',)]:
             raise ValueError('snapshot_quick_check')
+
+
+def verify_streamed_snapshot(zipped, manifest):
+    """Verify bytes without a second on-disk copy; receiver rechecks SQLite and refs."""
+    if (manifest.get('sqlite_quick_check') != 'ok' or manifest.get('decompression_verified') is not True
+            or manifest.get('source_writes') != 0 or type(manifest.get('raw_bytes')) is not int
+            or not 0 < manifest['raw_bytes'] <= RAW_CAP
+            or zipped.stat().st_size != manifest.get('compressed_bytes')
+            or digest(zipped) != manifest.get('compressed_sha256')):
+        raise ValueError('snapshot_manifest_mismatch')
+    total, raw_hash = 0, hashlib.sha256()
+    deadline = time.monotonic() + 600
+    with gzip.open(zipped, 'rb') as source:
+        while chunk := source.read(1024 * 1024):
+            total += len(chunk)
+            if total > manifest['raw_bytes'] or time.monotonic() > deadline:
+                raise ValueError('snapshot_expansion_bound')
+            raw_hash.update(chunk)
+    if total != manifest['raw_bytes'] or raw_hash.hexdigest() != manifest.get('raw_sha256'):
+        raise ValueError('snapshot_raw_mismatch')
 
 
 def referenced_commits(raw):
@@ -332,7 +352,7 @@ def receive(stream, root, needed):
             raise ValueError('unsafe_archive_lock')
         os.fchmod(lock_fd, 0o600)
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        space(root, needed)
+        space(root, needed, staging=True)
         stage = Path(tempfile.mkdtemp(prefix='.incoming-', dir=root))
         seen, transferred = set(), 0
         with tarfile.open(fileobj=stream, mode='r|') as tar:
@@ -361,7 +381,7 @@ def receive(stream, root, needed):
             raise ValueError('archive_space_binding')
         if needed < (transferred + int(manifest['raw_bytes']) + 3 * (stage / 'history.bundle').stat().st_size):
             raise ValueError('archive_restore_space_bound')
-        space(root, needed - transferred)
+        space(root, needed - transferred, staging=True)
         raw = stage / 'restored.sqlite'
         restore_snapshot(stage / FILES[0], manifest, raw)
         actual, coverage = referenced_commits(raw)
@@ -390,6 +410,7 @@ def receive(stream, root, needed):
             json.dump(ack, dst)
             dst.flush()
             os.fsync(dst.fileno())
+        space(root, 0)
         sync_dir(stage)
         destination = root / ('archive-' + uuid.uuid4().hex)
         os.rename(stage, destination)
@@ -428,14 +449,23 @@ def archive(repo, snapshot, config):
     if not git_objects.is_absolute():
         git_objects = repo / git_objects
     objects_size = sum(p.stat().st_size for p in git_objects.rglob('*') if p.is_file())
-    local_need = int(manifest['raw_bytes']) + 4 * objects_size + 2 * snapshot.stat().st_size + 1024**2
+    scan = manifest.get('code_reference_scan')
+    if scan is not None and (not isinstance(scan, dict) or set(scan) != {'commits', 'coverage'}
+            or not isinstance(scan['commits'], list) or not isinstance(scan['coverage'], dict)
+            or any(not isinstance(c, str) or not re.fullmatch('[0-9a-f]{40}', c) for c in scan['commits'])):
+        raise ValueError('snapshot_reference_scan_invalid')
+    local_need = (0 if scan is not None else int(manifest['raw_bytes'])) + 4 * objects_size + 2 * snapshot.stat().st_size + 1024**2
     if shutil.disk_usage(private).free < RESERVE + local_need:
         raise OSError('local_archive_space_limit')
     with tempfile.TemporaryDirectory(prefix='.btc-offsite-', dir=private) as tmp:
         stage = Path(tmp)
-        raw = stage / 'snapshot.sqlite'
-        restore_snapshot(snapshot, manifest, raw)
-        commits, coverage = referenced_commits(raw)
+        if scan is None:
+            raw = stage / 'snapshot.sqlite'
+            restore_snapshot(snapshot, manifest, raw)
+            commits, coverage = referenced_commits(raw)
+        else:
+            verify_streamed_snapshot(snapshot, manifest)
+            commits, coverage = scan['commits'], scan['coverage']
         source_head = run(['git', 'rev-parse', 'HEAD'], cwd=repo).strip()
         bundle = stage / 'history.bundle'
         make_bundle(repo, bundle, sorted(set(commits) | {source_head}), stage / 'source.git')
