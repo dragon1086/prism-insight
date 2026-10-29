@@ -348,6 +348,37 @@ def test_reentry_bought_below_ma50_is_not_sold_by_tier15(tmp_db, monkeypatch):
     assert calls == []
 
 
+def test_on_entry_session_only_until_the_first_close():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    kst = ZoneInfo("Asia/Seoul")
+    row = {"buy_date": "2026-06-01 14:00:00"}
+    assert lb.on_entry_session("KR", row, datetime(2026, 6, 1, 15, 15, tzinfo=kst)) is True
+    assert lb.on_entry_session("KR", row, datetime(2026, 6, 2, 15, 15, tzinfo=kst)) is False
+    # US: bought 02:52 KST = 13:52 ET the same session, close window 15:56 ET
+    us = {"buy_date": "2026-10-30 02:52:51"}
+    assert lb.on_entry_session("US", us, datetime(2026, 10, 30, 4, 56, tzinfo=kst)) is True
+    assert lb.on_entry_session("US", us, datetime(2026, 10, 31, 4, 56, tzinfo=kst)) is False
+    assert lb.on_entry_session("KR", {"buy_date": None}) is False
+
+
+def test_entry_day_tier15_waits_for_a_close(tmp_db, monkeypatch):
+    # 2026-10-30 LITE: re-entry bought 1% above the 50MA, -1.5% at the close window the same day.
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    _enable(monkeypatch, live=False, confirm=1, close_window=True)
+    _seed(tmp_db, [_row(1, "005930", 100.0, stop_loss=96.0)])
+    calls = []
+    trader = FakeTrader({"005930": 98.5}, calls=calls)
+    _patch(monkeypatch, trader, agent_holder=FakeAgent(calls), ma50=99.5)
+    monkeypatch.setattr(lb, "_now", lambda: datetime(2026, 6, 1, 15, 15, tzinfo=ZoneInfo("Asia/Seoul")))
+
+    summary = asyncio.run(lb.run_market("KR", "run1"))
+
+    assert summary["entry_day_ma50"] == 1
+    assert summary["signaled"] == 0 and calls == []
+
+
 # ── breach_streak: increments once/day, resets on recovery ─────────────────────
 def test_breach_streak_increments_once_per_day_and_gates(tmp_db, monkeypatch):
     # confirm=2: a single day's breach (streak=1) must NOT act (gated).
