@@ -43,3 +43,40 @@ def candidates(conn, now, *, after_slot=-1, limit=100):
                                               separators=(',', ':')).encode()).hexdigest()
         found.append({'rowid': rowid, 'slot': slot, 'tape_sha256': digest, 'decision_sha256': decision})
     return {'cutoff_slot': cutoff_slot, 'last_scanned_slot': last, 'candidates': found}
+
+
+def matching_evidence(current, archived, delivered, source_identity):
+    """Match snapshots and ClickStack summaries; archive verification is separate."""
+    if (not isinstance(source_identity, str) or len(source_identity) != 64
+            or any(c not in '0123456789abcdef' for c in source_identity)):
+        raise ValueError('retention_identity_invalid')
+    source_rows = current['candidates']
+    archive_rows = archived['candidates']
+    if not all(isinstance(rows, list) for rows in (source_rows, archive_rows, delivered)):
+        raise ValueError('retention_evidence_invalid')
+    archive_by_slot = {row['slot']: row for row in archive_rows}
+    if len(archive_by_slot) != len(archive_rows):
+        raise ValueError('retention_archive_ambiguous')
+    delivery_by_id = {}
+    for row in delivered:
+        event_id = row['event_id']
+        if event_id in delivery_by_id and delivery_by_id[event_id] != row:
+            raise ValueError('retention_delivery_ambiguous')
+        delivery_by_id[event_id] = row
+    approved = []
+    seen = set()
+    for row in source_rows:
+        slot, rowid = row['slot'], row['rowid']
+        if type(slot) is not int or type(rowid) is not int or slot in seen:
+            raise ValueError('retention_source_ambiguous')
+        seen.add(slot)
+        if archive_by_slot.get(slot) != row:
+            continue
+        event_id = hashlib.sha256(f'{source_identity}:llm_scenario_review_tapes:{rowid}'.encode()).hexdigest()[:32]
+        receipt = delivery_by_id.get(event_id)
+        if (receipt and receipt.get('source_identity') == source_identity
+                and receipt.get('event_type') == 'btc.research.review_tape'
+                and receipt.get('body_sha256') == row['tape_sha256']
+                and receipt.get('tape_hash_status') == 'MATCH'):
+            approved.append(row)
+    return approved

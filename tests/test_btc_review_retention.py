@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from utils.btc_review_retention import candidates
+from utils.btc_review_retention import candidates, matching_evidence
 
 
 def test_only_old_complete_flat_waits_become_candidates():
@@ -47,3 +47,21 @@ def test_invalid_boundaries_fail_closed(kwargs):
     with sqlite3.connect(':memory:') as conn:
         with pytest.raises(ValueError, match='retention_input_invalid'):
             candidates(conn, **kwargs)
+
+
+def test_snapshot_and_delivery_must_match_each_candidate():
+    identity = 'a' * 64
+    first = {'rowid': 7, 'slot': 7, 'tape_sha256': 'b' * 64, 'decision_sha256': 'c' * 64}
+    second = {'rowid': 8, 'slot': 8, 'tape_sha256': 'd' * 64, 'decision_sha256': 'e' * 64}
+    event_id = hashlib.sha256(f'{identity}:llm_scenario_review_tapes:7'.encode()).hexdigest()[:32]
+    receipt = {'event_id': event_id, 'event_type': 'btc.research.review_tape', 'source_identity': identity,
+               'body_sha256': first['tape_sha256'], 'tape_hash_status': 'MATCH'}
+    current = {'candidates': [first, second]}
+    archived = {'candidates': [first, dict(second, decision_sha256='f' * 64)]}
+    assert matching_evidence(current, archived, [receipt], identity) == [first]
+    assert matching_evidence(current, archived, [dict(receipt, body_sha256='0' * 64)], identity) == []
+    assert matching_evidence(current, archived, [], identity) == []
+    with pytest.raises(ValueError, match='delivery_ambiguous'):
+        matching_evidence(current, archived, [receipt, dict(receipt, body_sha256='0' * 64)], identity)
+    with pytest.raises(ValueError, match='identity_invalid'):
+        matching_evidence(current, archived, [receipt], 'invalid')
