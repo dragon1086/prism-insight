@@ -539,6 +539,17 @@ def test_cleanup_with_independently_restored_archive_and_real_lease(tmp_path, mo
         assert db.execute('SELECT slot,body FROM llm_scenario_review_tapes WHERE slot=1').fetchone() == (1, '{"kind":"WAIT"}')
     proof = json.loads((Path(restored['directory']) / 'restore-proof.json').read_text())
     assert proof['raw_sha256'] == restored['raw_sha256'] and proof['source_head'] == restored['source_head']
+    monkeypatch.setattr(retention.subprocess, 'Popen', local_ssh)
+    original = snapshot.read_bytes()
+    snapshot.write_bytes(original + b'tamper')
+    with pytest.raises(ValueError, match='retention_local_snapshot_invalid'):
+        retention.remove_uploaded_snapshot(directory)
+    assert snapshot.exists()
+    snapshot.write_bytes(original)
+    assert retention.remove_uploaded_snapshot(directory) == {'status': 'REMOVED'}
+    assert not snapshot.exists() and Path(str(snapshot) + '.manifest.json').is_file()
+    assert (remote_root / ack['archive'] / 'snapshot.sqlite.gz').is_file()
+    assert retention.remove_uploaded_snapshot(directory) == {'status': 'ALREADY_REMOVED'}
 
 
 def test_runner_reports_result_and_redacts_exception(monkeypatch, capsys):

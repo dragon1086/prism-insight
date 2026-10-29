@@ -450,20 +450,66 @@ def _backup_idle(source, proc_root=Path('/proc')):
         return False
 
 
-def cleanup(backup_dir, *, now=None):
-    """Apply one bounded batch only after archive, delivery and runtime rechecks."""
+def _backup_evidence(backup_dir):
     directory = Path(backup_dir)
     if (BACKUP_ROOT.is_symlink() or directory.is_symlink() or not directory.is_dir()
             or directory.resolve().parent != BACKUP_ROOT.resolve()
             or directory.stat().st_uid != os.getuid() or directory.stat().st_mode & 0o077):
         raise ValueError('retention_backup_directory_invalid')
-    if SOURCE.is_symlink() or EXPORT_STATE.is_symlink() or not SOURCE.is_file() or not EXPORT_STATE.is_file():
+    if SOURCE.is_symlink() or not SOURCE.is_file():
         raise ValueError('retention_source_invalid')
     from observability.btc_scenario_export import _identity
     identity = _identity(SOURCE)
     manifest = _private_read(directory / 'stock_tracking_db.sqlite.gz.manifest.json', 4 * 1024 * 1024)
     ack = json.loads(_private_read(directory / 'offsite_ack.json', 65536))
     index = verified_archive_index(manifest, ack, identity)
+    return directory, identity, manifest, ack, index
+
+
+def remove_uploaded_snapshot(backup_dir):
+    """Remove only this redundant local gzip after rechecking the remote archive."""
+    directory, _, raw_manifest, ack, _ = _backup_evidence(backup_dir)
+    manifest = json.loads(raw_manifest)
+    path = directory / 'stock_tracking_db.sqlite.gz'
+    if path.is_symlink():
+        raise ValueError('retention_local_snapshot_invalid')
+    if not path.exists():
+        return {'status': 'ALREADY_REMOVED'}
+    with locked_remote_archive(ack) as lease:
+        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        try:
+            before = os.fstat(fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_mode & 0o077
+                    or before.st_nlink != 1 or before.st_size != manifest.get('compressed_bytes')):
+                raise ValueError('retention_local_snapshot_invalid')
+            digest = hashlib.sha256()
+            with os.fdopen(fd, 'rb', closefd=False) as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                    if lease() is not True:
+                        raise ValueError('retention_archive_lease_lost')
+                    digest.update(chunk)
+            after, current = os.fstat(fd), path.lstat()
+            if (digest.hexdigest() != manifest.get('compressed_sha256') or lease() is not True
+                    or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                    or (before.st_dev, before.st_ino) != (current.st_dev, current.st_ino)):
+                raise ValueError('retention_local_snapshot_changed')
+            path.unlink()
+            directory_fd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            os.close(fd)
+    return {'status': 'REMOVED'}
+
+
+def cleanup(backup_dir, *, now=None):
+    """Apply one bounded batch only after archive, delivery and runtime rechecks."""
+    directory, identity, _, ack, index = _backup_evidence(backup_dir)
+    if EXPORT_STATE.is_symlink() or not EXPORT_STATE.is_file():
+        raise ValueError('retention_source_invalid')
     at = time.time() if now is None else now
     with closing(sqlite3.connect(SOURCE.resolve().as_uri() + '?mode=rw', uri=True, timeout=.1)) as conn:
         selected = []

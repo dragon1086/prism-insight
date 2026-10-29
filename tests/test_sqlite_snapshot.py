@@ -250,6 +250,10 @@ case "$1" in
       exit 1
     fi
     ;;
+  */remove_uploaded_btc_backup.py)
+    printf called > "$REMOVE_LOG"
+    printf '{"status":"REMOVED"}\\n'
+    ;;
   *) exit 1 ;;
 esac
 ''')
@@ -259,7 +263,8 @@ esac
     scheduler.chmod(0o755)
     script = Path(__file__).resolve().parents[1] / 'utils/backup_configs.sh'
     env = {**os.environ, 'HOME': str(home), 'PATH': str(tools) + ':' + os.environ['PATH'],
-           'ARCHIVE_SUCCESS': '1' if archive_success else '0', 'SCHEDULE_LOG': str(tmp_path / 'scheduled')}
+           'ARCHIVE_SUCCESS': '1' if archive_success else '0', 'SCHEDULE_LOG': str(tmp_path / 'scheduled'),
+           'REMOVE_LOG': str(tmp_path / 'removed')}
     run = subprocess.run(['bash', str(script)], env=env, capture_output=True, text=True, timeout=30)
     assert (run.returncode == 0) is archive_success
     ack, = (home / 'prism_backups').glob('*/offsite_ack.json')
@@ -267,6 +272,7 @@ esac
     assert ack.stat().st_mode & 0o077 == 0
     schedule = tmp_path / 'scheduled'
     assert schedule.exists() is archive_success
+    assert (tmp_path / 'removed').exists() is archive_success
     if archive_success:
         assert 'run_btc_review_retention.py' in schedule.read_text()
     if not archive_success:

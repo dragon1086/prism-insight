@@ -98,6 +98,14 @@ else
     exit 1
 fi
 
+# Drop only the exact uploaded local gzip after independently rechecking its archive.
+if PYTHONPATH="$PROJECT_DIR/prism-btc:$PROJECT_DIR" PRISM_DISABLE_SIGNAL_PUBLISH=1 \
+    python3 "$PROJECT_DIR/tools/remove_uploaded_btc_backup.py" "$BACKUP_DIR" | tee -a "$LOG_FILE"; then
+    log "검증된 원격 사본을 확인해 로컬 DB 압축 중복을 정리했습니다"
+else
+    log "⚠ 원격 사본 재확인 실패; 로컬 DB 압축본을 보존합니다"
+fi
+
 # One transient timer starts a bounded cleanup in the existing idle window.
 CURRENT_SECOND=$((10#$(date +%S)))
 RETENTION_DELAY=$(((90 - CURRENT_SECOND) % 60))
