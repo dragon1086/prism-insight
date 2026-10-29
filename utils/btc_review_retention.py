@@ -5,8 +5,10 @@ This module never deletes data. A candidate is not proof of safe deletion.
 import hashlib
 import json
 import math
+from contextlib import contextmanager
 from pathlib import Path
 import re
+import select
 import shlex
 import subprocess
 import sys
@@ -233,8 +235,9 @@ def verified_archive_index(manifest_bytes, ack, source_identity):
         raise ValueError('retention_archive_unverified') from exc
 
 
-def verify_remote_archive(ack):
-    """Recheck the private archive files and receiver receipt before any deletion."""
+@contextmanager
+def locked_remote_archive(ack):
+    """Verify the archive while holding the receiver's lock until cleanup ends."""
     if (not isinstance(ack, dict) or ack.get('status') != 'VERIFIED'
             or ack.get('retention_index_verified') is not True
             or not isinstance(ack.get('archive'), str)
@@ -246,12 +249,19 @@ def verify_remote_archive(ack):
     expected = {key: ack[key] for key in ('archive', 'raw_sha256', 'compressed_sha256', 'manifest_sha256',
                                            'bundle_sha256', 'archive_metadata_sha256')}
     remote = r'''
-import hashlib,json,os,stat,sys,time
+import fcntl,hashlib,json,os,select,stat,sys,time
 from pathlib import Path
 expected=json.loads(sys.stdin.readline())
 root=Path('/root/prism-btc-archive'); target=root/expected['archive']
 if root.is_symlink() or target.is_symlink() or not target.is_dir() or target.resolve().parent!=root.resolve():
     raise ValueError('archive_path_invalid')
+lock=root/'.receive.lock'
+if lock.is_symlink():raise ValueError('archive_lock_invalid')
+lock_fd=os.open(lock,os.O_CREAT|os.O_RDWR|getattr(os,'O_NOFOLLOW',0),0o600)
+lock_stat=os.fstat(lock_fd)
+if not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_uid!=os.getuid() or lock_stat.st_nlink!=1:
+    raise ValueError('archive_lock_invalid')
+os.fchmod(lock_fd,0o600);fcntl.flock(lock_fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
 if target.stat().st_uid!=os.getuid() or target.stat().st_mode & 0o077:
     raise ValueError('archive_permissions_invalid')
 deadline=time.monotonic()+35
@@ -275,7 +285,8 @@ if not stat.S_ISREG(st.st_mode) or st.st_uid!=os.getuid() or st.st_mode & 0o077 
 record=json.loads(receipt.read_text())
 if record.get('status')!='VERIFIED' or record.get('retention_index_verified') is not True or any(record.get(k)!=v for k,v in expected.items() if k!='archive'):
     raise ValueError('archive_receipt_mismatch')
-print('VERIFIED')
+print('VERIFIED',flush=True)
+select.select([sys.stdin],[],[],30)
 '''
     from utils.btc_offsite_archive import backend_host
     host = backend_host(Path('/etc/prism-observability/tunnel.env'))
@@ -283,7 +294,25 @@ print('VERIFIED')
         raise ValueError('retention_backend_missing')
     command = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', 'root@' + host,
                '/usr/bin/python3 -c ' + shlex.quote(remote)]
-    result = subprocess.run(command, input=json.dumps(expected) + '\n', text=True,
-                            capture_output=True, check=True, timeout=45)
-    if result.stdout.strip() != 'VERIFIED':
-        raise ValueError('retention_archive_unverified')
+    proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True, bufsize=1)
+    try:
+        proc.stdin.write(json.dumps(expected) + '\n')
+        proc.stdin.flush()
+        readable, _, _ = select.select([proc.stdout], [], [], 45)
+        if not readable or proc.stdout.readline().strip() != 'VERIFIED' or proc.poll() is not None:
+            raise ValueError('retention_archive_unverified')
+        yield lambda: proc.poll() is None
+    finally:
+        proc.stdin.close()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=3)
+        proc.stdout.close()
+
+
+def verify_remote_archive(ack):
+    with locked_remote_archive(ack):
+        pass

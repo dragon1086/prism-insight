@@ -138,6 +138,7 @@ def test_clickstack_lookup_is_read_only_bounded_and_rejects_unexpected_rows(monk
 
 
 def test_remote_archive_rechecks_files_and_rejects_tampering(tmp_path, monkeypatch):
+    import fcntl
     import os
     import shlex
     import subprocess
@@ -158,16 +159,23 @@ def test_remote_archive_rechecks_files_and_rejects_tampering(tmp_path, monkeypat
     receipt = target / 'receipt.json'
     receipt.write_text(json.dumps({k: v for k, v in ack.items() if k != 'archive'}))
     receipt.chmod(0o600)
-    real_run = subprocess.run
+    real_popen = subprocess.Popen
     def local_ssh(args, **kwargs):
         command = shlex.split(args[-1])
         code = command[2].replace('/root/prism-btc-archive', str(root))
-        return real_run([os.sys.executable, '-I', '-c', code], **kwargs)
+        return real_popen([os.sys.executable, '-I', '-c', code], **kwargs)
     monkeypatch.setattr(btc_offsite_archive, 'backend_host', lambda _: 'fixture.local')
-    monkeypatch.setattr(btc_review_retention.subprocess, 'run', local_ssh)
-    verify_remote_archive(ack)
+    monkeypatch.setattr(btc_review_retention.subprocess, 'Popen', local_ssh)
+    with btc_review_retention.locked_remote_archive(ack) as alive:
+        assert alive()
+        with (root / '.receive.lock').open('r+') as lock:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with (root / '.receive.lock').open('r+') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(lock, fcntl.LOCK_UN)
     (target / 'snapshot.sqlite.gz').write_bytes(b'tampered')
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(ValueError, match='retention_archive_unverified'):
         verify_remote_archive(ack)
 
 
@@ -221,6 +229,11 @@ def test_transaction_rolls_back_when_guard_or_export_anchor_fails():
     with pytest.raises(ValueError, match='retention_guard_failed'):
         _delete_matched(source, exporter, archived, receipts, identity, now,
                         guard=lambda: next(checks), lease_alive=lambda: True)
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 2
+    leases = iter((True, True, False))
+    with pytest.raises(ValueError, match='retention_guard_failed'):
+        _delete_matched(source, exporter, archived, receipts, identity, now,
+                        guard=lambda: True, lease_alive=lambda: next(leases))
     assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 2
     exporter.execute("UPDATE anchors SET ref='changed'")
     exporter.commit()
