@@ -406,7 +406,8 @@ def test_cleanup_uses_backup_ack_delivery_lease_and_transaction(tmp_path, monkey
         retention.cleanup(directory, now=now)
 
 
-def test_cleanup_processes_four_batches_and_resumes_cursor(tmp_path, monkeypatch):
+@pytest.mark.parametrize('missing_first', [False, True])
+def test_cleanup_processes_four_batches_and_resumes_cursor(tmp_path, monkeypatch, missing_first):
     from contextlib import contextmanager
     from observability.btc_scenario_export import _identity
     from utils import btc_review_retention as retention
@@ -443,7 +444,8 @@ def test_cleanup_processes_four_batches_and_resumes_cursor(tmp_path, monkeypatch
         calls.append(len(rows))
         return [{'event_id': hashlib.sha256(f'{source_identity}:llm_scenario_review_tapes:{row["rowid"]}'.encode()).hexdigest()[:32],
                  'event_type': 'btc.research.review_tape', 'source_identity': source_identity,
-                 'body_sha256': row['tape_sha256'], 'tape_hash_status': 'MATCH'} for row in rows]
+                 'body_sha256': row['tape_sha256'], 'tape_hash_status': 'MATCH'} for row in rows
+                if not (missing_first and row['slot'] == 1)]
     @contextmanager
     def lease(_, *, align=False):
         yield lambda: True
@@ -455,13 +457,15 @@ def test_cleanup_processes_four_batches_and_resumes_cursor(tmp_path, monkeypatch
     monkeypatch.setattr(retention, 'fetch_deliveries', delivery)
     monkeypatch.setattr(retention, 'locked_remote_archive', lease)
     prepare(-1)
-    assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': 400}
+    assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': 399 if missing_first else 400}
     assert calls == [100, 100, 100, 100]
     cursor = root / '.btc-retention-cursor.json'
-    assert retention.read_cursor(cursor, identity) == 400
-    prepare(400)
-    assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': 1}
-    assert retention.read_cursor(cursor, identity) == -1
+    assert retention.read_cursor(cursor, identity) == (0 if missing_first else 400)
+    prepare(retention.read_cursor(cursor, identity))
+    expected_second = 2 if missing_first else 1
+    missing_first = False
+    assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': expected_second}
+    assert retention.read_cursor(cursor, identity) == 401
     with sqlite3.connect(source_path) as db:
         assert db.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(402,)]
         assert db.execute('SELECT COUNT(*) FROM llm_scenario_decisions').fetchone()[0] == 402

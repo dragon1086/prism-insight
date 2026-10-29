@@ -532,7 +532,7 @@ def cleanup(backup_dir, *, now=None):
         progress = ({'truncated': True, 'last_scanned_slot': selected[-1]['slot']}
                     if len(selected) == 400 else index)
         if not matched:
-            _save_cursor(progress, identity)
+            _save_cursor({'truncated': True, 'last_scanned_slot': selected[0]['slot'] - 1}, identity)
             return {'status': 'DEFERRED', 'removed': 0}
         removed = []
         try:
@@ -548,5 +548,9 @@ def cleanup(backup_dir, *, now=None):
             if removed:
                 return {'status': 'PARTIAL', 'removed': len(removed), 'error_type': type(exc).__name__}
             raise
+        removed_slots = set(removed)
+        remaining = [item['slot'] for item in selected if item['slot'] not in removed_slots]
+        if remaining:
+            progress = {'truncated': True, 'last_scanned_slot': min(remaining) - 1}
         _save_cursor(progress, identity)
         return {'status': 'COMPLETE', 'removed': len(removed)}
