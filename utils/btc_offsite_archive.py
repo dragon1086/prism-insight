@@ -237,7 +237,9 @@ def verify_retention_index(raw, manifest):
             raise TimeoutError('retention_index_deadline')
     with closing(sqlite3.connect(raw.as_uri() + '?mode=ro', uri=True)) as db:
         db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
-        if snapshot_index(db, int(started), guard=guard) != manifest['btc_retention_index']:
+        index = manifest['btc_retention_index']
+        after_slot = index.get('after_slot') if isinstance(index, dict) else -1
+        if snapshot_index(db, int(started), after_slot=after_slot, guard=guard) != index:
             raise ValueError('retention_index_mismatch')
     return True
 

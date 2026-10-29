@@ -67,11 +67,31 @@ def test_snapshot_index_has_bounded_scan():
         index = snapshot_index(conn, 7 * 86400 + 300 * 3000)
         assert index['scanned'] == 2000 and index['last_scanned_slot'] == 2000
         assert index['truncated'] and index['candidates'] == []
+        next_index = snapshot_index(conn, 7 * 86400 + 300 * 3000, after_slot=index['last_scanned_slot'])
+        assert next_index['scanned'] == 1 and next_index['last_scanned_slot'] == 2001
+        assert next_index['truncated'] is False
         def stop():
             raise TimeoutError('fixture_limit')
         with pytest.raises(TimeoutError, match='fixture_limit'):
             snapshot_index(conn, 7 * 86400 + 300 * 3000, guard=stop)
         assert conn.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 2001
+
+
+def test_cursor_is_private_bound_to_source_and_wraps(tmp_path, monkeypatch):
+    from utils import btc_review_retention as retention
+    root = tmp_path / 'backups'
+    root.mkdir(mode=0o700)
+    monkeypatch.setattr(retention, 'BACKUP_ROOT', root)
+    cursor = root / '.btc-retention-cursor.json'
+    identity = 'a' * 64
+    assert retention.read_cursor(cursor, identity) == -1
+    retention._save_cursor({'truncated': True, 'last_scanned_slot': 42}, identity)
+    assert retention.read_cursor(cursor, identity) == 42
+    assert retention.read_cursor(cursor, 'b' * 64) == -1
+    retention._save_cursor({'truncated': False, 'last_scanned_slot': 99}, identity)
+    assert retention.read_cursor(cursor, identity) == -1
+    cursor.chmod(0o644)
+    assert retention.read_cursor(cursor, identity) == -1
 
 
 def test_snapshot_and_delivery_must_match_each_candidate():
@@ -96,7 +116,8 @@ def test_verified_archive_index_requires_matching_receipt_and_source():
     identity = 'a' * 64
     started = 700000.5
     index = {'version': 1, 'as_of': int(started),
-             'cutoff_slot': int((started - 7 * 86400) // 300), 'candidates': []}
+             'cutoff_slot': int((started - 7 * 86400) // 300), 'after_slot': -1,
+             'last_scanned_slot': -1, 'scanned': 0, 'truncated': False, 'candidates': []}
     data = json.dumps({'source_identity_sha256': identity, 'started_at': started,
                        'completed_at': started + 1, 'raw_sha256': 'b' * 64,
                        'compressed_sha256': 'c' * 64, 'btc_retention_index': index}).encode()

@@ -16,6 +16,7 @@ import subprocess
 import sqlite3
 import stat
 import sys
+import tempfile
 import time
 
 if 'btc_review_storage_embedded' in sys.modules:
@@ -66,7 +67,7 @@ def candidates(conn, now, *, after_slot=-1, limit=100, guard=None):
     return {'cutoff_slot': cutoff_slot, 'last_scanned_slot': last, 'scanned': scanned, 'candidates': found}
 
 
-def snapshot_index(conn, now, *, guard=None):
+def snapshot_index(conn, now, *, after_slot=-1, guard=None):
     """Bound the inventory; the receiver can independently recompute it."""
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     required = {'llm_scenario_review_tapes', 'llm_scenario_decisions'}
@@ -74,7 +75,9 @@ def snapshot_index(conn, now, *, guard=None):
         return None
     if not required <= tables:
         raise ValueError('retention_schema_incomplete')
-    last, scanned, found = -1, 0, []
+    if type(after_slot) is not int or after_slot < -1:
+        raise ValueError('retention_cursor_invalid')
+    last, scanned, found = after_slot, 0, []
     while scanned < 2000:
         size = min(100, 2000 - scanned)
         result = candidates(conn, now, after_slot=last, limit=size, guard=guard)
@@ -84,7 +87,7 @@ def snapshot_index(conn, now, *, guard=None):
         if result['scanned'] < size:
             break
     return {'version': 1, 'as_of': int(now), 'cutoff_slot': int((now - 7 * 86400) // 300),
-            'last_scanned_slot': last, 'scanned': scanned, 'truncated': scanned == 2000,
+            'after_slot': after_slot, 'last_scanned_slot': last, 'scanned': scanned, 'truncated': scanned == 2000,
             'candidates': found}
 
 
@@ -233,6 +236,10 @@ def verified_archive_index(manifest_bytes, ack, source_identity):
                 or not isinstance(index, dict) or type(index.get('version')) is not int
                 or index['version'] != 1 or type(index.get('as_of')) is not int or index['as_of'] != int(started)
                 or type(index.get('cutoff_slot')) is not int or index['cutoff_slot'] != int((started - 7 * 86400) // 300)
+                or type(index.get('after_slot')) is not int or index['after_slot'] < -1
+                or type(index.get('last_scanned_slot')) is not int or index['last_scanned_slot'] < index['after_slot']
+                or type(index.get('scanned')) is not int or not 0 <= index['scanned'] <= 2000
+                or type(index.get('truncated')) is not bool
                 or not isinstance(index.get('candidates'), list)):
             raise ValueError('retention_archive_unverified')
         return index
@@ -346,6 +353,41 @@ def _private_read(path, maximum):
         os.close(fd)
 
 
+def read_cursor(path, source_identity):
+    try:
+        value = json.loads(_private_read(Path(path), 4096))
+        if (not isinstance(value, dict) or set(value) != {'source_identity', 'after_slot'}
+                or value['source_identity'] != source_identity or type(value['after_slot']) is not int
+                or value['after_slot'] < -1):
+            return -1
+        return value['after_slot']
+    except (OSError, ValueError, TypeError):
+        return -1
+
+
+def _save_cursor(index, source_identity):
+    after = index['last_scanned_slot'] if index['truncated'] else -1
+    path = BACKUP_ROOT / '.btc-retention-cursor.json'
+    if path.is_symlink():
+        raise ValueError('retention_cursor_invalid')
+    fd, name = tempfile.mkstemp(prefix='.btc-retention-', dir=BACKUP_ROOT)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            json.dump({'source_identity': source_identity, 'after_slot': after}, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+        directory_fd = os.open(BACKUP_ROOT, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
 def _runtime_safe(conn):
     from live.scenario_incident_epoch import active_halts, unresolved
     row = conn.execute('SELECT body FROM llm_scenario_state WHERE id=1').fetchone()
@@ -387,6 +429,7 @@ def cleanup(backup_dir, *, now=None):
                 if len(selected) == 100:
                     break
         if not selected:
+            _save_cursor(index, identity)
             return {'status': 'NO_CANDIDATES', 'removed': 0}
         delivered = fetch_deliveries(selected, identity)
         batch = {'candidates': selected}
@@ -396,4 +439,13 @@ def cleanup(backup_dir, *, now=None):
                 return _resource_guard(SOURCE, identity) and _runtime_safe(conn)
             removed = _delete_matched(conn, exporter, batch, delivered, identity, at,
                                       guard=guard, lease_alive=lease)
+        remaining = False
+        for item in index['candidates']:
+            slot = item['slot']
+            current = candidates(conn, at, after_slot=slot - 1, limit=1)['candidates']
+            if current and current[0] == item:
+                remaining = True
+                break
+        if not remaining:
+            _save_cursor(index, identity)
         return {'status': 'COMPLETE', 'removed': len(removed)}
