@@ -5276,12 +5276,13 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         """Schedule Firebase notification as non-blocking task. Returns the task."""
         return asyncio.create_task(self._notify_firebase(message, chat_id, message_id, msg_type=msg_type))
 
-    async def _send_with_retry(self, chat_id: str, text: str, max_attempts: int = 3):
-        """Retry explicit rate rejection only; ambiguous delivery requires review."""
+    async def _send_with_retry(self, chat_id: str, text: str, max_attempts: int = 3, broadcast: bool = False):
+        """Retry explicit rate rejection only; ambiguous delivery requires review (broadcast: resend once)."""
         from messaging.telegram_delivery import send_message_once_or_rate_retry
 
         return await send_message_once_or_rate_retry(
-            self.telegram_bot, chat_id=chat_id, text=text, attempts=max_attempts
+            self.telegram_bot, chat_id=chat_id, text=text, attempts=max_attempts,
+            resend_unknown_once=broadcast,
         )
 
     async def send_telegram_message(self, chat_id: str, language: str = "ko",
@@ -5502,7 +5503,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             MAX_MESSAGE_LENGTH = 4096
 
                             if len(translated_message) <= MAX_MESSAGE_LENGTH:
-                                result = await self._send_with_retry(channel_id, translated_message)
+                                result = await self._send_with_retry(channel_id, translated_message, broadcast=True)
                                 firebase_tasks.append(self._schedule_firebase(translated_message, channel_id, result.message_id, msg_type=msg_type))
                             else:
                                 # Split long messages
@@ -5523,7 +5524,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 first_msg_id = None
                                 for i, part in enumerate(parts, 1):
                                     result = await self._send_with_retry(
-                                        channel_id, f"[{i}/{len(parts)}]\n{part}"
+                                        channel_id, f"[{i}/{len(parts)}]\n{part}", broadcast=True
                                     )
                                     if i == 1:
                                         first_msg_id = result.message_id
