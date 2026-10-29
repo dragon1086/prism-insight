@@ -471,3 +471,46 @@ def test_archive_resolves_audit_reference_in_standalone_receiver(tmp_path):
         conn.execute('DELETE FROM llm_scenario_decisions')
     with pytest.raises(ValueError, match='reference_audit_unresolved'):
         archive.referenced_commits(path)
+
+
+def test_archive_resolves_accounting_reference_in_standalone_receiver(tmp_path):
+    from utils.btc_accounting_audit_references import TAG, ORIGINAL_HASH, canonical, sha
+
+    path = tmp_path / 'accounting.sqlite'
+    account = {'source_commit': 'e' * 40, 'wallet': {'detail': 'x' * 1000}}
+    financial = {'trades': [], 'raw_executions': []}
+    event = {'observation': account, 'financial_evidence': financial, 'result': {'status': 'confirmed'}}
+    original = canonical(event)
+    with sqlite3.connect(path) as conn:
+        conn.execute('CREATE TABLE llm_scenario_broker_evidence(kind,captured_at,body)')
+        conn.execute('CREATE TABLE llm_scenario_audit_events(kind,decision_slot,body)')
+        conn.executemany('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)',
+                         [('account', 1, json.dumps(account, sort_keys=True)),
+                          ('financial', 1, json.dumps(financial, sort_keys=True))])
+        conn.execute("INSERT INTO llm_scenario_audit_events VALUES('accounting_observation',1,?)", (original,))
+    baseline = archive.referenced_commits(path)
+    encoded = dict(event, **{TAG: 1, ORIGINAL_HASH: sha(original)})
+    encoded['observation'] = {'rowid': 1, 'captured_at': 1, 'sha256': sha(canonical(account))}
+    encoded['financial_evidence'] = {'rowid': 2, 'captured_at': 1, 'sha256': sha(canonical(financial))}
+    with sqlite3.connect(path) as conn:
+        conn.execute('UPDATE llm_scenario_audit_events SET body=?', (canonical(encoded),))
+    assert archive.referenced_commits(path) == baseline
+    financial_source = Path(archive.__file__).with_name('btc_financial_references.py').read_text()
+    accounting_source = Path(archive.__file__).with_name('btc_accounting_audit_references.py').read_text()
+    source = Path(archive.__file__).read_text()
+    child_script = ("import sys,types; f=types.ModuleType('btc_financial_refs_embedded'); "
+                    "exec(compile(%r,'<financial>','exec'),f.__dict__); "
+                    "sys.modules['btc_financial_refs_embedded']=f; "
+                    "m=types.ModuleType('btc_accounting_refs_embedded'); "
+                    "exec(compile(%r,'<accounting>','exec'),m.__dict__); "
+                    "sys.modules['btc_accounting_refs_embedded']=m; ns={'__name__':'receiver'}; "
+                    "exec(compile(%r,'<archive>','exec'),ns); "
+                    "print(ns['referenced_commits'](ns['Path'](sys.argv[1]))[0][0])"
+                    % (financial_source, accounting_source, source))
+    child = subprocess.run([os.sys.executable, '-I', '-c', child_script, str(path)], cwd=tmp_path,
+                           capture_output=True, text=True, timeout=15, check=True)
+    assert child.stdout.strip() == 'e' * 40
+    with sqlite3.connect(path) as conn:
+        conn.execute('DELETE FROM llm_scenario_broker_evidence WHERE kind="account"')
+    with pytest.raises(ValueError, match='reference_accounting_unresolved'):
+        archive.referenced_commits(path)

@@ -3,8 +3,12 @@ import copy
 import hashlib
 import json
 import math
+import sys
 
-from utils.btc_financial_references import restore as restore_financial
+if 'btc_financial_refs_embedded' in sys.modules:
+    from btc_financial_refs_embedded import restore as restore_financial
+else:
+    from utils.btc_financial_references import restore as restore_financial
 
 TAG = '$btc_accounting_refs_v1'
 ORIGINAL_HASH = '$btc_accounting_original_sha256'
