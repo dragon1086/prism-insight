@@ -21,6 +21,21 @@ def test_commit_scan_rejects_expired_outer_deadline(tmp_path):
         archive.referenced_commits(raw, deadline=0)
 
 
+def test_scan_does_not_classify_deadline_interruption_as_malformed(tmp_path, monkeypatch):
+    raw = tmp_path / 'snapshot.sqlite'
+    with sqlite3.connect(raw) as db:
+        db.execute('CREATE TABLE llm_scenario_review_events(body TEXT)')
+        db.execute("INSERT INTO llm_scenario_review_events VALUES ('{}')")
+    now = [10]
+    monkeypatch.setattr(archive.time, 'monotonic', lambda: now[0])
+    def interrupted(_):
+        now[0] = 30
+        raise sqlite3.OperationalError('interrupted')
+    monkeypatch.setattr(archive, 'review_text', interrupted)
+    with pytest.raises(TimeoutError, match='commit_scan_deadline'):
+        archive.referenced_commits(raw, deadline=20)
+
+
 def git(repo, *args):
     return subprocess.run(['/usr/bin/git', *args], cwd=repo, capture_output=True,
                           check=True, text=True, timeout=30).stdout.strip()

@@ -307,6 +307,8 @@ def referenced_commits(raw, *, deadline=None):
                                 value = review_text(value)
                             parsed = json.loads(value)
                         except (TypeError, ValueError, sqlite3.Error) as exc:
+                            if time.monotonic() > deadline:
+                                raise TimeoutError('commit_scan_deadline') from exc
                             if is_reference:
                                 raise ValueError('reference_tape_unresolved') from exc
                             if is_audit_reference:
@@ -321,6 +323,8 @@ def referenced_commits(raw, *, deadline=None):
                             not isinstance(parsed, dict) or 'git_revision' not in parsed):
                         coverage['missing_manifest_git_revision'] += 1
                     walk(parsed)
+                    if time.monotonic() > deadline:
+                        raise TimeoutError('commit_scan_deadline')
     coverage['unique_known_revision_count'] = len(found)
     return sorted(found), coverage
 
