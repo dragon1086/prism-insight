@@ -105,7 +105,10 @@ def test_known_non_failures_are_ignored():
              "2026-10-21 03:00:01,000 - x - ERROR - Actual purchase failed: Micro-split budget below one share",
              '2026-10-27 23:20:41,787 - yfinance - ERROR - HTTP Error 404: {"quoteSummary":{"result":null,"error":'
              '{"code":"Not Found","description":"Quote not found for symbol: LC"}}}',
-             "2026-10-27 15:44:09,062 - aiohttp.server - ERROR - Error handling request from 127.0.0.1"]
+             "2026-10-27 15:44:09,062 - aiohttp.server - ERROR - Error handling request from 127.0.0.1",
+             "2026-10-30 03:54:39,180 - us_stock_tracking_agent - ERROR - Actual sell failed: LLY not found in portfolio",
+             "2026-10-30 03:54:39,180 - x - WARNING - [LIVE][US] LLY KIS sell success=False order_no=None"
+             " msg=LLY not found in portfolio"]
     assert W.scan_lines(_job("us_morning"), lines, now)[1] == []
 
 
