@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from utils.btc_review_retention import candidates, matching_evidence, snapshot_index, verified_archive_index
+from utils.btc_review_retention import candidates, fetch_deliveries, matching_evidence, snapshot_index, verified_archive_index
 
 
 def test_only_old_complete_flat_waits_become_candidates():
@@ -110,3 +110,28 @@ def test_verified_archive_index_requires_matching_receipt_and_source():
             verified_archive_index(data, invalid, identity)
     with pytest.raises(ValueError, match='retention_archive_unverified'):
         verified_archive_index(data, ack, 'e' * 64)
+
+
+def test_clickstack_lookup_is_read_only_bounded_and_rejects_unexpected_rows(monkeypatch):
+    from types import SimpleNamespace
+    from utils import btc_offsite_archive, btc_review_retention
+
+    identity = 'a' * 64
+    event = hashlib.sha256(f'{identity}:llm_scenario_review_tapes:7'.encode()).hexdigest()[:32]
+    receipt = {'event_id': event, 'event_type': 'btc.research.review_tape', 'source_identity': identity,
+               'body_sha256': 'b' * 64, 'tape_hash_status': 'MATCH'}
+    calls = []
+    monkeypatch.setattr(btc_offsite_archive, 'backend_host', lambda _: 'fixture.local')
+    def execute(command, **kwargs):
+        calls.append((command, kwargs))
+        assert event in kwargs['input'] and 'readonly' in kwargs['input'] and 'LIMIT 201' in kwargs['input']
+        return SimpleNamespace(stdout=json.dumps(receipt) + '\n')
+    monkeypatch.setattr(btc_review_retention.subprocess, 'run', execute)
+    assert fetch_deliveries([{'rowid': 7}], identity) == [receipt]
+    assert calls[0][0][0] == 'ssh' and calls[0][1]['timeout'] == 45
+    assert fetch_deliveries([], identity) == [] and len(calls) == 1
+    with pytest.raises(ValueError, match='retention_query_invalid'):
+        fetch_deliveries([{'rowid': '7 OR 1=1'}], identity)
+    receipt['event_id'] = 'f' * 32
+    with pytest.raises(ValueError, match='retention_delivery_invalid'):
+        fetch_deliveries([{'rowid': 7}], identity)

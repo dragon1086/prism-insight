@@ -5,7 +5,9 @@ This module never deletes data. A candidate is not proof of safe deletion.
 import hashlib
 import json
 import math
+from pathlib import Path
 import re
+import subprocess
 import sys
 
 if 'btc_review_storage_embedded' in sys.modules:
@@ -113,6 +115,38 @@ def matching_evidence(current, archived, delivered, source_identity):
                 and receipt.get('tape_hash_status') == 'MATCH'):
             approved.append(row)
     return approved
+
+
+def fetch_deliveries(rows, source_identity):
+    """Read a bounded set of ClickStack summaries using the SELECT-only account."""
+    if (not isinstance(source_identity, str) or not re.fullmatch(r'[a-f0-9]{64}', source_identity)
+            or not isinstance(rows, list) or len(rows) > 100
+            or any(not isinstance(row, dict) or type(row.get('rowid')) is not int or row['rowid'] < 0 for row in rows)):
+        raise ValueError('retention_query_invalid')
+    if not rows:
+        return []
+    ids = {hashlib.sha256(f'{source_identity}:llm_scenario_review_tapes:{row["rowid"]}'.encode()).hexdigest()[:32]
+           for row in rows}
+    sql = ("SELECT JSONExtractString(Body,'event_id') AS event_id, "
+           "JSONExtractString(Body,'event_type') AS event_type, "
+           "JSONExtractString(Body,'attributes','source_identity') AS source_identity, "
+           "JSONExtractString(Body,'attributes','body_sha256') AS body_sha256, "
+           "JSONExtractString(Body,'attributes','tape_hash_status') AS tape_hash_status "
+           "FROM otel_logs WHERE LogAttributes['event.name']='btc.research.review_tape' "
+           "AND JSONExtractString(Body,'event_id') IN (" + ','.join("'" + item + "'" for item in sorted(ids)) + ') LIMIT 201')
+    from tools.clickstack_query import build_program
+    from utils.btc_offsite_archive import backend_host
+    host = backend_host(Path('/etc/prism-observability/tunnel.env'))
+    if host is None:
+        raise ValueError('retention_backend_missing')
+    command = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', 'root@' + host,
+               'set -a; . /etc/prism-observability/reader.env; set +a; python3 -']
+    result = subprocess.run(command, input=build_program(sql, {}), text=True,
+                            capture_output=True, check=True, timeout=45)
+    delivered = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    if len(delivered) > 200 or any(not isinstance(row, dict) or row.get('event_id') not in ids for row in delivered):
+        raise ValueError('retention_delivery_invalid')
+    return delivered
 
 
 def verified_archive_index(manifest_bytes, ack, source_identity):
