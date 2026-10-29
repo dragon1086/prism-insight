@@ -5,7 +5,7 @@ import sqlite3
 from utils.btc_review_retention import _runtime_safe
 
 
-def test_actual_runtime_guard_rejects_active_pending_and_incident():
+def test_actual_runtime_guard_rejects_active_or_pending_but_preserves_incident():
     with sqlite3.connect(':memory:') as conn:
         conn.executescript('CREATE TABLE llm_scenario_state(id INTEGER PRIMARY KEY,body TEXT);'
                            'CREATE TABLE llm_scenario_intents(id TEXT,status TEXT);'
@@ -22,4 +22,5 @@ def test_actual_runtime_guard_rejects_active_pending_and_incident():
         assert _runtime_safe(conn)
         conn.execute('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)',
                      ('incident_epoch_halt_v1', 1, json.dumps({'reason': 'historical_evidence_changed'})))
-        assert not _runtime_safe(conn)
+        assert _runtime_safe(conn)
+        assert conn.execute('SELECT COUNT(*) FROM llm_scenario_broker_evidence').fetchone()[0] == 1

@@ -407,12 +407,12 @@ def _save_cursor(index, source_identity):
 
 
 def _runtime_safe(conn):
-    from live.scenario_incident_epoch import active_halts, unresolved
+    from live.scenario_incident_epoch import unresolved
     row = conn.execute('SELECT body FROM llm_scenario_state WHERE id=1').fetchone()
     if not row:
         return False
     state = json.loads(row[0])
-    return isinstance(state, dict) and 'active' in state and state['active'] is None and not active_halts(conn) and not unresolved(conn)
+    return isinstance(state, dict) and 'active' in state and state['active'] is None and not unresolved(conn)
 
 
 def _resource_guard(source, identity):
