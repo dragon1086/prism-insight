@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 
 from observability.review_storage import MAGIC as LEGACY_MAGIC, review_text
-from utils.btc_recovery_references import MAGIC, TAG, canonical, compact, pack, read_recovery, restore
+from utils.btc_recovery_references import MAGIC, TAG, canonical, compact, compact_input, pack, read_recovery, restore
 
 
 def fixture():
@@ -65,3 +65,29 @@ def test_noncanonical_or_nonmatching_inputs_stay_legacy_and_bad_marker_fails():
         restore(canonical(candidate), review, 1, 2)
     ordinary = canonical({'kind': 'MODEL_RAW', 'raw': 'contains ' + TAG})
     assert read_recovery(ordinary, None, None, decode_legacy=review_text) == ordinary
+
+
+def test_input_reference_roundtrip_export_and_source_changes():
+    from observability.btc_scenario_export import _source_text
+
+    conn = sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE llm_scenario_decisions(slot INTEGER,context TEXT)')
+    context = canonical({'input_id': 'a', 'recovery': {'baseline': '한글' * 2000}})
+    original = canonical({'input_id': 'a', 'decision_slot': 7, 'recovery': json.loads(context)['recovery']})
+    conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?)', (7, context))
+    encoded = compact_input(context, original, 7)
+    assert encoded != original
+    stored = pack(encoded)
+    row = {'kind': 'INPUT', 'slot': 7, 'body': stored}
+    assert _source_text('llm_scenario_recovery_events', row, conn) == original
+    with pytest.raises(ValueError, match='reference_invalid'):
+        read_recovery(stored, conn, 7, decode_legacy=review_text, expected_kind='MODEL_RAW')
+    conn.execute('UPDATE llm_scenario_decisions SET context=?', (canonical({'recovery': {'baseline': 'changed'}}),))
+    with pytest.raises(ValueError, match='reference_changed'):
+        _source_text('llm_scenario_recovery_events', row, conn)
+    conn.execute('DELETE FROM llm_scenario_decisions')
+    with pytest.raises(ValueError, match='source_missing'):
+        _source_text('llm_scenario_recovery_events', row, conn)
+    assert compact_input(context, ' ' + original, 7) == ' ' + original
+    assert compact_input(canonical({'recovery': {}}), original, 7) == original
+    conn.close()
