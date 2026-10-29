@@ -275,5 +275,8 @@ esac
     assert (tmp_path / 'removed').exists() is archive_success
     if archive_success:
         assert 'run_btc_review_retention.py' in schedule.read_text()
+        arguments = schedule.read_text().splitlines()
+        assert arguments[-7:-3] == ['/usr/bin/bash', '-c', 'exec "$1" "$2" "$3"', '--']
+        assert arguments[-3] == str(fake)
     if not archive_success:
         assert (old / 'evidence').read_bytes() == b'keep'

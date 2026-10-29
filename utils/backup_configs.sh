@@ -117,6 +117,7 @@ if systemd-run --quiet --collect --on-active="${RETENTION_DELAY}s" \
     --unit="prism-btc-retention-${DATE}" --setenv="PATH=$PATH" \
     --setenv="PRISM_DISABLE_SIGNAL_PUBLISH=1" \
     --setenv="PYTHONPATH=$PROJECT_DIR/prism-btc:$PROJECT_DIR" \
+    /usr/bin/bash -c 'exec "$1" "$2" "$3"' -- \
     "$PYTHON_BIN" "$PROJECT_DIR/tools/run_btc_review_retention.py" "$BACKUP_DIR"; then
     log "7일 정리 1회 등록; 실행 결과는 별도 확인"
 else
