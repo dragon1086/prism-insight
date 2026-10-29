@@ -98,6 +98,23 @@ else
     exit 1
 fi
 
+# One transient timer starts a bounded cleanup in the existing idle window.
+CURRENT_SECOND=$((10#$(date +%S)))
+RETENTION_DELAY=$(((90 - CURRENT_SECOND) % 60))
+if [ "$RETENTION_DELAY" -lt 10 ]; then
+    RETENTION_DELAY=$((RETENTION_DELAY + 60))
+fi
+PYTHON_BIN=$(command -v python3)
+if systemd-run --quiet --collect --on-active="${RETENTION_DELAY}s" \
+    --unit="prism-btc-retention-${DATE}" --setenv="PATH=$PATH" \
+    --setenv="PRISM_DISABLE_SIGNAL_PUBLISH=1" \
+    --setenv="PYTHONPATH=$PROJECT_DIR/prism-btc:$PROJECT_DIR" \
+    "$PYTHON_BIN" "$PROJECT_DIR/tools/run_btc_review_retention.py" "$BACKUP_DIR"; then
+    log "7일 정리 1회 등록; 실행 결과는 별도 확인"
+else
+    log "⚠ 7일 정리 등록 실패; 다음 백업에서 재시도"
+fi
+
 # 7일 이상 된 백업 삭제
 log "오래된 백업 정리 중..."
 find $BACKUP_BASE_DIR -maxdepth 1 -type d -mtime +7 ! -path $BACKUP_BASE_DIR -exec rm -rf {} \; 2>/dev/null

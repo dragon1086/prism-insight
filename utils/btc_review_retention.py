@@ -53,10 +53,16 @@ def candidates(conn, now, *, after_slot=-1, limit=100, guard=None):
             continue
         if not all(isinstance(item, dict) for item in (ctx, plan, result)):
             continue
+        historical = ctx.get('historical_unsettled')
+        if (not isinstance(historical, list) or any(
+                not isinstance(item, dict) or item.get('status') != 'HISTORICAL_UNSETTLED'
+                or item.get('excluded_from_performance') is not True for item in historical)):
+            continue
         if (ctx.get('scenario_id', True) is not None or ctx.get('positions') != []
                 or ctx.get('pending_entries') != [] or ctx.get('unknown_intents') is not False
-                or ctx.get('historical_unsettled') != [] or ctx.get('incident_epoch_blocked') is not False
-                or ctx.get('recovery_observing') is not False or plan.get('action') != 'WAIT'
+                or ctx.get('incident_epoch_blocked') is not False
+                or ctx.get('recovery_observing', False) is not False or 'recovery' in ctx
+                or 'recovery_contract_version' in ctx or plan.get('action') != 'WAIT'
                 or result.get('status') != 'wait'):
             continue
         original = read_tape(tape, conn, slot, decode_legacy=review_text)

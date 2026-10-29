@@ -51,6 +51,22 @@ def test_invalid_boundaries_fail_closed(kwargs):
             candidates(conn, **kwargs)
 
 
+def test_documented_optional_recovery_flag_and_sealed_history():
+    with sqlite3.connect(':memory:') as conn:
+        conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY, body TEXT);'
+                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY, context TEXT, proposal TEXT, outcome TEXT);')
+        context = {'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
+                   'historical_unsettled': [{'status': 'HISTORICAL_UNSETTLED', 'excluded_from_performance': True}],
+                   'incident_epoch_blocked': False}
+        for slot, ctx in ((1, context), (2, dict(context, recovery_observing=True)),
+                          (3, dict(context, historical_unsettled=[{'status': 'UNKNOWN'}]))):
+            conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (slot, '{}'))
+            conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?)',
+                         (slot, json.dumps(ctx), '{"action":"WAIT"}', '{"status":"wait"}'))
+        result = candidates(conn, 7 * 86400 + 10 * 300)
+        assert [row['slot'] for row in result['candidates']] == [1]
+
+
 def test_missing_or_partial_schema_is_not_an_empty_verified_index():
     with sqlite3.connect(':memory:') as conn:
         assert snapshot_index(conn, 700000) is None
@@ -403,3 +419,16 @@ def test_cleanup_with_independently_restored_archive_and_real_lease(tmp_path, mo
     with sqlite3.connect(source_path) as db:
         assert db.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(2,)]
     assert (remote_root / ack['archive'] / 'receipt.json').is_file()
+
+
+def test_runner_reports_result_and_redacts_exception(monkeypatch, capsys):
+    from tools import run_btc_review_retention as runner
+    monkeypatch.setattr(runner, 'cleanup', lambda _: {'status': 'NO_CANDIDATES', 'removed': 0})
+    assert runner.main(['/fixture']) == 0
+    assert json.loads(capsys.readouterr().out) == {'status': 'NO_CANDIDATES', 'removed': 0}
+    def fail(_):
+        raise ValueError('private fixture content')
+    monkeypatch.setattr(runner, 'cleanup', fail)
+    assert runner.main(['/fixture']) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output == {'status': 'ERROR', 'error_type': 'ValueError'}

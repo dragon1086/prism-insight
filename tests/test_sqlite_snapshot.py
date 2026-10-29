@@ -249,13 +249,20 @@ case "$1" in
 esac
 ''')
     fake.chmod(0o755)
+    scheduler = tools / 'systemd-run'
+    scheduler.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$SCHEDULE_LOG"\n')
+    scheduler.chmod(0o755)
     script = Path(__file__).resolve().parents[1] / 'utils/backup_configs.sh'
     env = {**os.environ, 'HOME': str(home), 'PATH': str(tools) + ':' + os.environ['PATH'],
-           'ARCHIVE_SUCCESS': '1' if archive_success else '0'}
+           'ARCHIVE_SUCCESS': '1' if archive_success else '0', 'SCHEDULE_LOG': str(tmp_path / 'scheduled')}
     run = subprocess.run(['bash', str(script)], env=env, capture_output=True, text=True, timeout=30)
     assert (run.returncode == 0) is archive_success
     ack, = (home / 'prism_backups').glob('*/offsite_ack.json')
     assert json.loads(ack.read_text())['status'] == ('VERIFIED' if archive_success else 'ERROR')
     assert ack.stat().st_mode & 0o077 == 0
+    schedule = tmp_path / 'scheduled'
+    assert schedule.exists() is archive_success
+    if archive_success:
+        assert 'run_btc_review_retention.py' in schedule.read_text()
     if not archive_success:
         assert (old / 'evidence').read_bytes() == b'keep'
