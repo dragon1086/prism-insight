@@ -86,7 +86,7 @@ def test_actual_request_and_invalid_raw_are_durable_before_parse(tmp_path):
     rows={kind:json.loads(review_text(body)) for kind,body in conn.execute('SELECT kind,body FROM llm_scenario_recovery_events')}
     assert rows['MODEL_RAW']['raw']=='not JSON'
     assert json.loads(rows['MODEL_REQUEST']['user_prompt'])['contract_context']['input_id']==c['input_id']
-    assert rows['MODEL_REQUEST']['model']=='gpt-6.1-sol'
+    assert rows['MODEL_REQUEST']['model']=='gpt-6.1-terra'
     assert 'MODEL_ERROR' in rows
 
 

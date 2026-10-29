@@ -123,7 +123,7 @@ def test_exact_oauth_model_effort_fast_and_no_tools():
     assert p['action'] == 'WAIT'
     assert calls[0]['response_schema']['additionalProperties'] is False
     assert len(calls) == 1
-    assert calls[0]["model"] == "gpt-6.1-sol"
+    assert calls[0]["model"] == "gpt-6.1-terra"
     assert calls[0]["reasoning_effort"] == "low"
     assert calls[0]["fast_tier"] is True
     assert calls[0]["mcp_profile"] is None

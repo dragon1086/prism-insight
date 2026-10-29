@@ -79,7 +79,7 @@ def test_operational_row_factory_records_real_review_without_legacy_fallback(tmp
 
     def generate(**request):
         requests.append(request)
-        assert (request['model'], request['reasoning_effort']) == ('gpt-6.1-sol', 'low')
+        assert (request['model'], request['reasoning_effort']) == ('gpt-6.1-terra', 'low')
         assert request["retry_transport"] is False
         assert 0 < request["timeout"] <= 75
         assert conn.execute("SELECT COUNT(*) FROM llm_scenario_review_events").fetchone()[0] > 0
@@ -163,7 +163,7 @@ def test_operational_holding_row_factory_keeps_prices_and_exits(tmp_path, monkey
 
     def generate(**request):
         calls.append(request)
-        assert (request['model'], request['reasoning_effort']) == ('gpt-6.1-sol', 'low')
+        assert (request['model'], request['reasoning_effort']) == ('gpt-6.1-terra', 'low')
         assert request["retry_transport"] is False
         if "wait_proposal" in request["response_schema"]["properties"]:
             raw = wire(captured, "OPEN" if action == "ADJUST" else "EXIT")

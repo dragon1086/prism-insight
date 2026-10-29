@@ -262,7 +262,7 @@ class Response:
     def read(self,limit):return json.dumps(self.result).encode()
 
 
-@pytest.mark.parametrize('model,effort', [('gpt-6.1-sol','low'), ('gpt-6-luna','high'), ('gpt-6-luna','xhigh')])
+@pytest.mark.parametrize('model,effort', [('gpt-6.1-terra','low'), ('gpt-6.1-sol','low'), ('gpt-6-luna','high'), ('gpt-6-luna','xhigh')])
 def test_exact_approved_model_effort_pairs_keep_no_tools_and_no_default_retry(monkeypatch, model, effort):
     monkeypatch.delenv('PRISM_BTC_SCENARIO_OAUTH_URL', raising=False)
     calls = []
@@ -279,7 +279,7 @@ def test_exact_approved_model_effort_pairs_keep_no_tools_and_no_default_retry(mo
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize('model,effort', [('gpt-6.1-sol','high'), ('gpt-6.1-sol','xhigh'),
+@pytest.mark.parametrize('model,effort', [('gpt-6.1-terra','high'), ('gpt-6.1-sol','high'), ('gpt-6.1-sol','xhigh'),
     ('gpt-6-luna','low'), ('gpt-6.1-sol','medium'), ('other','low')])
 def test_crossed_model_effort_pairs_are_rejected_before_transport(model, effort):
     with pytest.raises(ValueError, match='scenario_model_policy'):
@@ -303,10 +303,10 @@ def test_sol_response_model_must_match_without_fallback(monkeypatch):
 def test_operating_default_is_sol_low_for_both_calculated_phases():
     from live.scenario_llm import MODEL, EFFORT, TIMEOUT_SECONDS
     from tests.test_scenario_calculated_review import run
-    assert (MODEL, EFFORT, TIMEOUT_SECONDS) == ('gpt-6.1-sol', 'low', 75)
+    assert (MODEL, EFFORT, TIMEOUT_SECONDS) == ('gpt-6.1-terra', 'low', 75)
     _, _, calls = run()
     assert len(calls) == 2
-    assert all((c['model'], c['reasoning_effort'], c['retry_transport']) == ('gpt-6.1-sol','low',False) for c in calls)
+    assert all((c['model'], c['reasoning_effort'], c['retry_transport']) == ('gpt-6.1-terra','low',False) for c in calls)
     assert all('combine transitions only when their respective before/after source values match' in c['system_prompt'] for c in calls)
 
 

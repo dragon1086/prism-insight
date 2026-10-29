@@ -11,7 +11,7 @@ from live.scenario_entry_display import project_entry_display_input
 from live.scenario_position_flow import project_position_flow_input, project_holding_price_order_input
 from live.scenario_analysis_frames import analysis_model_view, PRIMARY_FRAMES
 
-MODEL = "gpt-6.1-sol"
+MODEL = "gpt-6.1-terra"
 EFFORT = "low"
 TIMEOUT_SECONDS = 75
 MAX_RESPONSE_BYTES = 24_000

@@ -91,7 +91,7 @@ def test_assembled_prompt_hashes_use_actual_wire_utf8_basis():
     from live.scenario_llm import SYSTEM_PROMPT, MA_STRUCTURE_PROMPT, FLAT_ENTRY_PROMPT
     b,_=inputs()
     contract=contract_for(b,'OHLC',1.,10000.)
-    assert (contract['model'],contract['effort']) == ('gpt-6.1-sol','low')
+    assert (contract['model'],contract['effort']) == ('gpt-6.1-terra','low')
     assert contract['assembled_prompt_hash_basis']=='sha256_utf8'
     assert contract['assembled_prompt_hashes']['active']==hashlib.sha256((SYSTEM_PROMPT+MA_STRUCTURE_PROMPT).encode()).hexdigest()
     assert contract['assembled_prompt_hashes']['flat']==hashlib.sha256((SYSTEM_PROMPT+MA_STRUCTURE_PROMPT+FLAT_ENTRY_PROMPT).encode()).hexdigest()
@@ -338,7 +338,7 @@ def test_exact_assembled_request_envelope_and_identity_scope_restore(tmp_path):
         assert request['user_prompt']==call['user_prompt']
         assert 'ma_structure' in json.loads(request['user_prompt'])['contract_context']
         assert request['input_projection']
-        assert row['raw_response']['wire_metadata']==dict(model='gpt-6.1-sol',effort='low',fast=True)
+        assert row['raw_response']['wire_metadata']==dict(model='gpt-6.1-terra',effort='low',fast=True)
     journals=[]
     from live.scenario_review_storage import review_text
     for name in ('audit','audit-frozen'):
