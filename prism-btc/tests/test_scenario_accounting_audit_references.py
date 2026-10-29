@@ -19,8 +19,8 @@ def fixture(conn):
              'result': {'status': 'confirmed'}, 'children': []}
     raw = canonical(event)
     encoded = dict(event, **{TAG: 1, ORIGINAL_HASH: sha(raw)})
-    encoded['observation'] = {'rowid': 1, 'sha256': sha(canonical(account))}
-    encoded['financial_evidence'] = {'rowid': 2, 'sha256': sha(canonical(financial))}
+    encoded['observation'] = {'rowid': 1, 'captured_at': 1, 'sha256': sha(canonical(account))}
+    encoded['financial_evidence'] = {'rowid': 2, 'captured_at': 1, 'sha256': sha(canonical(financial))}
     return raw, canonical(encoded)
 
 
@@ -53,7 +53,7 @@ def test_reference_accepts_already_compacted_financial_source():
         assert read_accounting(canonical(refs), conn) == raw
 
 
-@pytest.mark.parametrize('damage', ['missing', 'changed', 'wrong_kind', 'unknown_version', 'wrong_digest'])
+@pytest.mark.parametrize('damage', ['missing', 'changed', 'wrong_kind', 'timestamp', 'unknown_version', 'wrong_digest'])
 def test_missing_changed_or_invalid_reference_fails_closed(damage):
     with sqlite3.connect(':memory:') as conn:
         _, encoded = fixture(conn)
@@ -61,6 +61,7 @@ def test_missing_changed_or_invalid_reference_fails_closed(damage):
         if damage == 'missing': conn.execute('DELETE FROM llm_scenario_broker_evidence WHERE rowid=1')
         if damage == 'changed': conn.execute("UPDATE llm_scenario_broker_evidence SET body='{}' WHERE rowid=1")
         if damage == 'wrong_kind': conn.execute("UPDATE llm_scenario_broker_evidence SET kind='other' WHERE rowid=1")
+        if damage == 'timestamp': conn.execute("UPDATE llm_scenario_broker_evidence SET captured_at=3 WHERE rowid=1")
         if damage == 'unknown_version': data[TAG] = 2
         if damage == 'wrong_digest': data[ORIGINAL_HASH] = 'bad'
         with pytest.raises(ValueError): read_accounting(canonical(data), conn)

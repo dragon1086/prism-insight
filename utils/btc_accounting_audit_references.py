@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import math
 
 from utils.btc_financial_references import restore as restore_financial
 
@@ -35,15 +36,17 @@ def read_accounting(raw, conn):
     result.pop(TAG)
     for field, kind in (('observation', 'account'), ('financial_evidence', 'financial')):
         marker = result.get(field)
-        if (not isinstance(marker, dict) or set(marker) != {'rowid', 'sha256'}
+        if (not isinstance(marker, dict) or set(marker) != {'rowid', 'sha256', 'captured_at'}
                 or type(marker['rowid']) is not int or marker['rowid'] <= 0
+                or type(marker['captured_at']) not in (int, float) or not math.isfinite(marker['captured_at'])
+                or marker['captured_at'] <= 0
                 or not isinstance(marker['sha256'], str)):
             raise ValueError('accounting_audit_reference_invalid')
-        row = conn.execute('SELECT kind,body FROM llm_scenario_broker_evidence WHERE rowid=?',
+        row = conn.execute('SELECT kind,captured_at,body FROM llm_scenario_broker_evidence WHERE rowid=?',
                            (marker['rowid'],)).fetchone()
-        if not row or row[0] != kind or not isinstance(row[1], str):
+        if not row or row[0] != kind or row[1] != marker['captured_at'] or not isinstance(row[2], str):
             raise ValueError('accounting_audit_source_missing')
-        value = json.loads(restore_financial(row[1]) if kind == 'financial' else row[1])
+        value = json.loads(restore_financial(row[2]) if kind == 'financial' else row[2])
         if not isinstance(value, dict) or sha(canonical(value)) != marker['sha256']:
             raise ValueError('accounting_audit_source_changed')
         result[field] = value
