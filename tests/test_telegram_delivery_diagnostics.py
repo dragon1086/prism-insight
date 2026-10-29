@@ -99,3 +99,19 @@ async def test_broadcast_resends_one_unknown_then_stops(isolated_spool):
     with pytest.raises(TelegramDeliveryUnknown):
         await send_message_once_or_rate_retry(bot, chat_id=1, text="t", resend_unknown_once=True)
     assert bot.send_message.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_bot_agent_resends_only_broadcast_sends(isolated_spool):
+    # en channel US summary read_error, 2026-10-29 23:26.
+    from telegram_bot_agent import TelegramBotAgent
+
+    agent = TelegramBotAgent.__new__(TelegramBotAgent)
+    sent = SimpleNamespace(message_id=7)
+    agent.bot = SimpleNamespace(send_message=AsyncMock(side_effect=[TimedOut("x"), sent]))
+    assert await agent.send_message(1, "t", broadcast=True) is True
+    assert agent.bot.send_message.await_count == 2
+
+    agent.bot = SimpleNamespace(send_message=AsyncMock(side_effect=[TimedOut("x"), sent]))
+    assert await agent.send_message(1, "t") is False
+    assert agent.bot.send_message.await_count == 1
