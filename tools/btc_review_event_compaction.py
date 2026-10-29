@@ -45,15 +45,15 @@ def compact_one(conn, *, rowid, slot, sequence, expected_type, expected_sha256, 
     if current_type != expected_type or current_sha != expected_sha256:
         if (expected_type == 'text' and isinstance(original, bytes) and original.startswith(MAGIC)
                 and hashlib.sha256(review_text(original).encode('utf-8')).hexdigest() == expected_sha256):
-            return 'UNCHANGED'
-        return 'SOURCE_CHANGED'
-    if not isinstance(original, str):
+            candidate = original
+        else:
+            return 'SOURCE_CHANGED'
+    elif not isinstance(original, str):
         review_text(original)
-        return 'UNCHANGED'
-    candidate = review_storage(original)
-    if isinstance(candidate, str):
-        return 'UNCHANGED'
-    if review_text(candidate) != original:
+        candidate = original
+    else:
+        candidate = review_storage(original)
+    if isinstance(original, str) and review_text(candidate) != original:
         raise ValueError('review_roundtrip_mismatch')
     try:
         conn.execute('BEGIN IMMEDIATE')
@@ -64,6 +64,9 @@ def compact_one(conn, *, rowid, slot, sequence, expected_type, expected_sha256, 
         if guard() is not True:
             conn.rollback()
             return 'RESOURCE_LIMIT'
+        if candidate == original:
+            conn.rollback()
+            return 'UNCHANGED'
         updated = conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE rowid=? AND body=?',
                                (candidate, rowid, original))
         if updated.rowcount != 1:

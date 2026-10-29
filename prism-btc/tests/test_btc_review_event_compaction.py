@@ -74,6 +74,40 @@ def test_concurrent_update_stops_before_overwrite(tmp_path, monkeypatch):
     conn.close()
 
 
+def test_concurrent_change_to_uncompressed_noop_stops(tmp_path, monkeypatch):
+    conn, _, _ = fixture(tmp_path)
+    raw = 'tiny'
+    conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE rowid=1', (raw,))
+    conn.commit()
+    def mutate(value):
+        other = sqlite3.connect(tmp_path / 'data.sqlite')
+        other.execute("UPDATE llm_scenario_review_events SET body='changed' WHERE rowid=1")
+        other.commit()
+        other.close()
+        return value
+    monkeypatch.setattr(subject, 'review_storage', mutate)
+    assert run(conn, raw) == 'SOURCE_CHANGED'
+    assert conn.execute('SELECT body FROM llm_scenario_review_events').fetchone()[0] == 'changed'
+    conn.close()
+
+
+def test_concurrent_change_to_previously_compressed_noop_stops(tmp_path, monkeypatch):
+    conn, raw, _ = fixture(tmp_path)
+    assert run(conn, raw) == 'UPDATED'
+    decode = subject.review_text
+    def mutate(value):
+        result = decode(value)
+        other = sqlite3.connect(tmp_path / 'data.sqlite')
+        other.execute("UPDATE llm_scenario_review_events SET body='changed' WHERE rowid=1")
+        other.commit()
+        other.close()
+        return result
+    monkeypatch.setattr(subject, 'review_text', mutate)
+    assert run(conn, raw) == 'SOURCE_CHANGED'
+    assert conn.execute('SELECT body FROM llm_scenario_review_events').fetchone()[0] == 'changed'
+    conn.close()
+
+
 @pytest.mark.parametrize('override', [{'rowid':True}, {'slot':-1}, {'sequence':2**63}, {'expected_type':'other'},
                                       {'expected_sha256':'invalid'}, {'guard':None}])
 def test_invalid_context_is_rejected(tmp_path, override):
