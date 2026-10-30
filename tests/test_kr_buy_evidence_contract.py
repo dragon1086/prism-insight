@@ -125,6 +125,8 @@ def test_sell_factory_matches_reviewed_volume_prompt():
     # 2026-10-30 reviewed (user decision after the LITE re-entry, bought 1% above its 50MA, was sold by the MA50 exit
     # two hours later): the MA50 exit also waits for the first close after entry (tools/trend_exit_seller.py
     # on_entry_session); stop_loss and -7% still apply on the entry day. KR/US x ko/en say the same.
+    # 2026-10-30 reviewed: wording only — "applies from the next trading day" replaces "before the first close"
+    # (the pre-close check runs before the close, so the rule first applies on the next session). No rule change.
     source = SOURCE.read_text(encoding="utf-8")
     node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "create_sell_decision_agent")
-    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "8cd664d3fc8ef25933ad7377bfd58e2745707339a0e0cb3e3d20b0557f629c3b"
+    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "1cfe184964744e87526a0bf140e413aca3bf65fc475bbc85807ab647f298b965"

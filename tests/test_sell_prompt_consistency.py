@@ -110,7 +110,7 @@ def test_system_50_day_exit_is_named_and_reentry_is_not_a_reason(prompts):
         # tools/trend_exit_seller.py ma50_exit_armed: bought below the line -> exempt until a close above it (10/29).
         assert ("50일선 아래에서 매수한 종목은" in text) or ("bought below its 50-day MA is exempt" in text), key
         # on_entry_session: no MA50 exit before the first close after entry (10/30 LITE).
-        assert ("매수 당일(매수 후 첫 종가 전)" in text) or ("On the entry day itself" in text), key
+        assert ("매수 당일에는 어떤 종목에도" in text) or ("On the entry day itself" in text), key
         assert "재진입 비용" not in text and "re-entry cost" not in text, key
         assert ("20일 평균 이상 거래량" in text) or ("volume above its 20-day average" in text), key
 
