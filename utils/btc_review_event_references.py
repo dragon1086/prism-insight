@@ -44,10 +44,14 @@ def compact(raw_text, sources, slot, sequence):
                 or not isinstance(actual, dict) or 'timeout' not in actual):
             return raw_text
         matching = []
+        source_bytes = 0
         for source_sequence, source_text in sources:
             if (type(source_sequence) is not int or not 0 <= source_sequence < sequence
-                    or not isinstance(source_text, str) or len(source_text.encode()) > MAX_BYTES):
-                continue
+                    or not isinstance(source_text, str)):
+                return raw_text
+            source_bytes += len(source_text.encode())
+            if source_bytes > MAX_BYTES:
+                return raw_text
             source = json.loads(source_text)
             request = source.get('request') if isinstance(source, dict) else None
             if (isinstance(source, dict) and _json(source) == source_text and source.get('kind') == 'MODEL_REQUEST'

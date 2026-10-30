@@ -55,6 +55,16 @@ def test_bool_and_number_are_not_treated_as_identical_json():
     assert refs.compact(canonical(right), [(2, canonical(left))], 100, 3) == canonical(right)
 
 
+def test_source_budget_and_invalid_indices_fall_back_to_original(monkeypatch):
+    request, raw = sample()
+    other = json.loads(request)
+    other['phase'] = 'candidate'
+    other = canonical(other)
+    monkeypatch.setattr(refs, 'MAX_BYTES', max(len(raw.encode()), len(request.encode()), len(other.encode())) + 1)
+    assert refs.compact(raw, [(0, request), (1, other)], 100, 3) == raw
+    assert refs.compact(raw, [(True, request)], 100, 3) == raw
+
+
 def test_reference_rejects_corrupt_or_changed_sources():
     request, raw = sample()
     encoded = refs.compact(raw, [(2, request)], 100, 3)
