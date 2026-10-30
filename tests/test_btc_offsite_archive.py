@@ -14,6 +14,53 @@ import pytest
 from utils import btc_offsite_archive as archive
 
 
+def test_ssh_receiver_bootstrap_stays_below_single_argument_limit(monkeypatch):
+    commands = []
+    def capture(args, **kwargs):
+        commands.append(args[-1])
+        return subprocess.CompletedProcess(args, 0, stdout=b'READY\n')
+    monkeypatch.setattr(archive.subprocess, 'run', capture)
+    archive.ssh_archive('127.0.0.1', 1)
+    assert len(commands[0].encode()) < 65536
+
+
+def test_ssh_receiver_bootstrap_leaves_transfer_stdin_intact(monkeypatch):
+    import shlex
+    import sys
+    original_read, original_run = Path.read_text, subprocess.run
+    stub = ('import json\nfrom pathlib import Path\nREMOTE_ROOT="fixture"\n'
+            'def receive(stream, root, needed):\n return {"payload":stream.read().decode(),"needed":needed}\n')
+    def read(path, *args, **kwargs):
+        if path.name == 'btc_offsite_archive.py':
+            return stub
+        if path.name in {'btc_review_references.py', 'btc_audit_references.py', 'btc_recovery_references.py',
+                         'btc_financial_references.py', 'btc_accounting_audit_references.py',
+                         'btc_review_retention.py', 'review_storage.py'}:
+            return ''
+        return original_read(path, *args, **kwargs)
+    def transport(args, **kwargs):
+        command = shlex.split(args[-1])
+        result = original_run([sys.executable, '-I', '-c', command[2]], input=kwargs['stdin'].read(),
+                              capture_output=True, check=True, timeout=10)
+        return subprocess.CompletedProcess(args, 0, stdout=result.stdout, stderr=result.stderr)
+    monkeypatch.setattr(Path, 'read_text', read)
+    monkeypatch.setattr(archive.subprocess, 'run', transport)
+    result = archive.ssh_archive('127.0.0.1', 42, stream=io.BytesIO(b'fixture-transfer'))
+    assert json.loads(result.stdout) == {'payload': 'fixture-transfer', 'needed': 42}
+
+
+def test_ssh_receiver_rejects_oversized_bootstrap_before_transport(monkeypatch):
+    original = Path.read_text
+    extra = os.urandom(160000).hex()
+    def read(path, *args, **kwargs):
+        value = original(path, *args, **kwargs)
+        return value + '\n#' + extra if path.name == 'btc_offsite_archive.py' else value
+    monkeypatch.setattr(Path, 'read_text', read)
+    monkeypatch.setattr(archive.subprocess, 'run', lambda *_a, **_kw: pytest.fail('transport must not start'))
+    with pytest.raises(ValueError, match='archive_bootstrap_too_large'):
+        archive.ssh_archive('127.0.0.1', 1)
+
+
 def test_commit_scan_rejects_expired_outer_deadline(tmp_path):
     raw = tmp_path / 'snapshot.sqlite'
     sqlite3.connect(raw).close()
