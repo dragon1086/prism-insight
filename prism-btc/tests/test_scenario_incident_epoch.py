@@ -981,6 +981,31 @@ def test_monitor_gap_release_fails_closed(flat_incident,monkeypatch,fault):
     assert policy.halted(broker.conn) and i['exchange'].writes==[]
 
 
+@pytest.mark.parametrize('extra,owned', [
+    (dict(orderId='unsaved-sl', orderLinkId='', parentOrderLinkId='OWN', reduceOnly=True, stopOrderType='StopLoss'), True),
+    (dict(orderId='unsaved-order', orderLinkId='OWN'), True),
+    (dict(orderId='other-sl', orderLinkId='', parentOrderLinkId='someone-else', reduceOnly=True, stopOrderType='StopLoss'), False),
+    (dict(orderId='opening', orderLinkId='', parentOrderLinkId='OWN', reduceOnly=False, stopOrderType='StopLoss'), False),
+    (dict(orderId='blank', orderLinkId='', parentOrderLinkId=''), False),
+])
+def test_monitor_accepts_only_own_unsaved_orders(flat_incident, monkeypatch, extra, owned):
+    # 2026-10-30 01:01: the entry's attached stop was live 3 minutes before its row was saved.
+    i=flat_incident;transition(i);broker=restarted(i)
+    link='sc_live_entry'
+    broker.conn.execute('INSERT INTO llm_scenario_children VALUES(?,?,?,?,?,?,?,?,?,?)',
+        (link,'live-intent','live-scenario','entry','e',json.dumps(dict(side='Buy',qty='.001')),'UNKNOWN',None,None,i['now'][0]))
+    broker.conn.commit()
+    order={k:(link if v=='OWN' else v) for k,v in extra.items()}
+    original=policy.account_sources
+    def with_order(*a):
+        rows=original(*a);next(r for r in rows if 'orders' in r)['orders']['result']['list'].append(order);return rows
+    monkeypatch.setattr(policy,'account_sources',with_order)
+    assert (policy.monitor(broker, refresh=True) is not None) is owned
+    assert policy.halted(broker.conn) is (not owned)
+    if not owned:
+        assert policy._events(broker.conn, policy.HALT)[-1]['evidence']['reason'] == 'incident_epoch_foreign_order'
+
+
 def test_corrupt_monitor_release_cannot_hide_halt(flat_incident):
     i=flat_incident;transition(i);broker=restarted(i)
     policy.record_late(broker,dict(status='HISTORICAL_MONITOR_OR_COVERAGE_GAP'))
