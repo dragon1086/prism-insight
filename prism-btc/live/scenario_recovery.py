@@ -15,7 +15,7 @@ import math
 from pathlib import Path
 import uuid
 from live.scenario_analysis_frames import allowed_evidence_path
-from live.scenario_review_storage import review_storage, review_text
+from live.scenario_review_storage import review_storage, review_text, snapshot_storage
 
 RISK_FRACTION = .005
 STAGE_FRACTIONS = (.005, .01, .02)
@@ -83,7 +83,8 @@ def journal(conn, kind, body, now, *, slot=None, scenario_id=None, review_sequen
             body = dict(body, input_id=json.loads(row[0]).get("input_id"))
     event_id = str(uuid.uuid4())
     text = encoded(body)
-    stored = review_storage(text) if kind in {"MODEL_REQUEST", "MODEL_RAW"} else text
+    stored = (snapshot_storage(text) if kind == "RECHECK" else
+              review_storage(text) if kind in {"MODEL_REQUEST", "MODEL_RAW"} else text)
     if kind in {"MODEL_REQUEST", "MODEL_RAW"} and body.get('calculated_review_version') == 1:
         stored = _reference_storage(conn, kind, slot, review_sequence, text, stored)
     conn.execute("INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?,?,?)",

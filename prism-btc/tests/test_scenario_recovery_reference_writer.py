@@ -7,6 +7,7 @@ import pytest
 
 from live import scenario_recovery as recovery
 from live.scenario_review_storage import review_text
+from observability.btc_scenario_export import _anchor_hash, _source_text
 from utils import btc_recovery_references as refs
 
 
@@ -22,6 +23,34 @@ def fixture(tmp_path):
     conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (7, 3, json.dumps(event, sort_keys=True)))
     conn.commit()
     return conn, event
+
+
+def test_recheck_roundtrips_and_keeps_export_anchor(tmp_path):
+    conn, _ = fixture(tmp_path)
+    payload = {'context': {'long': '복구 근거' * 2000}, 'input_id': 'test'}
+    raw = recovery.encoded(payload)
+    event_id = recovery.journal(conn, 'RECHECK', payload, 1, slot=7)
+    stored = conn.execute('SELECT body FROM llm_scenario_recovery_events WHERE event_id=?', (event_id,)).fetchone()[0]
+    assert isinstance(stored, bytes) and len(stored) < len(raw.encode())
+    assert refs.read_recovery(stored, conn, 7, decode_legacy=review_text, expected_kind='RECHECK') == raw
+    legacy = {'slot': 7, 'kind': 'RECHECK', 'body': raw}
+    compressed = dict(legacy, body=stored)
+    assert _source_text('llm_scenario_recovery_events', compressed, conn) == raw
+    assert _anchor_hash('llm_scenario_recovery_events', legacy, conn) == _anchor_hash('llm_scenario_recovery_events', compressed, conn)
+    conn.close()
+
+
+def test_recheck_compression_failure_keeps_original(tmp_path, monkeypatch):
+    from live import scenario_review_storage
+    conn, _ = fixture(tmp_path)
+    payload = {'input_id': 'test', 'context': {'long': 'x' * 4000}}
+    def fail(_):
+        raise RuntimeError('compression unavailable')
+    monkeypatch.setattr(scenario_review_storage, 'review_storage', fail)
+    event_id = recovery.journal(conn, 'RECHECK', payload, 1, slot=7)
+    stored = conn.execute('SELECT body FROM llm_scenario_recovery_events WHERE event_id=?', (event_id,)).fetchone()[0]
+    assert stored == recovery.encoded(payload)
+    conn.close()
 
 
 def test_input_reference_commits_with_decision_and_rolls_back_together(tmp_path):

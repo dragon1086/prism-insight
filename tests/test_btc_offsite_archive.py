@@ -31,6 +31,19 @@ def test_snapshot_compression_keeps_commit_scan_and_rejects_corruption(tmp_path)
         archive.referenced_commits(path)
 
 
+def test_recheck_compression_keeps_backup_commit_scan(tmp_path):
+    from observability.review_storage import MAGIC
+    path = tmp_path / 'source.sqlite'
+    body = json.dumps({'git_revision': 'b' * 40, 'context': 'x' * 1000})
+    with sqlite3.connect(path) as conn:
+        conn.execute('CREATE TABLE llm_scenario_recovery_events(kind TEXT, slot INTEGER, body TEXT)')
+        conn.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?)', ('RECHECK', 7, body))
+    baseline = archive.referenced_commits(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute('UPDATE llm_scenario_recovery_events SET body=?', (MAGIC + gzip.compress(body.encode()),))
+    assert archive.referenced_commits(path) == baseline
+
+
 def test_ssh_receiver_bootstrap_stays_below_single_argument_limit(monkeypatch):
     commands = []
     def capture(args, **kwargs):
