@@ -168,6 +168,14 @@ def test_read_tape_requires_sources_and_contiguous_events():
 
     assert refs.read_tape(packed, conn, 1, decode_legacy=legacy) == raw
     assert refs.read_tape(raw, conn, 1, decode_legacy=legacy) == raw
+    import gzip
+    from observability.review_storage import MAGIC, review_text
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + gzip.compress(snapshot.encode()),))
+    assert refs.read_tape(packed, conn, 1, decode_legacy=review_text) == raw
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + b'corrupt',))
+    with pytest.raises(ValueError):
+        refs.read_tape(packed, conn, 1, decode_legacy=review_text)
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (snapshot,))
     conn.execute("UPDATE llm_scenario_review_events SET sequence=2 WHERE sequence=0")
     with pytest.raises(
         ValueError, match="reference_changed|reference_event_sequence_invalid"

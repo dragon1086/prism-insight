@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import sys
 
 TAG = '$btc_audit_input_refs_v1'
 ORIGINAL_HASH = '$btc_audit_original_sha256'
@@ -17,6 +18,12 @@ def sha(text):
 
 
 def _sources(snapshot, context):
+    if isinstance(snapshot, bytes):
+        if 'btc_review_storage_embedded' in sys.modules:
+            from btc_review_storage_embedded import review_text
+        else:
+            from observability.review_storage import review_text
+        snapshot = review_text(snapshot)
     if not isinstance(snapshot, str) or not isinstance(context, str):
         raise ValueError('audit_reference_source_missing')
     if len(snapshot.encode()) + len(context.encode()) > MAX_BYTES:
