@@ -4,6 +4,7 @@ This module neither selects safe WAITs nor deletes records. Callers must bind
 these fingerprints to an independently verified backup and delivery receipts.
 """
 import hashlib
+import gzip
 import json
 import re
 import subprocess  # nosec B404 - fixed host-verified SSH and bounded query
@@ -87,7 +88,14 @@ def snapshot_event_index(conn, now, *, after_slot=-1):
         from utils.btc_review_retention import candidates
     page = candidates(conn, now, after_slot=after_slot, limit=100)
     selected = page['candidates'][:MAX_SLOTS]
-    items = [{'candidate': row, 'proof': event_proof(conn, row['slot'])} for row in selected]
+    items = []
+    for row in selected:
+        try:
+            proof = event_proof(conn, row['slot'])
+        except ValueError:
+            # Preserve the unavailable slot, but do not block other verified slots.
+            proof = {'slot': row['slot'], 'unavailable': True}
+        items.append({'candidate': row, 'proof': proof})
     capped = len(page['candidates']) > MAX_SLOTS
     last = selected[-1]['slot'] if capped else page['last_scanned_slot']
     return {'version': 2, 'cutoff_slot': page['cutoff_slot'], 'after_slot': after_slot,
@@ -230,7 +238,7 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
 
     This is not a standalone authority: the caller must validate archived using
     verified_event_index while holding the matching verified remote archive lease.
-    Recovery references remain untouched, so slots containing one are deferred.
+    Recovery references are detached losslessly within the same transaction.
     """
     from observability.btc_scenario_export import _anchor_hash
     from utils.btc_recovery_references import MAGIC as RECOVERY_MAGIC
@@ -250,7 +258,8 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
         conn.execute('BEGIN IMMEDIATE')
         exporter.execute('BEGIN IMMEDIATE')
         triggers = conn.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' "
-                                "AND tbl_name IN ('llm_scenario_review_tapes','llm_scenario_review_events') LIMIT 1").fetchone()
+                                "AND tbl_name IN ('llm_scenario_review_tapes','llm_scenario_review_events',"
+                                "'llm_scenario_recovery_events') LIMIT 1").fetchone()
         if triggers or conn.execute('PRAGMA foreign_keys').fetchone() != (0,):
             raise ValueError('event_delete_schema_unsupported')
         tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
@@ -287,12 +296,33 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
         if (not delivered_event_proof(current_proof, proof, event_deliveries, source_identity)
                 or any(event['rowid'] >= cursors['llm_scenario_review_events'] for event in current_proof['events'])):
             return {'status': 'DEFERRED_EVENT_EVIDENCE'}
-        recovery_rows = conn.execute('SELECT body FROM llm_scenario_recovery_events WHERE slot=? LIMIT ?',
+        recovery_rows = conn.execute('SELECT rowid,event_id,kind,body FROM llm_scenario_recovery_events '
+                                     'WHERE slot=? ORDER BY event_id LIMIT ?',
                                      (slot, MAX_RECOVERY + 1)).fetchall()
-        if any(isinstance(row[0], bytes) and row[0].startswith(RECOVERY_MAGIC) for row in recovery_rows):
-            return {'status': 'DEFERRED_RECOVERY_REFERENCE'}
+        refs = [row for row in recovery_rows if isinstance(row[3], bytes) and row[3].startswith(RECOVERY_MAGIC)]
+        recovery_anchor = None
+        if refs:
+            stream = 'llm_scenario_recovery_events'
+            cursor = exporter.execute('SELECT seq FROM cursors WHERE stream=?', (stream,)).fetchone()
+            saved = exporter.execute('SELECT ref FROM anchors WHERE stream=?', (stream,)).fetchone()
+            if not cursor or type(cursor[0]) is not int or cursor[0] <= 0 or not saved or not isinstance(saved[0], str):
+                return {'status': 'DEFERRED_RECOVERY_EXPORT'}
+            row = conn.execute('SELECT slot,kind,body FROM llm_scenario_recovery_events WHERE rowid=?', (cursor[0],)).fetchone()
+            recovery_anchor = {'slot': row[0], 'kind': row[1], 'body': row[2]} if row else None
+            if recovery_anchor is None or _anchor_hash(stream, recovery_anchor, conn) != saved[0]:
+                raise ValueError('event_delete_export_anchor_changed')
         if guard() is not True or lease_alive() is not True:
             raise ValueError('event_delete_guard_failed')
+        if refs:
+            from observability.review_storage import MAGIC as REVIEW_MAGIC
+            for rowid, event_id, kind, stored in refs:
+                raw = read_recovery(stored, conn, slot, decode_legacy=review_text, expected_kind=kind)
+                packed = REVIEW_MAGIC + gzip.compress(raw.encode('utf-8'), compresslevel=1, mtime=0)
+                replacement = packed if len(packed) < len(raw.encode('utf-8')) else raw
+                if review_text(replacement) != raw or conn.execute(
+                        'UPDATE llm_scenario_recovery_events SET body=? WHERE rowid=? AND slot=? AND event_id=? AND body=?',
+                        (replacement, rowid, slot, event_id, stored)).rowcount != 1:
+                    raise ValueError('event_delete_recovery_changed')
         for event in current_proof['events']:
             changed = conn.execute('DELETE FROM llm_scenario_review_events WHERE rowid=? AND slot=? AND sequence=?',
                                    (event['rowid'], slot, event['sequence'])).rowcount
@@ -301,6 +331,20 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
         if conn.execute('DELETE FROM llm_scenario_review_tapes WHERE rowid=? AND slot=?',
                         (candidate['rowid'], slot)).rowcount != 1:
             raise ValueError('event_delete_source_changed')
+        remaining = conn.execute('SELECT event_id,kind,body FROM llm_scenario_recovery_events '
+                                 'WHERE slot=? ORDER BY event_id LIMIT ?', (slot, MAX_RECOVERY + 1)).fetchall()
+        recovered = []
+        for event_id, kind, stored in remaining:
+            raw = read_recovery(stored, conn, slot, decode_legacy=review_text, expected_kind=kind)
+            digest, _ = _digest(raw)
+            recovered.append({'event_id': event_id, 'kind': kind, 'sha256': digest})
+        if recovered != current_proof['recovery']:
+            raise ValueError('event_delete_recovery_changed')
+        if recovery_anchor is not None:
+            row = conn.execute('SELECT slot,kind,body FROM llm_scenario_recovery_events WHERE rowid=?', (cursor[0],)).fetchone()
+            anchor = {'slot': row[0], 'kind': row[1], 'body': row[2]} if row else None
+            if anchor is None or _anchor_hash('llm_scenario_recovery_events', anchor, conn) != saved[0]:
+                raise ValueError('event_delete_export_anchor_changed')
         if guard() is not True or lease_alive() is not True:
             raise ValueError('event_delete_guard_failed')
         conn.commit()
@@ -341,6 +385,9 @@ def cleanup_events(backup_dir, *, now=None):
     at = time.time() if now is None else now
     prepared = []
     for item in index['items']:
+        if item['proof'].get('unavailable') is True:
+            prepared.append((item, None, None))
+            continue
         tape_receipts = retention.fetch_deliveries([item['candidate']], identity)
         event_receipts = fetch_event_deliveries(item['proof'], identity)
         prepared.append((item, tape_receipts, event_receipts))
@@ -352,6 +399,9 @@ def cleanup_events(backup_dir, *, now=None):
             def guard():
                 return retention._resource_guard(retention.SOURCE, identity) and retention._runtime_safe(conn)
             for item, tape_receipts, event_receipts in prepared:
+                if tape_receipts is None:
+                    statuses['DEFERRED_EVENT_PROOF'] += 1
+                    continue
                 result = delete_confirmed_slot(conn, exporter, item, tape_receipts, event_receipts,
                                                identity, at, guard=guard, lease_alive=lease)
                 statuses[result['status']] += 1

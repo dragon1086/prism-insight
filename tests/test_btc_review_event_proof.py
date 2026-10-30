@@ -95,6 +95,7 @@ def test_snapshot_index_is_bounded_and_does_not_skip_candidates():
         conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (slot, '{}'))
         conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)', (slot, '{}', context, '{"action":"WAIT"}', '{"status":"wait"}'))
         conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (slot, 0, '{"kind":"MODEL_RAW"}'))
+    conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=2', ('not-json',))
     conn.commit()
     now = 7 * 86400 + 100 * 300
     with pytest.raises(ValueError, match='proof_snapshot_transaction_required'):
@@ -102,6 +103,8 @@ def test_snapshot_index_is_bounded_and_does_not_skip_candidates():
     conn.execute('BEGIN')
     first = snapshot_event_index(conn, now)
     assert len(first['items']) == 20 and first['truncated'] and first['last_scanned_slot'] == 20
+    assert first['items'][1]['proof'] == {'slot': 2, 'unavailable': True}
+    assert first['items'][2]['proof']['events']
     second = snapshot_event_index(conn, now, after_slot=first['last_scanned_slot'])
     assert [item['candidate']['slot'] for item in second['items']] == [21, 22, 23]
     assert not second['truncated']
@@ -197,8 +200,11 @@ def test_missing_delivery_or_lost_lease_never_deletes():
     assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_events').fetchone() == (2,)
 
 
-def test_recovery_reference_defers_event_deletion():
+def test_recovery_reference_is_preserved_before_event_deletion():
     from utils.btc_review_event_proof import delete_confirmed_slot
+    from observability.btc_scenario_export import _anchor_hash
+    from observability.review_storage import review_text
+    from utils.btc_recovery_references import read_recovery
     source, exporter, archived, tape, events, identity, now = deletion_fixture()
     review = canonical({'kind': 'MODEL_REQUEST', 'prompt': 'x' * 3000})
     recovery = canonical({'kind': 'MODEL_REQUEST', 'prompt': 'x' * 3000, 'calculated_review_version': 1,
@@ -211,8 +217,20 @@ def test_recovery_reference_defers_event_deletion():
     events[0]['body_sha256'] = archived['proof']['events'][0]['sha256']
     result = delete_confirmed_slot(source, exporter, archived, tape, events, identity, now,
                                    guard=lambda: True, lease_alive=lambda: True)
-    assert result == {'status': 'DEFERRED_RECOVERY_REFERENCE'}
+    assert result == {'status': 'DEFERRED_RECOVERY_EXPORT'}
     assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_events').fetchone() == (2,)
+    stored = source.execute('SELECT body FROM llm_scenario_recovery_events WHERE event_id=?', ('e',)).fetchone()[0]
+    anchor = _anchor_hash('llm_scenario_recovery_events', {'slot': 1, 'kind': 'MODEL_REQUEST', 'body': stored}, source)
+    exporter.execute('INSERT INTO cursors VALUES(?,?)', ('llm_scenario_recovery_events', 1))
+    exporter.execute('INSERT INTO anchors VALUES(?,?)', ('llm_scenario_recovery_events', anchor))
+    exporter.commit()
+    result = delete_confirmed_slot(source, exporter, archived, tape, events, identity, now,
+                                   guard=lambda: True, lease_alive=lambda: True)
+    assert result == {'status': 'REMOVED', 'events': 1}
+    preserved = source.execute('SELECT body FROM llm_scenario_recovery_events WHERE event_id=?', ('e',)).fetchone()[0]
+    assert read_recovery(preserved, source, 1, decode_legacy=review_text, expected_kind='MODEL_REQUEST') == recovery
+    assert _anchor_hash('llm_scenario_recovery_events', {'slot': 1, 'kind': 'MODEL_REQUEST', 'body': preserved}, source) == anchor
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_events WHERE slot=1').fetchone() == (0,)
 
 
 def test_changed_export_anchor_never_deletes():
@@ -266,8 +284,9 @@ def test_event_delivery_lookup_is_read_only_and_bounded(monkeypatch):
         proof_module.fetch_event_deliveries({'events': [{'rowid': '1 OR 1=1'}]}, identity)
 
 
-@pytest.mark.parametrize('delivered,cursor_changed', [(True, False), (False, False), (True, True)])
-def test_cleanup_links_proof_receipts_and_lease_before_deletion(tmp_path, monkeypatch, delivered, cursor_changed):
+@pytest.mark.parametrize('delivered,cursor_changed,unavailable', [(True, False, False), (False, False, False),
+                                                                  (True, True, False), (False, False, True)])
+def test_cleanup_links_proof_receipts_and_lease_before_deletion(tmp_path, monkeypatch, delivered, cursor_changed, unavailable):
     from contextlib import contextmanager
     from utils import btc_review_event_proof as proof_module, btc_review_retention as retention
     source, exporter, archived, tape, events, identity, now = deletion_fixture()
@@ -280,6 +299,8 @@ def test_cleanup_links_proof_receipts_and_lease_before_deletion(tmp_path, monkey
     base = {'version': 1, 'as_of': int(started), 'cutoff_slot': int((started - 7 * 86400) // 300),
             'after_slot': -1, 'last_scanned_slot': 2, 'scanned': 2, 'truncated': False,
             'candidates': [archived['candidate']]}
+    if unavailable:
+        archived['proof'] = {'slot': 1, 'unavailable': True}
     index = {'version': 2, 'cutoff_slot': base['cutoff_slot'], 'after_slot': -1, 'last_scanned_slot': 2,
              'truncated': False, 'items': [archived]}
     manifest = json.dumps({'source_identity_sha256': identity, 'started_at': started, 'completed_at': started + 1,
@@ -307,9 +328,39 @@ def test_cleanup_links_proof_receipts_and_lease_before_deletion(tmp_path, monkey
     result = proof_module.cleanup_events(tmp_path, now=now)
     assert result['status'] == ('PARTIAL' if cursor_changed else 'COMPLETE' if delivered else 'DEFERRED')
     assert result['removed_slots'] == result['removed_events'] == int(delivered)
+    if unavailable:
+        assert result['outcomes'] == {'DEFERRED_EVENT_PROOF': 1}
     assert saved == ([] if cursor_changed else [(index, identity)])
     with sqlite3.connect(source_path) as check:
         expected = [(2,)] if delivered else [(1,), (2,)]
         assert check.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == expected
         assert check.execute('SELECT slot FROM llm_scenario_review_events').fetchall() == expected
         assert check.execute('SELECT COUNT(*) FROM llm_scenario_decisions').fetchone() == (2,)
+
+
+def test_recovery_detachment_failure_rolls_back_all_changes(monkeypatch):
+    from observability.btc_scenario_export import _anchor_hash
+    from utils import btc_review_event_proof as proof_module
+    source, exporter, archived, tape, events, identity, now = deletion_fixture()
+    review = canonical({'kind': 'MODEL_REQUEST', 'prompt': 'x' * 3000})
+    recovery = canonical({'kind': 'MODEL_REQUEST', 'prompt': 'x' * 3000, 'calculated_review_version': 1,
+                          'input_id': 'fixture'})
+    encoded = pack(compact(review, recovery, 1, 0))
+    source.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=1', (review,))
+    source.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?)', ('e', 1, 'MODEL_REQUEST', encoded))
+    source.commit()
+    archived['proof'] = event_proof(source, 1)
+    events[0]['body_sha256'] = archived['proof']['events'][0]['sha256']
+    anchor = _anchor_hash('llm_scenario_recovery_events', {'slot': 1, 'kind': 'MODEL_REQUEST', 'body': encoded}, source)
+    exporter.execute('INSERT INTO cursors VALUES(?,?)', ('llm_scenario_recovery_events', 1))
+    exporter.execute('INSERT INTO anchors VALUES(?,?)', ('llm_scenario_recovery_events', anchor))
+    exporter.commit()
+    def fail(*_args, **_kwargs):
+        raise OSError('compression unavailable')
+    monkeypatch.setattr(proof_module.gzip, 'compress', fail)
+    with pytest.raises(OSError):
+        proof_module.delete_confirmed_slot(source, exporter, archived, tape, events, identity, now,
+                                           guard=lambda: True, lease_alive=lambda: True)
+    assert source.execute('SELECT body FROM llm_scenario_recovery_events WHERE event_id=?', ('e',)).fetchone() == (encoded,)
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_events').fetchone() == (2,)
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone() == (2,)
