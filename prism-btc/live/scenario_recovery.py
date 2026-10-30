@@ -46,6 +46,7 @@ def ensure_schema(conn):
         event_id TEXT PRIMARY KEY, slot INTEGER, scenario_id TEXT,
         kind TEXT NOT NULL, observed_at REAL NOT NULL, body TEXT NOT NULL)""")
     conn.execute("CREATE INDEX IF NOT EXISTS llm_scenario_recovery_source_lookup ON llm_scenario_recovery_events(scenario_id,kind)")
+    conn.execute("CREATE INDEX IF NOT EXISTS llm_scenario_recovery_slot_kind ON llm_scenario_recovery_events(slot,kind)")
 
 
 def _reference_storage(conn, kind, slot, sequence, original, fallback):
