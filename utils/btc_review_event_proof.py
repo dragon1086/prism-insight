@@ -338,9 +338,12 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
                 or any(event['rowid'] >= cursors['llm_scenario_review_events'] for event in current_proof['events'])):
             return {'status': 'DEFERRED_EVENT_EVIDENCE'}
         def stored_bytes():
-            tables = ('llm_scenario_review_tapes', 'llm_scenario_review_events', 'llm_scenario_recovery_events')
-            return sum(conn.execute('SELECT coalesce(sum(length(cast(body AS BLOB))),0) FROM ' + table +
-                                    ' WHERE slot=?', (slot,)).fetchone()[0] for table in tables)
+            queries = (
+                'SELECT coalesce(sum(length(cast(body AS BLOB))),0) FROM llm_scenario_review_tapes WHERE slot=?',
+                'SELECT coalesce(sum(length(cast(body AS BLOB))),0) FROM llm_scenario_review_events WHERE slot=?',
+                'SELECT coalesce(sum(length(cast(body AS BLOB))),0) FROM llm_scenario_recovery_events WHERE slot=?',
+            )
+            return sum(conn.execute(query, (slot,)).fetchone()[0] for query in queries)
         before_bytes = stored_bytes()
         recovery_rows = conn.execute('SELECT rowid,event_id,kind,body FROM llm_scenario_recovery_events '
                                      'WHERE slot=? ORDER BY event_id LIMIT ?',
