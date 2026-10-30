@@ -426,3 +426,35 @@ def test_manifest_transport_bounds_and_validates_ack(monkeypatch):
     monkeypatch.setattr(transport.subprocess, 'run', lambda *a, **k: SimpleNamespace(stdout=b'{"manifest_sha256":"wrong"}'))
     with pytest.raises(ValueError, match='transport_response_invalid'):
         transport.apply_remote(manifest, seal, proof, commit=commit)
+
+
+def test_real_runtime_guard_blocks_active_and_unresolved_intent(tmp_path, monkeypatch):
+    from tools import btc_review_event_compaction as guards
+    from tools.btc_account_compaction import guarded_operational_batch, manifest_sha256
+    from utils import btc_review_retention as retention
+    path = tmp_path/'fixture.sqlite'
+    conn = sqlite3.connect(path, timeout=0)
+    conn.executescript('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body);'
+                       'CREATE TABLE llm_scenario_state(id INTEGER,body TEXT);'
+                       'CREATE TABLE llm_scenario_intents(id TEXT,status TEXT);')
+    raw = json.dumps({'detail':'x'*4000})
+    conn.execute("INSERT INTO llm_scenario_broker_evidence VALUES('account',1,?)", (raw,))
+    conn.execute('INSERT INTO llm_scenario_state VALUES(1,?)', (json.dumps({'active': {'id':'open'}}),))
+    conn.commit()
+    st = path.stat()
+    identity = hashlib.sha256(f'{path.resolve()}:{st.st_dev}:{st.st_ino}'.encode()).hexdigest()
+    manifest = {'source_identity':identity, 'cutoff':3, 'after_rowid':0, 'backup_proof_sha256':'b'*64,
+                'rows':[{'rowid':1, 'captured_at':1, 'sha256':hashlib.sha256(raw.encode()).hexdigest()}]}
+    monkeypatch.setattr(guards, 'SOURCE', path)
+    monkeypatch.setattr(guards, 'resource_guard', lambda *a: True)
+    monkeypatch.setattr(retention, '_backup_idle', lambda *a: True)
+    def apply(): return guarded_operational_batch(conn, manifest, manifest_sha256(manifest), 'b'*64)
+    assert apply()['status'] == 'DEFERRED'
+    conn.execute('UPDATE llm_scenario_state SET body=? WHERE id=1', (json.dumps({'active':None}),))
+    conn.execute("INSERT INTO llm_scenario_intents VALUES('pending','UNKNOWN')")
+    conn.commit()
+    assert apply()['status'] == 'DEFERRED'
+    assert conn.execute('SELECT body FROM llm_scenario_broker_evidence').fetchone()[0] == raw
+    conn.execute("UPDATE llm_scenario_intents SET status='TERMINAL'")
+    conn.commit()
+    assert apply()['updated'] == 1
