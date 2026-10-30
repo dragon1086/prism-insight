@@ -113,6 +113,12 @@ def test_snapshot_index_is_bounded_and_does_not_skip_candidates(monkeypatch):
     with pytest.raises(ValueError, match='proof_snapshot_transaction_required'):
         snapshot_event_index(conn, now)
     conn.execute('BEGIN')
+    with pytest.raises(ValueError, match='proof_snapshot_recovery_index_missing'):
+        snapshot_event_index(conn, now)
+    conn.rollback()
+    conn.execute('CREATE INDEX llm_scenario_recovery_slot_kind ON llm_scenario_recovery_events(slot,kind)')
+    conn.commit()
+    conn.execute('BEGIN')
     first = snapshot_event_index(conn, now)
     assert len(first['items']) == 400 and first['truncated'] and first['last_scanned_slot'] == 400
     assert first['items'][1]['proof'] == {'slot': 2, 'unavailable': True}
@@ -691,7 +697,8 @@ def test_daily_capacity_uses_real_transactions_without_skipping_anchor(tmp_path,
         conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
                            'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);'
                            'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT,PRIMARY KEY(slot,sequence));'
-                           'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body);')
+                           'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body);'
+                           'CREATE INDEX llm_scenario_recovery_slot_kind ON llm_scenario_recovery_events(slot,kind);')
         conn.executemany('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', [(slot, '{}') for slot in range(1, 290)])
         conn.executemany('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)',
                          [(slot, '{}', context, plan, '{"status":"wait"}') for slot in range(1, 290)])

@@ -294,7 +294,8 @@ def test_standalone_receiver_recomputes_retention_index(payload, monkeypatch):
         conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
                            'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,context TEXT,proposal TEXT,outcome TEXT,snapshot TEXT DEFAULT "{}");'
                            'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT);'
-                           'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body TEXT);')
+                           'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body TEXT);'
+                           'CREATE INDEX llm_scenario_recovery_slot_kind ON llm_scenario_recovery_events(slot,kind);')
         conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (1, '{"kind":"WAIT"}'))
         conn.execute('INSERT INTO llm_scenario_decisions(slot,context,proposal,outcome) VALUES(?,?,?,?)',
                      (1, json.dumps(ctx), json.dumps({'schema_version': 1, 'action': 'WAIT', 'entries': [],
@@ -1035,7 +1036,8 @@ def test_event_retention_end_to_end_with_isolated_archive(payload, monkeypatch):
         conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
                            'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);'
                            'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body);'
-                           'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body);')
+                           'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body);'
+                           'CREATE INDEX llm_scenario_recovery_slot_kind ON llm_scenario_recovery_events(slot,kind);')
         for slot in (1, 2):
             conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (slot, '{}'))
             conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)',

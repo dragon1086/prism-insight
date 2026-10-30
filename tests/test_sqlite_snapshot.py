@@ -16,7 +16,9 @@ def test_optional_event_proof_failure_preserves_verified_backup(tmp_path, monkey
                'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False}
     with sqlite3.connect(source) as conn:
         conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
-                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);')
+                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);'
+                           'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT);'
+                           'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body TEXT);')
         conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (1, '{}'))
         conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)',
                      (1, '{}', json.dumps(context), json.dumps({'schema_version': 1, 'action': 'WAIT', 'entries': [],

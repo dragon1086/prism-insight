@@ -90,6 +90,13 @@ def snapshot_event_index(conn, now, *, after_slot=-1, guard=None):
     """
     if not conn.in_transaction:
         raise ValueError('proof_snapshot_transaction_required')
+    required = {'llm_scenario_review_tapes', 'llm_scenario_decisions',
+                'llm_scenario_review_events', 'llm_scenario_recovery_events'}
+    present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not required <= present:
+        raise ValueError('proof_snapshot_schema_missing')
+    if [row[2] for row in conn.execute('PRAGMA index_info(llm_scenario_recovery_slot_kind)')] != ['slot', 'kind']:
+        raise ValueError('proof_snapshot_recovery_index_missing')
     if 'btc_retention_embedded' in sys.modules:
         from btc_retention_embedded import candidates
     else:

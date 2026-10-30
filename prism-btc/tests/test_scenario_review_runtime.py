@@ -530,6 +530,13 @@ def test_recovery_wait_retention_requires_complete_unchanged_journal(tmp_path):
     at = r.test_clock[0] + 7 * 86400 + 300
     selected = candidates(r.conn, at)['candidates']
     assert [row['slot'] for row in selected] == [slot]
+    # Legacy snapshots can lack this index even when the same journal is safe.
+    r.conn.execute('SAVEPOINT legacy_missing_index')
+    r.conn.execute('DROP INDEX llm_scenario_recovery_slot_kind')
+    assert candidates(r.conn, at)['candidates'] == []
+    r.conn.execute('ROLLBACK TO legacy_missing_index')
+    r.conn.execute('RELEASE legacy_missing_index')
+    assert candidates(r.conn, at)['candidates'] == selected
     from utils.btc_offsite_archive import verify_retention_index
     manifest = {'started_at': at, 'btc_retention_index': snapshot_index(r.conn, at)}
     assert verify_retention_index(tmp_path / 'runtime.db', manifest) is True
