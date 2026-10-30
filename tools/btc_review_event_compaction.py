@@ -49,7 +49,8 @@ def compact_one(conn, *, rowid, slot, sequence, expected_type, expected_sha256, 
         else:
             return 'SOURCE_CHANGED'
     elif not isinstance(original, str):
-        review_text(original)
+        from utils.btc_review_event_references import read_event
+        read_event(original, conn, slot, sequence, decode_legacy=review_text)
         candidate = original
     else:
         candidate = review_storage(original)

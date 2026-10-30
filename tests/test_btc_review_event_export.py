@@ -256,6 +256,34 @@ def test_compressed_review_events_keep_original_hash_and_cursor(lane):
     assert export.export_once(*lane)['status'] != 'UNAVAILABLE'
 
 
+def test_referenced_review_event_exports_original_hash_and_fails_closed(lane):
+    import random
+    from utils.btc_review_event_references import compact
+    create_review(lane[0])
+    export.export_once(*lane)
+    request = {'kind': 'MODEL_REQUEST', 'phase': 'single', 'request': {
+        'user_prompt': random.Random(7).randbytes(16000).hex(), 'timeout': 50}}
+    raw = {'kind': 'MODEL_RAW', 'phase': 'single', 'actual_request': dict(request['request'], timeout=49),
+           'raw': 'PRIVATE RESPONSE'}
+    request_text = json.dumps(request, sort_keys=True, allow_nan=False)
+    raw_text = json.dumps(raw, sort_keys=True, allow_nan=False)
+    reference = compact(raw_text, [(0, request_text)], 100, 1)
+    assert isinstance(reference, bytes)
+    with sqlite3.connect(lane[0]) as conn:
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (100, 0, request_text))
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (100, 1, reference))
+    assert export.export_once(*lane)['captured'] == 2
+    event = review_events(lane)[-1]
+    assert event['attributes']['source_sequence'] == 1
+    assert event['attributes']['body_sha256'] == export._hash(raw_text)
+    assert 'PRIVATE RESPONSE' not in lane[2].read_text()
+    assert export.export_once(*lane)['captured'] == 0
+    with sqlite3.connect(lane[0]) as conn:
+        conn.execute('DELETE FROM llm_scenario_review_events WHERE slot=100 AND sequence=0')
+    assert export.export_once(*lane)['status'] == 'UNAVAILABLE'
+    assert len(review_events(lane)) == 2
+
+
 def test_bad_compressed_review_keeps_cursor(lane):
     from observability.review_storage import MAGIC
     create_review(lane[0])

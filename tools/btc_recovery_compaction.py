@@ -45,11 +45,12 @@ def compact_one(conn, *, rowid, slot, kind, expected_type, expected_sha256, expe
         else:
             options = []
             total = 0
+            from utils.btc_review_event_references import read_event
             events = conn.execute('SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence LIMIT 129', (slot,))
             for index, (sequence, body) in enumerate(events):
                 if index >= 128:
                     return 'INELIGIBLE'
-                text = review_text(body)
+                text = read_event(body, conn, slot, sequence, decode_legacy=review_text)
                 total += len(text.encode('utf-8'))
                 if total > MAX_BYTES:
                     return 'INELIGIBLE'

@@ -55,11 +55,12 @@ def _reference_storage(conn, kind, slot, sequence, original, fallback):
         return fallback
     try:
         from utils.btc_recovery_references import compact, pack, read_recovery
+        from utils.btc_review_event_references import read_event
         rows = conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=? AND sequence=? LIMIT 2',
                             (slot, sequence)).fetchall()
         if len(rows) != 1:
             return fallback
-        candidate = compact(review_text(rows[0][0]), original, slot, sequence)
+        candidate = compact(read_event(rows[0][0], conn, slot, sequence, decode_legacy=review_text), original, slot, sequence)
         if candidate == original:
             return fallback
         candidate = pack(candidate)

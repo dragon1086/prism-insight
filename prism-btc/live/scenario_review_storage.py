@@ -47,6 +47,7 @@ def tape_storage(conn, slot, text):
     if decision is None:
         return original
     try:
+        from utils.btc_review_event_references import read_event
         count = sum(op.get('kind') == 'record' for op in tape['operations'])
         if count > MAX_REFERENCES - 2:
             return original
@@ -56,7 +57,7 @@ def tape_storage(conn, slot, text):
         for sequence, body in rows:
             if sequence != len(events):
                 return original
-            event = review_text(body)
+            event = read_event(body, conn, slot, sequence, decode_legacy=review_text)
             size += len(event.encode('utf-8'))
             if size > MAX_BYTES:
                 return original
