@@ -123,6 +123,10 @@ def _resolve_sell_quantity(holding_quantity: int, quantity: int = None) -> int:
 
 
 _RATE_LIMIT_CODE = "EGW00201"   # KIS per-second request limit
+
+
+class PortfolioQueryError(RuntimeError):
+    """No US balance query succeeded: holdings are unknown, not empty."""
 _RATE_LIMIT_WAITS = (0.5, 1.0)
 
 # Exchange code mapping (for trading/portfolio APIs using OVRS_EXCG_CD)
@@ -1636,7 +1640,7 @@ class USStockTrading:
                         logger.info(f"[Async Sell] {ticker} starting")
 
                         # Verify portfolio holdings
-                        portfolio = await asyncio.to_thread(self.get_portfolio)
+                        portfolio = await asyncio.to_thread(self.get_portfolio, True)
 
                         target_stock = None
                         for stock in portfolio:
@@ -1722,6 +1726,10 @@ class USStockTrading:
                                 result['outcome_unknown'] = True
                             result['message'] = f"Sell failed: {sell_result['message']}"
 
+                    except PortfolioQueryError as e:
+                        # No order was sent; the holding is unknown, so say so instead of "not found".
+                        result['message'] = f'{ticker} holdings unknown: {e}'
+                        logger.error(f"[Async Sell] {ticker} {result['message']}")
                     except Exception as e:
                         result['outcome_unknown'] = True
                         result['message'] = f'Async sell error: {str(e)}'
@@ -1731,9 +1739,12 @@ class USStockTrading:
 
         return result
 
-    def get_portfolio(self) -> List[Dict[str, Any]]:
+    def get_portfolio(self, strict: bool = False) -> List[Dict[str, Any]]:
         """
         Get current US stock portfolio
+
+        strict: raise PortfolioQueryError when no exchange query succeeded, instead of returning an empty
+        list that reads as "holds nothing" (QCOM subscriber stop-loss skipped as "not found", 2026-10-30).
 
         Returns:
             [{
@@ -1766,14 +1777,27 @@ class USStockTrading:
 
         portfolio = []
 
+        failures = []
+
         # Query each exchange
         for exchange in ["NASD", "NYSE", "AMEX"]:
             params["OVRS_EXCG_CD"] = exchange
 
             try:
                 res = self._request(api_url, tr_id, params)
+                # A failed balance query used to be skipped silently; retry it briefly like a rate limit.
+                for wait in _RATE_LIMIT_WAITS:
+                    if res.isOK():
+                        break
+                    logger.warning(f"Portfolio query {exchange} failed: {res.getErrorCode()} - "
+                                   f"{res.getErrorMessage()}; retrying in {wait:.1f}s")
+                    time.sleep(wait)
+                    res = self._request(api_url, tr_id, params)
 
-                if res.isOK():
+                if not res.isOK():
+                    failures.append(f"{exchange}: {res.getErrorCode()} - {res.getErrorMessage()}")
+                    logger.error(f"Portfolio query {exchange} failed: {failures[-1]}")
+                else:
                     output1 = res.getBody().output1
 
                     if not isinstance(output1, list):
@@ -1799,8 +1823,12 @@ class USStockTrading:
                 time.sleep(0.1)  # Rate limit
 
             except Exception as e:
+                failures.append(f"{exchange}: {e}")
                 logger.error(f"Error getting portfolio for {exchange}: {str(e)}")
                 continue
+
+        if strict and len(failures) == 3:
+            raise PortfolioQueryError("US portfolio query failed: " + "; ".join(failures))
 
         # Deduplicate by ticker (KIS API may return same stock from multiple exchanges)
         seen_tickers = set()
