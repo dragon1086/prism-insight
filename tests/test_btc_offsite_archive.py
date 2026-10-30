@@ -14,6 +14,23 @@ import pytest
 from utils import btc_offsite_archive as archive
 
 
+def test_snapshot_compression_keeps_commit_scan_and_rejects_corruption(tmp_path):
+    from observability.review_storage import MAGIC
+    path = tmp_path / 'source.sqlite'
+    snapshot = json.dumps({'git_revision': 'a' * 40, 'frame': 'x' * 1000})
+    with sqlite3.connect(path) as conn:
+        conn.execute('CREATE TABLE llm_scenario_decisions(snapshot TEXT,context TEXT)')
+        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?)', (snapshot, '{}'))
+    baseline = archive.referenced_commits(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + gzip.compress(snapshot.encode()),))
+    assert archive.referenced_commits(path) == baseline
+    with sqlite3.connect(path) as conn:
+        conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + b'corrupt',))
+    with pytest.raises(ValueError, match='snapshot_compression_unresolved'):
+        archive.referenced_commits(path)
+
+
 def test_ssh_receiver_bootstrap_stays_below_single_argument_limit(monkeypatch):
     commands = []
     def capture(args, **kwargs):
@@ -887,6 +904,8 @@ def test_archive_resolves_reference_tape_without_losing_revision_coverage(tmp_pa
     assert bundle['version'] == (2 if with_generate else 1)
     with sqlite3.connect(raw) as db:
         db.execute('UPDATE llm_scenario_review_tapes SET body=?', (pack(bundle),))
+        db.execute('UPDATE llm_scenario_decisions SET snapshot=?',
+                   (b'PRISM_REVIEW_GZIP_V1\x00' + gzip.compress(s.encode()),))
     assert archive.referenced_commits(raw) == original
     reference_source = Path(archive.__file__).with_name('btc_review_references.py').read_text()
     receiver_source = Path(archive.__file__).read_text()
@@ -922,14 +941,19 @@ def test_archive_resolves_audit_reference_in_standalone_receiver(tmp_path):
     baseline = archive.referenced_commits(path)
     with sqlite3.connect(path) as conn:
         conn.execute('UPDATE llm_scenario_audit_events SET body=?', (compact(original, s, c),))
+        conn.execute('UPDATE llm_scenario_decisions SET snapshot=?',
+                     (b'PRISM_REVIEW_GZIP_V1\x00' + gzip.compress(s.encode()),))
     assert archive.referenced_commits(path) == baseline
     helper = Path(archive.__file__).with_name('btc_audit_references.py').read_text()
     source = Path(archive.__file__).read_text()
-    child_script = ("import sys,types; m=types.ModuleType('btc_audit_refs_embedded'); "
+    storage = Path(archive.__file__).parent.parent.joinpath('observability/review_storage.py').read_text()
+    child_script = ("import sys,types; r=types.ModuleType('btc_review_storage_embedded'); "
+                    "exec(compile(%r,'<storage>','exec'),r.__dict__); sys.modules['btc_review_storage_embedded']=r; "
+                    "m=types.ModuleType('btc_audit_refs_embedded'); "
                     "exec(compile(%r,'<refs>','exec'),m.__dict__); "
                     "sys.modules['btc_audit_refs_embedded']=m; ns={'__name__':'receiver'}; "
                     "exec(compile(%r,'<archive>','exec'),ns); "
-                    "print(ns['referenced_commits'](ns['Path'](sys.argv[1]))[0][0])" % (helper, source))
+                    "print(ns['referenced_commits'](ns['Path'](sys.argv[1]))[0][0])" % (storage, helper, source))
     child = subprocess.run([os.sys.executable, '-I', '-c', child_script, str(path)], cwd=tmp_path,
                            capture_output=True, text=True, timeout=15, check=True)
     assert child.stdout.strip() == 'c' * 40

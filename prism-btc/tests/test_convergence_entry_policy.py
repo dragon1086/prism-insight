@@ -143,6 +143,10 @@ def test_executor_uses_original_snapshot_not_forged_allowed_context(tmp_path):
     executor = ScenarioExecution();executor.conn=c;executor.convergence_entry_enabled=True;executor.clock=lambda:1800000000
     with pytest.raises(ValueError, match='entry_convergence_restricted'):
         executor._check_entry_convergence(dict(action_id='a', input_id='i'))
+    from live.scenario_review_storage import review_storage
+    c.execute('UPDATE llm_scenario_decisions SET snapshot=?', (review_storage(json.dumps(snap)),))
+    with pytest.raises(ValueError, match='entry_convergence_restricted'):
+        executor._check_entry_convergence(dict(action_id='a', input_id='i'))
     ctx['entry_convergence']['status'] = 'ALLOWED'
     c.execute('UPDATE llm_scenario_decisions SET context=?', (json.dumps(ctx),))
     with pytest.raises(Exception, match='entry_convergence_evidence_changed'):

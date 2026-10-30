@@ -19,6 +19,7 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from utils.btc_audit_references import read_audit  # noqa: E402
 from utils.btc_accounting_audit_references import read_accounting  # noqa: E402
+from observability.review_storage import review_text  # noqa: E402
 
 
 QUERIES = {
@@ -88,8 +89,14 @@ def _read(db):
         conn.execute("BEGIN")  # All source tables share one SQLite snapshot.
         names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         require(set(QUERIES) | {"btc_meta"} <= names)
-        data = {name: sorted((dict(r) for r in conn.execute(query)), key=canonical)
-                for name, query in QUERIES.items()}
+        data = {}
+        for name, query in QUERIES.items():
+            rows = [dict(r) for r in conn.execute(query)]
+            if name == 'llm_scenario_decisions':
+                for row in rows:
+                    if row.get('snapshot') is not None:
+                        row['snapshot'] = review_text(row['snapshot'])
+            data[name] = sorted(rows, key=canonical)
         for name, query in OPTIONAL.items():
             rows = [dict(r) for r in conn.execute(query)] if name in names else []
             if name == 'llm_scenario_audit_events':

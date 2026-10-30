@@ -105,6 +105,10 @@ def _runtime_event_hash(conn):
         cursor = conn.execute(RUNTIME_EVENT_QUERIES[name])
         columns = [field[0] for field in cursor.description]
         rows = cursor.fetchall()
+        if name == 'llm_scenario_decisions' and 'snapshot' in columns:
+            index = columns.index('snapshot')
+            rows = [tuple(review_text(value) if i == index and value is not None else value
+                          for i, value in enumerate(row)) for row in rows]
         if name in ('llm_scenario_review_events', 'llm_scenario_review_tapes') and 'body' in columns:
             index = columns.index('body')
             slot_index = columns.index('slot')

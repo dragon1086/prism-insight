@@ -438,6 +438,9 @@ def referenced_commits(raw, *, deadline=None):
                                              and value.startswith(b'PRISM_RECOVERY_REFS_V1\x00'))
                     is_event_reference = (table == 'llm_scenario_review_events' and isinstance(value, bytes)
                                           and value.startswith(b'PRISM_REVIEW_EVENT_REF_V1\x00'))
+                    is_snapshot_compressed = (table == 'llm_scenario_decisions' and col == 'snapshot'
+                                              and isinstance(value, bytes)
+                                              and value.startswith(b'PRISM_REVIEW_GZIP_V1\x00'))
                     if time.monotonic() > deadline:
                         raise TimeoutError('commit_scan_deadline')
                     if value is None or value == '':
@@ -491,6 +494,8 @@ def referenced_commits(raw, *, deadline=None):
                                 value = read_event(value, db, slot, sequence, decode_legacy=review_text)
                             elif table in ('llm_scenario_review_events', 'llm_scenario_review_tapes'):
                                 value = review_text(value)
+                            elif is_snapshot_compressed:
+                                value = review_text(value)
                             parsed = json.loads(value)
                         except (TypeError, ValueError, sqlite3.Error) as exc:
                             if time.monotonic() > deadline:
@@ -505,6 +510,8 @@ def referenced_commits(raw, *, deadline=None):
                                 raise ValueError('reference_recovery_unresolved') from exc
                             if is_event_reference:
                                 raise ValueError('reference_review_event_unresolved') from exc
+                            if is_snapshot_compressed:
+                                raise ValueError('snapshot_compression_unresolved') from exc
                             parsed = None
                             coverage['malformed_evidence_rows'] += 1
                     if table == 'llm_scenario_audit_manifests' and (

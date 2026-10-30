@@ -1,4 +1,5 @@
 import hashlib
+import gzip
 import json
 from pathlib import Path
 import sqlite3
@@ -35,6 +36,12 @@ def test_only_old_complete_flat_waits_become_candidates():
     assert index['scanned'] == 6 and index['candidates'] == result['candidates']
     assert conn.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 7
     old_digest = result['candidates'][0]['decision_sha256']
+    from observability.review_storage import MAGIC as STORAGE_MAGIC
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=? WHERE slot=1',
+                 (STORAGE_MAGIC + gzip.compress(b'{}'),))
+    assert candidates(conn, now)['candidates'][0]['decision_sha256'] == old_digest
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=? WHERE slot=1', (STORAGE_MAGIC + b'corrupt',))
+    assert candidates(conn, now)['candidates'] == []
     conn.execute('UPDATE llm_scenario_decisions SET snapshot=? WHERE slot=1', ('{"price":1}',))
     assert candidates(conn, now)['candidates'][0]['decision_sha256'] != old_digest
     conn.execute('UPDATE llm_scenario_decisions SET snapshot=? WHERE slot=1', ('{}',))

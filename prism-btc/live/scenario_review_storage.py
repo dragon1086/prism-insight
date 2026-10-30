@@ -48,6 +48,7 @@ def tape_storage(conn, slot, text, *, allow_failed=False):
     if decision is None:
         return original
     try:
+        snapshot = review_text(decision[0]) if isinstance(decision[0], bytes) else decision[0]
         from utils.btc_review_event_references import read_event
         count = sum(op.get('kind') == 'record' for op in tape['operations'])
         if count > MAX_REFERENCES - 2:
@@ -65,8 +66,8 @@ def tape_storage(conn, slot, text, *, allow_failed=False):
             events.append(event)
         if len(events) != count:
             return original
-        bundle = compact(text, decision[0], decision[1], events)
-        if restore(bundle, decision[0], decision[1], events) != text:
+        bundle = compact(text, snapshot, decision[1], events)
+        if restore(bundle, snapshot, decision[1], events) != text:
             return original
         encoded = pack(bundle)
     except (ValueError, TypeError, KeyError, IndexError):

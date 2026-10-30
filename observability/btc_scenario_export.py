@@ -655,6 +655,8 @@ def _capture(source, state, identity, stream, row, manifest_cache=None):
             for key in decision.keys():
                 value = decision[key]
                 if value:
+                    if key == 'snapshot':
+                        value = review_text(value)
                     attrs[key + '_sha256'] = _hash(value)
                     decoded = json.loads(value)
                     attrs[key + '_facts'] = _facts(decoded)

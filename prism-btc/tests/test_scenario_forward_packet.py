@@ -75,6 +75,23 @@ def scenario(db):
     return result["scenarios"][0]
 
 
+def test_compressed_decision_snapshot_preserves_forward_input(db):
+    import gzip
+    from observability.review_storage import MAGIC
+    snapshot = '{"frame":"fixture"}'
+    with sqlite3.connect(db) as conn:
+        conn.execute('ALTER TABLE llm_scenario_decisions ADD COLUMN snapshot TEXT')
+        conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (snapshot,))
+    before = packet._read(db)
+    with sqlite3.connect(db) as conn:
+        conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + gzip.compress(snapshot.encode()),))
+    assert packet._read(db) == before
+    with sqlite3.connect(db) as conn:
+        conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + b'corrupt',))
+    with pytest.raises(ValueError):
+        packet._read(db)
+
+
 def test_financial_reference_preserves_forward_packet_business_facts(db):
     import sys
     sys.path.append(str(Path(__file__).resolve().parents[2]))

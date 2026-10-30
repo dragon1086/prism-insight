@@ -257,6 +257,20 @@ def test_outcome_exact_slot_and_model_refs_no_raw_wire(lane):
     assert 'DO NOT EXPORT RAW' not in lane[2].read_text()
 
 
+def test_outcome_hashes_compressed_snapshot_as_original(lane):
+    import gzip
+    import hashlib
+    from observability.review_storage import MAGIC
+    export.export_once(*lane)
+    snapshot = '{"mark":100,"git_revision":"' + 'a' * 40 + '"}'
+    with sqlite3.connect(lane[0]) as c:
+        c.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)',
+                  (2, MAGIC + gzip.compress(snapshot.encode()), '{}', '{}', '{}'))
+    add(lane[0], 2)
+    assert export.export_once(*lane)['status'] == 'OK'
+    assert events(lane[2])[-1]['attributes']['snapshot_sha256'] == hashlib.sha256(snapshot.encode()).hexdigest()
+
+
 def test_manifest_policy_and_confirmed_execution_refs_not_ack(lane):
     db, _, spool = lane
     with sqlite3.connect(db) as c:

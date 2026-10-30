@@ -181,6 +181,8 @@ def candidates(conn, now, *, after_slot=-1, limit=100, guard=None):
         last = slot
         scanned += 1
         try:
+            if isinstance(snapshot, bytes):
+                snapshot = review_text(snapshot)
             market, ctx, plan, result = json.loads(snapshot), json.loads(context), json.loads(proposal), json.loads(outcome)
         except (TypeError, ValueError):
             continue
