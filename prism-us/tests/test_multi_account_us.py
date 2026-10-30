@@ -1,4 +1,5 @@
 import atexit
+import asyncio
 import importlib.util
 import sqlite3
 import sys
@@ -726,3 +727,64 @@ def test_us_limit_buy_exception_marks_outcome_unknown():
     assert result["success"] is False
     assert result["outcome_unknown"] is True
     assert "Expecting value" in result["message"]
+
+
+class _BalanceResp:
+    def __init__(self, ok, items=()):
+        self._ok, self._items = ok, list(items)
+
+    def isOK(self):
+        return self._ok
+
+    def getErrorCode(self):
+        return "" if self._ok else "EGW00201"
+
+    def getErrorMessage(self):
+        return "" if self._ok else "초당 거래건수를 초과하였습니다."
+
+    def getBody(self):
+        return SimpleNamespace(output1=self._items)
+
+
+def _balance_trader(responses):
+    trader = ust.USStockTrading.__new__(ust.USStockTrading)
+    trader.mode = "real"
+    trader.trenv = SimpleNamespace(my_acct="test-account", my_prod="01")
+    calls = iter(responses)
+    trader._request = lambda *a, **k: next(calls)
+    return trader
+
+
+QCOM_ROW = {"ovrs_pdno": "QCOM", "ovrs_item_name": "퀄컴", "ovrs_cblc_qty": "3", "pchs_avg_pric": "178.02",
+            "now_pric2": "164.37", "ovrs_stck_evlu_amt": "493.11", "frcr_evlu_pfls_amt": "-40.95",
+            "evlu_pfls_rt": "-7.67"}
+
+
+def test_portfolio_query_retries_a_failed_exchange(monkeypatch):
+    monkeypatch.setattr(ust.time, "sleep", lambda s: None)
+    trader = _balance_trader([_BalanceResp(False), _BalanceResp(True, [QCOM_ROW]),
+                              _BalanceResp(True), _BalanceResp(True)])
+    assert [(s["ticker"], s["quantity"]) for s in trader.get_portfolio(strict=True)] == [("QCOM", 3)]
+
+
+def test_portfolio_query_failure_is_unknown_not_empty(monkeypatch):
+    # QCOM subscriber stop-loss 2026-10-30: every balance query failed, read as "0 stocks held" -> "not found"
+    monkeypatch.setattr(ust.time, "sleep", lambda s: None)
+    trader = _balance_trader([_BalanceResp(False)] * 9)
+    with pytest.raises(ust.PortfolioQueryError):
+        trader.get_portfolio(strict=True)
+    trader = _balance_trader([_BalanceResp(False)] * 9)
+    assert trader.get_portfolio() == []                     # non-strict callers keep the old behaviour
+
+
+def test_sell_reports_unknown_holdings_when_the_portfolio_query_fails(monkeypatch):
+    monkeypatch.setattr(ust.time, "sleep", lambda s: None)
+    trader = _balance_trader([_BalanceResp(False)] * 9)
+
+    async def run():
+        trader._semaphore, trader._global_lock = asyncio.Semaphore(1), asyncio.Lock()
+        trader._stock_locks = {}
+        return await trader._execute_sell_stock("QCOM")
+    result = asyncio.run(run())
+    assert result["success"] is False and "holdings unknown" in result["message"]
+    assert "not found" not in result["message"] and not result.get("outcome_unknown")
