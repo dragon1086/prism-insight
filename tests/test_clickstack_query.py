@@ -44,6 +44,30 @@ def test_summarize_pulls_decision_and_fill_fields():
     assert json.dumps(cq.summarize({}, 50)) == '""'
 
 
+def test_recent_events_separate_future_records(monkeypatch, capsys):
+    captured = []
+    def query(sql, params, *, local):
+        captured.append((sql, params, local))
+        return [{'event': 'btc.scenario.settlement_recorded', 'market': 'CRYPTO', 'n': 9,
+                 'future': 1, 'last_kst': '2026-10-30 01:00:00'},
+                {'event': 'fixture', 'market': '', 'n': 0, 'future': 2, 'last_kst': '1970-01-01'}]
+    monkeypatch.setattr(cq, 'run_query', query)
+    args = type('A', (), {'days': 3, 'prefix': 'btc', 'local': False})()
+    cq.cmd_events(args)
+    output = capsys.readouterr().out
+    assert 'future=1' in output and 'future=2' in output and 'last -' in output
+    assert 'countIf(Timestamp <= now() + INTERVAL 5 MINUTE)' in captured[0][0]
+    assert captured[0][1] == {'days': 3, 'prefix': 'btc'}
+
+
+def test_recent_ticker_excludes_far_future_events(monkeypatch):
+    captured = []
+    monkeypatch.setattr(cq, 'run_query', lambda sql, params, *, local: captured.append(sql) or [])
+    args = type('A', (), {'ticker': 'BTCUSDT', 'days': 3, 'limit': 10, 'all': False, 'local': False})()
+    cq.cmd_ticker(args)
+    assert 'Timestamp <= now() + INTERVAL 5 MINUTE' in captured[0]
+
+
 @pytest.mark.parametrize("target", ["-oProxyCommand=sh", "a b", ""])
 def test_rejects_ssh_option_injection(monkeypatch, target):
     monkeypatch.setenv("PRISM_DB_SSH", target)
