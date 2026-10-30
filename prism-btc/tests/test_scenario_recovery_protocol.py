@@ -19,6 +19,21 @@ def recovery_context():
     return c
 
 
+def test_recovery_schema_indexes_slot_and_kind_without_changing_records():
+    conn = sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE llm_scenario_recovery_events '
+                 '(event_id TEXT PRIMARY KEY, slot INTEGER, scenario_id TEXT, kind TEXT NOT NULL, '
+                 'observed_at REAL NOT NULL, body TEXT NOT NULL)')
+    conn.executemany('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?,?,?)', [
+        ('one', 100, None, 'MODEL_RAW', 1, '{}'), ('two', 101, None, 'MODEL_RAW', 2, '{}')])
+    ensure_schema(conn)
+    query = "SELECT 1 FROM llm_scenario_recovery_events WHERE slot=? AND kind='MODEL_RAW'"
+    assert conn.execute(query, (100,)).fetchone() == (1,)
+    assert conn.execute(query, (102,)).fetchone() is None
+    assert 'llm_scenario_recovery_slot_kind' in str(conn.execute('EXPLAIN QUERY PLAN ' + query, (100,)).fetchall())
+    assert conn.execute('SELECT count(*) FROM llm_scenario_recovery_events').fetchone()[0] == 2
+
+
 @pytest.mark.parametrize('stage,fraction',[(0,.005),(1,.01),(2,.02)])
 def test_automatic_normalization_contract_uses_host_offered_cap(stage,fraction):
     c=recovery_context()

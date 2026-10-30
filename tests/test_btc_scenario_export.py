@@ -42,6 +42,23 @@ def test_cutover_no_backfill_restart_and_secret_safety(lane):
     assert os.stat(state).st_mode & 0o777 == 0o600
 
 
+@pytest.mark.parametrize(('kind', 'expected'), [
+    ('incident_epoch_finance_cursor_v1', 'incident_epoch_finance_cursor_v1'),
+    ('incident_epoch_halt_v1', 'incident_epoch_halt_v1'),
+    ('account_123', 'UNKNOWN'),
+    ('account:private', 'UNKNOWN'),
+])
+def test_versioned_broker_evidence_kind_is_identified_without_exposing_ids(lane, kind, expected):
+    db, state, spool = lane
+    with sqlite3.connect(db) as conn:
+        conn.execute('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body TEXT)')
+    export.export_once(db, state, spool)
+    with sqlite3.connect(db) as conn:
+        conn.execute('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)', (kind, 1700000001, '{}'))
+    assert export.export_once(db, state, spool)['captured'] == 1
+    assert events(spool)[-1]['attributes']['source_kind'] == expected
+
+
 def test_append_before_checkpoint_crash_reuses_id(lane, monkeypatch):
     export.export_once(*lane)
     add(lane[0], 1)
