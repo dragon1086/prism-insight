@@ -101,8 +101,24 @@ def _recovery_wait_proven(conn, slot, snapshot, context, plan, outcome, original
                 or decision.get('proposal') != plan or decision.get('metadata') != plan['recovery']
                 or result != expected_outcome):
             return False
+        operations = tape.get('operations')
+        if (not isinstance(operations, list) or len(operations) > 128
+                or any(not isinstance(op, dict) or op.get('kind') not in ('clock', 'generate', 'record')
+                       for op in operations)):
+            return False
+        records = [op.get('event') for op in operations if op['kind'] == 'record']
+        if not records or any(not isinstance(event, dict) for event in records):
+            return False
+        if [row[2] for row in conn.execute('PRAGMA index_info(sqlite_autoindex_llm_scenario_review_events_1)')] != ['slot', 'sequence']:
+            return False
+        review_rows = conn.execute('SELECT sequence,body FROM llm_scenario_review_events '
+                                   'WHERE slot=? ORDER BY sequence LIMIT ?', (slot, len(records))).fetchall()
+        if (len(review_rows) != len(records) or any(
+                sequence != index or full_hash(json.loads(review_text(body))) != full_hash(records[index])
+                for index, (sequence, body) in enumerate(review_rows))):
+            return False
         expected, phases = [], Counter()
-        for operation in tape.get('operations', []):
+        for operation in operations:
             event = operation.get('event') if isinstance(operation, dict) and operation.get('kind') == 'record' else None
             if isinstance(event, dict) and event.get('kind') in ('MODEL_REQUEST', 'MODEL_RAW'):
                 value = dict(event, calculated_review_version=1)

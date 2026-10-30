@@ -407,6 +407,15 @@ def test_recovery_wait_retention_requires_complete_unchanged_journal(tmp_path):
     assert not candidates(r.conn, at)['candidates']
     r.conn.execute('ROLLBACK TO extra')
     r.conn.execute('RELEASE extra')
+    r.conn.execute('SAVEPOINT missing_review')
+    original_body = r.conn.execute('SELECT body FROM llm_scenario_review_tapes WHERE slot=?', (slot,)).fetchone()[0]
+    original = read_tape(original_body, r.conn, slot, decode_legacy=review_text)
+    from live.scenario_review_storage import review_storage
+    r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (review_storage(original), slot))
+    r.conn.execute('DELETE FROM llm_scenario_review_events WHERE slot=? AND sequence=2', (slot,))
+    assert not candidates(r.conn, at)['candidates']
+    r.conn.execute('ROLLBACK TO missing_review')
+    r.conn.execute('RELEASE missing_review')
     r.conn.execute('SAVEPOINT corrupt_tape')
     r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (b'PRISM_REVIEW_REFS_V1\x00bad', slot))
     assert not candidates(r.conn, at)['candidates']
