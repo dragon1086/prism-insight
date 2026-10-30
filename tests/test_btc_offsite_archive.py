@@ -414,6 +414,14 @@ def test_sparse_restore_preserves_sqlite_bytes_and_rejects_wrong_zero_count(tmp_
         assert db.execute('PRAGMA quick_check').fetchone() == ('ok',)
     with pytest.raises(ValueError, match='sparse_zero_mismatch'):
         archive.restore_snapshot(zipped, manifest, tmp_path / 'wrong.sqlite', expected_zero_bytes=zeros + 4096)
+    with monkeypatch.context() as patched:
+        patched.setattr(archive.os, 'fstat', lambda _: SimpleNamespace(st_blocks=len(original) // 512 + 100))
+        with pytest.raises(ValueError, match='sparse_allocation_exceeded'):
+            archive.restore_snapshot(zipped, manifest, tmp_path / 'overallocated.sqlite', expected_zero_bytes=zeros)
+    with monkeypatch.context() as patched:
+        patched.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=archive.RESERVE + 1))
+        with pytest.raises(OSError, match='snapshot_restore_space_reserve_lost'):
+            archive.restore_snapshot(zipped, manifest, tmp_path / 'low-space.sqlite', expected_zero_bytes=zeros)
 
 
 def test_receiver_verifies_sparse_claim_and_preserves_previous_archive(payload, monkeypatch):
@@ -463,6 +471,16 @@ def test_sender_and_receiver_use_verified_sparse_bound(payload, monkeypatch):
     monkeypatch.setattr(archive.shutil, 'disk_usage', disk_usage)
     monkeypatch.setattr(archive, '_sparse_raw_bound', lambda raw, zero: raw - zero)
     monkeypatch.setattr(archive, '_require_sparse', lambda _: None)
+    real_restore = archive.restore_snapshot
+    def sparse_restore(zipped, details, raw, *, expected_zero_bytes=None):
+        if expected_zero_bytes is None:
+            return real_restore(zipped, details, raw)
+        # Model a sparse-capable receiver even when the test volume allocates holes.
+        blocks = (details['raw_bytes'] - expected_zero_bytes + 511) // 512
+        with monkeypatch.context() as patched:
+            patched.setattr(archive.os, 'fstat', lambda _: SimpleNamespace(st_blocks=blocks))
+            return real_restore(zipped, details, raw, expected_zero_bytes=expected_zero_bytes)
+    monkeypatch.setattr(archive, 'restore_snapshot', sparse_restore)
     def ssh(_host, needed, *, stream=None):
         if stream is None:
             budget.append(archive.RESERVE + needed + 65536)

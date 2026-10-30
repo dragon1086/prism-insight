@@ -229,8 +229,9 @@ def restore_snapshot(zipped, manifest, raw, *, expected_zero_bytes=None):
             digest(zipped) != manifest.get('compressed_sha256')):
         raise ValueError('snapshot_manifest_mismatch')
     total = zero_bytes = data_bytes = 0
+    sparse_bound = None
     if expected_zero_bytes is not None:
-        _sparse_raw_bound(manifest['raw_bytes'], expected_zero_bytes)
+        sparse_bound = _sparse_raw_bound(manifest['raw_bytes'], expected_zero_bytes)
     deadline = time.monotonic() + 600
     with gzip.open(zipped, 'rb') as src, raw.open('xb', buffering=0) as dst:
         while chunk := src.read(1024 * 1024):
@@ -240,7 +241,7 @@ def restore_snapshot(zipped, manifest, raw, *, expected_zero_bytes=None):
                 raise ValueError('snapshot_expansion_bound')
             if total < manifest['raw_bytes'] and len(chunk) % 4096:
                 raise ValueError('snapshot_block_alignment')
-            if shutil.disk_usage(raw.parent).free < RESERVE:
+            if shutil.disk_usage(raw.parent).free < RESERVE + len(chunk):
                 raise OSError('snapshot_restore_space_reserve_lost')
             if expected_zero_bytes is None:
                 data = memoryview(chunk)
@@ -281,6 +282,10 @@ def restore_snapshot(zipped, manifest, raw, *, expected_zero_bytes=None):
             raise ValueError('sparse_zero_mismatch')
         os.ftruncate(dst.fileno(), total)
         os.fsync(dst.fileno())
+        if sparse_bound is not None and os.fstat(dst.fileno()).st_blocks * 512 > sparse_bound:
+            raise ValueError('sparse_allocation_exceeded')
+        if shutil.disk_usage(raw.parent).free < RESERVE:
+            raise OSError('snapshot_restore_space_reserve_lost')
     if total != manifest['raw_bytes'] or digest(raw) != manifest.get('raw_sha256'):
         raise ValueError('snapshot_raw_mismatch')
     with closing(sqlite3.connect(raw.as_uri() + '?mode=ro', uri=True)) as db:
