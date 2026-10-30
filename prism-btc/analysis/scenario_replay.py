@@ -130,7 +130,8 @@ def _runtime_event_hash(conn):
         if name == 'llm_scenario_broker_evidence' and {'body', 'kind'} <= set(columns):
             index = columns.index('body')
             kind_index = columns.index('kind')
-            rows = [tuple(restore_financial(value) if i == index and row[kind_index] == 'financial' else value
+            rows = [tuple((restore_financial(value) if row[kind_index] == 'financial' else
+                           review_text(value) if row[kind_index] == 'account' else value) if i == index else value
                           for i, value in enumerate(row)) for row in rows]
         if name == 'llm_scenario_audit_events' and {'body', 'kind', 'decision_slot'} <= set(columns):
             index, kind_index, slot_index = (columns.index(k) for k in ('body', 'kind', 'decision_slot'))
