@@ -30,6 +30,16 @@ else:
     from utils.btc_review_references import MAGIC as REVIEW_REFERENCE_MAGIC, read_tape
 
 
+def _review_event_text(value, conn, slot, sequence):
+    if not isinstance(value, bytes) or not value.startswith(b'PRISM_REVIEW_EVENT_REF_V1\x00'):
+        return review_text(value)
+    if 'btc_review_event_refs_embedded' in sys.modules:
+        from btc_review_event_refs_embedded import read_event
+    else:
+        from utils.btc_review_event_references import read_event
+    return read_event(value, conn, slot, sequence, decode_legacy=review_text)
+
+
 def _recovery_wait_proven(conn, slot, snapshot, context, plan, outcome, original, *, reference_verified=False):
     """Require the independently retained recovery journal for a flat WAIT."""
     try:
@@ -115,7 +125,7 @@ def _recovery_wait_proven(conn, slot, snapshot, context, plan, outcome, original
             review_rows = conn.execute('SELECT sequence,body FROM llm_scenario_review_events '
                                        'WHERE slot=? ORDER BY sequence LIMIT ?', (slot, len(records))).fetchall()
             if (len(review_rows) != len(records) or any(
-                    sequence != index or full_hash(json.loads(review_text(body))) != full_hash(records[index])
+                    sequence != index or full_hash(json.loads(_review_event_text(body, conn, slot, sequence))) != full_hash(records[index])
                     for index, (sequence, body) in enumerate(review_rows))):
                 return False
         final_rows = conn.execute('SELECT sequence,body FROM llm_scenario_review_events '
@@ -124,7 +134,7 @@ def _recovery_wait_proven(conn, slot, snapshot, context, plan, outcome, original
                                   (slot, len(records))).fetchall()
         if len(final_rows) != 1 or final_rows[0][0] != len(records):
             return False
-        final_event = json.loads(review_text(final_rows[0][1]))
+        final_event = json.loads(_review_event_text(final_rows[0][1], conn, slot, final_rows[0][0]))
         expected_final = {'kind': 'FRESH_REVIEW_RECEIPT',
                           'receipt': {key: value for key, value in selection.items() if key != 'input_id'}}
         if full_hash(final_event) != full_hash(expected_final):

@@ -27,6 +27,30 @@ def test_legacy_and_compressed_have_same_replay_hash():
     assert review_text(packed) == export_text(packed) == value
 
 
+def test_replay_hash_resolves_review_event_reference_and_rejects_changed_source():
+    import json
+    import random
+    from utils.btc_review_event_references import compact
+    request = {'kind': 'MODEL_REQUEST', 'phase': 'single', 'request': {
+        'prompt': random.Random(17).randbytes(16000).hex(), 'timeout': 50.0}}
+    event = {'kind': 'MODEL_RAW', 'phase': 'single', 'actual_request': dict(request['request'], timeout=49.0),
+             'raw': 'fixture'}
+    source = json.dumps(request, sort_keys=True, allow_nan=False)
+    original = json.dumps(event, sort_keys=True, allow_nan=False)
+    encoded = compact(original, [(0, source)], 1, 1)
+    assert isinstance(encoded, bytes)
+    with sqlite3.connect(':memory:') as conn:
+        conn.execute('CREATE TABLE llm_scenario_review_events(slot,sequence,body,PRIMARY KEY(slot,sequence))')
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 0, source))
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 1, original))
+        expected = _runtime_event_hash(conn)
+        conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE sequence=1', (encoded,))
+        assert _runtime_event_hash(conn) == expected
+        conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE sequence=0', (source + ' ',))
+        with pytest.raises(ValueError):
+            _runtime_event_hash(conn)
+
+
 @pytest.mark.parametrize('data', [MAGIC+b'bad', MAGIC+gzip.compress(b'{}')[:-1],
                                   MAGIC+gzip.compress(b'{}')+b'junk',
                                   MAGIC+gzip.compress(b'x'*(MAX_BYTES+1))])
