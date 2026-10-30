@@ -186,7 +186,10 @@ def deletion_fixture():
     source.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
                          'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);'
                          'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body);'
-                         'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body,scenario_id TEXT);')
+                         'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body,scenario_id TEXT);'
+                         'CREATE TABLE llm_scenario_state(id INTEGER PRIMARY KEY,body TEXT);')
+    source.execute('INSERT INTO llm_scenario_state VALUES(1,?)',
+                   (json.dumps({'active': None, 'recovery': {'baseline_slot': 0}}),))
     context = json.dumps({'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
                           'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False})
     plan = json.dumps({'schema_version': 1, 'action': 'WAIT', 'side': None, 'hard_stop': None, 'chase': None,
@@ -618,12 +621,13 @@ def test_normalized_v1_wait_can_omit_fields_removed_by_wire_validator():
     assert result == {'status': 'REMOVED', 'events': 1}
 
 
-@pytest.mark.parametrize('slots,event_count,expected_slots,expected_calls,expected_status', [
-    (288, 5, 288, 6, 'COMPLETE'),
-    (190, 128, 184, 48, 'BUDGET_LIMIT'),
-    (190, 128, 0, 48, 'ERROR'),
+@pytest.mark.parametrize('slots,event_count,recovery_count,expected_slots,expected_calls,expected_status', [
+    (288, 5, 0, 288, 6, 'COMPLETE'),
+    (190, 128, 0, 184, 48, 'BUDGET_LIMIT'),
+    (190, 128, 0, 0, 48, 'ERROR'),
+    (161, 128, 16, 160, 47, 'BUDGET_LIMIT'),
 ])
-def test_daily_cleanup_capacity_and_query_cap(tmp_path, monkeypatch, slots, event_count, expected_slots,
+def test_daily_cleanup_capacity_and_query_cap(tmp_path, monkeypatch, slots, event_count, recovery_count, expected_slots,
                                               expected_calls, expected_status):
     from contextlib import contextmanager
     from utils import btc_review_event_proof as proof_module, btc_review_retention as retention
@@ -632,8 +636,11 @@ def test_daily_cleanup_capacity_and_query_cap(tmp_path, monkeypatch, slots, even
     for slot in range(1, slots + 1):
         events = [{'rowid': (slot - 1) * event_count + i + 1, 'sequence': i, 'sha256': 'f' * 64}
                   for i in range(event_count)]
+        recovery = [{'rowid': (slot - 1) * recovery_count + i + 1, 'event_id': str(i),
+                     'kind': 'MODEL_RAW', 'sha256': 'e' * 64, 'scenario_is_null': True}
+                    for i in range(recovery_count)]
         items.append({'candidate': {'slot': slot, 'rowid': slot},
-                      'proof': {'slot': slot, 'events': events, 'recovery': []}})
+                      'proof': {'slot': slot, 'events': events, 'recovery': recovery}})
     index = {'after_slot': -1, 'last_scanned_slot': slots, 'truncated': False, 'items': items}
     source_path, exporter_path = tmp_path / 'source.sqlite', tmp_path / 'export.sqlite'
     source_path.touch(); exporter_path.touch()
@@ -656,9 +663,14 @@ def test_daily_cleanup_capacity_and_query_cap(tmp_path, monkeypatch, slots, even
             raise OSError('simulated delivery failure')
         return [{'event_id': hashlib.sha256(f'{source_identity}:llm_scenario_review_events:{event["rowid"]}'.encode()).hexdigest()[:32]}
                 for event in proof['events']]
+    def recoveries(rows, source_identity):
+        calls.append(('recovery', len(rows)))
+        return [{'event_id': hashlib.sha256(f'{source_identity}:llm_scenario_recovery_events:{row["rowid"]}'.encode()).hexdigest()[:32]}
+                for row in rows]
     def delete(_conn, _export, item, _tapes, deliveries, source_identity, _now, **_kwargs):
         assert expected_status != 'ERROR'
         assert len(deliveries) == len(item['proof']['events'])
+        assert len(_kwargs['recovery_deliveries']) == len(item['proof']['recovery'])
         return {'status': 'REMOVED', 'events': len(deliveries)}
     @contextmanager
     def locked(_ack, *, require_event_proof):
@@ -666,6 +678,7 @@ def test_daily_cleanup_capacity_and_query_cap(tmp_path, monkeypatch, slots, even
         yield lambda: True
     monkeypatch.setattr(retention, 'fetch_deliveries', tapes)
     monkeypatch.setattr(proof_module, 'fetch_event_deliveries', events)
+    monkeypatch.setattr(proof_module, 'fetch_recovery_deliveries', recoveries)
     monkeypatch.setattr(proof_module, 'delete_confirmed_slot', delete)
     monkeypatch.setattr(retention, 'locked_remote_archive', locked)
     if expected_status == 'ERROR':
@@ -796,3 +809,68 @@ def test_recovery_delivery_query_is_bounded_and_read_only(monkeypatch):
     assert proof_module.fetch_recovery_deliveries([row], identity) == [{'event_id': event_id}]
     with pytest.raises(ValueError, match='recovery_delivery_query_invalid'):
         proof_module.fetch_recovery_deliveries([{'rowid': '1 OR 1=1'}], identity)
+
+
+@pytest.mark.parametrize('mode', ['full', 'missing_receipt', 'linked_scenario', 'recent', 'anchor', 'lease_lost',
+                                  'baseline', 'first_observation', 'missing_state'])
+def test_recovery_model_pruning_requires_all_independent_guards(monkeypatch, mode):
+    from observability.btc_scenario_export import _anchor_hash
+    from utils import btc_review_event_proof as proof_module, btc_review_retention as retention
+    source, exporter, archived, tape, events, identity, now = deletion_fixture()
+    review = canonical({'kind': 'MODEL_REQUEST', 'prompt': 'x' * 3000})
+    recovery = canonical({'kind': 'MODEL_REQUEST', 'prompt': 'x' * 3000, 'calculated_review_version': 1,
+                          'input_id': 'fixture'})
+    ref = pack(compact(review, recovery, 1, 0))
+    context = json.loads(source.execute('SELECT context FROM llm_scenario_decisions WHERE slot=1').fetchone()[0])
+    context['recovery_observing'] = True
+    context['recovery'] = {'first_observation': mode == 'first_observation'}
+    source.execute('UPDATE llm_scenario_decisions SET context=? WHERE slot=1', (json.dumps(context),))
+    if mode == 'baseline':
+        source.execute('UPDATE llm_scenario_state SET body=? WHERE id=1',
+                       (json.dumps({'active': None, 'recovery': {'baseline_slot': 1}}),))
+    elif mode == 'missing_state':
+        source.execute('DELETE FROM llm_scenario_state WHERE id=1')
+    if mode != 'recent':
+        source.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)', (3, '{}', '{}', '{}', '{}'))
+    source.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=1', (review,))
+    source.execute('INSERT INTO llm_scenario_recovery_events(event_id,slot,kind,body,scenario_id) VALUES(?,?,?,?,?)',
+                   ('e', 1, 'MODEL_REQUEST', ref, 'scenario' if mode == 'linked_scenario' else None))
+    source.execute('INSERT INTO llm_scenario_recovery_events(event_id,slot,kind,body,scenario_id) VALUES(?,?,?,?,?)',
+                   ('anchor', 2, 'OUTCOME', '{}', None))
+    source.commit()
+    anchor_row = (1, 'MODEL_REQUEST', ref) if mode == 'anchor' else (2, 'OUTCOME', '{}')
+    anchor_rowid = 1 if mode == 'anchor' else 2
+    anchor = _anchor_hash('llm_scenario_recovery_events',
+                          {'slot': anchor_row[0], 'kind': anchor_row[1], 'body': anchor_row[2]}, source)
+    exporter.execute('INSERT INTO cursors VALUES(?,?)', ('llm_scenario_recovery_events', anchor_rowid))
+    exporter.execute('INSERT INTO anchors VALUES(?,?)', ('llm_scenario_recovery_events', anchor))
+    exporter.commit()
+    archived['proof'] = event_proof(source, 1)
+    events[0]['body_sha256'] = archived['proof']['events'][0]['sha256']
+    recovery_row = archived['proof']['recovery'][0]
+    event_id = hashlib.sha256(f'{identity}:llm_scenario_recovery_events:{recovery_row["rowid"]}'.encode()).hexdigest()[:32]
+    recovery_receipt = {'event_id': event_id, 'event_type': 'btc.research.source',
+                        'source_stream': 'llm_scenario_recovery_events', 'source_identity': identity,
+                        'source_kind': recovery_row['kind'], 'body_sha256': recovery_row['sha256'],
+                        'source_rowid': recovery_row['rowid'], 'decision_slot': 1}
+    monkeypatch.setattr(retention, 'candidates', lambda *_args, **_kwargs: {'candidates': [archived['candidate']]})
+    if mode == 'lease_lost':
+        checks = iter((True, True, False))
+        with pytest.raises(ValueError, match='event_delete_guard_failed'):
+            proof_module.delete_confirmed_slot(source, exporter, archived, tape, events, identity, now,
+                guard=lambda: True, lease_alive=lambda: next(checks), recovery_deliveries=[recovery_receipt])
+        assert source.execute('SELECT body FROM llm_scenario_recovery_events WHERE slot=1').fetchone() == (ref,)
+        assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_events WHERE slot=1').fetchone() == (1,)
+        assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes WHERE slot=1').fetchone() == (1,)
+        return
+    result = proof_module.delete_confirmed_slot(source, exporter, archived, tape, events, identity, now,
+        guard=lambda: True, lease_alive=lambda: True,
+        recovery_deliveries=[] if mode == 'missing_receipt' else [recovery_receipt])
+    if mode == 'full':
+        assert result == {'status': 'REMOVED', 'events': 1, 'recovery_model_events': 1}
+        assert source.execute('SELECT COUNT(*) FROM llm_scenario_recovery_events WHERE slot=1').fetchone() == (0,)
+        assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_events WHERE slot=1').fetchone() == (0,)
+    else:
+        assert result == {'status': 'REMOVED', 'events': 0}
+        assert source.execute('SELECT body FROM llm_scenario_recovery_events WHERE slot=1').fetchone() == (ref,)
+        assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_events WHERE slot=1').fetchone() == (1,)

@@ -6,6 +6,7 @@ these fingerprints to an independently verified backup and delivery receipts.
 import hashlib
 import json
 import re
+import sqlite3
 import subprocess  # nosec B404 - fixed host-verified SSH and bounded query
 import sys
 import zlib
@@ -398,8 +399,26 @@ def _flat_noop_plan(raw):
     return all(plan.get(key) is None for key in ('stop_revision', 'pending_renewal'))
 
 
+def _recovery_history_prunable(conn, slot, context):
+    """Keep the first observation and any baseline still used by current recovery."""
+    metadata = context.get('recovery') if isinstance(context, dict) else None
+    if not isinstance(metadata, dict) or metadata.get('first_observation') is not False:
+        return False
+    try:
+        row = conn.execute('SELECT body FROM llm_scenario_state WHERE id=1').fetchone()
+        state = json.loads(row[0]) if row else None
+    except (ValueError, TypeError, sqlite3.Error):
+        return False
+    if not isinstance(state, dict) or 'active' not in state or state['active'] is not None:
+        return False
+    current = state.get('recovery')
+    if current is None:
+        return True
+    return isinstance(current, dict) and type(current.get('baseline_slot')) is int and current['baseline_slot'] != slot
+
+
 def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliveries,
-                          source_identity, now, *, guard, lease_alive):
+                          source_identity, now, *, guard, lease_alive, recovery_deliveries=()):
     """Atomically delete one verified flat WAIT and its events under a held archive lease.
 
     This is not a standalone authority: the caller must validate archived using
@@ -430,7 +449,8 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
             raise ValueError('event_delete_schema_unsupported')
         tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
         for (table,) in tables:
-            if any(row[0] in ('llm_scenario_review_tapes', 'llm_scenario_review_events') for row in
+            if any(row[0] in ('llm_scenario_review_tapes', 'llm_scenario_review_events',
+                              'llm_scenario_recovery_events') for row in
                    conn.execute('SELECT "table" FROM pragma_foreign_key_list(?)', (table,))):
                 raise ValueError('event_delete_schema_unsupported')
         identity = exporter.execute("SELECT value FROM meta WHERE key='source_identity'").fetchone()
@@ -458,7 +478,7 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
                                   tape_deliveries, source_identity) != [candidate] or
                 candidate['rowid'] >= cursors['llm_scenario_review_tapes']):
             return {'status': 'DEFERRED_TAPE_EVIDENCE'}
-        decision = conn.execute('SELECT proposal FROM llm_scenario_decisions WHERE slot=?', (slot,)).fetchone()
+        decision = conn.execute('SELECT proposal,context FROM llm_scenario_decisions WHERE slot=?', (slot,)).fetchone()
         if not decision or not _flat_noop_plan(decision[0]):
             return {'status': 'DEFERRED_NONNOOP_PLAN'}
         current_proof = event_proof(conn, slot)
@@ -477,8 +497,15 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
                                      'WHERE slot=? ORDER BY event_id LIMIT ?',
                                      (slot, MAX_RECOVERY + 1)).fetchall()
         refs = [row for row in recovery_rows if isinstance(row[3], bytes) and row[3].startswith(RECOVERY_MAGIC)]
+        context = json.loads(decision[1])
+        latest = {row[0] for row in conn.execute('SELECT slot FROM llm_scenario_decisions ORDER BY slot DESC LIMIT 2')}
+        model_rows = [row for row in current_proof['recovery'] if row['kind'] in ('MODEL_REQUEST', 'MODEL_RAW')]
+        prune = (model_rows if isinstance(context, dict) and context.get('recovery_observing') is True
+                 and _recovery_history_prunable(conn, slot, context)
+                 and slot not in latest and all(row['scenario_is_null'] is True for row in model_rows)
+                 and delivered_recovery_proof(model_rows, recovery_deliveries, source_identity, slot) else [])
         recovery_anchor = None
-        if refs:
+        if refs or prune:
             stream = 'llm_scenario_recovery_events'
             cursor = exporter.execute('SELECT seq FROM cursors WHERE stream=?', (stream,)).fetchone()
             saved = exporter.execute('SELECT ref FROM anchors WHERE stream=?', (stream,)).fetchone()
@@ -488,8 +515,19 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
             recovery_anchor = {'slot': row[0], 'kind': row[1], 'body': row[2]} if row else None
             if recovery_anchor is None or _anchor_hash(stream, recovery_anchor, conn) != saved[0]:
                 raise ValueError('event_delete_export_anchor_changed')
+            if any(row['rowid'] >= cursor[0] for row in prune):
+                prune = []
         if guard() is not True or lease_alive() is not True:
             raise ValueError('event_delete_guard_failed')
+        for row in prune:
+            changed = conn.execute('DELETE FROM llm_scenario_recovery_events '
+                                   'WHERE rowid=? AND slot=? AND event_id=? AND kind=? AND scenario_id IS NULL',
+                                   (row['rowid'], slot, row['event_id'], row['kind'])).rowcount
+            if changed != 1:
+                raise ValueError('event_delete_source_changed')
+        if prune:
+            recovery_rows = conn.execute('SELECT rowid,event_id,kind,body FROM llm_scenario_recovery_events '
+                                         'WHERE slot=? ORDER BY event_id LIMIT ?', (slot, MAX_RECOVERY + 1)).fetchall()
         required = _required_event_sequences(conn, slot, recovery_rows)
         removed_events = 0
         for event in current_proof['events']:
@@ -511,7 +549,8 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
             digest, _ = _digest(raw)
             recovered.append({'rowid': rowid, 'event_id': event_id, 'kind': kind, 'sha256': digest,
                               'scenario_is_null': scenario_id is None})
-        if recovered != current_proof['recovery']:
+        deleted_ids = {row['rowid'] for row in prune}
+        if recovered != [row for row in current_proof['recovery'] if row['rowid'] not in deleted_ids]:
             raise ValueError('event_delete_recovery_changed')
         if recovery_anchor is not None:
             row = conn.execute('SELECT slot,kind,body FROM llm_scenario_recovery_events WHERE rowid=?', (cursor[0],)).fetchone()
@@ -523,7 +562,10 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
         if guard() is not True or lease_alive() is not True:
             raise ValueError('event_delete_guard_failed')
         conn.commit()
-        return {'status': 'REMOVED', 'events': removed_events}
+        result = {'status': 'REMOVED', 'events': removed_events}
+        if prune:
+            result['recovery_model_events'] = len(prune)
+        return result
     finally:
         if conn.in_transaction:
             conn.rollback()
@@ -560,19 +602,29 @@ def cleanup_events(backup_dir, *, now=None):
     if retention.EXPORT_STATE.is_symlink() or not retention.EXPORT_STATE.is_file():
         raise ValueError('event_delete_export_state_invalid')
     at = time.time() if now is None else now
-    selected, usable, event_count = [], [], 0
+    selected, usable, event_count, recovery_count = [], [], 0, 0
     for item in index['items']:
         proof = item['proof']
         if proof.get('unavailable') is not True:
             rows = proof.get('events')
             if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_EVENTS:
                 raise ValueError('event_delivery_query_invalid')
+            recovery = proof.get('recovery')
+            if not isinstance(recovery, list) or len(recovery) > MAX_RECOVERY:
+                raise ValueError('recovery_delivery_query_invalid')
+            model_rows = [row for row in recovery if isinstance(row, dict)
+                          and row.get('kind') in ('MODEL_REQUEST', 'MODEL_RAW')]
+            if any(row.get('scenario_is_null') is not True for row in model_rows):
+                model_rows = []
             next_usable, next_events = len(usable) + 1, event_count + len(rows)
-            query_count = (next_usable + 99) // 100 + (next_events + MAX_QUERY_EVENTS - 1) // MAX_QUERY_EVENTS
+            next_recovery = recovery_count + len(model_rows)
+            query_count = ((next_usable + 99) // 100 + (next_events + MAX_QUERY_EVENTS - 1) // MAX_QUERY_EVENTS
+                           + (next_recovery + MAX_QUERY_EVENTS - 1) // MAX_QUERY_EVENTS)
             if query_count > MAX_DELIVERY_QUERIES:
                 break
             usable.append(item)
             event_count = next_events
+            recovery_count = next_recovery
         selected.append(item)
     budget_capped = len(selected) < len(index['items'])
     if budget_capped:
@@ -596,38 +648,62 @@ def cleanup_events(backup_dir, *, now=None):
     by_id = {}
     for receipt in deliveries:
         by_id.setdefault(receipt['event_id'], []).append(receipt)
+    recovery_rows = []
+    for item in usable:
+        model_rows = [row for row in item['proof']['recovery'] if isinstance(row, dict)
+                      and row.get('kind') in ('MODEL_REQUEST', 'MODEL_RAW')]
+        if all(row.get('scenario_is_null') is True for row in model_rows):
+            recovery_rows.extend(model_rows)
+    recovery_ids = [row.get('rowid') for row in recovery_rows]
+    if (any(type(rowid) is not int or rowid <= 0 for rowid in recovery_ids)
+            or len(set(recovery_ids)) != len(recovery_ids)):
+        raise ValueError('recovery_delivery_query_invalid')
+    recovery_by_id = {}
+    for start in range(0, len(recovery_rows), MAX_QUERY_EVENTS):
+        for receipt in fetch_recovery_deliveries(recovery_rows[start:start + MAX_QUERY_EVENTS], identity):
+            recovery_by_id.setdefault(receipt['event_id'], []).append(receipt)
     prepared = []
     for item in selected:
         if item['proof'].get('unavailable') is True:
-            prepared.append((item, None, None))
+            prepared.append((item, None, None, None))
             continue
         ids = [hashlib.sha256(f'{identity}:llm_scenario_review_events:{event["rowid"]}'.encode()).hexdigest()[:32]
                for event in item['proof']['events']]
-        prepared.append((item, tape_receipts, [receipt for event_id in ids for receipt in by_id.get(event_id, [])]))
-    statuses, removed_slots, removed_events = Counter(), 0, 0
+        models = [row for row in item['proof']['recovery'] if row['kind'] in ('MODEL_REQUEST', 'MODEL_RAW')]
+        if any(row['scenario_is_null'] is not True for row in models):
+            models = []
+        model_ids = [hashlib.sha256(f'{identity}:llm_scenario_recovery_events:{row["rowid"]}'.encode()).hexdigest()[:32]
+                     for row in models]
+        prepared.append((item, tape_receipts, [receipt for event_id in ids for receipt in by_id.get(event_id, [])],
+                         [receipt for event_id in model_ids for receipt in recovery_by_id.get(event_id, [])]))
+    statuses, removed_slots, removed_events, removed_recovery = Counter(), 0, 0, 0
     try:
         with retention.locked_remote_archive(ack, require_event_proof=True) as lease, closing(sqlite3.connect(
                 retention.SOURCE.resolve().as_uri() + '?mode=rw', uri=True, timeout=.1)) as conn, closing(sqlite3.connect(
                 retention.EXPORT_STATE.resolve().as_uri() + '?mode=rw', uri=True, timeout=.1)) as exporter:
             def guard():
                 return retention._resource_guard(retention.SOURCE, identity) and retention._runtime_safe(conn)
-            for item, tape_receipts, event_receipts in prepared:
+            for item, tape_receipts, event_receipts, recovery_receipts in prepared:
                 if tape_receipts is None:
                     statuses['DEFERRED_EVENT_PROOF'] += 1
                     continue
                 result = delete_confirmed_slot(conn, exporter, item, tape_receipts, event_receipts,
-                                               identity, at, guard=guard, lease_alive=lease)
+                                               identity, at, guard=guard, lease_alive=lease,
+                                               recovery_deliveries=recovery_receipts)
                 statuses[result['status']] += 1
                 if result['status'] == 'REMOVED':
                     removed_slots += 1
                     removed_events += result['events']
+                    removed_recovery += result.get('recovery_model_events', 0)
         save_cursor()
     except Exception as exc:
         if removed_slots:
             return {'status': 'PARTIAL', 'removed': removed_slots, 'removed_slots': removed_slots, 'removed_events': removed_events,
+                    'removed_recovery_model_events': removed_recovery,
                     'error_type': type(exc).__name__}
         raise
     return {'status': ('DEFERRED' if any(k != 'REMOVED' for k in statuses) else
                        'BUDGET_LIMIT' if budget_capped else 'MORE_TO_SCAN' if index['truncated'] else 'COMPLETE'),
             'removed': removed_slots, 'removed_slots': removed_slots, 'removed_events': removed_events,
-            'outcomes': dict(statuses), 'more_to_scan': budget_capped or index['truncated']}
+            'removed_recovery_model_events': removed_recovery, 'outcomes': dict(statuses),
+            'more_to_scan': budget_capped or index['truncated']}
