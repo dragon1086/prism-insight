@@ -315,7 +315,8 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
 def cleanup_events(backup_dir, *, now=None):
     """Opt-in bounded cleanup; verify every source under the archive lease.
 
-    This does not advance the legacy tape cursor. A deferred slot stays intact.
+    The existing cursor advances by scanned page and wraps to the beginning.
+    Deferred slots remain untouched and are revisited after a complete pass.
     """
     import sqlite3
     import time
@@ -325,7 +326,15 @@ def cleanup_events(backup_dir, *, now=None):
 
     _, identity, manifest, ack, _ = retention._backup_evidence(backup_dir)
     index = verified_event_index(manifest, ack, identity)
+    def save_cursor():
+        path = retention.BACKUP_ROOT / '.btc-retention-cursor.json'
+        if retention.read_cursor(path, identity) != index['after_slot']:
+            raise ValueError('event_delete_cursor_changed')
+        retention._save_cursor(index, identity)
+    if retention.read_cursor(retention.BACKUP_ROOT / '.btc-retention-cursor.json', identity) != index['after_slot']:
+        raise ValueError('event_delete_cursor_changed')
     if not index['items']:
+        save_cursor()
         return {'status': 'NO_CANDIDATES', 'removed_slots': 0, 'removed_events': 0}
     if retention.EXPORT_STATE.is_symlink() or not retention.EXPORT_STATE.is_file():
         raise ValueError('event_delete_export_state_invalid')
@@ -349,6 +358,7 @@ def cleanup_events(backup_dir, *, now=None):
                 if result['status'] == 'REMOVED':
                     removed_slots += 1
                     removed_events += result['events']
+        save_cursor()
     except Exception as exc:
         if removed_slots:
             return {'status': 'PARTIAL', 'removed_slots': removed_slots, 'removed_events': removed_events,

@@ -262,7 +262,8 @@ def test_event_delivery_lookup_is_read_only_and_bounded(monkeypatch):
         proof_module.fetch_event_deliveries({'events': [{'rowid': '1 OR 1=1'}]}, identity)
 
 
-def test_cleanup_links_proof_receipts_and_lease_before_deletion(tmp_path, monkeypatch):
+@pytest.mark.parametrize('delivered,cursor_changed', [(True, False), (False, False), (True, True)])
+def test_cleanup_links_proof_receipts_and_lease_before_deletion(tmp_path, monkeypatch, delivered, cursor_changed):
     from contextlib import contextmanager
     from utils import btc_review_event_proof as proof_module, btc_review_retention as retention
     source, exporter, archived, tape, events, identity, now = deletion_fixture()
@@ -287,17 +288,24 @@ def test_cleanup_links_proof_receipts_and_lease_before_deletion(tmp_path, monkey
     monkeypatch.setattr(retention, 'EXPORT_STATE', exporter_path)
     monkeypatch.setattr(retention, '_backup_evidence', lambda _: (tmp_path, identity, manifest, ack, base))
     monkeypatch.setattr(retention, 'fetch_deliveries', lambda *_: tape)
-    monkeypatch.setattr(proof_module, 'fetch_event_deliveries', lambda *_: events)
+    monkeypatch.setattr(proof_module, 'fetch_event_deliveries', lambda *_: events if delivered else [])
     monkeypatch.setattr(retention, '_resource_guard', lambda *_: True)
     monkeypatch.setattr(retention, '_runtime_safe', lambda *_: True)
+    saved = []
+    cursor_values = iter((-1, 99 if cursor_changed else -1))
+    monkeypatch.setattr(retention, 'read_cursor', lambda *_: next(cursor_values))
+    monkeypatch.setattr(retention, '_save_cursor', lambda current, source_identity: saved.append((current, source_identity)))
     @contextmanager
     def locked(actual_ack, *, require_event_proof):
         assert actual_ack == ack and require_event_proof is True
         yield lambda: True
     monkeypatch.setattr(retention, 'locked_remote_archive', locked)
     result = proof_module.cleanup_events(tmp_path, now=now)
-    assert result['status'] == 'COMPLETE' and result['removed_slots'] == result['removed_events'] == 1
+    assert result['status'] == ('PARTIAL' if cursor_changed else 'COMPLETE' if delivered else 'DEFERRED')
+    assert result['removed_slots'] == result['removed_events'] == int(delivered)
+    assert saved == ([] if cursor_changed else [(index, identity)])
     with sqlite3.connect(source_path) as check:
-        assert check.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(2,)]
-        assert check.execute('SELECT slot FROM llm_scenario_review_events').fetchall() == [(2,)]
+        expected = [(2,)] if delivered else [(1,), (2,)]
+        assert check.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == expected
+        assert check.execute('SELECT slot FROM llm_scenario_review_events').fetchall() == expected
         assert check.execute('SELECT COUNT(*) FROM llm_scenario_decisions').fetchone() == (2,)
