@@ -858,6 +858,13 @@ def test_archive_resolves_recovery_input_reference(tmp_path):
     child = subprocess.run([os.sys.executable, '-I', '-c', child_script, str(path)], cwd=tmp_path,
                            capture_output=True, text=True, timeout=15, check=True)
     assert child.stdout.strip() == 'e' * 40
+    if audit_compressed:
+        with sqlite3.connect(path) as conn:
+            conn.execute("UPDATE llm_scenario_audit_events SET body=? WHERE event_id='target'", (_test_gzip(canonical(encoded))[:-2],))
+        with pytest.raises(ValueError, match='reference_accounting_unresolved'):
+            archive.referenced_commits(path)
+        with sqlite3.connect(path) as conn:
+            conn.execute("UPDATE llm_scenario_audit_events SET body=? WHERE event_id='target'", (_test_gzip(canonical(encoded)),))
     with sqlite3.connect(path) as conn:
         conn.execute('DELETE FROM llm_scenario_decisions')
     with pytest.raises(ValueError, match='reference_recovery_unresolved'):
@@ -987,7 +994,8 @@ def test_archive_resolves_audit_reference_in_standalone_receiver(tmp_path):
 
 
 @pytest.mark.parametrize('account_compressed', [False, True])
-def test_archive_resolves_accounting_reference_in_standalone_receiver(tmp_path, account_compressed):
+@pytest.mark.parametrize('audit_compressed', [False, True])
+def test_archive_resolves_accounting_reference_in_standalone_receiver(tmp_path, account_compressed, audit_compressed):
     from utils.btc_accounting_audit_references import CHILDREN_REF, TAG, ORIGINAL_HASH, canonical, sha
 
     path = tmp_path / 'accounting.sqlite'
@@ -1011,7 +1019,9 @@ def test_archive_resolves_accounting_reference_in_standalone_receiver(tmp_path, 
     children = encoded.pop('children')
     encoded[CHILDREN_REF] = {'event_id': 'source', 'sha256': sha(canonical(children))}
     with sqlite3.connect(path) as conn:
-        conn.execute("UPDATE llm_scenario_audit_events SET body=? WHERE event_id='target'", (canonical(encoded),))
+        conn.execute("UPDATE llm_scenario_audit_events SET body=? WHERE event_id='target'", (_test_gzip(canonical(encoded)) if audit_compressed else canonical(encoded),))
+        if audit_compressed:
+            conn.execute("UPDATE llm_scenario_audit_events SET body=? WHERE event_id='source'", (_test_gzip(original),))
     assert archive.referenced_commits(path) == baseline
     financial_source = Path(archive.__file__).with_name('btc_financial_references.py').read_text()
     accounting_source = Path(archive.__file__).with_name('btc_accounting_audit_references.py').read_text()
