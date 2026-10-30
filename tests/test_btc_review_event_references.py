@@ -91,6 +91,21 @@ def test_database_reader_preserves_legacy_and_fails_closed_on_source_loss():
         refs.read_event(encoded, None, 100, 3, decode_legacy=review_text)
 
 
+def test_reader_rejects_duplicate_or_recursive_sources():
+    request, raw = sample()
+    encoded = refs.compact(raw, [(2, request)], 100, 3)
+    with sqlite3.connect(':memory:') as conn:
+        conn.execute('CREATE TABLE llm_scenario_review_events(slot,sequence,body)')
+        conn.executemany('INSERT INTO llm_scenario_review_events VALUES(?,?,?)',
+                         [(100, 2, request), (100, 2, request)])
+        with pytest.raises(ValueError, match='source_missing'):
+            refs.read_event(encoded, conn, 100, 3, decode_legacy=review_text)
+        conn.execute('DELETE FROM llm_scenario_review_events')
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (100, 2, encoded))
+        with pytest.raises(ValueError, match='source_missing'):
+            refs.read_event(encoded, conn, 100, 3, decode_legacy=review_text)
+
+
 def test_all_reference_readers_preserve_logical_evidence(tmp_path):
     from observability import btc_scenario_export as exporter
     from utils import btc_offsite_archive, btc_recovery_references, btc_review_references
