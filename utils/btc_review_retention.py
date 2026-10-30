@@ -5,6 +5,7 @@ This module never deletes data. A candidate is not proof of safe deletion.
 import hashlib
 import json
 import math
+from collections import Counter
 from contextlib import contextmanager
 from contextlib import closing
 import os
@@ -24,9 +25,131 @@ if 'btc_review_storage_embedded' in sys.modules:
 else:
     from observability.review_storage import review_text
 if 'btc_review_refs_embedded' in sys.modules:
-    from btc_review_refs_embedded import read_tape
+    from btc_review_refs_embedded import MAGIC as REVIEW_REFERENCE_MAGIC, read_tape
 else:
-    from utils.btc_review_references import read_tape
+    from utils.btc_review_references import MAGIC as REVIEW_REFERENCE_MAGIC, read_tape
+
+
+def _recovery_wait_proven(conn, slot, snapshot, context, plan, outcome, original, *, reference_verified=False):
+    """Require the independently retained recovery journal for a flat WAIT."""
+    try:
+        recovery = context.get('recovery')
+        if (context.get('recovery_observing') is not True or not isinstance(recovery, dict)
+                or recovery.get('phase') != 'OBSERVING' or recovery.get('consumed') is not False
+                or type(context.get('recovery_contract_version')) is not int
+                or context['recovery_contract_version'] not in (1, 2)
+                or not isinstance(context.get('input_id'), str) or not context['input_id']
+                or plan.get('entries') != [] or plan.get('take_profits') != [] or plan.get('partial_stops') != []
+                or plan.get('cancel_entry_ids') != [] or plan.get('side') is not None
+                or plan.get('hard_stop') is not None or plan.get('chase') is not None
+                or plan.get('pending_renewal') is not None
+                or not isinstance(plan.get('recovery'), dict) or plan['recovery'].get('decision') != 'OBSERVE'):
+            return False
+        if [row[2] for row in conn.execute('PRAGMA index_info(llm_scenario_recovery_slot_kind)')] != ['slot', 'kind']:
+            return False
+        rows = conn.execute('SELECT kind,body FROM llm_scenario_recovery_events '
+                            'INDEXED BY llm_scenario_recovery_slot_kind WHERE slot=? LIMIT 17',
+                            (slot,)).fetchall()
+        if len(rows) > 16:
+            return False
+        required = {'INPUT', 'RECHECK', 'CALCULATED_REVIEW_SELECTION', 'DECISION', 'OUTCOME'}
+        if any(kind not in required | {'MODEL_REQUEST', 'MODEL_RAW'} for kind, _ in rows):
+            return False
+        if 'btc_recovery_refs_embedded' in sys.modules:
+            from btc_recovery_refs_embedded import read_recovery
+        else:
+            from utils.btc_recovery_references import read_recovery
+        journal = [(kind, json.loads(read_recovery(body, conn, slot, decode_legacy=review_text,
+                                                   expected_kind=kind))) for kind, body in rows]
+        if any(not isinstance(body, dict) or body.get('input_id') != context['input_id'] for _, body in journal):
+            return False
+        by_kind = {kind: [body for key, body in journal if key == kind] for kind in required}
+        if any(len(values) != 1 for values in by_kind.values()):
+            return False
+        inp, recheck, selection, decision, result = (by_kind[k][0] for k in
+            ('INPUT', 'RECHECK', 'CALCULATED_REVIEW_SELECTION', 'DECISION', 'OUTCOME'))
+        full_hash = lambda value: hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                                            allow_nan=False).encode()).hexdigest()
+        compact_hash = lambda value: hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+            allow_nan=False, separators=(',', ':')).encode()).hexdigest()
+        tape = json.loads(original)
+        if not isinstance(tape, dict):
+            return False
+        tape_outcome = tape.get('outcome')
+        review_result = tape_outcome.get('result') if isinstance(tape_outcome, dict) else None
+        selected = review_result.get('selected') if isinstance(review_result, dict) else None
+        seal = {key: value for key, value in tape.items() if key != 'sha256'}
+        tape_hash = hashlib.sha256(json.dumps(seal, sort_keys=True, separators=(',', ':'),
+                                              allow_nan=False).encode()).hexdigest()
+        receipt = {key: value for key, value in selection.items() if key not in ('sha256', 'input_id')}
+        expected_outcome = dict(outcome)
+        expected_outcome.setdefault('input_id', context['input_id'])
+        if (inp.get('decision_slot') != slot or inp.get('snapshot_hash') != full_hash(snapshot)
+                or inp.get('context_hash') != full_hash(context) or inp.get('recovery') != recovery
+                or 'active' not in recheck or recheck['active'] is not None
+                or recheck.get('recovery_observing_requested') is not True
+                or selection.get('status') != 'FRESH_VALIDATED_NOT_AUTHORIZED'
+                or selection.get('execution_authorized') is not False
+                or type(selection.get('orders_submitted')) is not int or selection['orders_submitted'] != 0
+                or selection.get('sha256') != compact_hash(receipt) or tape.get('sha256') != tape_hash
+                or not isinstance(tape_outcome, dict) or tape_outcome.get('status') != 'COMPLETE'
+                or not isinstance(selected, dict) or selected.get('id') != 'WAIT'
+                or not isinstance(selected.get('raw_proposal'), dict)
+                or selected['raw_proposal'].get('action') != 'WAIT'
+                or selection.get('payload_sha256') != compact_hash(plan)
+                or selection.get('envelope_sha256') != tape_hash
+                or decision.get('proposal') != plan or decision.get('metadata') != plan['recovery']
+                or result != expected_outcome):
+            return False
+        operations = tape.get('operations')
+        if (not isinstance(operations, list) or len(operations) > 128
+                or any(not isinstance(op, dict) or op.get('kind') not in ('clock', 'generate', 'record')
+                       for op in operations)):
+            return False
+        records = [op.get('event') for op in operations if op['kind'] == 'record']
+        if not records or any(not isinstance(event, dict) for event in records):
+            return False
+        if not reference_verified:
+            if [row[2] for row in conn.execute('PRAGMA index_info(sqlite_autoindex_llm_scenario_review_events_1)')] != ['slot', 'sequence']:
+                return False
+            review_rows = conn.execute('SELECT sequence,body FROM llm_scenario_review_events '
+                                       'WHERE slot=? ORDER BY sequence LIMIT ?', (slot, len(records))).fetchall()
+            if (len(review_rows) != len(records) or any(
+                    sequence != index or full_hash(json.loads(review_text(body))) != full_hash(records[index])
+                    for index, (sequence, body) in enumerate(review_rows))):
+                return False
+        final_rows = conn.execute('SELECT sequence,body FROM llm_scenario_review_events '
+                                  'INDEXED BY sqlite_autoindex_llm_scenario_review_events_1 '
+                                  'WHERE slot=? AND sequence>=? ORDER BY sequence LIMIT 2',
+                                  (slot, len(records))).fetchall()
+        if len(final_rows) != 1 or final_rows[0][0] != len(records):
+            return False
+        final_event = json.loads(review_text(final_rows[0][1]))
+        expected_final = {'kind': 'FRESH_REVIEW_RECEIPT',
+                          'receipt': {key: value for key, value in selection.items() if key != 'input_id'}}
+        if full_hash(final_event) != full_hash(expected_final):
+            return False
+        expected, phases = [], Counter()
+        for operation in operations:
+            event = operation.get('event') if isinstance(operation, dict) and operation.get('kind') == 'record' else None
+            if isinstance(event, dict) and event.get('kind') in ('MODEL_REQUEST', 'MODEL_RAW'):
+                value = dict(event, calculated_review_version=1)
+                value.setdefault('input_id', context['input_id'])
+                expected.append((event['kind'], full_hash(value)))
+                phases[(event['kind'], event.get('phase'))] += 1
+        actual = [(kind, full_hash(body)) for kind, body in journal if kind in ('MODEL_REQUEST', 'MODEL_RAW')]
+        calls = tape.get('calls')
+        if (type(calls) is not int or not 1 <= calls <= 2 or len(expected) != 2 * calls
+                or review_result.get('calls') != calls):
+            return False
+        names = {phase for _, phase in phases}
+        if (len(names) != calls or not names <= {'single', 'candidate', 'selection'}
+                or any(phases[('MODEL_REQUEST', phase)] != 1 or phases[('MODEL_RAW', phase)] != 1
+                       for phase in names)):
+            return False
+        return Counter(actual) == Counter(expected)
+    except (sqlite3.Error, ValueError, TypeError, KeyError, OverflowError):
+        return False
 
 
 def candidates(conn, now, *, after_slot=-1, limit=100, guard=None):
@@ -60,12 +183,26 @@ def candidates(conn, now, *, after_slot=-1, limit=100, guard=None):
             continue
         if (ctx.get('scenario_id', True) is not None or ctx.get('positions') != []
                 or ctx.get('pending_entries') != [] or ctx.get('unknown_intents') is not False
-                or ctx.get('incident_epoch_blocked') is not False
-                or ctx.get('recovery_observing', False) is not False or 'recovery' in ctx
-                or 'recovery_contract_version' in ctx or plan.get('action') != 'WAIT'
+                or ctx.get('incident_epoch_blocked') is not False or plan.get('action') != 'WAIT'
                 or result.get('status') != 'wait'):
             continue
-        original = read_tape(tape, conn, slot, decode_legacy=review_text)
+        observing = ctx.get('recovery_observing', False)
+        if observing is not True and (observing is not False or 'recovery' in ctx or 'recovery_contract_version' in ctx):
+            continue
+        if observing is True and [row[2] for row in conn.execute(
+                'PRAGMA index_info(sqlite_autoindex_llm_scenario_review_events_1)')] != ['slot', 'sequence']:
+            continue
+        try:
+            original = read_tape(tape, conn, slot, decode_legacy=review_text)
+        except (ValueError, TypeError):
+            if observing is True:
+                continue
+            raise
+        if observing is True:
+            reference_verified = isinstance(tape, bytes) and tape.startswith(REVIEW_REFERENCE_MAGIC)
+            if not _recovery_wait_proven(conn, slot, market, ctx, plan, result, original,
+                                         reference_verified=reference_verified):
+                continue
         digest = hashlib.sha256(original.encode('utf-8')).hexdigest()
         decision = hashlib.sha256(json.dumps([snapshot, context, proposal, outcome], ensure_ascii=True,
                                               separators=(',', ':')).encode()).hexdigest()
@@ -516,8 +653,8 @@ def cleanup(backup_dir, *, now=None):
             slot = item['slot']
             if type(slot) is not int or slot < 0:
                 raise ValueError('retention_source_invalid')
-            current = candidates(conn, at, after_slot=slot - 1, limit=1)['candidates']
-            if current and current[0] == item:
+            current = conn.execute('SELECT rowid FROM llm_scenario_review_tapes WHERE slot=?', (slot,)).fetchone()
+            if current and current[0] == item.get('rowid'):
                 selected.append(item)
                 if len(selected) == 400:
                     break
@@ -530,16 +667,31 @@ def cleanup(backup_dir, *, now=None):
         matched = matching_evidence({'candidates': selected}, {'candidates': selected}, delivered, identity)
         progress = ({'truncated': True, 'last_scanned_slot': selected[-1]['slot']}
                     if len(selected) == 400 else index)
+        def unchanged(item):
+            current = candidates(conn, at, after_slot=item['slot'] - 1, limit=1)['candidates']
+            return bool(current and current[0] == item)
         if not matched:
-            _save_cursor({'truncated': True, 'last_scanned_slot': selected[0]['slot'] - 1}, identity)
-            return {'status': 'DEFERRED', 'removed': 0}
+            remaining = [item['slot'] for item in selected if unchanged(item)]
+            _save_cursor({'truncated': True, 'last_scanned_slot': min(remaining) - 1} if remaining else progress,
+                         identity)
+            return {'status': 'DEFERRED' if remaining else 'NO_CANDIDATES', 'removed': 0}
         removed = []
         try:
             with locked_remote_archive(ack, align=True) as lease, closing(sqlite3.connect(
                     EXPORT_STATE.resolve().as_uri() + '?mode=rw', uri=True, timeout=.1)) as exporter:
-                def guard():
-                    return _resource_guard(SOURCE, identity) and _runtime_safe(conn)
                 for start in range(0, len(matched), 100):
+                    cached_state = []
+                    def guard():
+                        if not _resource_guard(SOURCE, identity):
+                            return False
+                        if not conn.in_transaction:
+                            return _runtime_safe(conn)
+                        if not cached_state:
+                            trigger = conn.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' "
+                                                   "AND tbl_name='llm_scenario_review_tapes' LIMIT 1").fetchone()
+                            foreign_keys = conn.execute('PRAGMA foreign_keys').fetchone()
+                            cached_state.append(None if trigger or foreign_keys != (0,) else _runtime_safe(conn))
+                        return _runtime_safe(conn) if cached_state[0] is None else cached_state[0]
                     batch = {'candidates': matched[start:start + 100]}
                     removed.extend(_delete_matched(conn, exporter, batch, delivered, identity, at,
                                                    guard=guard, lease_alive=lease))
@@ -548,7 +700,7 @@ def cleanup(backup_dir, *, now=None):
                 return {'status': 'PARTIAL', 'removed': len(removed), 'error_type': type(exc).__name__}
             raise
         removed_slots = set(removed)
-        remaining = [item['slot'] for item in selected if item['slot'] not in removed_slots]
+        remaining = [item['slot'] for item in selected if item['slot'] not in removed_slots and unchanged(item)]
         if remaining:
             progress = {'truncated': True, 'last_scanned_slot': min(remaining) - 1}
         _save_cursor(progress, identity)
