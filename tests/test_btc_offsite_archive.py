@@ -457,11 +457,15 @@ def test_sender_and_receiver_use_verified_sparse_bound(payload, monkeypatch):
     manifest = backup_database(source, snapshot, reserve_bytes=0, capture_references=True)
     root = path / 'remote-sparse-full'
     monkeypatch.setattr(archive, 'backend_host', lambda _: 'fixture')
-    monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=100 * archive.CAP))
+    budget = []
+    def disk_usage(target):
+        return SimpleNamespace(free=budget[0] if str(target).startswith(str(root)) and budget else 100 * archive.CAP)
+    monkeypatch.setattr(archive.shutil, 'disk_usage', disk_usage)
     monkeypatch.setattr(archive, '_sparse_raw_bound', lambda raw, zero: raw - zero)
     monkeypatch.setattr(archive, '_require_sparse', lambda _: None)
     def ssh(_host, needed, *, stream=None):
         if stream is None:
+            budget.append(archive.RESERVE + needed + 65536)
             return SimpleNamespace(stdout=b'READY')
         return SimpleNamespace(stdout=json.dumps(archive.receive(stream, root, needed)).encode())
     monkeypatch.setattr(archive, 'ssh_archive', ssh)
@@ -473,6 +477,7 @@ def test_sender_and_receiver_use_verified_sparse_bound(payload, monkeypatch):
     manifest_size = Path(str(snapshot) + '.manifest.json').stat().st_size
     dense = snapshot.stat().st_size + manifest_size + manifest['raw_bytes'] + 4 * (saved / 'history.bundle').stat().st_size + 1024**2
     assert meta['required_space'] < dense
+    assert budget[0] < archive.RESERVE + dense
     assert (saved / 'receipt.json').is_file()
 
 
@@ -480,6 +485,13 @@ def test_sender_and_receiver_use_verified_sparse_bound(payload, monkeypatch):
 def test_invalid_sparse_bounds_are_rejected(zero):
     with pytest.raises(ValueError, match='sparse_bound_invalid'):
         archive._sparse_raw_bound(4096, zero)
+
+
+def test_sparse_bound_keeps_all_nonzero_bytes_and_conservative_slack():
+    raw, zero = 9336344576, 3049779200
+    nonzero = raw - zero
+    assert archive._sparse_raw_bound(raw, zero) == nonzero + max(64 * 1024**2, nonzero // 20)
+    assert archive._sparse_raw_bound(raw, 4096) == raw
 
 
 def test_sparse_probe_rejects_unsupported_filesystem_and_removes_probe(tmp_path, monkeypatch):
