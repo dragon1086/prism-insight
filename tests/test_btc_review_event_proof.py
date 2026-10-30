@@ -83,7 +83,7 @@ def test_backup_and_every_delivery_must_match_exactly():
         delivered_event_proof(proof, proof, [receipt], 'invalid')
 
 
-def test_snapshot_index_is_bounded_and_does_not_skip_candidates():
+def test_snapshot_index_is_bounded_and_does_not_skip_candidates(monkeypatch):
     conn = sqlite3.connect(':memory:')
     conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
                        'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);'
@@ -93,7 +93,7 @@ def test_snapshot_index_is_bounded_and_does_not_skip_candidates():
                           'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False})
     noop = {'schema_version': 1, 'action': 'WAIT', 'entries': [], 'take_profits': [],
             'partial_stops': [], 'cancel_entry_ids': []}
-    for slot in range(1, 24):
+    for slot in range(1, 402):
         conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (slot, '{}'))
         conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)', (slot, '{}', context, json.dumps(noop), '{"status":"wait"}'))
         conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (slot, 0, '{"kind":"MODEL_RAW"}'))
@@ -101,18 +101,25 @@ def test_snapshot_index_is_bounded_and_does_not_skip_candidates():
     conn.execute('UPDATE llm_scenario_decisions SET proposal=? WHERE slot=3',
                  (json.dumps(dict(noop, cancel_entry_ids=['entry'])),))
     conn.commit()
-    now = 7 * 86400 + 100 * 300
+    now = 7 * 86400 + 1000 * 300
     with pytest.raises(ValueError, match='proof_snapshot_transaction_required'):
         snapshot_event_index(conn, now)
     conn.execute('BEGIN')
     first = snapshot_event_index(conn, now)
-    assert len(first['items']) == 20 and first['truncated'] and first['last_scanned_slot'] == 20
+    assert len(first['items']) == 400 and first['truncated'] and first['last_scanned_slot'] == 400
     assert first['items'][1]['proof'] == {'slot': 2, 'unavailable': True}
     assert first['items'][2]['proof'] == {'slot': 3, 'unavailable': True}
     assert first['items'][3]['proof']['events']
     second = snapshot_event_index(conn, now, after_slot=first['last_scanned_slot'])
-    assert [item['candidate']['slot'] for item in second['items']] == [21, 22, 23]
+    assert [item['candidate']['slot'] for item in second['items']] == [401]
     assert not second['truncated']
+    from utils import btc_review_event_proof as proof_module
+    monkeypatch.setattr(proof_module, 'MAX_INDEX_BYTES', 2500)
+    bounded = snapshot_event_index(conn, now)
+    assert bounded['truncated'] and 0 < len(bounded['items']) < 400
+    assert sum(len(json.dumps(item, sort_keys=True, separators=(',', ':')).encode()) for item in bounded['items']) <= 2500
+    next_page = snapshot_event_index(conn, now, after_slot=bounded['last_scanned_slot'])
+    assert next_page['items'][0]['candidate']['slot'] == bounded['last_scanned_slot'] + 1
     conn.rollback()
 
 
@@ -580,3 +587,141 @@ def test_normalized_v1_wait_can_omit_fields_removed_by_wire_validator():
     result = delete_confirmed_slot(source, exporter, archived, tape, events, identity, now,
                                    guard=lambda: True, lease_alive=lambda: True)
     assert result == {'status': 'REMOVED', 'events': 1}
+
+
+@pytest.mark.parametrize('slots,event_count,expected_slots,expected_calls,expected_status', [
+    (288, 5, 288, 15, 'COMPLETE'),
+    (50, 128, 47, 48, 'BUDGET_LIMIT'),
+])
+def test_daily_cleanup_capacity_and_query_cap(tmp_path, monkeypatch, slots, event_count, expected_slots,
+                                              expected_calls, expected_status):
+    from contextlib import contextmanager
+    from utils import btc_review_event_proof as proof_module, btc_review_retention as retention
+    identity = 'a' * 64
+    items = []
+    for slot in range(1, slots + 1):
+        events = [{'rowid': (slot - 1) * event_count + i + 1, 'sequence': i, 'sha256': 'f' * 64}
+                  for i in range(event_count)]
+        items.append({'candidate': {'slot': slot, 'rowid': slot},
+                      'proof': {'slot': slot, 'events': events, 'recovery': []}})
+    index = {'after_slot': -1, 'last_scanned_slot': slots, 'truncated': False, 'items': items}
+    source_path, exporter_path = tmp_path / 'source.sqlite', tmp_path / 'export.sqlite'
+    source_path.touch(); exporter_path.touch()
+    monkeypatch.setattr(retention, 'SOURCE', source_path)
+    monkeypatch.setattr(retention, 'EXPORT_STATE', exporter_path)
+    monkeypatch.setattr(retention, '_backup_evidence', lambda _: (tmp_path, identity, b'ignored', {}, {}))
+    monkeypatch.setattr(proof_module, 'verified_event_index', lambda *_: index)
+    monkeypatch.setattr(retention, 'read_cursor', lambda *_: -1)
+    saved = []
+    monkeypatch.setattr(retention, '_save_cursor', lambda current, _: saved.append(current))
+    monkeypatch.setattr(retention, '_resource_guard', lambda *_: True)
+    monkeypatch.setattr(retention, '_runtime_safe', lambda *_: True)
+    calls = []
+    def tapes(rows, _identity):
+        calls.append(('tape', len(rows)))
+        return []
+    def events(proof, source_identity):
+        calls.append(('events', len(proof['events'])))
+        return [{'event_id': hashlib.sha256(f'{source_identity}:llm_scenario_review_events:{event["rowid"]}'.encode()).hexdigest()[:32]}
+                for event in proof['events']]
+    def delete(_conn, _export, item, _tapes, deliveries, source_identity, _now, **_kwargs):
+        assert len(deliveries) == len(item['proof']['events'])
+        return {'status': 'REMOVED', 'events': len(deliveries)}
+    @contextmanager
+    def locked(_ack, *, require_event_proof):
+        assert require_event_proof
+        yield lambda: True
+    monkeypatch.setattr(retention, 'fetch_deliveries', tapes)
+    monkeypatch.setattr(proof_module, 'fetch_event_deliveries', events)
+    monkeypatch.setattr(proof_module, 'delete_confirmed_slot', delete)
+    monkeypatch.setattr(retention, 'locked_remote_archive', locked)
+    result = proof_module.cleanup_events(tmp_path, now=700000)
+    assert result['status'] == expected_status and result['removed_slots'] == expected_slots
+    assert len(calls) == expected_calls <= 48
+    if expected_status == 'BUDGET_LIMIT':
+        assert saved == [{'last_scanned_slot': expected_slots, 'truncated': True}]
+    else:
+        assert saved == [index]
+
+
+def test_daily_capacity_uses_real_transactions_without_skipping_anchor(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from observability.btc_scenario_export import _anchor_hash
+    from utils import btc_review_event_proof as proof_module, btc_review_retention as retention
+    source_path, export_path = tmp_path / 'source.sqlite', tmp_path / 'export.sqlite'
+    identity, now = 'a' * 64, 7 * 86400 + 1000 * 300
+    context = json.dumps({'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
+                          'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False})
+    plan = json.dumps({'schema_version': 1, 'action': 'WAIT', 'entries': [], 'take_profits': [],
+                       'partial_stops': [], 'cancel_entry_ids': []})
+    body = '{"kind":"MODEL_RAW"}'
+    with sqlite3.connect(source_path) as conn:
+        conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
+                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);'
+                           'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT,PRIMARY KEY(slot,sequence));'
+                           'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body);')
+        conn.executemany('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', [(slot, '{}') for slot in range(1, 290)])
+        conn.executemany('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)',
+                         [(slot, '{}', context, plan, '{"status":"wait"}') for slot in range(1, 290)])
+        conn.executemany('INSERT INTO llm_scenario_review_events VALUES(?,?,?)',
+                         [(slot, seq, body) for slot in range(1, 290) for seq in range(5)])
+    with sqlite3.connect(source_path) as conn, sqlite3.connect(export_path) as exporter:
+        exporter.executescript('CREATE TABLE meta(key PRIMARY KEY,value);CREATE TABLE cursors(stream PRIMARY KEY,seq);'
+                               'CREATE TABLE anchors(stream PRIMARY KEY,ref);CREATE TABLE outbox(id PRIMARY KEY,body);')
+        exporter.execute('INSERT INTO meta VALUES(?,?)', ('source_identity', identity))
+        for stream, seq, anchor in (('llm_scenario_review_tapes', 289, {'slot': 289, 'body': '{}'}),
+                                    ('llm_scenario_review_events', 1445, {'slot': 289, 'sequence': 4, 'body': body})):
+            exporter.execute('INSERT INTO cursors VALUES(?,?)', (stream, seq))
+            exporter.execute('INSERT INTO anchors VALUES(?,?)', (stream, _anchor_hash(stream, anchor, conn)))
+        conn.execute('BEGIN')
+        index = proof_module.snapshot_event_index(conn, now)
+        assert len(index['items']) == 289 and not index['truncated']
+        conn.rollback()
+    monkeypatch.setattr(retention, 'SOURCE', source_path)
+    monkeypatch.setattr(retention, 'EXPORT_STATE', export_path)
+    monkeypatch.setattr(retention, '_backup_evidence', lambda _: (tmp_path, identity, b'ignored', {}, {}))
+    monkeypatch.setattr(proof_module, 'verified_event_index', lambda *_: index)
+    monkeypatch.setattr(retention, 'read_cursor', lambda *_: -1)
+    monkeypatch.setattr(retention, '_save_cursor', lambda *_: None)
+    monkeypatch.setattr(retention, '_resource_guard', lambda *_: True)
+    monkeypatch.setattr(retention, '_runtime_safe', lambda *_: True)
+    calls = []
+    def tapes(rows, source_identity):
+        calls.append('tape')
+        return [{'event_id': hashlib.sha256(f'{source_identity}:llm_scenario_review_tapes:{row["rowid"]}'.encode()).hexdigest()[:32],
+                 'event_type': 'btc.research.review_tape', 'source_identity': source_identity,
+                 'body_sha256': row['tape_sha256'], 'tape_hash_status': 'MATCH'} for row in rows]
+    def events(proof, source_identity):
+        calls.append('events')
+        return [{'event_id': hashlib.sha256(f'{source_identity}:llm_scenario_review_events:{row["rowid"]}'.encode()).hexdigest()[:32],
+                 'event_type': 'btc.research.review', 'source_identity': source_identity, 'body_sha256': row['sha256'],
+                 'source_rowid': row['rowid'], 'source_sequence': row['sequence'], 'decision_slot': (row['rowid'] - 1) // 5 + 1}
+                for row in proof['events']]
+    @contextmanager
+    def locked(_ack, *, require_event_proof):
+        assert require_event_proof
+        yield lambda: True
+    monkeypatch.setattr(retention, 'fetch_deliveries', tapes)
+    monkeypatch.setattr(proof_module, 'fetch_event_deliveries', events)
+    monkeypatch.setattr(retention, 'locked_remote_archive', locked)
+    result = proof_module.cleanup_events(tmp_path, now=now)
+    assert result['status'] == 'DEFERRED' and result['removed_slots'] == 288 and result['removed_events'] == 1440
+    assert len(calls) == 15
+    with sqlite3.connect(source_path) as conn:
+        assert conn.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(289,)]
+        assert conn.execute('SELECT count(*) FROM llm_scenario_review_events').fetchone() == (5,)
+        assert conn.execute('SELECT count(*) FROM llm_scenario_decisions').fetchone() == (289,)
+
+
+def test_empty_scanned_page_is_not_reported_as_complete_when_more_remains(tmp_path, monkeypatch):
+    from utils import btc_review_event_proof as proof_module, btc_review_retention as retention
+    identity = 'a' * 64
+    index = {'after_slot': -1, 'last_scanned_slot': 2000, 'truncated': True, 'items': []}
+    saved = []
+    monkeypatch.setattr(retention, '_backup_evidence', lambda _: (tmp_path, identity, b'ignored', {}, {}))
+    monkeypatch.setattr(proof_module, 'verified_event_index', lambda *_: index)
+    monkeypatch.setattr(retention, 'read_cursor', lambda *_: -1)
+    monkeypatch.setattr(retention, '_save_cursor', lambda progress, _: saved.append(progress))
+    result = proof_module.cleanup_events(tmp_path, now=700000)
+    assert result['status'] == 'MORE_TO_SCAN' and result['more_to_scan'] is True
+    assert saved == [index]

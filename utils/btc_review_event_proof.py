@@ -22,7 +22,10 @@ else:
 MAX_EVENTS = 128
 MAX_RECOVERY = 16
 MAX_BYTES = 8_000_000
-MAX_SLOTS = 20
+MAX_SLOTS = 400
+MAX_SCANNED = 2000
+MAX_INDEX_BYTES = 700_000
+MAX_DELIVERY_QUERIES = 48
 
 
 def _digest(text):
@@ -86,24 +89,40 @@ def snapshot_event_index(conn, now, *, after_slot=-1):
         from btc_retention_embedded import candidates
     else:
         from utils.btc_review_retention import candidates
-    page = candidates(conn, now, after_slot=after_slot, limit=100)
-    selected = page['candidates'][:MAX_SLOTS]
-    items = []
-    for row in selected:
-        try:
-            decision = conn.execute('SELECT proposal FROM llm_scenario_decisions WHERE slot=?', (row['slot'],)).fetchone()
-            if not decision or not _flat_noop_plan(decision[0]):
+    items, scanned, size, last = [], 0, 0, after_slot
+    cutoff = None
+    while scanned < MAX_SCANNED:
+        page = candidates(conn, now, after_slot=last, limit=min(100, MAX_SCANNED - scanned))
+        cutoff = page['cutoff_slot']
+        for row in page['candidates']:
+            if len(items) >= MAX_SLOTS:
+                return {'version': 2, 'cutoff_slot': cutoff, 'after_slot': after_slot,
+                        'last_scanned_slot': items[-1]['candidate']['slot'], 'truncated': True, 'items': items}
+            try:
+                decision = conn.execute('SELECT proposal FROM llm_scenario_decisions WHERE slot=?', (row['slot'],)).fetchone()
+                proof = event_proof(conn, row['slot']) if decision and _flat_noop_plan(decision[0]) else {
+                    'slot': row['slot'], 'unavailable': True}
+            except ValueError:
                 proof = {'slot': row['slot'], 'unavailable': True}
-            else:
-                proof = event_proof(conn, row['slot'])
-        except ValueError:
-            # Preserve the unavailable slot, but do not block other verified slots.
-            proof = {'slot': row['slot'], 'unavailable': True}
-        items.append({'candidate': row, 'proof': proof})
-    capped = len(page['candidates']) > MAX_SLOTS
-    last = selected[-1]['slot'] if capped else page['last_scanned_slot']
-    return {'version': 2, 'cutoff_slot': page['cutoff_slot'], 'after_slot': after_slot,
-            'last_scanned_slot': last, 'truncated': capped or page['scanned'] == 100, 'items': items}
+            item = {'candidate': row, 'proof': proof}
+            item_bytes = len(json.dumps(item, sort_keys=True, separators=(',', ':')).encode())
+            if size + item_bytes > MAX_INDEX_BYTES:
+                if items:
+                    return {'version': 2, 'cutoff_slot': cutoff, 'after_slot': after_slot,
+                            'last_scanned_slot': items[-1]['candidate']['slot'], 'truncated': True, 'items': items}
+                item['proof'] = {'slot': row['slot'], 'unavailable': True}
+                item_bytes = len(json.dumps(item, sort_keys=True, separators=(',', ':')).encode())
+                if item_bytes > MAX_INDEX_BYTES:
+                    raise ValueError('proof_index_item_too_large')
+            items.append(item)
+            size += item_bytes
+        scanned += page['scanned']
+        last = page['last_scanned_slot']
+        if page['scanned'] < 100:
+            return {'version': 2, 'cutoff_slot': cutoff, 'after_slot': after_slot,
+                    'last_scanned_slot': last, 'truncated': False, 'items': items}
+    return {'version': 2, 'cutoff_slot': cutoff, 'after_slot': after_slot,
+            'last_scanned_slot': last, 'truncated': True, 'items': items}
 
 
 def delivered_event_proof(current, archived, deliveries, source_identity):
@@ -440,25 +459,47 @@ def cleanup_events(backup_dir, *, now=None):
 
     _, identity, manifest, ack, _ = retention._backup_evidence(backup_dir)
     index = verified_event_index(manifest, ack, identity)
+    progress = index
     def save_cursor():
         path = retention.BACKUP_ROOT / '.btc-retention-cursor.json'
         if retention.read_cursor(path, identity) != index['after_slot']:
             raise ValueError('event_delete_cursor_changed')
-        retention._save_cursor(index, identity)
+        retention._save_cursor(progress, identity)
     if retention.read_cursor(retention.BACKUP_ROOT / '.btc-retention-cursor.json', identity) != index['after_slot']:
         raise ValueError('event_delete_cursor_changed')
     if not index['items']:
         save_cursor()
-        return {'status': 'NO_CANDIDATES', 'removed': 0, 'removed_slots': 0, 'removed_events': 0}
+        return {'status': 'MORE_TO_SCAN' if index['truncated'] else 'NO_CANDIDATES',
+                'removed': 0, 'removed_slots': 0, 'removed_events': 0, 'more_to_scan': index['truncated']}
     if retention.EXPORT_STATE.is_symlink() or not retention.EXPORT_STATE.is_file():
         raise ValueError('event_delete_export_state_invalid')
     at = time.time() if now is None else now
-    usable = [item for item in index['items'] if item['proof'].get('unavailable') is not True]
+    selected, usable, event_count = [], [], 0
+    for item in index['items']:
+        proof = item['proof']
+        if proof.get('unavailable') is not True:
+            rows = proof.get('events')
+            if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_EVENTS:
+                raise ValueError('event_delivery_query_invalid')
+            next_usable, next_events = len(usable) + 1, event_count + len(rows)
+            query_count = (next_usable + 99) // 100 + (next_events + MAX_EVENTS - 1) // MAX_EVENTS
+            if query_count > MAX_DELIVERY_QUERIES:
+                break
+            usable.append(item)
+            event_count = next_events
+        selected.append(item)
+    budget_capped = len(selected) < len(index['items'])
+    if budget_capped:
+        if not selected:
+            raise ValueError('event_delivery_budget_invalid')
+        progress = {'last_scanned_slot': selected[-1]['candidate']['slot'], 'truncated': True}
     if not usable:
         save_cursor()
         return {'status': 'DEFERRED', 'removed': 0, 'removed_slots': 0, 'removed_events': 0,
-                'outcomes': {'DEFERRED_EVENT_PROOF': len(index['items'])}}
-    tape_receipts = retention.fetch_deliveries([item['candidate'] for item in usable], identity) if usable else []
+                'outcomes': {'DEFERRED_EVENT_PROOF': len(selected)}, 'more_to_scan': index['truncated']}
+    tape_receipts = []
+    for start in range(0, len(usable), 100):
+        tape_receipts.extend(retention.fetch_deliveries([item['candidate'] for item in usable[start:start + 100]], identity))
     events = [event for item in usable for event in item['proof'].get('events', [])]
     rowids = [event.get('rowid') if isinstance(event, dict) else None for event in events]
     if any(type(rowid) is not int or rowid <= 0 for rowid in rowids) or len(set(rowids)) != len(rowids):
@@ -470,7 +511,7 @@ def cleanup_events(backup_dir, *, now=None):
     for receipt in deliveries:
         by_id.setdefault(receipt['event_id'], []).append(receipt)
     prepared = []
-    for item in index['items']:
+    for item in selected:
         if item['proof'].get('unavailable') is True:
             prepared.append((item, None, None))
             continue
@@ -500,5 +541,7 @@ def cleanup_events(backup_dir, *, now=None):
             return {'status': 'PARTIAL', 'removed': removed_slots, 'removed_slots': removed_slots, 'removed_events': removed_events,
                     'error_type': type(exc).__name__}
         raise
-    return {'status': 'DEFERRED' if any(k != 'REMOVED' for k in statuses) else 'COMPLETE',
-            'removed': removed_slots, 'removed_slots': removed_slots, 'removed_events': removed_events, 'outcomes': dict(statuses)}
+    return {'status': ('DEFERRED' if any(k != 'REMOVED' for k in statuses) else
+                       'BUDGET_LIMIT' if budget_capped else 'MORE_TO_SCAN' if index['truncated'] else 'COMPLETE'),
+            'removed': removed_slots, 'removed_slots': removed_slots, 'removed_events': removed_events,
+            'outcomes': dict(statuses), 'more_to_scan': budget_capped or index['truncated']}
