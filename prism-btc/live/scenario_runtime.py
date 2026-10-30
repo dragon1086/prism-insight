@@ -276,7 +276,7 @@ class ScenarioRuntime:
                     stored = candidate
             except Exception:
                 # Optional deduplication cannot prevent storing the original evidence.
-                pass
+                stored = body
         if sequence >= 128:
             raise ValueError("review_record_bound")
         self.conn.execute("INSERT INTO llm_scenario_review_events VALUES(?,?,?)",
