@@ -5,6 +5,7 @@ This module never deletes data. A candidate is not proof of safe deletion.
 import hashlib
 import json
 import math
+from collections import Counter
 from contextlib import contextmanager
 from contextlib import closing
 import os
@@ -27,6 +28,100 @@ if 'btc_review_refs_embedded' in sys.modules:
     from btc_review_refs_embedded import read_tape
 else:
     from utils.btc_review_references import read_tape
+
+
+def _recovery_wait_proven(conn, slot, snapshot, context, plan, outcome, original):
+    """Require the independently retained recovery journal for a flat WAIT."""
+    try:
+        recovery = context.get('recovery')
+        if (context.get('recovery_observing') is not True or not isinstance(recovery, dict)
+                or recovery.get('phase') != 'OBSERVING' or recovery.get('consumed') is not False
+                or type(context.get('recovery_contract_version')) is not int
+                or context['recovery_contract_version'] not in (1, 2)
+                or not isinstance(context.get('input_id'), str) or not context['input_id']
+                or plan.get('entries') != [] or plan.get('take_profits') != [] or plan.get('partial_stops') != []
+                or plan.get('cancel_entry_ids') != [] or plan.get('side') is not None
+                or plan.get('hard_stop') is not None or plan.get('chase') is not None
+                or plan.get('pending_renewal') is not None
+                or not isinstance(plan.get('recovery'), dict) or plan['recovery'].get('decision') != 'OBSERVE'):
+            return False
+        if [row[2] for row in conn.execute('PRAGMA index_info(llm_scenario_recovery_slot_kind)')] != ['slot', 'kind']:
+            return False
+        rows = conn.execute('SELECT kind,body FROM llm_scenario_recovery_events '
+                            'INDEXED BY llm_scenario_recovery_slot_kind WHERE slot=? LIMIT 17',
+                            (slot,)).fetchall()
+        if len(rows) > 16:
+            return False
+        required = {'INPUT', 'RECHECK', 'CALCULATED_REVIEW_SELECTION', 'DECISION', 'OUTCOME'}
+        if any(kind not in required | {'MODEL_REQUEST', 'MODEL_RAW'} for kind, _ in rows):
+            return False
+        if 'btc_recovery_refs_embedded' in sys.modules:
+            from btc_recovery_refs_embedded import read_recovery
+        else:
+            from utils.btc_recovery_references import read_recovery
+        journal = [(kind, json.loads(read_recovery(body, conn, slot, decode_legacy=review_text,
+                                                   expected_kind=kind))) for kind, body in rows]
+        if any(not isinstance(body, dict) or body.get('input_id') != context['input_id'] for _, body in journal):
+            return False
+        by_kind = {kind: [body for key, body in journal if key == kind] for kind in required}
+        if any(len(values) != 1 for values in by_kind.values()):
+            return False
+        inp, recheck, selection, decision, result = (by_kind[k][0] for k in
+            ('INPUT', 'RECHECK', 'CALCULATED_REVIEW_SELECTION', 'DECISION', 'OUTCOME'))
+        full_hash = lambda value: hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                                            allow_nan=False).encode()).hexdigest()
+        compact_hash = lambda value: hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+            allow_nan=False, separators=(',', ':')).encode()).hexdigest()
+        tape = json.loads(original)
+        if not isinstance(tape, dict):
+            return False
+        tape_outcome = tape.get('outcome')
+        review_result = tape_outcome.get('result') if isinstance(tape_outcome, dict) else None
+        selected = review_result.get('selected') if isinstance(review_result, dict) else None
+        seal = {key: value for key, value in tape.items() if key != 'sha256'}
+        tape_hash = hashlib.sha256(json.dumps(seal, sort_keys=True, separators=(',', ':'),
+                                              allow_nan=False).encode()).hexdigest()
+        receipt = {key: value for key, value in selection.items() if key not in ('sha256', 'input_id')}
+        expected_outcome = dict(outcome)
+        expected_outcome.setdefault('input_id', context['input_id'])
+        if (inp.get('decision_slot') != slot or inp.get('snapshot_hash') != full_hash(snapshot)
+                or inp.get('context_hash') != full_hash(context) or inp.get('recovery') != recovery
+                or 'active' not in recheck or recheck['active'] is not None
+                or recheck.get('recovery_observing_requested') is not True
+                or selection.get('status') != 'FRESH_VALIDATED_NOT_AUTHORIZED'
+                or selection.get('execution_authorized') is not False
+                or type(selection.get('orders_submitted')) is not int or selection['orders_submitted'] != 0
+                or selection.get('sha256') != compact_hash(receipt) or tape.get('sha256') != tape_hash
+                or not isinstance(tape_outcome, dict) or tape_outcome.get('status') != 'COMPLETE'
+                or not isinstance(selected, dict) or selected.get('id') != 'WAIT'
+                or not isinstance(selected.get('raw_proposal'), dict)
+                or selected['raw_proposal'].get('action') != 'WAIT'
+                or selection.get('payload_sha256') != compact_hash(plan)
+                or selection.get('envelope_sha256') != tape_hash
+                or decision.get('proposal') != plan or decision.get('metadata') != plan['recovery']
+                or result != expected_outcome):
+            return False
+        expected, phases = [], Counter()
+        for operation in tape.get('operations', []):
+            event = operation.get('event') if isinstance(operation, dict) and operation.get('kind') == 'record' else None
+            if isinstance(event, dict) and event.get('kind') in ('MODEL_REQUEST', 'MODEL_RAW'):
+                value = dict(event, calculated_review_version=1)
+                value.setdefault('input_id', context['input_id'])
+                expected.append((event['kind'], full_hash(value)))
+                phases[(event['kind'], event.get('phase'))] += 1
+        actual = [(kind, full_hash(body)) for kind, body in journal if kind in ('MODEL_REQUEST', 'MODEL_RAW')]
+        calls = tape.get('calls')
+        if (type(calls) is not int or not 1 <= calls <= 2 or len(expected) != 2 * calls
+                or review_result.get('calls') != calls):
+            return False
+        names = {phase for _, phase in phases}
+        if (len(names) != calls or not names <= {'single', 'candidate', 'selection'}
+                or any(phases[('MODEL_REQUEST', phase)] != 1 or phases[('MODEL_RAW', phase)] != 1
+                       for phase in names)):
+            return False
+        return Counter(actual) == Counter(expected)
+    except (sqlite3.Error, ValueError, TypeError, KeyError, OverflowError):
+        return False
 
 
 def candidates(conn, now, *, after_slot=-1, limit=100, guard=None):
@@ -60,12 +155,21 @@ def candidates(conn, now, *, after_slot=-1, limit=100, guard=None):
             continue
         if (ctx.get('scenario_id', True) is not None or ctx.get('positions') != []
                 or ctx.get('pending_entries') != [] or ctx.get('unknown_intents') is not False
-                or ctx.get('incident_epoch_blocked') is not False
-                or ctx.get('recovery_observing', False) is not False or 'recovery' in ctx
-                or 'recovery_contract_version' in ctx or plan.get('action') != 'WAIT'
+                or ctx.get('incident_epoch_blocked') is not False or plan.get('action') != 'WAIT'
                 or result.get('status') != 'wait'):
             continue
-        original = read_tape(tape, conn, slot, decode_legacy=review_text)
+        observing = ctx.get('recovery_observing', False)
+        if observing is not True and (observing is not False or 'recovery' in ctx or 'recovery_contract_version' in ctx):
+            continue
+        try:
+            original = read_tape(tape, conn, slot, decode_legacy=review_text)
+        except (ValueError, TypeError):
+            if observing is True:
+                continue
+            raise
+        if observing is True:
+            if not _recovery_wait_proven(conn, slot, market, ctx, plan, result, original):
+                continue
         digest = hashlib.sha256(original.encode('utf-8')).hexdigest()
         decision = hashlib.sha256(json.dumps([snapshot, context, proposal, outcome], ensure_ascii=True,
                                               separators=(',', ':')).encode()).hexdigest()
