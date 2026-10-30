@@ -429,14 +429,30 @@ def cleanup_events(backup_dir, *, now=None):
     if retention.EXPORT_STATE.is_symlink() or not retention.EXPORT_STATE.is_file():
         raise ValueError('event_delete_export_state_invalid')
     at = time.time() if now is None else now
+    usable = [item for item in index['items'] if item['proof'].get('unavailable') is not True]
+    if not usable:
+        save_cursor()
+        return {'status': 'DEFERRED', 'removed': 0, 'removed_slots': 0, 'removed_events': 0,
+                'outcomes': {'DEFERRED_EVENT_PROOF': len(index['items'])}}
+    tape_receipts = retention.fetch_deliveries([item['candidate'] for item in usable], identity) if usable else []
+    events = [event for item in usable for event in item['proof'].get('events', [])]
+    rowids = [event.get('rowid') if isinstance(event, dict) else None for event in events]
+    if any(type(rowid) is not int or rowid <= 0 for rowid in rowids) or len(set(rowids)) != len(rowids):
+        raise ValueError('event_delivery_query_invalid')
+    deliveries = []
+    for start in range(0, len(events), MAX_EVENTS):
+        deliveries.extend(fetch_event_deliveries({'events': events[start:start + MAX_EVENTS]}, identity))
+    by_id = {}
+    for receipt in deliveries:
+        by_id.setdefault(receipt['event_id'], []).append(receipt)
     prepared = []
     for item in index['items']:
         if item['proof'].get('unavailable') is True:
             prepared.append((item, None, None))
             continue
-        tape_receipts = retention.fetch_deliveries([item['candidate']], identity)
-        event_receipts = fetch_event_deliveries(item['proof'], identity)
-        prepared.append((item, tape_receipts, event_receipts))
+        ids = [hashlib.sha256(f'{identity}:llm_scenario_review_events:{event["rowid"]}'.encode()).hexdigest()[:32]
+               for event in item['proof']['events']]
+        prepared.append((item, tape_receipts, [receipt for event_id in ids for receipt in by_id.get(event_id, [])]))
     statuses, removed_slots, removed_events = Counter(), 0, 0
     try:
         with retention.locked_remote_archive(ack, require_event_proof=True) as lease, closing(sqlite3.connect(

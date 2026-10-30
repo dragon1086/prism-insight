@@ -332,6 +332,7 @@ def test_cleanup_links_proof_receipts_and_lease_before_deletion(tmp_path, monkey
     monkeypatch.setattr(retention, '_save_cursor', lambda current, source_identity: saved.append((current, source_identity)))
     @contextmanager
     def locked(actual_ack, *, require_event_proof):
+        assert not unavailable
         assert actual_ack == ack and require_event_proof is True
         yield lambda: True
     monkeypatch.setattr(retention, 'locked_remote_archive', locked)
@@ -484,3 +485,48 @@ def test_noncontiguous_recovery_source_survives_future_archive_scan(tmp_path):
         source.backup(snapshot)
     commits, coverage = btc_offsite_archive.referenced_commits(path)
     assert 'c' * 40 in commits and coverage['malformed_evidence_rows'] == 0
+
+
+def test_cleanup_batches_delivery_queries_without_mixing_slots(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from utils import btc_review_event_proof as proof_module, btc_review_retention as retention
+    identity = 'a' * 64
+    items = []
+    for slot in (1, 2):
+        rows = [{'rowid': (slot - 1) * 70 + i + 1, 'sequence': i, 'sha256': 'f' * 64} for i in range(70)]
+        items.append({'candidate': {'slot': slot, 'rowid': slot}, 'proof': {'slot': slot, 'events': rows, 'recovery': []}})
+    index = {'after_slot': -1, 'last_scanned_slot': 2, 'truncated': False, 'items': items}
+    source_path, exporter_path = tmp_path / 'source.sqlite', tmp_path / 'export.sqlite'
+    source_path.touch(); exporter_path.touch()
+    monkeypatch.setattr(retention, 'SOURCE', source_path)
+    monkeypatch.setattr(retention, 'EXPORT_STATE', exporter_path)
+    monkeypatch.setattr(retention, '_backup_evidence', lambda _: (tmp_path, identity, b'ignored', {}, {}))
+    monkeypatch.setattr(proof_module, 'verified_event_index', lambda *_: index)
+    monkeypatch.setattr(retention, 'read_cursor', lambda *_: -1)
+    monkeypatch.setattr(retention, '_save_cursor', lambda *_: None)
+    monkeypatch.setattr(retention, '_resource_guard', lambda *_: True)
+    monkeypatch.setattr(retention, '_runtime_safe', lambda *_: True)
+    calls = []
+    def tapes(rows, _identity):
+        calls.append(('tape', len(rows)))
+        return []
+    def events(proof, source_identity):
+        calls.append(('events', len(proof['events'])))
+        return [{'event_id': hashlib.sha256(f'{source_identity}:llm_scenario_review_events:{event["rowid"]}'.encode()).hexdigest()[:32]}
+                for event in proof['events']]
+    def delete(_conn, _export, item, _tapes, deliveries, source_identity, _now, **_kwargs):
+        expected = {hashlib.sha256(f'{source_identity}:llm_scenario_review_events:{event["rowid"]}'.encode()).hexdigest()[:32]
+                    for event in item['proof']['events']}
+        assert {row['event_id'] for row in deliveries} == expected
+        return {'status': 'REMOVED', 'events': len(deliveries)}
+    @contextmanager
+    def locked(_ack, *, require_event_proof):
+        assert require_event_proof
+        yield lambda: True
+    monkeypatch.setattr(retention, 'fetch_deliveries', tapes)
+    monkeypatch.setattr(proof_module, 'fetch_event_deliveries', events)
+    monkeypatch.setattr(proof_module, 'delete_confirmed_slot', delete)
+    monkeypatch.setattr(retention, 'locked_remote_archive', locked)
+    result = proof_module.cleanup_events(tmp_path, now=700000)
+    assert result['status'] == 'COMPLETE' and result['removed_events'] == 140
+    assert calls == [('tape', 2), ('events', 128), ('events', 12)]

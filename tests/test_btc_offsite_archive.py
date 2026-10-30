@@ -1080,19 +1080,25 @@ def test_event_retention_end_to_end_with_isolated_archive(payload, monkeypatch):
     monkeypatch.setattr(retention, 'BACKUP_ROOT', backup_root)
     monkeypatch.setattr(retention, '_resource_guard', lambda *_: True)
     monkeypatch.setattr(retention, '_runtime_safe', lambda *_: True)
+    calls = {'tape': 0, 'events': 0}
     def tape_receipts(rows, source_identity):
+        calls['tape'] += 1
         return [{'event_id': hashlib.sha256(f'{source_identity}:llm_scenario_review_tapes:{row["rowid"]}'.encode()).hexdigest()[:32],
                  'event_type': 'btc.research.review_tape', 'source_identity': source_identity,
                  'body_sha256': row['tape_sha256'], 'tape_hash_status': 'MATCH'} for row in rows]
     def event_receipts(proof, source_identity):
+        calls['events'] += 1
+        with sqlite3.connect(source) as conn:
+            slots = {rowid: slot for rowid, slot in conn.execute('SELECT rowid,slot FROM llm_scenario_review_events')}
         return [{'event_id': hashlib.sha256(f'{source_identity}:llm_scenario_review_events:{row["rowid"]}'.encode()).hexdigest()[:32],
                  'event_type': 'btc.research.review', 'source_identity': source_identity, 'body_sha256': row['sha256'],
-                 'source_rowid': row['rowid'], 'source_sequence': row['sequence'], 'decision_slot': proof['slot']}
+                 'source_rowid': row['rowid'], 'source_sequence': row['sequence'], 'decision_slot': slots[row['rowid']]}
                 for row in proof['events']]
     monkeypatch.setattr(retention, 'fetch_deliveries', tape_receipts)
     monkeypatch.setattr(proof_module, 'fetch_event_deliveries', event_receipts)
     result = proof_module.cleanup_events(directory)
     assert result['status'] == 'DEFERRED' and result['removed_slots'] == result['removed_events'] == 1
+    assert calls == {'tape': 1, 'events': 1}
     with sqlite3.connect(source) as conn:
         assert conn.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(2,)]
         assert conn.execute('SELECT slot FROM llm_scenario_review_events').fetchall() == [(2,)]
