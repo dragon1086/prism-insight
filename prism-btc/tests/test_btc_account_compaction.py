@@ -217,13 +217,144 @@ def test_operational_wrapper_requires_lock_and_all_guards(tmp_path, monkeypatch)
     monkeypatch.setattr(guards, 'SOURCE', Path(path))
     monkeypatch.setattr(coordinator, 'mutation_lock', lock)
     monkeypatch.setattr(guards, 'resource_guard', lambda *a: bool(held))
-    monkeypatch.setattr(retention, '_backup_idle', lambda *a: True)
+    monkeypatch.setattr(retention, '_backup_idle', lambda *a, **kw: True)
     monkeypatch.setattr(retention, '_runtime_safe', lambda *a: False)
     assert guarded_operational_batch(conn, manifest, manifest_sha256(manifest), 'b'*64)['status'] == 'DEFERRED'
     assert conn.execute('SELECT body FROM llm_scenario_broker_evidence').fetchone()[0] == raw
     monkeypatch.setattr(retention, '_runtime_safe', lambda *a: True)
     assert guarded_operational_batch(conn, manifest, manifest_sha256(manifest), 'b'*64)['updated'] == 1
     assert not held
+
+
+def test_only_exact_b3_readonly_descriptor_can_be_allowed(tmp_path, monkeypatch):
+    from tools import btc_account_compaction as module
+    from utils.btc_review_retention import _backup_idle
+
+    monkeypatch.setattr('time.time', lambda: 1800000100.)
+    monkeypatch.setattr(module, '_fresh_b3_idle_health', lambda: True)
+    source = tmp_path / 'source.sqlite'
+    source.write_bytes(b'fixture')
+    proc = tmp_path / 'proc'
+    process = proc / '99999999'
+    (process / 'fd').mkdir(parents=True)
+    (process / 'fdinfo').mkdir()
+    fd = process / 'fd' / '4'
+    fd.symlink_to(source)
+    interpreter = tmp_path / 'python'
+    interpreter.write_bytes(b'fixture')
+    (process / 'exe').symlink_to(interpreter)
+    monkeypatch.setattr(module, '_B3_LAUNCHER', '/fixture/python3')
+    monkeypatch.setattr(module, '_B3_INTERPRETER', str(interpreter))
+    monkeypatch.setattr(module, '_B3_SCRIPT', '/fixture/run_b3_ae_shadow.py')
+    (process / 'cmdline').write_bytes(b'/fixture/python3\0/fixture/run_b3_ae_shadow.py\0--market\0us\0')
+    (process / 'fdinfo' / '4').write_text('flags:\t0100000\n')
+    assert not _backup_idle(source, proc)
+    assert _backup_idle(source, proc, allow_reader=module._trusted_b3_readonly_fd)
+    (process / 'fdinfo' / '4').write_text('flags:\t0100002\n')
+    assert not _backup_idle(source, proc, allow_reader=module._trusted_b3_readonly_fd)
+    (process / 'fdinfo' / '4').write_text('flags:\t0100000\n')
+    (process / 'exe').unlink()
+    assert not _backup_idle(source, proc, allow_reader=module._trusted_b3_readonly_fd)
+    (process / 'exe').symlink_to(interpreter)
+    (process / 'cmdline').write_bytes(b'/fixture/python3\0/fixture/other.py\0--market\0us\0')
+    assert not _backup_idle(source, proc, allow_reader=module._trusted_b3_readonly_fd)
+    (process / 'cmdline').write_bytes(b'/fixture/python3\0/fixture/run_b3_ae_shadow.py\0--market\0us\0')
+    (process / 'fdinfo' / '4').unlink()
+    assert not _backup_idle(source, proc, allow_reader=module._trusted_b3_readonly_fd)
+
+
+@pytest.mark.parametrize(('local_time', 'allowed'), [
+    ('2026-10-30T09:24:59', True), ('2026-10-30T09:25:00', False),
+    ('2026-10-30T16:30:00', False), ('2026-10-30T20:04:59', False),
+    ('2026-10-30T20:05:00', True), ('2026-10-31T12:00:00', True),
+    ('2026-11-02T10:00:00', False),
+])
+def test_b3_live_window_covers_regular_and_close_decisions(monkeypatch, local_time, allowed):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from tools.btc_account_compaction import _outside_b3_live_window
+    timestamp = datetime.fromisoformat(local_time).replace(tzinfo=ZoneInfo('America/New_York')).timestamp()
+    monkeypatch.setattr('time.time', lambda: timestamp)
+    assert _outside_b3_live_window() is allowed
+
+
+def test_b3_health_requires_recent_completed_idle_tick(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from tools import btc_account_compaction as module
+    now = 1800000100.
+    monkeypatch.setattr('time.time', lambda: now)
+    path = tmp_path / 'health.json'
+    monkeypatch.setattr(module, '_B3_HEALTH', str(path))
+    stamp = lambda value: datetime.fromtimestamp(value, timezone.utc).isoformat()
+    good = {'contract': 'b3-ae-worker-v1', 'market': 'US', 'status': 'OUTSIDE_REGULAR_SESSION',
+            'orders_submitted': 0, 'at': stamp(now - 30), 'completed_at': stamp(now - 29)}
+    path.write_text(json.dumps(good))
+    assert module._fresh_b3_idle_health()
+    for update in ({'at': stamp(now - 121)}, {'status': 'COMPLETED'}, {'orders_submitted': 1},
+                   {'completed_at': stamp(now - 31)}, {'at': 'not-a-date'}, {'market': 'KR'}):
+        path.write_text(json.dumps(dict(good, **update)))
+        assert not module._fresh_b3_idle_health()
+    from zoneinfo import ZoneInfo
+    edge = datetime.fromisoformat('2026-10-30T20:05:15').replace(tzinfo=ZoneInfo('America/New_York')).timestamp()
+    monkeypatch.setattr('time.time', lambda: edge)
+    path.write_text(json.dumps(dict(good, at=stamp(edge - 16), completed_at=stamp(edge - 1))))
+    assert not module._fresh_b3_idle_health()
+    path.unlink()
+    path.symlink_to(tmp_path / 'missing')
+    assert not module._fresh_b3_idle_health()
+
+
+def test_b3_reader_exception_requires_wal(tmp_path, monkeypatch):
+    import contextlib
+    from tools import btc_account_compaction as module, btc_review_event_compaction as guards
+    from utils import btc_review_retention as retention
+    import live.shared_entry_coordinator as coordinator
+
+    path = tmp_path / 'fixture.sqlite'
+    conn = sqlite3.connect(path, timeout=0)
+    conn.execute('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body)')
+    raw = json.dumps({'detail': 'x' * 4000})
+    conn.execute("INSERT INTO llm_scenario_broker_evidence VALUES('account',1,?)", (raw,))
+    conn.commit()
+    stat = path.stat()
+    identity = hashlib.sha256(f'{path.resolve()}:{stat.st_dev}:{stat.st_ino}'.encode()).hexdigest()
+    manifest = {'source_identity': identity, 'cutoff': 3, 'after_rowid': 0, 'backup_proof_sha256': 'b' * 64,
+                'rows': [{'rowid': 1, 'captured_at': 1, 'sha256': hashlib.sha256(raw.encode()).hexdigest()}]}
+    monkeypatch.setattr(guards, 'SOURCE', path)
+    monkeypatch.setattr(guards, 'resource_guard', lambda *a: True)
+    monkeypatch.setattr(retention, '_backup_idle', lambda source, *, allow_reader: allow_reader(None, None))
+    monkeypatch.setattr(retention, '_runtime_safe', lambda *a: True)
+    monkeypatch.setattr(module, '_trusted_b3_readonly_fd', lambda *a: True)
+    monkeypatch.setattr(coordinator, 'mutation_lock', lambda _: contextlib.nullcontext())
+    monkeypatch.setattr('time.time', lambda: 1800000100.)
+    assert module.guarded_operational_batch(conn, manifest, module.manifest_sha256(manifest), 'b' * 64)['status'] == 'DEFERRED'
+    assert conn.execute('PRAGMA journal_mode=WAL').fetchone()[0].lower() == 'wal'
+    assert module.guarded_operational_batch(conn, manifest, module.manifest_sha256(manifest), 'b' * 64)['updated'] == 1
+
+
+def test_wal_reader_keeps_snapshot_during_compaction(tmp_path):
+    from tools.btc_account_compaction import compact_file_batch
+    path = tmp_path / 'fixture.sqlite'
+    writer = sqlite3.connect(path, timeout=0)
+    assert writer.execute('PRAGMA journal_mode=WAL').fetchone()[0].lower() == 'wal'
+    writer.execute('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body)')
+    raw = json.dumps({'sample': 'x' * 4000})
+    writer.execute("INSERT INTO llm_scenario_broker_evidence VALUES('account',1,?)", (raw,))
+    writer.commit()
+    reader = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=0)
+    reader.execute('BEGIN')
+    assert reader.execute('SELECT body FROM llm_scenario_broker_evidence').fetchone()[0] == raw
+    stat = path.stat()
+    identity = hashlib.sha256(f'{path.resolve()}:{stat.st_dev}:{stat.st_ino}'.encode()).hexdigest()
+    manifest = {'source_identity': identity, 'cutoff': 3, 'after_rowid': 0, 'backup_proof_sha256': 'b' * 64,
+                'rows': [{'rowid': 1, 'captured_at': 1, 'sha256': hashlib.sha256(raw.encode()).hexdigest()}]}
+    assert compact_file_batch(writer, manifest, 604803, lambda: True)['updated'] == 1
+    assert reader.execute('SELECT body FROM llm_scenario_broker_evidence').fetchone()[0] == raw
+    reader.rollback()
+    current = reader.execute('SELECT body FROM llm_scenario_broker_evidence').fetchone()[0]
+    assert isinstance(current, bytes) and review_text(current) == raw
+    reader.close()
+    writer.close()
 
 
 def test_wal_batch_rolls_back_all_rows_when_guard_fails(tmp_path):
@@ -390,7 +521,7 @@ def test_apply_cli_uses_sealed_manifest_and_refuses_unexplicit_invocation(tmp_pa
                 'rows':[{'rowid':1, 'captured_at':1, 'sha256':hashlib.sha256(raw.encode()).hexdigest()}]}
     monkeypatch.setattr(guards, 'SOURCE', path)
     monkeypatch.setattr(guards, 'resource_guard', lambda *a: True)
-    monkeypatch.setattr(retention, '_backup_idle', lambda *a: True)
+    monkeypatch.setattr(retention, '_backup_idle', lambda *a, **kw: True)
     monkeypatch.setattr(retention, '_runtime_safe', lambda *a: True)
     monkeypatch.setattr(coordinator, 'mutation_lock', lambda _: contextlib.nullcontext())
     monkeypatch.setattr(sys, 'stdin', type('Input', (), {'buffer': io.BytesIO(json.dumps(manifest).encode())})())
@@ -453,7 +584,7 @@ def test_real_runtime_guard_blocks_active_and_unresolved_intent(tmp_path, monkey
                 'rows':[{'rowid':1, 'captured_at':1, 'sha256':hashlib.sha256(raw.encode()).hexdigest()}]}
     monkeypatch.setattr(guards, 'SOURCE', path)
     monkeypatch.setattr(guards, 'resource_guard', lambda *a: True)
-    monkeypatch.setattr(retention, '_backup_idle', lambda *a: True)
+    monkeypatch.setattr(retention, '_backup_idle', lambda *a, **kw: True)
     def apply(): return guarded_operational_batch(conn, manifest, manifest_sha256(manifest), 'b'*64)
     assert apply()['status'] == 'DEFERRED'
     conn.execute('UPDATE llm_scenario_state SET body=? WHERE id=1', (json.dumps({'active':None}),))
@@ -564,7 +695,7 @@ def test_attested_backup_to_guarded_batches_end_to_end(tmp_path, monkeypatch):
     backup_sha = digest(restored)
     monkeypatch.setattr(guards, 'SOURCE', path)
     monkeypatch.setattr(guards, 'resource_guard', lambda *a: True)
-    monkeypatch.setattr(retention, '_backup_idle', lambda *a: True)
+    monkeypatch.setattr(retention, '_backup_idle', lambda *a, **kw: True)
     def apply(manifest, seal, proof_sha):
         return guarded_operational_batch(source, manifest, seal, proof_sha)
     result = run_bounded_batches(proof, 10, plan_attested_accounts, apply, max_batches=2)
@@ -614,7 +745,7 @@ def test_operational_batch_defers_when_next_tick_is_too_close(tmp_path, monkeypa
                 'rows':[{'rowid':1, 'captured_at':1, 'sha256':hashlib.sha256(raw.encode()).hexdigest()}]}
     monkeypatch.setattr(guards, 'SOURCE', Path(path))
     monkeypatch.setattr(guards, 'resource_guard', lambda *a: True)
-    monkeypatch.setattr(retention, '_backup_idle', lambda *a: True)
+    monkeypatch.setattr(retention, '_backup_idle', lambda *a, **kw: True)
     monkeypatch.setattr(retention, '_runtime_safe', lambda *a: True)
     monkeypatch.setattr(coordinator, 'mutation_lock', lambda _: contextlib.nullcontext())
     monkeypatch.setattr(time, 'time', lambda: 1800000181.)
