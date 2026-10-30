@@ -166,6 +166,18 @@ _B3_INTERPRETER = '/root/.pyenv/versions/3.11.11/bin/python3.11'
 _B3_SCRIPT = '/root/prism-insight/tools/run_b3_ae_shadow.py'
 
 
+def _outside_b3_live_window():
+    """B3 may send live orders through the US daily-close window as late as 20:00."""
+    import datetime
+    import time
+    from zoneinfo import ZoneInfo
+    try:
+        local = datetime.datetime.fromtimestamp(time.time(), ZoneInfo('America/New_York'))
+        return local.weekday() >= 5 or not datetime.time(9, 25) <= local.time() < datetime.time(20, 5)
+    except (OSError, ValueError, OverflowError, KeyError):
+        return False
+
+
 def _trusted_b3_readonly_fd(process, fd):
     """Accept only the known US B3 observer's read-only database descriptor."""
     import os
@@ -175,7 +187,7 @@ def _trusted_b3_readonly_fd(process, fd):
         if args[-1:] == [b'']:
             args.pop()
         expected = [os.fsencode(_B3_LAUNCHER), os.fsencode(_B3_SCRIPT), b'--market', b'us']
-        if (args != expected or process.stat().st_uid != os.geteuid()
+        if (not _outside_b3_live_window() or args != expected or process.stat().st_uid != os.geteuid()
                 or (process / 'exe').resolve(strict=True) != Path(_B3_INTERPRETER).resolve(strict=True)):
             return False
         info = (process / 'fdinfo' / fd.name).read_text().splitlines()

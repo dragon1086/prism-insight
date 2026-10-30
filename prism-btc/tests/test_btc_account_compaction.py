@@ -230,6 +230,7 @@ def test_only_exact_b3_readonly_descriptor_can_be_allowed(tmp_path, monkeypatch)
     from tools import btc_account_compaction as module
     from utils.btc_review_retention import _backup_idle
 
+    monkeypatch.setattr('time.time', lambda: 1800000100.)
     source = tmp_path / 'source.sqlite'
     source.write_bytes(b'fixture')
     proc = tmp_path / 'proc'
@@ -259,6 +260,21 @@ def test_only_exact_b3_readonly_descriptor_can_be_allowed(tmp_path, monkeypatch)
     (process / 'cmdline').write_bytes(b'/fixture/python3\0/fixture/run_b3_ae_shadow.py\0--market\0us\0')
     (process / 'fdinfo' / '4').unlink()
     assert not _backup_idle(source, proc, allow_reader=module._trusted_b3_readonly_fd)
+
+
+@pytest.mark.parametrize(('local_time', 'allowed'), [
+    ('2026-10-30T09:24:59', True), ('2026-10-30T09:25:00', False),
+    ('2026-10-30T16:30:00', False), ('2026-10-30T20:04:59', False),
+    ('2026-10-30T20:05:00', True), ('2026-10-31T12:00:00', True),
+    ('2026-11-02T10:00:00', False),
+])
+def test_b3_live_window_covers_regular_and_close_decisions(monkeypatch, local_time, allowed):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from tools.btc_account_compaction import _outside_b3_live_window
+    timestamp = datetime.fromisoformat(local_time).replace(tzinfo=ZoneInfo('America/New_York')).timestamp()
+    monkeypatch.setattr('time.time', lambda: timestamp)
+    assert _outside_b3_live_window() is allowed
 
 
 def test_b3_reader_exception_requires_wal(tmp_path, monkeypatch):
