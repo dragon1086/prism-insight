@@ -402,6 +402,7 @@ def test_recovery_wait_retention_requires_complete_unchanged_journal(tmp_path):
     root = Path(__file__).resolve().parents[2]
     sources = [(name, (root / path).read_text()) for name, path in (
         ('btc_review_storage_embedded', 'observability/review_storage.py'),
+        ('btc_review_event_refs_embedded', 'utils/btc_review_event_references.py'),
         ('btc_review_refs_embedded', 'utils/btc_review_references.py'),
         ('btc_retention_embedded', 'utils/btc_review_retention.py'),
         ('btc_recovery_refs_embedded', 'utils/btc_recovery_references.py'))]
@@ -437,6 +438,43 @@ def test_recovery_wait_retention_requires_complete_unchanged_journal(tmp_path):
     child = subprocess.run([sys.executable, '-I', '-c', script, str(tmp_path / 'runtime.db'), str(at)],
                            capture_output=True, text=True, check=True, timeout=15)
     assert json.loads(child.stdout) == selected
+    r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (original_body, slot))
+    r.conn.commit()
+    from utils.btc_review_event_references import compact as compact_event
+    from live.scenario_review_storage import review_text as decode_event
+    r.conn.execute('SAVEPOINT referenced_review_event')
+    rows = r.conn.execute('SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence', (slot,)).fetchall()
+    prior = []
+    changed = False
+    for seq, body in rows:
+        decoded = decode_event(body)
+        if json.loads(decoded).get('kind') == 'MODEL_RAW':
+            compacted = compact_event(decoded, prior, slot, seq)
+            if isinstance(compacted, bytes):
+                r.conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=? AND sequence=?',
+                               (compacted, slot, seq))
+                changed = True
+                break
+        prior.append((seq, decoded))
+    assert changed
+    assert candidates(r.conn, at)['candidates'] == selected
+    from live.scenario_review_storage import review_storage
+    r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (review_storage(original), slot))
+    assert candidates(r.conn, at)['candidates'] == selected
+    from utils.btc_review_event_references import _unpack as unpack_event
+    source_seq = unpack_event(compacted)['source_sequence']
+    r.conn.execute('SAVEPOINT changed_reference_source')
+    r.conn.execute("UPDATE llm_scenario_review_events SET body='{}' WHERE slot=? AND sequence=?", (slot, source_seq))
+    assert not candidates(r.conn, at)['candidates']
+    r.conn.execute('ROLLBACK TO changed_reference_source')
+    r.conn.execute('RELEASE changed_reference_source')
+    r.conn.execute('RELEASE referenced_review_event')
+    r.conn.commit()
+    assert verify_retention_index(tmp_path / 'runtime.db', manifest) is True
+    child = subprocess.run([sys.executable, '-I', '-c', script, str(tmp_path / 'runtime.db'), str(at)],
+                           capture_output=True, text=True, check=True, timeout=15)
+    assert json.loads(child.stdout) == selected
+    r.conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=? AND sequence=?', (body, slot, seq))
     r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (original_body, slot))
     r.conn.commit()
     r.conn.execute('SAVEPOINT missing')
