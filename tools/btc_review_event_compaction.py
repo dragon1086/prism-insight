@@ -29,6 +29,13 @@ def _valid_row(rowid, slot, sequence, expected_type, expected_sha256):
             and len(expected_sha256) == 64 and all(c in '0123456789abcdef' for c in expected_sha256))
 
 
+def _unique_review_index(conn):
+    indexes = [row for row in conn.execute('PRAGMA index_list(llm_scenario_review_events)')
+               if row[1] == 'sqlite_autoindex_llm_scenario_review_events_1']
+    columns = [row[2] for row in conn.execute('PRAGMA index_info(sqlite_autoindex_llm_scenario_review_events_1)')]
+    return len(indexes) == 1 and indexes[0][2] == 1 and indexes[0][4] == 0 and columns == ['slot', 'sequence']
+
+
 def compact_one(conn, *, rowid, slot, sequence, expected_type, expected_sha256, guard):
     """Change one unchanged backed-up row, preserving its original logical text."""
     if (not _valid_row(rowid, slot, sequence, expected_type, expected_sha256)
@@ -96,10 +103,7 @@ def compact_backed_model_pair(conn, raw_row, source_row, *, guard):
         if guard() is not True:
             conn.rollback()
             return 'RESOURCE_LIMIT'
-        indexes = [row for row in conn.execute('PRAGMA index_list(llm_scenario_review_events)')
-                   if row[1] == 'sqlite_autoindex_llm_scenario_review_events_1']
-        columns = [row[2] for row in conn.execute('PRAGMA index_info(sqlite_autoindex_llm_scenario_review_events_1)')]
-        if len(indexes) != 1 or indexes[0][2] != 1 or indexes[0][4] != 0 or columns != ['slot', 'sequence']:
+        if not _unique_review_index(conn):
             conn.rollback()
             return 'SOURCE_CHANGED'
         def load(proof):
@@ -252,6 +256,64 @@ def compact_backed_pairs(conn, manifest, guard):
             break
         last = pair['raw']['rowid']
     return {'counts':counts, 'last_rowid':last}
+
+
+def plan_backed_pairs(conn, identity, *, after_rowid=0):
+    """Plan at most 20 pairs from a caller-verified, read-only backup."""
+    if (not isinstance(identity, str) or len(identity) != 64 or any(c not in '0123456789abcdef' for c in identity)
+            or type(after_rowid) is not int or not 0 <= after_rowid <= 9223372036854775807 or not _unique_review_index(conn)
+            or conn.execute('PRAGMA query_only').fetchone()[0] != 1):
+        raise ValueError('invalid_manifest')
+    from utils.btc_review_event_references import MAX_BYTES, MAGIC as REF_MAGIC, _unpack, compact, read_event
+    pairs, scanned, unreadable, last = [], 0, 0, after_rowid
+    rows = conn.execute('SELECT rowid,slot,sequence,body FROM llm_scenario_review_events '
+                        'WHERE rowid>? ORDER BY rowid LIMIT 200', (after_rowid,))
+    for rowid, slot, sequence, body in rows:
+        last, scanned = rowid, scanned + 1
+        if type(slot) is not int or slot < 0 or type(sequence) is not int or not 0 <= sequence < 128:
+            unreadable += 1
+            continue
+        try:
+            if len(_bytes(body)) > 2 * MAX_BYTES:
+                raise ValueError('review_body_too_large')
+            text = read_event(body, conn, slot, sequence, decode_legacy=review_text)
+            if len(text.encode('utf-8')) > MAX_BYTES:
+                raise ValueError('review_body_too_large')
+            event = json.loads(text)
+            if not isinstance(event, dict):
+                raise ValueError('review_body_invalid')
+            if event.get('kind') != 'MODEL_RAW':
+                continue
+            sources, total = [], 0
+            for source_id, number, value in conn.execute(
+                    'SELECT rowid,sequence,body FROM llm_scenario_review_events '
+                    'WHERE slot=? AND sequence<? ORDER BY sequence LIMIT 128', (slot, sequence)):
+                if len(_bytes(value)) > 2 * MAX_BYTES:
+                    raise ValueError('review_body_too_large')
+                original = read_event(value, conn, slot, number, decode_legacy=review_text)
+                total += len(original.encode('utf-8')) + len(_bytes(value))
+                if total > 2 * MAX_BYTES:
+                    raise ValueError('review_reference_source_budget')
+                sources.append((source_id, number, value, original))
+            encoded = compact(text, [(n, original) for _, n, _, original in sources], slot, sequence)
+            if not isinstance(encoded, bytes) or not encoded.startswith(REF_MAGIC) or len(encoded) >= len(_bytes(body)):
+                continue
+            source_sequence = _unpack(encoded)['source_sequence']
+            found = [item for item in sources if item[1] == source_sequence]
+            if len(found) != 1:
+                raise ValueError('review_reference_source_invalid')
+            def fingerprint(rid, number, value):
+                return {'rowid':rid,'slot':slot,'sequence':number,
+                        'expected_type':'text' if isinstance(value,str) else 'blob',
+                        'expected_sha256':hashlib.sha256(_bytes(value)).hexdigest()}
+            pairs.append({'raw':fingerprint(rowid,sequence,body),
+                          'source':fingerprint(found[0][0],source_sequence,found[0][2])})
+            if len(pairs) == 20:
+                break
+        except (ValueError, TypeError, KeyError, UnicodeError):
+            unreadable += 1
+    return {'manifest':{'source_identity':identity,'pairs':pairs},'scanned':scanned,
+            'unreadable':unreadable,'last_scanned_rowid':last}
 
 
 def main():

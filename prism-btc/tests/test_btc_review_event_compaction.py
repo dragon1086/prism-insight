@@ -352,3 +352,41 @@ def test_backed_pair_cli_defers_while_backup_active(tmp_path, monkeypatch, capsy
     assert json.loads(capsys.readouterr().out)['status'] == 'RESOURCE_LIMIT'
     with sqlite3.connect(source) as db:
         assert db.execute('SELECT body FROM llm_scenario_review_events WHERE rowid=2').fetchone()[0] == before
+
+
+def test_pair_planner_requires_read_only_and_matches_backed_rows(tmp_path):
+    conn, raw_proof, source_proof, _, _ = backed_model_pair(tmp_path)
+    with pytest.raises(ValueError, match='invalid_manifest'):
+        subject.plan_backed_pairs(conn, 'a'*64)
+    conn.execute('PRAGMA query_only=ON')
+    plan = subject.plan_backed_pairs(conn, 'a'*64)
+    assert plan['manifest']['pairs'] == [{'raw':raw_proof,'source':source_proof}]
+    assert plan['scanned'] == 2 and plan['unreadable'] == 0 and plan['last_scanned_rowid'] == 2
+    assert not subject.plan_backed_pairs(conn, 'a'*64, after_rowid=2)['manifest']['pairs']
+    for invalid in (-1, True, '2', 9223372036854775808):
+        with pytest.raises(ValueError, match='invalid_manifest'):
+            subject.plan_backed_pairs(conn, 'a'*64, after_rowid=invalid)
+    conn.close()
+
+
+def test_pair_planner_limits_batches_and_reports_unreadable_rows(tmp_path):
+    import random
+    from live.scenario_review_storage import review_storage
+    path = tmp_path/'planner.sqlite'
+    with sqlite3.connect(path) as conn:
+        conn.execute('CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body BLOB,PRIMARY KEY(slot,sequence))')
+        prompt = random.Random(29).randbytes(8000).hex()
+        for slot in range(21):
+            request = {'kind':'MODEL_REQUEST','phase':'single','request':{'prompt':prompt,'timeout':50}}
+            raw = {'kind':'MODEL_RAW','phase':'single','actual_request':dict(request['request'],timeout=49),'raw':'x'}
+            conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)',
+                         (slot,0,review_storage(json.dumps(request,sort_keys=True,allow_nan=False))))
+            conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)',
+                         (slot,1,review_storage(json.dumps(raw,sort_keys=True,allow_nan=False))))
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)',(99,0,'not json'))
+    with sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True) as conn:
+        conn.execute('PRAGMA query_only=ON')
+        first = subject.plan_backed_pairs(conn,'b'*64)
+        assert len(first['manifest']['pairs']) == 20 and first['scanned'] == 40 and first['last_scanned_rowid'] == 40
+        second = subject.plan_backed_pairs(conn,'b'*64,after_rowid=first['last_scanned_rowid'])
+        assert len(second['manifest']['pairs']) == 1 and second['scanned'] == 3 and second['unreadable'] == 1
