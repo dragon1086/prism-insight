@@ -84,7 +84,7 @@ def create_backup_attestation(directory, output):
     return proof
 
 
-def plan_pairs_from_attestation(proof_path, *, after_rowid=0):
+def plan_pairs_from_attestation(proof_path, *, after_rowid=0, planner=None):
     """Plan a bounded batch only from files matching a previously hashed backup."""
     proof_path = Path(proof_path)
     private_file(proof_path)
@@ -139,11 +139,14 @@ def plan_pairs_from_attestation(proof_path, *, after_rowid=0):
                     or record.get('sha256') != detail.get(label+'_sha256')):
                 raise ValueError('backup_artifact_changed')
     check_files()
-    from tools.btc_review_event_compaction import plan_backed_pairs
+    if planner is None:
+        from tools.btc_review_event_compaction import plan_backed_pairs as planner
+    if not callable(planner):
+        raise ValueError('backup_planner_invalid')
     with closing(sqlite3.connect(restored.resolve().as_uri() + '?mode=ro', uri=True, timeout=2)) as conn:
         conn.execute('PRAGMA query_only=ON')
         conn.execute('BEGIN')
-        result = plan_backed_pairs(conn, proof['source_identity'], after_rowid=after_rowid)
+        result = planner(conn, proof['source_identity'], after_rowid=after_rowid)
     check_files()
     if (proof_path.read_bytes() != proof_bytes or receipt_path.read_bytes() != receipt_bytes
             or manifest_path.read_bytes() != manifest_bytes):
