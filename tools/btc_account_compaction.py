@@ -7,7 +7,7 @@ import sqlite3
 
 from observability.btc_scenario_export import _anchor_hash
 from observability.review_storage import MAGIC, review_text
-from live.scenario_review_storage import snapshot_storage
+from live.scenario_review_storage import review_storage
 
 
 def plan_old_accounts(conn, identity, cutoff, *, after_rowid=0, limit=1000):
@@ -70,7 +70,7 @@ def compact_batch(conn, rows, guard):
             if isinstance(current, bytes):
                 unchanged += 1
                 continue
-            candidate = snapshot_storage(raw)
+            candidate = review_storage(raw)
             if review_text(candidate) != raw:
                 raise ValueError('roundtrip_failed')
             if candidate == current:

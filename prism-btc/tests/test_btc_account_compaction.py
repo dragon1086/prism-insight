@@ -519,3 +519,58 @@ def test_resuming_a_range_cannot_claim_full_history_completed(monkeypatch):
                 'after_rowid':after_rowid,'rows':[]}
     monkeypatch.setattr(compaction, 'plan_attested_accounts', empty_plan)
     assert transport.run_verified_remote_batches('proof', 3, 1, after_rowid=100)['status'] == 'RANGE_COMPLETE'
+
+
+def test_attested_backup_to_guarded_batches_end_to_end(tmp_path, monkeypatch):
+    from tools import btc_review_event_compaction as guards
+    from utils import btc_review_retention as retention
+    from tools.btc_account_compaction import plan_attested_accounts, guarded_operational_batch, run_bounded_batches
+    from tools.btc_review_backup_manifest import create_backup_attestation
+    path = tmp_path/'source.sqlite'
+    source = sqlite3.connect(path, timeout=0)
+    source.executescript('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body);'
+                         'CREATE INDEX llm_scenario_broker_evidence_kind ON llm_scenario_broker_evidence(kind);'
+                         'CREATE TABLE llm_scenario_state(id INTEGER,body TEXT);'
+                         'CREATE TABLE llm_scenario_intents(id TEXT,status TEXT);')
+    bodies = [json.dumps({'value': str(i)*3000}) for i in range(8)]
+    source.executemany("INSERT INTO llm_scenario_broker_evidence VALUES('account',?,?)", [(i+1, x) for i,x in enumerate(bodies)])
+    source.execute('INSERT INTO llm_scenario_state VALUES(1,?)', (json.dumps({'active':None}),))
+    source.commit()
+    st = path.stat()
+    identity = hashlib.sha256(f'{path.resolve()}:{st.st_dev}:{st.st_ino}'.encode()).hexdigest()
+    directory = tmp_path/'archive'; directory.mkdir(mode=0o700)
+    archive, restored = directory/'backup.typed.gz', directory/'restored.sqlite'
+    archive.write_bytes(b'fixture'); archive.chmod(0o600)
+    with sqlite3.connect(restored) as dest:
+        source.backup(dest)
+    restored.chmod(0o600)
+    digest = lambda file: hashlib.sha256(file.read_bytes()).hexdigest()
+    detail = {'source_identity':identity, 'archive_bytes':archive.stat().st_size,
+              'archive_sha256':digest(archive), 'restored_bytes':restored.stat().st_size,
+              'restored_sha256':digest(restored)}
+    backup_manifest = directory/'verified-manifest.json'; backup_manifest.write_text(json.dumps(detail)); backup_manifest.chmod(0o600)
+    receipt = tmp_path/'archive.receipt.json'
+    receipt.write_text(json.dumps({'status':'VERIFIED','directory':str(directory),'source_identity':identity,
+                                   'manifest_sha256':digest(backup_manifest)})); receipt.chmod(0o600)
+    proof = tmp_path/'proof.json'; create_backup_attestation(directory, proof)
+    backup_sha = digest(restored)
+    monkeypatch.setattr(guards, 'SOURCE', path)
+    monkeypatch.setattr(guards, 'resource_guard', lambda *a: True)
+    monkeypatch.setattr(retention, '_backup_idle', lambda *a: True)
+    def apply(manifest, seal, proof_sha):
+        return guarded_operational_batch(source, manifest, seal, proof_sha)
+    result = run_bounded_batches(proof, 10, plan_attested_accounts, apply, max_batches=2)
+    assert result['status'] == 'COMPLETE' and result['updated'] == 8 and result['batches'] == 1
+    assert [review_text(row[0]) for row in source.execute('SELECT body FROM llm_scenario_broker_evidence ORDER BY rowid')] == bodies
+    assert digest(restored) == backup_sha
+
+
+def test_compaction_error_rolls_back_instead_of_advancing_as_unchanged(monkeypatch):
+    from tools import btc_account_compaction as compaction
+    conn, values, rows = fixture()
+    def fail(_):
+        raise RuntimeError('compression failed')
+    monkeypatch.setattr(compaction, 'review_storage', fail)
+    with pytest.raises(RuntimeError, match='compression failed'):
+        compaction.compact_batch(conn, rows, lambda: True)
+    assert [row[0] for row in conn.execute('SELECT body FROM llm_scenario_broker_evidence ORDER BY rowid')] == values
