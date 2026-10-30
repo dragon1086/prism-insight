@@ -508,7 +508,7 @@ def _flush(capture):
                         stored_event = (*stored_event[:8], packed)
                 except Exception:
                     # Optional compression must not discard the original audit.
-                    pass
+                    stored_event = event
             conn.execute('INSERT OR IGNORE INTO llm_scenario_audit_events VALUES (?,?,?,?,?,?,?,?,?)', stored_event)
             written.append(event)
     # Committed rows only; the ClickStack copy is a bounded, ID-free summary.
