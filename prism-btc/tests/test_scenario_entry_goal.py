@@ -607,7 +607,8 @@ def test_goal_source_loss_does_not_disable_registered_numeric_failure_exit(tmp_p
         elif damage == 'decision_missing':
             r.conn.execute('DELETE FROM llm_scenario_decisions WHERE slot=?', (slot,))
         else:
-            snap = json.loads(r.conn.execute('SELECT snapshot FROM llm_scenario_decisions WHERE slot=?', (slot,)).fetchone()[0])
+            from live.scenario_review_storage import review_text
+            snap = json.loads(review_text(r.conn.execute('SELECT snapshot FROM llm_scenario_decisions WHERE slot=?', (slot,)).fetchone()[0]))
             snap['timeframes']['4h']['ma_path']['confirmed_points'][0]['ma35'] += 1
             r.conn.execute('UPDATE llm_scenario_decisions SET snapshot=? WHERE slot=?', (json.dumps(snap), slot))
         r.conn.commit()

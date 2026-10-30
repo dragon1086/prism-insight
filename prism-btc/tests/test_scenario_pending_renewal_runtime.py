@@ -634,7 +634,7 @@ def test_pending_renewal_reads_referenced_tape_and_rejects_changed_source(tmp_pa
         snapshot, context = r.conn.execute('SELECT snapshot,context FROM llm_scenario_decisions WHERE slot=?', (slot,)).fetchone()
         events = [read_event(body, r.conn, slot, seq, decode_legacy=review_text)
                   for seq, body in r.conn.execute('SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence', (slot,))]
-        value = pack(compact(read_tape(stored, r.conn, slot, decode_legacy=review_text), snapshot, context, events))
+        value = pack(compact(read_tape(stored, r.conn, slot, decode_legacy=review_text), review_text(snapshot), context, events))
         r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (value, slot))
         if corrupt:
             r.conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=? AND sequence=0', ('{}', slot))
