@@ -50,7 +50,8 @@ done
 if [ -f stock_tracking_db.sqlite ]; then
     python3 "$PROJECT_DIR/utils/sqlite_snapshot.py" \
         --source "$PROJECT_DIR/stock_tracking_db.sqlite" \
-        --destination "$BACKUP_DIR/stock_tracking_db.sqlite.gz" --timeout 1200 --capture-references
+        --destination "$BACKUP_DIR/stock_tracking_db.sqlite.gz" --timeout 1200 --capture-references \
+        --retention-cursor "$BACKUP_BASE_DIR/.btc-retention-cursor.json"
     log "✓ SQLite 온라인 스냅샷·압축·복원 해시 검증 완료"
 else
     log "오류: stock_tracking_db.sqlite 없음; 기존 DB 백업을 보존하고 종료"
@@ -89,11 +90,38 @@ log "백업 완료: $BACKUP_SIZE"
 
 # Only the verified database, its manifest and Git history go offsite, never settings.
 if python3 "$PROJECT_DIR/utils/btc_offsite_archive.py" \
-    --repo "$PROJECT_DIR" --snapshot "$BACKUP_DIR/stock_tracking_db.sqlite.gz" | tee -a "$LOG_FILE"; then
+    --repo "$PROJECT_DIR" --snapshot "$BACKUP_DIR/stock_tracking_db.sqlite.gz" \
+    | tee "$BACKUP_DIR/offsite_ack.json" | tee -a "$LOG_FILE"; then
     log "✓ 별도 서버 DB·Git 복원 검증 ACK 완료"
 else
     log "CRITICAL: 별도 서버 백업 미확인/비활성; 기존 백업 보존, 보존기간 삭제 중단"
     exit 1
+fi
+
+# Drop only the exact uploaded local gzip after independently rechecking its archive.
+if PYTHONPATH="$PROJECT_DIR/prism-btc:$PROJECT_DIR" PRISM_DISABLE_SIGNAL_PUBLISH=1 \
+    python3 "$PROJECT_DIR/tools/remove_uploaded_btc_backup.py" "$BACKUP_DIR" | tee -a "$LOG_FILE"; then
+    log "검증된 원격 사본을 확인해 로컬 DB 압축 중복을 정리했습니다"
+else
+    log "⚠ 원격 사본 재확인 실패; 로컬 DB 압축본을 보존합니다"
+fi
+
+# One transient timer starts a bounded cleanup in the existing idle window.
+CURRENT_SECOND=$((10#$(date +%S)))
+RETENTION_DELAY=$(((90 - CURRENT_SECOND) % 60))
+if [ "$RETENTION_DELAY" -lt 10 ]; then
+    RETENTION_DELAY=$((RETENTION_DELAY + 60))
+fi
+PYTHON_BIN=$(command -v python3)
+if systemd-run --quiet --collect --on-active="${RETENTION_DELAY}s" \
+    --unit="prism-btc-retention-${DATE}" --setenv="PATH=$PATH" \
+    --setenv="PRISM_DISABLE_SIGNAL_PUBLISH=1" \
+    --setenv="PYTHONPATH=$PROJECT_DIR/prism-btc:$PROJECT_DIR" \
+    /usr/bin/bash -c 'exec "$1" "$2" "$3"' -- \
+    "$PYTHON_BIN" "$PROJECT_DIR/tools/run_btc_review_retention.py" "$BACKUP_DIR"; then
+    log "7일 정리 1회 등록; 실행 결과는 별도 확인"
+else
+    log "⚠ 7일 정리 등록 실패; 다음 백업에서 재시도"
 fi
 
 # 7일 이상 된 백업 삭제

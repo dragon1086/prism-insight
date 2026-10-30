@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -25,6 +26,7 @@ RESERVE = 5 * 1024**3
 CAP = 10 * 1024**3
 RAW_CAP = 20 * 1024**3
 REMOTE_ROOT = Path('/root/prism-btc-archive')
+REPLAY_ROOT = Path('/root/prism-btc-replays')
 FILES = ('snapshot.sqlite.gz', 'snapshot.manifest.json', 'history.bundle', 'archive.json')
 COMMIT_KEYS = {'git_revision', 'source_commit', 'code_commit', 'source_reference'}
 EVIDENCE_QUERIES = {
@@ -88,16 +90,21 @@ def validate_host(host):
         ipaddress.IPv4Address(host)
 
 
-def ssh_archive(host, needed, *, stream=None):
+def ssh_archive(host, needed, *, stream=None, restore=None):
     validate_host(host)
     if type(needed) is not int or not 0 <= needed <= 4 * RAW_CAP:
         raise ValueError('invalid_space_requirement')
+    if restore is not None and (stream is not None or not isinstance(restore, str)
+            or not re.fullmatch(r'archive-[a-f0-9]{32}', restore)):
+        raise ValueError('invalid_restore_request')
     source = Path(__file__).read_text()
     refs_source = Path(__file__).with_name('btc_review_references.py').read_text()
     audit_source = Path(__file__).with_name('btc_audit_references.py').read_text()
     recovery_source = Path(__file__).with_name('btc_recovery_references.py').read_text()
     financial_source = Path(__file__).with_name('btc_financial_references.py').read_text()
     accounting_source = Path(__file__).with_name('btc_accounting_audit_references.py').read_text()
+    storage_source = Path(__file__).resolve().parent.parent.joinpath('observability/review_storage.py').read_text()
+    retention_source = Path(__file__).with_name('btc_review_retention.py').read_text()
     prelude = ("import sys,types\n"
                "_btc_financial=types.ModuleType('btc_financial_refs_embedded')\n"
                "exec(compile(" + repr(financial_source) + ",'<btc_financial_refs>','exec'),_btc_financial.__dict__)\n"
@@ -108,14 +115,23 @@ def ssh_archive(host, needed, *, stream=None):
                "_btc_refs=types.ModuleType('btc_review_refs_embedded')\n"
                "exec(compile(" + repr(refs_source) + ",'<btc_review_refs>','exec'),_btc_refs.__dict__)\n"
                "sys.modules['btc_review_refs_embedded']=_btc_refs\n"
+               "_btc_storage=types.ModuleType('btc_review_storage_embedded')\n"
+               "exec(compile(" + repr(storage_source) + ",'<btc_review_storage>','exec'),_btc_storage.__dict__)\n"
+               "sys.modules['btc_review_storage_embedded']=_btc_storage\n"
+               "_btc_retention=types.ModuleType('btc_retention_embedded')\n"
+               "exec(compile(" + repr(retention_source) + ",'<btc_retention>','exec'),_btc_retention.__dict__)\n"
+               "sys.modules['btc_retention_embedded']=_btc_retention\n"
                "_btc_audit=types.ModuleType('btc_audit_refs_embedded')\n"
                "exec(compile(" + repr(audit_source) + ",'<btc_audit_refs>','exec'),_btc_audit.__dict__)\n"
                "sys.modules['btc_audit_refs_embedded']=_btc_audit\n"
                "_btc_recovery=types.ModuleType('btc_recovery_refs_embedded')\n"
                "exec(compile(" + repr(recovery_source) + ",'<btc_recovery_refs>','exec'),_btc_recovery.__dict__)\n"
                "sys.modules['btc_recovery_refs_embedded']=_btc_recovery\n")
-    suffix = ('\nprivate_root(REMOTE_ROOT); space(REMOTE_ROOT, ' + str(needed) + ', staging=True); print("READY")\n'
-              if stream is None else '\nprint(json.dumps(receive(sys.stdin.buffer, REMOTE_ROOT, ' + str(needed) + ')))\n')
+    if restore is not None:
+        suffix = '\nprint(json.dumps(restore_archive(REMOTE_ROOT, ' + repr(restore) + ', REPLAY_ROOT)))\n'
+    else:
+        suffix = ('\nprivate_root(REMOTE_ROOT); space(REMOTE_ROOT, ' + str(needed) + ', staging=True); print("READY")\n'
+                  if stream is None else '\nprint(json.dumps(receive(sys.stdin.buffer, REMOTE_ROOT, ' + str(needed) + ')))\n')
     command = '/usr/bin/python3 -c ' + shlex.quote(
         "exec(compile(" + repr(prelude + source + suffix) + ", '<archive>', 'exec'), {'__name__':'offsite_receiver'})")
     # Only this repository's receiver source and a bounded integer reach the remote command.
@@ -123,7 +139,7 @@ def ssh_archive(host, needed, *, stream=None):
                            '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=15',
                            '-o', 'ServerAliveCountMax=3', 'root@' + host, command],
                           stdin=stream, capture_output=True, check=True, shell=False,
-                          timeout=60 if stream is None else 1800)
+                          timeout=1800 if stream is not None or restore is not None else 60)
 
 
 def digest(path):
@@ -179,6 +195,8 @@ def restore_snapshot(zipped, manifest, raw):
             total += len(chunk)
             if total > manifest['raw_bytes'] or time.monotonic() > deadline:
                 raise ValueError('snapshot_expansion_bound')
+            if shutil.disk_usage(raw.parent).free < RESERVE:
+                raise OSError('snapshot_restore_space_reserve_lost')
             dst.write(chunk)
         dst.flush()
         os.fsync(dst.fileno())
@@ -208,6 +226,31 @@ def verify_streamed_snapshot(zipped, manifest):
             raw_hash.update(chunk)
     if total != manifest['raw_bytes'] or raw_hash.hexdigest() != manifest.get('raw_sha256'):
         raise ValueError('snapshot_raw_mismatch')
+
+
+def verify_retention_index(raw, manifest):
+    if 'btc_retention_index' not in manifest:
+        return False
+    started = manifest.get('started_at')
+    if type(started) not in (int, float) or not math.isfinite(started) or started <= 7 * 86400:
+        raise ValueError('retention_snapshot_time_invalid')
+    if 'btc_retention_embedded' in sys.modules:
+        from btc_retention_embedded import snapshot_index
+    elif __package__:
+        from .btc_review_retention import snapshot_index
+    else:
+        from btc_review_retention import snapshot_index
+    deadline = time.monotonic() + 600
+    def guard():
+        if time.monotonic() > deadline:
+            raise TimeoutError('retention_index_deadline')
+    with closing(sqlite3.connect(raw.as_uri() + '?mode=ro', uri=True)) as db:
+        db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
+        index = manifest['btc_retention_index']
+        after_slot = index.get('after_slot') if isinstance(index, dict) else -1
+        if snapshot_index(db, int(started), after_slot=after_slot, guard=guard) != index:
+            raise ValueError('retention_index_mismatch')
+    return True
 
 
 def referenced_commits(raw, *, deadline=None):
@@ -390,6 +433,7 @@ def receive(stream, root, needed):
         space(root, needed - transferred, staging=True)
         raw = stage / 'restored.sqlite'
         restore_snapshot(stage / FILES[0], manifest, raw)
+        retention_verified = verify_retention_index(raw, manifest)
         actual, coverage = referenced_commits(raw)
         if actual != metadata['referenced_commits']:
             raise ValueError('archive_commit_manifest_mismatch')
@@ -412,6 +456,8 @@ def receive(stream, root, needed):
                    bundle_sha256=metadata['sha256'][FILES[2]],
                    archive_metadata_sha256=digest(stage / 'archive.json'),
                    referenced_commit_count=len(actual), code_reference_coverage=coverage)
+        if retention_verified:
+            ack['retention_index_verified'] = True
         with (stage / 'receipt.json').open('x') as dst:
             json.dump(ack, dst)
             dst.flush()
@@ -426,6 +472,89 @@ def receive(stream, root, needed):
         if stage is not None and stage.exists():
             shutil.rmtree(stage)
         os.close(lock_fd)
+
+
+def restore_archive(root, name, output_root):
+    """Restore one verified archive and its code to a separate private directory."""
+    root, output_root = Path(root), Path(output_root)
+    if not isinstance(name, str) or not re.fullmatch(r'archive-[a-f0-9]{32}', name) or not root.is_dir():
+        raise ValueError('restore_request_invalid')
+    private_root(root)
+    resolved_root, resolved_output = root.resolve(), output_root.resolve()
+    if (resolved_root == resolved_output or resolved_root in resolved_output.parents
+            or resolved_output in resolved_root.parents):
+        raise ValueError('restore_root_overlap')
+    private_root(output_root)
+    if any(p.name.startswith('restore-') for p in output_root.iterdir()):
+        raise ValueError('restore_already_present')
+    archive = root / name
+    if archive.is_symlink() or not archive.is_dir():
+        raise ValueError('restore_archive_missing')
+    private_root(archive)
+    lock = root / '.receive.lock'
+    lock_fd = os.open(lock, os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0))
+    previous_umask = os.umask(0o077)
+    stage = None
+    try:
+        lock_stat = os.fstat(lock_fd)
+        if not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_uid != os.getuid() or lock_stat.st_nlink != 1:
+            raise ValueError('unsafe_archive_lock')
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for filename in (*FILES, 'receipt.json'):
+            path = archive / filename
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise ValueError('restore_archive_file_invalid')
+        receipt_path, metadata_path = archive / 'receipt.json', archive / 'archive.json'
+        manifest_path = archive / 'snapshot.manifest.json'
+        if any(p.stat().st_size > 4 * 1024 * 1024 for p in (receipt_path, metadata_path, manifest_path)):
+            raise ValueError('restore_metadata_too_large')
+        receipt, metadata, manifest = (json.loads(p.read_text()) for p in (receipt_path, metadata_path, manifest_path))
+        if receipt.get('status') != 'VERIFIED' or digest(metadata_path) != receipt.get('archive_metadata_sha256'):
+            raise ValueError('restore_receipt_invalid')
+        for filename, key in ((FILES[0], 'compressed_sha256'), (FILES[1], 'manifest_sha256'),
+                              (FILES[2], 'bundle_sha256')):
+            actual = digest(archive / filename)
+            if actual != metadata.get('sha256', {}).get(filename) or actual != receipt.get(key):
+                raise ValueError('restore_archive_checksum_mismatch')
+        if receipt.get('raw_sha256') != manifest.get('raw_sha256'):
+            raise ValueError('restore_receipt_invalid')
+        needed = int(manifest['raw_bytes']) + 4 * (archive / FILES[2]).stat().st_size + 1024**2
+        if needed <= 0 or needed > 4 * RAW_CAP or shutil.disk_usage(output_root).free < RESERVE + needed:
+            raise OSError('restore_space_limit')
+        stage = Path(tempfile.mkdtemp(prefix='.restoring-', dir=output_root))
+        raw = stage / 'snapshot.sqlite'
+        restore_snapshot(archive / FILES[0], manifest, raw)
+        checked = verify_retention_index(raw, manifest)
+        if 'btc_retention_index' in manifest and (not checked or receipt.get('retention_index_verified') is not True):
+            raise ValueError('restore_retention_index_unverified')
+        commits, coverage = referenced_commits(raw)
+        if commits != metadata.get('referenced_commits') or coverage != metadata.get('code_reference_coverage'):
+            raise ValueError('restore_reference_mismatch')
+        head = metadata.get('source_head')
+        if not isinstance(head, str) or not re.fullmatch('[0-9a-f]{40}', head):
+            raise ValueError('restore_source_head_invalid')
+        bare = stage / 'history.git'
+        run(['git', 'clone', '--bare', str(archive / FILES[2]), str(bare)])
+        for commit in [*commits, head]:
+            run(['git', 'cat-file', '-e', commit + '^{commit}'], cwd=bare)
+        run(['git', 'fsck', '--full'], cwd=bare)
+        proof = {'archive': name, 'source_head': head, 'raw_sha256': manifest['raw_sha256'],
+                 'referenced_commit_count': len(commits)}
+        with (stage / 'restore-proof.json').open('x') as output:
+            json.dump(proof, output, sort_keys=True)
+            output.flush()
+            os.fsync(output.fileno())
+        destination = output_root / ('restore-' + uuid.uuid4().hex)
+        os.rename(stage, destination)
+        sync_dir(output_root)
+        return {'status': 'VERIFIED', 'directory': str(destination), 'source_head': head,
+                'raw_sha256': manifest['raw_sha256'], 'referenced_commit_count': len(commits)}
+    finally:
+        if stage is not None and stage.exists():
+            shutil.rmtree(stage)
+        os.close(lock_fd)
+        os.umask(previous_umask)
 
 
 def backend_host(config):
@@ -497,6 +626,8 @@ def archive(repo, snapshot, config):
                 ack.get('bundle_sha256') != hashes[FILES[2]] or ack.get('archive_metadata_sha256') != digest(meta) or
                 ack.get('referenced_commit_count') != len(commits) or ack.get('code_reference_coverage') != coverage):
             raise ValueError('archive_ack_mismatch')
+        if 'btc_retention_index' in manifest and ack.get('retention_index_verified') is not True:
+            raise ValueError('archive_retention_index_unverified')
         return ack
 
 

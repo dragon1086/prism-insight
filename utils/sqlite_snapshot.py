@@ -67,7 +67,8 @@ def _compress_in_place(path, raw_bytes, progress):
         os.fsync(stream.fileno())
 
 
-def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024**3, capture_references=False):
+def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024**3,
+                    capture_references=False, retention_cursor=None):
     source, destination = Path(source), Path(destination)
     if not source.is_file() or source.is_symlink() or destination.suffix != ".gz":
         raise ValueError("invalid_snapshot_paths")
@@ -135,10 +136,16 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
             logging.getLogger(__name__).info('snapshot_stage=reference_scan')
             if __package__:
                 from .btc_offsite_archive import referenced_commits
+                from .btc_review_retention import read_cursor, snapshot_index
             else:
                 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
                 from utils.btc_offsite_archive import referenced_commits
+                from utils.btc_review_retention import read_cursor, snapshot_index
             commits, coverage = referenced_commits(raw, deadline=deadline)
+            after_slot = read_cursor(retention_cursor, source_identity) if retention_cursor is not None else -1
+            with closing(sqlite3.connect(raw.resolve().as_uri() + '?mode=ro', uri=True)) as index_conn:
+                retention_index = snapshot_index(index_conn, int(started), after_slot=after_slot,
+                                                 guard=lambda: progress(None, None, None))
             progress(None, None, None)
             reference_scan = {'commits': commits, 'coverage': coverage}
         logging.getLogger(__name__).info('snapshot_stage=compress')
@@ -159,6 +166,7 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
                       decompression_verified=True, source_writes=0)
         if reference_scan is not None:
             result['code_reference_scan'] = reference_scan
+            result['btc_retention_index'] = retention_index
         manifest = temp(".json")
         with manifest.open("w", encoding="utf-8") as stream:
             json.dump(result, stream, indent=2, allow_nan=False)
@@ -197,9 +205,10 @@ def main():
     parser.add_argument("--destination", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=180)
     parser.add_argument("--capture-references", action="store_true")
+    parser.add_argument("--retention-cursor", type=Path)
     args = parser.parse_args()
     result = backup_database(args.source, args.destination, timeout=args.timeout,
-                             capture_references=args.capture_references)
+                             capture_references=args.capture_references, retention_cursor=args.retention_cursor)
     print(json.dumps(dict(status="ok", destination=str(args.destination), **result)))
 
 

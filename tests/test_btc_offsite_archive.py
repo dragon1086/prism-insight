@@ -105,6 +105,80 @@ def test_verified_restore_and_exact_commit_no_settings_upload(payload, monkeypat
     assert (root / '.receive.lock').stat().st_mode & 0o077 == 0
 
 
+def test_retained_archive_restores_database_and_exact_code(payload, monkeypatch):
+    path, needed, manifest, _ = payload
+    monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=100 * archive.CAP))
+    root, output = path / 'remote', path / 'replays'
+    ack = archive.receive(transfer(path), root, needed)
+    with pytest.raises(ValueError, match='restore_root_overlap'):
+        archive.restore_archive(root, ack['archive'], root / 'unsafe-replay')
+    assert not (root / 'unsafe-replay').exists()
+    result = archive.restore_archive(root, ack['archive'], output)
+    restored = Path(result['directory'])
+    assert result['status'] == 'VERIFIED' and result['raw_sha256'] == manifest['raw_sha256']
+    assert restored.stat().st_mode & 0o077 == 0
+    assert (restored / 'snapshot.sqlite').stat().st_mode & 0o077 == 0
+    with sqlite3.connect(restored / 'snapshot.sqlite') as conn:
+        assert conn.execute('SELECT COUNT(*) FROM llm_scenario_audit_manifests').fetchone()[0] == 1
+    assert git(restored / 'history.git', 'cat-file', '-e', result['source_head'] + '^{commit}') == ''
+    assert (root / ack['archive'] / 'receipt.json').is_file()
+    with pytest.raises(ValueError, match='restore_already_present'):
+        archive.restore_archive(root, ack['archive'], output)
+    (root / ack['archive'] / 'snapshot.sqlite.gz').write_bytes(b'tampered')
+    with pytest.raises(ValueError, match='restore_archive_checksum_mismatch'):
+        archive.restore_archive(root, ack['archive'], path / 'another-replay')
+    assert (root / ack['archive'] / 'receipt.json').is_file()
+
+
+def test_embedded_remote_restore_preserves_verified_archive(payload, monkeypatch):
+    import shlex
+    path, needed, manifest, _ = payload
+    monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=100 * archive.CAP))
+    root, output = path / 'remote', path / 'replays'
+    ack = archive.receive(transfer(path), root, needed)
+    real_run = subprocess.run
+    def local_ssh(args, **kwargs):
+        if args[0] != '/usr/bin/ssh':
+            return real_run(args, **kwargs)
+        command = shlex.split(args[-1])
+        code = command[2].replace('/root/prism-btc-archive', str(root)).replace('/root/prism-btc-replays', str(output))
+        return real_run([os.sys.executable, '-I', '-c', code], **kwargs)
+    monkeypatch.setattr(archive.subprocess, 'run', local_ssh)
+    result = json.loads(archive.ssh_archive('fixture.local', 0, restore=ack['archive']).stdout)
+    assert result['status'] == 'VERIFIED' and result['raw_sha256'] == manifest['raw_sha256']
+    assert (Path(result['directory']) / 'snapshot.sqlite').is_file()
+    with pytest.raises(ValueError, match='invalid_restore_request'):
+        archive.ssh_archive('fixture.local', 0, restore='../bad')
+
+
+def test_replay_restore_cleans_staging_when_disk_reserve_is_lost(payload, monkeypatch):
+    path, needed, _, _ = payload
+    monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=100 * archive.CAP))
+    root, output = path / 'remote', path / 'replays'
+    ack = archive.receive(transfer(path), root, needed)
+    calls = iter((100 * archive.CAP, archive.RESERVE - 1))
+    monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=next(calls)))
+    with pytest.raises(OSError, match='snapshot_restore_space_reserve_lost'):
+        archive.restore_archive(root, ack['archive'], output)
+    assert not list(output.glob('.restoring-*')) and not list(output.glob('restore-*'))
+    assert (root / ack['archive'] / 'receipt.json').is_file()
+
+
+def test_replay_restore_command_reports_status_without_private_errors(monkeypatch, capsys):
+    from tools import restore_btc_replay_archive as runner
+    name = 'archive-' + 'a' * 32
+    monkeypatch.setattr(runner, 'backend_host', lambda _: 'fixture.local')
+    monkeypatch.setattr(runner, 'ssh_archive', lambda host, needed, restore: SimpleNamespace(
+        stdout=json.dumps({'status': 'VERIFIED', 'directory': '/fixture', 'source_head': 'b' * 40}).encode()))
+    assert runner.main([name]) == 0
+    assert json.loads(capsys.readouterr().out)['status'] == 'VERIFIED'
+    def fail(*args, **kwargs):
+        raise ValueError('private fixture data')
+    monkeypatch.setattr(runner, 'ssh_archive', fail)
+    assert runner.main([name]) == 1
+    assert json.loads(capsys.readouterr().out) == {'status': 'ERROR', 'error_type': 'ValueError'}
+
+
 def test_captured_references_avoid_sender_restore_but_receiver_verifies(payload, monkeypatch):
     from utils.sqlite_snapshot import backup_database
 
@@ -142,6 +216,45 @@ def test_captured_references_avoid_sender_restore_but_receiver_verifies(payload,
     manifest_path.write_text(json.dumps(damaged))
     with pytest.raises(ValueError, match='archive_reference_coverage_mismatch'):
         archive.archive(repo, snapshot, path / 'unused-config')
+
+
+def test_standalone_receiver_recomputes_retention_index(payload, monkeypatch):
+    import shlex
+    from utils.sqlite_snapshot import backup_database
+
+    path, _, _, repo = payload
+    source = path / 'retention.sqlite'
+    ctx = {'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
+           'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False}
+    with sqlite3.connect(source) as conn:
+        conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
+                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,context TEXT,proposal TEXT,outcome TEXT,snapshot TEXT DEFAULT "{}");')
+        conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (1, '{"kind":"WAIT"}'))
+        conn.execute('INSERT INTO llm_scenario_decisions(slot,context,proposal,outcome) VALUES(?,?,?,?)',
+                     (1, json.dumps(ctx), json.dumps({'action': 'WAIT'}), json.dumps({'status': 'wait'})))
+    snapshot = path / 'retention.sqlite.gz'
+    manifest = backup_database(source, snapshot, reserve_bytes=0, capture_references=True)
+    assert len(manifest['btc_retention_index']['candidates']) == 1
+    root = path / 'embedded-remote'
+    original_run = archive.subprocess.run
+    def local_ssh(args, **kwargs):
+        if args[0] != '/usr/bin/ssh':
+            return original_run(args, **kwargs)
+        command = shlex.split(args[-1])
+        assert command[:2] == ['/usr/bin/python3', '-c']
+        code = command[2].replace('/root/prism-btc-archive', str(root))
+        return original_run([os.sys.executable, '-I', '-c', code], **kwargs)
+    monkeypatch.setattr(archive.subprocess, 'run', local_ssh)
+    monkeypatch.setattr(archive, 'backend_host', lambda _: 'fixture')
+    ack = archive.archive(repo, snapshot, path / 'unused-config')
+    assert ack['retention_index_verified'] is True
+    manifest_path = Path(str(snapshot) + '.manifest.json')
+    altered = json.loads(manifest_path.read_text())
+    altered['btc_retention_index']['candidates'][0]['tape_sha256'] = '0' * 64
+    manifest_path.write_text(json.dumps(altered))
+    with pytest.raises(subprocess.CalledProcessError):
+        archive.archive(repo, snapshot, path / 'unused-config')
+    assert (root / ack['archive'] / 'receipt.json').is_file()
 
 
 @pytest.mark.parametrize('fault', ['checksum', 'partial', 'env', 'raw_hash', 'understated_space', 'missing_ref'])
