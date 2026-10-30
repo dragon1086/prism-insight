@@ -458,3 +458,33 @@ def test_real_runtime_guard_blocks_active_and_unresolved_intent(tmp_path, monkey
     conn.execute("UPDATE llm_scenario_intents SET status='TERMINAL'")
     conn.commit()
     assert apply()['updated'] == 1
+
+
+def test_bounded_runner_recognizes_valid_end_and_reports_transport_uncertainty():
+    import subprocess
+    from tools.btc_account_compaction import run_bounded_batches
+    def planner(proof, cutoff, *, after_rowid):
+        return {'source_identity':'a'*64, 'backup_proof_sha256':'b'*64, 'cutoff':cutoff,
+                'after_rowid':after_rowid, 'rows':[] if after_rowid else [{'rowid':1}]}
+    def apply(manifest, seal, proof_sha):
+        return {'status':'COMMITTED','manifest_sha256':seal,'updated':1,'unchanged':0,'saved_bytes':10}
+    result = run_bounded_batches('proof', 3, planner, apply)
+    assert result['status'] == 'COMPLETE' and result['after_rowid'] == 1 and result['batches'] == 1
+    def timed_out(*args):
+        raise subprocess.TimeoutExpired('ssh', 25)
+    result = run_bounded_batches('proof', 3, planner, timed_out)
+    assert result['status'] == 'ERROR' and result['error_type'] == 'TimeoutExpired' and result['after_rowid'] == 0
+
+
+def test_bounded_runner_stops_before_next_batch_when_deadline_expires(monkeypatch):
+    import time
+    from tools.btc_account_compaction import run_bounded_batches
+    readings = iter([100.,101.,121.])
+    monkeypatch.setattr(time, 'monotonic', lambda: next(readings))
+    def planner(proof, cutoff, *, after_rowid):
+        return {'source_identity':'a'*64, 'backup_proof_sha256':'b'*64, 'cutoff':cutoff,
+                'after_rowid':after_rowid, 'rows':[{'rowid':after_rowid+1}]}
+    def apply(manifest, seal, proof_sha):
+        return {'status':'COMMITTED','manifest_sha256':seal,'updated':1,'unchanged':0,'saved_bytes':10}
+    result = run_bounded_batches('proof', 3, planner, apply)
+    assert result['status'] == 'DEADLINE_REACHED' and result['after_rowid'] == 1
