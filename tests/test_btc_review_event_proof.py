@@ -120,6 +120,21 @@ def test_snapshot_index_is_bounded_and_does_not_skip_candidates(monkeypatch):
     assert sum(len(json.dumps(item, sort_keys=True, separators=(',', ':')).encode()) for item in bounded['items']) <= 2500
     next_page = snapshot_event_index(conn, now, after_slot=bounded['last_scanned_slot'])
     assert next_page['items'][0]['candidate']['slot'] == bounded['last_scanned_slot'] + 1
+    monkeypatch.setattr(proof_module, 'MAX_INDEX_BYTES', 700_000)
+    def worst_case(_conn, slot):
+        return {'slot': slot,
+                'events': [{'rowid': slot * 1000 + seq, 'sequence': seq, 'sha256': 'f' * 64} for seq in range(128)],
+                'recovery': [{'event_id': str(i).zfill(128), 'kind': 'x' * 80, 'sha256': 'e' * 64} for i in range(16)]}
+    monkeypatch.setattr(proof_module, 'event_proof', worst_case)
+    dense = snapshot_event_index(conn, now)
+    assert dense['truncated'] and 0 < len(dense['items']) < 400
+    assert sum(len(json.dumps(item, sort_keys=True, separators=(',', ':')).encode()) for item in dense['items']) <= 700_000
+    base = [{'slot': n, 'rowid': n, 'tape_sha256': 'a' * 64, 'decision_sha256': 'b' * 64}
+            for n in range(1, 2001)]
+    manifest = {'btc_review_event_proof_index': dense, 'btc_retention_index': {'candidates': base}}
+    assert len(json.dumps(manifest, indent=2).encode()) < 4 * 1024 * 1024
+    resumed = snapshot_event_index(conn, now, after_slot=dense['last_scanned_slot'])
+    assert resumed['items'][0]['candidate']['slot'] == dense['last_scanned_slot'] + 1
     conn.rollback()
 
 
@@ -299,7 +314,7 @@ def test_event_delivery_lookup_is_read_only_and_bounded(monkeypatch):
     monkeypatch.setattr(btc_offsite_archive, 'backend_host', lambda _: 'fixture.local')
     def execute(command, **kwargs):
         calls.append(command)
-        assert event_id in kwargs['input'] and 'readonly' in kwargs['input'] and 'LIMIT 257' in kwargs['input']
+        assert event_id in kwargs['input'] and 'readonly' in kwargs['input'] and 'LIMIT 1025' in kwargs['input']
         return SimpleNamespace(stdout=json.dumps(response) + '\n')
     monkeypatch.setattr(proof_module.subprocess, 'run', execute)
     assert proof_module.fetch_event_deliveries(proof, identity) == [response]
@@ -543,7 +558,7 @@ def test_cleanup_batches_delivery_queries_without_mixing_slots(tmp_path, monkeyp
     monkeypatch.setattr(retention, 'locked_remote_archive', locked)
     result = proof_module.cleanup_events(tmp_path, now=700000)
     assert result['status'] == 'COMPLETE' and result['removed_events'] == 140
-    assert calls == [('tape', 2), ('events', 128), ('events', 12)]
+    assert calls == [('tape', 2), ('events', 140)]
 
 
 @pytest.mark.parametrize('change', ['cancel', 'renewal', 'missing_entries', 'stop', 'side', 'missing_version'])
@@ -590,8 +605,9 @@ def test_normalized_v1_wait_can_omit_fields_removed_by_wire_validator():
 
 
 @pytest.mark.parametrize('slots,event_count,expected_slots,expected_calls,expected_status', [
-    (288, 5, 288, 15, 'COMPLETE'),
-    (50, 128, 47, 48, 'BUDGET_LIMIT'),
+    (288, 5, 288, 6, 'COMPLETE'),
+    (190, 128, 184, 48, 'BUDGET_LIMIT'),
+    (190, 128, 0, 48, 'ERROR'),
 ])
 def test_daily_cleanup_capacity_and_query_cap(tmp_path, monkeypatch, slots, event_count, expected_slots,
                                               expected_calls, expected_status):
@@ -622,9 +638,12 @@ def test_daily_cleanup_capacity_and_query_cap(tmp_path, monkeypatch, slots, even
         return []
     def events(proof, source_identity):
         calls.append(('events', len(proof['events'])))
+        if expected_status == 'ERROR' and len(calls) == expected_calls:
+            raise OSError('simulated delivery failure')
         return [{'event_id': hashlib.sha256(f'{source_identity}:llm_scenario_review_events:{event["rowid"]}'.encode()).hexdigest()[:32]}
                 for event in proof['events']]
     def delete(_conn, _export, item, _tapes, deliveries, source_identity, _now, **_kwargs):
+        assert expected_status != 'ERROR'
         assert len(deliveries) == len(item['proof']['events'])
         return {'status': 'REMOVED', 'events': len(deliveries)}
     @contextmanager
@@ -635,6 +654,11 @@ def test_daily_cleanup_capacity_and_query_cap(tmp_path, monkeypatch, slots, even
     monkeypatch.setattr(proof_module, 'fetch_event_deliveries', events)
     monkeypatch.setattr(proof_module, 'delete_confirmed_slot', delete)
     monkeypatch.setattr(retention, 'locked_remote_archive', locked)
+    if expected_status == 'ERROR':
+        with pytest.raises(OSError, match='simulated delivery failure'):
+            proof_module.cleanup_events(tmp_path, now=700000)
+        assert len(calls) == expected_calls <= 48 and not saved
+        return
     result = proof_module.cleanup_events(tmp_path, now=700000)
     assert result['status'] == expected_status and result['removed_slots'] == expected_slots
     assert len(calls) == expected_calls <= 48
@@ -706,7 +730,7 @@ def test_daily_capacity_uses_real_transactions_without_skipping_anchor(tmp_path,
     monkeypatch.setattr(retention, 'locked_remote_archive', locked)
     result = proof_module.cleanup_events(tmp_path, now=now)
     assert result['status'] == 'DEFERRED' and result['removed_slots'] == 288 and result['removed_events'] == 1440
-    assert len(calls) == 15
+    assert len(calls) == 6
     with sqlite3.connect(source_path) as conn:
         assert conn.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(289,)]
         assert conn.execute('SELECT count(*) FROM llm_scenario_review_events').fetchone() == (5,)

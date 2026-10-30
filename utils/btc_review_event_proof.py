@@ -26,6 +26,7 @@ MAX_SLOTS = 400
 MAX_SCANNED = 2000
 MAX_INDEX_BYTES = 700_000
 MAX_DELIVERY_QUERIES = 48
+MAX_QUERY_EVENTS = 512
 
 
 def _digest(text):
@@ -223,7 +224,7 @@ def fetch_event_deliveries(proof, source_identity):
     """Read only the bounded event IDs needed for one archived slot."""
     if (not isinstance(source_identity, str) or not re.fullmatch('[a-f0-9]{64}', source_identity)
             or not isinstance(proof, dict) or not isinstance(proof.get('events'), list)
-            or not 1 <= len(proof['events']) <= MAX_EVENTS):
+            or not 1 <= len(proof['events']) <= MAX_QUERY_EVENTS):
         raise ValueError('event_delivery_query_invalid')
     rowids = [row.get('rowid') if isinstance(row, dict) else None for row in proof['events']]
     if any(type(rowid) is not int or rowid <= 0 for rowid in rowids) or len(set(rowids)) != len(rowids):
@@ -238,7 +239,7 @@ def fetch_event_deliveries(proof, source_identity):
            "JSONExtractInt(Body,'attributes','source_sequence') AS source_sequence, "
            "JSONExtractInt(Body,'attributes','decision_slot') AS decision_slot "
            "FROM otel_logs WHERE LogAttributes['event.name']='btc.research.review' "
-           "AND JSONExtractString(Body,'event_id') IN {ids:Array(String)} LIMIT 257")
+           "AND JSONExtractString(Body,'event_id') IN {ids:Array(String)} LIMIT 1025")
     from pathlib import Path
     from tools.clickstack_query import build_program
     from utils.btc_offsite_archive import backend_host
@@ -250,7 +251,7 @@ def fetch_event_deliveries(proof, source_identity):
                             input=build_program(sql, {'ids': ids}), text=True, capture_output=True,
                             check=True, timeout=45)  # nosec B603  # nosemgrep
     rows = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
-    if len(rows) > 256 or any(not isinstance(row, dict) or row.get('event_id') not in ids for row in rows):
+    if len(rows) > 1024 or any(not isinstance(row, dict) or row.get('event_id') not in ids for row in rows):
         raise ValueError('event_delivery_query_invalid')
     return rows
 
@@ -482,7 +483,7 @@ def cleanup_events(backup_dir, *, now=None):
             if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_EVENTS:
                 raise ValueError('event_delivery_query_invalid')
             next_usable, next_events = len(usable) + 1, event_count + len(rows)
-            query_count = (next_usable + 99) // 100 + (next_events + MAX_EVENTS - 1) // MAX_EVENTS
+            query_count = (next_usable + 99) // 100 + (next_events + MAX_QUERY_EVENTS - 1) // MAX_QUERY_EVENTS
             if query_count > MAX_DELIVERY_QUERIES:
                 break
             usable.append(item)
@@ -505,8 +506,8 @@ def cleanup_events(backup_dir, *, now=None):
     if any(type(rowid) is not int or rowid <= 0 for rowid in rowids) or len(set(rowids)) != len(rowids):
         raise ValueError('event_delivery_query_invalid')
     deliveries = []
-    for start in range(0, len(events), MAX_EVENTS):
-        deliveries.extend(fetch_event_deliveries({'events': events[start:start + MAX_EVENTS]}, identity))
+    for start in range(0, len(events), MAX_QUERY_EVENTS):
+        deliveries.extend(fetch_event_deliveries({'events': events[start:start + MAX_QUERY_EVENTS]}, identity))
     by_id = {}
     for receipt in deliveries:
         by_id.setdefault(receipt['event_id'], []).append(receipt)
