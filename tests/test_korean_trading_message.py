@@ -165,3 +165,13 @@ def test_stored_skip_reason_keeps_the_ai_reason():
     assert stored_skip_reason("점수 부족 (5/6)", {}) == "점수 부족 (5/6)"
     assert stored_skip_reason("점수 부족 (5/6)", None) == "점수 부족 (5/6)"
     assert stored_skip_reason(None, {"rejection_reason": " "}) == "기타"
+
+
+def test_hold_reason_display_does_not_repeat_a_stored_ai_reason():
+    # BTSG 2026-10-30: the US tracker passes the stored skip_reason (already "— AI 사유: ...") with the scenario
+    from messaging.korean_trading_message import hold_reason_display, stored_skip_reason
+    scenario = {"rejection_reason": "R/R floor 미달: 손익비 0.9로 기준 1.3에 미달합니다. 저항이 가깝습니다."}
+    stored = stored_skip_reason("AI judgment: no_entry", scenario)
+    shown = hold_reason_display(stored, scenario)
+    assert shown == "AI 판단: no_entry — AI 사유: " + scenario["rejection_reason"]
+    assert shown.count("R/R floor") == 1

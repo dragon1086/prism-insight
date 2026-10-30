@@ -163,7 +163,9 @@ def hold_reason_display(reason, scenario=None, limit=100):
         text = text.replace(english, korean)
     rejection = (scenario or {}).get('rejection_reason') if isinstance(scenario, dict) else None
     short = _first_sentence(rejection, limit) if isinstance(rejection, str) else ''
-    if not short:
+    # A stored_skip_reason() text already carries the AI reason; injecting it again split "R/R" at its
+    # slash (BTSG hold message, 2026-10-30).
+    if not short or short in text or 'AI 사유:' in text:
         return text
     if _AI_PART.search(text):
         return _AI_PART.sub(lambda m: f'{m[1].rstrip()} — {short}{m[2]}', text, count=1)
