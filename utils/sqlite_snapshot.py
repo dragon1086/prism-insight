@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
+import ctypes
+import errno
 import gzip
 import hashlib
 import json
@@ -16,6 +18,52 @@ import sys
 import tempfile
 import time
 import zlib
+
+
+class _SparseSnapshot:
+    """Release zero blocks only between SQLite backup steps."""
+    def __init__(self, path):
+        self.fd = None
+        self.offset = 0
+        self.punch = None
+        if sys.platform != 'linux' or os.statvfs(path).f_frsize != 4096:
+            return
+        try:
+            self.punch = ctypes.CDLL(None, use_errno=True).fallocate
+            self.punch.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong)
+        except (AttributeError, OSError):
+            return
+        self.fd = os.open(path, os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0))
+
+    def scan(self):
+        if self.fd is None:
+            return
+        end = os.fstat(self.fd).st_size
+        zero = bytes(4096)
+        while self.offset + 4096 <= end:
+            data = os.pread(self.fd, min(1024 * 1024, end - self.offset), self.offset)
+            if len(data) < 4096:
+                raise OSError('snapshot_sparse_short_read')
+            blocks = len(data) // 4096
+            start = None
+            for index in range(blocks + 1):
+                empty = index < blocks and data[index * 4096:(index + 1) * 4096] == zero
+                if empty and start is None:
+                    start = index
+                if not empty and start is not None:
+                    if self.punch(self.fd, 3, self.offset + start * 4096, (index - start) * 4096):
+                        error = ctypes.get_errno()
+                        if error in (errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP):
+                            self.close()
+                            return
+                        raise OSError(error, 'snapshot_sparse_punch_failed')
+                    start = None
+            self.offset += blocks * 4096
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
 
 
 def _hash_stream(stream, deadline):
@@ -119,7 +167,12 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
         with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)) as src:
             src.execute("PRAGMA query_only=ON")
             with closing(sqlite3.connect(raw)) as dst:
-                src.backup(dst, pages=256, progress=progress, sleep=0.05)
+                with closing(_SparseSnapshot(raw)) as sparse:
+                    def copy_progress(status, remaining, total):
+                        progress(status, remaining, total)
+                        sparse.scan()
+                        progress(status, remaining, total)
+                    src.backup(dst, pages=256, progress=copy_progress, sleep=0.05)
                 progress(None, None, None)
                 logging.getLogger(__name__).info('snapshot_stage=integrity')
                 dst.execute("PRAGMA journal_mode=DELETE")
