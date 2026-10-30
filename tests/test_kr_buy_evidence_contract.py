@@ -127,6 +127,9 @@ def test_sell_factory_matches_reviewed_volume_prompt():
     # on_entry_session); stop_loss and -7% still apply on the entry day. KR/US x ko/en say the same.
     # 2026-10-30 reviewed: wording only — "applies from the next trading day" replaces "before the first close"
     # (the pre-close check runs before the close, so the rule first applies on the next session). No rule change.
+    # 2026-10-30 reviewed (user decision after LLY was sold on yesterday's close against a line from today's peak): the
+    # afternoon review's price counts as today's close (as the afternoon screening assumes) for Tier 2 trailing and
+    # Tier 3, using the facts block's today bar; the morning review never sells on a trailing breach. KR/US x ko/en.
     source = SOURCE.read_text(encoding="utf-8")
     node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "create_sell_decision_agent")
-    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "1cfe184964744e87526a0bf140e413aca3bf65fc475bbc85807ab647f298b965"
+    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "59d653910e76ae04344081ff69b17213b379786ed8eab88eeeaaa528f570e5dc"
