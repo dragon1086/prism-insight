@@ -116,12 +116,29 @@ def compact(raw_tape, snapshot, context, event_bodies):
                 "event", sequence, op["event"], event_bodies[sequence]
             )
             sequence += 1
-    return {
+    bundle = {
         "version": 1,
         "tape": tape,
         "references": refs,
         "tape_sha256": sha(raw_tape),
     }
+    model_events = [json.loads(value) for value in event_bodies[:sequence]]
+    for op in tape['operations']:
+        if op.get('kind') != 'generate' or not isinstance(op.get('request'), dict) or not isinstance(op.get('text'), str):
+            continue
+        matches = [(index, event) for index, event in enumerate(model_events)
+                   if isinstance(event, dict) and event.get('kind') == 'MODEL_RAW'
+                   and isinstance(event.get('actual_request'), dict)
+                   and canonical(event['actual_request']) == canonical(op['request']) and event.get('raw') == op['text']]
+        if len(matches) != 1:
+            continue
+        index, event = matches[0]
+        op['request'] = {'$btc_model_ref': {'sequence': index, 'order': order_recipe(op['request']),
+                         'request_sha256': sha(canonical(event['actual_request'])),
+                         'response_sha256': sha(event['raw'])}}
+        op['text'] = {'$btc_model_ref': index}
+        bundle['version'] = 2
+    return bundle
 
 
 def restore(bundle, snapshot, context, event_bodies):
