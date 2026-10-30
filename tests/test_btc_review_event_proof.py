@@ -54,6 +54,10 @@ def test_duplicate_recovery_and_event_bound_fail_closed():
     with pytest.raises(ValueError, match='proof_recovery_identity_invalid'):
         event_proof(conn, 1)
     conn.execute('DELETE FROM llm_scenario_recovery_events')
+    conn.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?)', ('x' * 129, 1, 'OTHER', '{}'))
+    with pytest.raises(ValueError, match='proof_recovery_identity_invalid'):
+        event_proof(conn, 1)
+    conn.execute('DELETE FROM llm_scenario_recovery_events')
     conn.executemany('INSERT INTO llm_scenario_review_events VALUES(?,?,?)',
                      [(1, i, '{}') for i in range(1, 129)])
     with pytest.raises(ValueError, match='proof_event_count_invalid'):

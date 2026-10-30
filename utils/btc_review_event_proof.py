@@ -60,8 +60,8 @@ def event_proof(conn, slot):
         raise ValueError('proof_recovery_count_invalid')
     recovery, seen = [], set()
     for event_id, kind, stored in rows:
-        if (not isinstance(event_id, str) or not event_id or event_id in seen
-                or not isinstance(kind, str) or not kind):
+        if (not isinstance(event_id, str) or not 1 <= len(event_id) <= 128 or event_id in seen
+                or not isinstance(kind, str) or not 1 <= len(kind) <= 80):
             raise ValueError('proof_recovery_identity_invalid')
         seen.add(event_id)
         text = read_recovery(stored, conn, slot, decode_legacy=review_text, expected_kind=kind)
@@ -114,8 +114,8 @@ def delivered_event_proof(current, archived, deliveries, source_identity):
     recovery_ids = []
     for item in recovery:
         if (not isinstance(item, dict) or set(item) != {'event_id', 'kind', 'sha256'}
-                or not isinstance(item['event_id'], str) or not item['event_id']
-                or not isinstance(item['kind'], str) or not item['kind']
+                or not isinstance(item['event_id'], str) or not 1 <= len(item['event_id']) <= 128
+                or not isinstance(item['kind'], str) or not 1 <= len(item['kind']) <= 80
                 or not isinstance(item['sha256'], str) or not re.fullmatch('[a-f0-9]{64}', item['sha256'])):
             return False
         recovery_ids.append(item['event_id'])
