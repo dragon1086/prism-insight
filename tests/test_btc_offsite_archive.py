@@ -466,6 +466,18 @@ def test_sparse_retained_archive_restore_checks_output_filesystem(payload, monke
     result = archive.restore_archive(root, ack['archive'], output)
     assert probes == [root, output]
     assert archive.digest(Path(result['directory']) / 'snapshot.sqlite') == manifest['raw_sha256']
+    with monkeypatch.context() as limited:
+        limited.setattr(archive, '_sparse_raw_bound', lambda raw, empty: 1)
+        bundle_bytes = (root / ack['archive'] / archive.FILES[2]).stat().st_size
+        limited.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(
+            free=archive.RESERVE + 1 + 4 * bundle_bytes + 1024**2))
+        def reached_restore(*args, **kwargs):
+            assert kwargs['expected_zero_bytes'] == zero
+            raise RuntimeError('sparse_preflight_passed')
+        limited.setattr(archive, 'restore_snapshot', reached_restore)
+        with pytest.raises(RuntimeError, match='sparse_preflight_passed'):
+            archive.restore_archive(root, ack['archive'], path / 'limited-replay')
+        assert not list((path / 'limited-replay').glob('.restoring-*'))
     def unsupported(_):
         raise ValueError('sparse_filesystem_unsupported')
     monkeypatch.setattr(archive, '_require_sparse', unsupported)
