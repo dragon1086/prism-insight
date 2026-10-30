@@ -1,7 +1,6 @@
 """Repo-root pytest configuration.
 
-Its ONE job today is to make it impossible for a test run to emit a real
-trading signal.
+It isolates test trading signals and the default observability spool.
 
 Background: the trading agents (and the publisher modules themselves) call
 ``load_dotenv()`` at import time, so importing one inside a test hands the
@@ -32,6 +31,8 @@ from messaging.publish_guard import DISABLE_ENV_VAR
 # Set at import time — before pytest imports a single test module, and before
 # any of them can import a trading agent and trigger load_dotenv().
 os.environ[DISABLE_ENV_VAR] = "1"
+# Test fixtures must never enter the shared ClickStack spool during collection or execution.
+os.environ["PRISM_OBSERVABILITY_SPOOL"] = os.devnull
 # Never write the runtime eligibility cache or reach KIS from the default test run;
 # tests that exercise either opt in explicitly.
 os.environ.setdefault("US_ELIGIBILITY_CACHE_PATH", "")
