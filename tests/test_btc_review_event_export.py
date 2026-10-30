@@ -329,15 +329,19 @@ def test_referenced_tape_restores_export_anchor_and_fails_on_missing_source(lane
 
     snapshot = {'z': 1, 'a': {'second': 2, 'first': 1}}
     context = {'input_id': 'fixture'}
-    event = {'kind': 'MODEL_RAW', 'raw': 'private fixture'}
+    request = {'system_prompt': 'private fixture', 'schema': {'z': 1, 'a': 2}}
+    event = {'kind': 'MODEL_RAW', 'actual_request': request, 'raw': 'private fixture'}
     inputs = {'snapshot': snapshot, 'context': context, 'bindings': {}}
     body = {'version': 1, 'inputs': inputs, 'inputs_sha256': tape_digest(inputs), 'calls': 0,
-            'operations': [{'kind': 'record', 'event': event}],
+            'operations': [{'kind': 'generate', 'request': request, 'text': 'private fixture'},
+                           {'kind': 'record', 'event': event}],
             'outcome': {'status': 'COMPLETE', 'result': {}}}
     body['sha256'] = tape_digest(body)
     original = json.dumps(body)
     snapshot_text, context_text, event_text = map(canonical, (snapshot, context, event))
-    packed = pack(compact(original, snapshot_text, context_text, [event_text]))
+    bundle = compact(original, snapshot_text, context_text, [event_text])
+    assert bundle['version'] == 2
+    packed = pack(bundle)
     create_review(lane[0])
     with sqlite3.connect(lane[0]) as conn:
         conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)',

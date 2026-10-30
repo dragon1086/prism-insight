@@ -624,9 +624,11 @@ def test_archive_resolves_reference_tape_without_losing_revision_coverage(tmp_pa
 
     raw = tmp_path / 'references.sqlite'
     snapshot, context = {'z': 1, 'a': 2}, {'input_id': 'fixture'}
-    event = {'kind': 'MODEL_RAW', 'source_commit': 'b' * 40}
+    request = {'system_prompt': 'fixture', 'schema': {'z': 1, 'a': 2}}
+    event = {'kind': 'MODEL_RAW', 'source_commit': 'b' * 40, 'actual_request': request, 'raw': 'response'}
     tape = {'inputs': {'snapshot': snapshot, 'context': context},
-            'operations': [{'kind': 'record', 'event': event}]}
+            'operations': [{'kind': 'generate', 'request': request, 'text': 'response'},
+                           {'kind': 'record', 'event': event}]}
     text = json.dumps(tape)
     s, c, e = map(canonical, (snapshot, context, event))
     with sqlite3.connect(raw) as db:
@@ -637,8 +639,10 @@ def test_archive_resolves_reference_tape_without_losing_revision_coverage(tmp_pa
         db.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 0, e))
         db.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (1, text))
     original = archive.referenced_commits(raw)
+    bundle = compact(text, s, c, [e])
+    assert bundle['version'] == 2
     with sqlite3.connect(raw) as db:
-        db.execute('UPDATE llm_scenario_review_tapes SET body=?', (pack(compact(text, s, c, [e])),))
+        db.execute('UPDATE llm_scenario_review_tapes SET body=?', (pack(bundle),))
     assert archive.referenced_commits(raw) == original
     reference_source = Path(archive.__file__).with_name('btc_review_references.py').read_text()
     receiver_source = Path(archive.__file__).read_text()

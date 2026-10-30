@@ -219,6 +219,21 @@ def test_tampered_complete_tape_fails_before_intent(tmp_path):
     assert r.conn.execute("SELECT COUNT(*) FROM llm_scenario_intents").fetchone()[0] == 0
 
 
+def test_runtime_wait_writes_model_reference_with_replayable_evidence(tmp_path):
+    from utils.btc_review_references import read_tape, unpack
+
+    r, broker, calls = runtime(tmp_path, empty=True)
+    assert r.tick()['status'] == 'wait'
+    assert len(calls) == 1 and broker.executed == []
+    slot, body = r.conn.execute('SELECT slot,body FROM llm_scenario_review_tapes').fetchone()
+    assert unpack(body)['version'] == 2
+    tape = json.loads(read_tape(body, r.conn, slot, decode_legacy=review_text))
+    assert tape['outcome']['status'] == 'COMPLETE'
+    r.conn.execute('DELETE FROM llm_scenario_review_events WHERE slot=?', (slot,))
+    with pytest.raises(ValueError):
+        read_tape(body, r.conn, slot, decode_legacy=review_text)
+
+
 def test_no_candidate_wait_has_one_call_and_no_intent(tmp_path):
     r, broker, calls = runtime(tmp_path, empty=True)
     assert r.tick()["status"] == "wait"
