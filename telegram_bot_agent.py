@@ -99,9 +99,10 @@ class TelegramBotAgent:
                 raise
             return False
         except TelegramError as e:
-            logger.error(f"Telegram message send failed ({parse_mode}): {e}")
-            # If error occurs, retry with plain text (for parse errors)
-            if isinstance(e, BadRequest) and parse_mode and "parse" in str(e).lower():
+            # A Markdown parse rejection is retried as plain text below, so it is not a failure yet.
+            retry_plain = isinstance(e, BadRequest) and parse_mode and "parse" in str(e).lower()
+            (logger.warning if retry_plain else logger.error)(f"Telegram message send failed ({parse_mode}): {e}")
+            if retry_plain:
                 try:
                     logger.info("Retrying with plain text.")
                     result = await send_message_once_or_rate_retry(

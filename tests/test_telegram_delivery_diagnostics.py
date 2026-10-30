@@ -115,3 +115,16 @@ async def test_bot_agent_resends_only_broadcast_sends(isolated_spool):
     agent.bot = SimpleNamespace(send_message=AsyncMock(side_effect=[TimedOut("x"), sent]))
     assert await agent.send_message(1, "t") is False
     assert agent.bot.send_message.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_markdown_parse_rejection_retried_as_plain_text_is_a_warning(isolated_spool, caplog):
+    # US afternoon es/en summaries, 2026-10-30 03:46: plain-text retry delivered, alert was noise.
+    from telegram.error import BadRequest
+    from telegram_bot_agent import TelegramBotAgent
+
+    agent = TelegramBotAgent.__new__(TelegramBotAgent)
+    agent.bot = SimpleNamespace(send_message=AsyncMock(side_effect=[
+        BadRequest("Can't parse entities: can't find end of the entity"), SimpleNamespace(message_id=7)]))
+    assert await agent.send_message(1, "*t") is True
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]
