@@ -169,7 +169,8 @@ def guarded_operational_batch(conn, manifest, expected_manifest_sha, expected_ba
     if manifest.get('source_identity') != identity:
         raise ValueError('source_identity_changed')
     def guard():
-        return resource_guard(source, identity) and _backup_idle(source) and _runtime_safe(conn)
+        return (300 - time.time() % 300 >= 120 and resource_guard(source, identity)
+                and _backup_idle(source) and _runtime_safe(conn))
     with mutation_lock(conn):
         return compact_file_batch(conn, manifest, time.time(), guard)
 

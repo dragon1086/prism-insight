@@ -188,6 +188,8 @@ def test_file_batch_never_waits_or_partially_changes_a_busy_db(tmp_path):
 
 
 def test_operational_wrapper_requires_lock_and_all_guards(tmp_path, monkeypatch):
+    import time
+    monkeypatch.setattr(time, "time", lambda: 1800000100.)
     import contextlib
     from pathlib import Path
     from tools.btc_account_compaction import guarded_operational_batch, manifest_sha256
@@ -368,6 +370,8 @@ def test_bounded_batch_runner_respects_batch_cap_without_waiting():
 
 
 def test_apply_cli_uses_sealed_manifest_and_refuses_unexplicit_invocation(tmp_path, monkeypatch, capsys):
+    import time
+    monkeypatch.setattr(time, "time", lambda: 1800000100.)
     import contextlib
     import io
     import sys
@@ -429,6 +433,8 @@ def test_manifest_transport_bounds_and_validates_ack(monkeypatch):
 
 
 def test_real_runtime_guard_blocks_active_and_unresolved_intent(tmp_path, monkeypatch):
+    import time
+    monkeypatch.setattr(time, "time", lambda: 1800000100.)
     from tools import btc_review_event_compaction as guards
     from tools.btc_account_compaction import guarded_operational_batch, manifest_sha256
     from utils import btc_review_retention as retention
@@ -522,6 +528,8 @@ def test_resuming_a_range_cannot_claim_full_history_completed(monkeypatch):
 
 
 def test_attested_backup_to_guarded_batches_end_to_end(tmp_path, monkeypatch):
+    import time
+    monkeypatch.setattr(time, "time", lambda: 1800000100.)
     from tools import btc_review_event_compaction as guards
     from utils import btc_review_retention as retention
     from tools.btc_account_compaction import plan_attested_accounts, guarded_operational_batch, run_bounded_batches
@@ -584,3 +592,33 @@ def test_compaction_error_rolls_back_instead_of_advancing_as_unchanged(monkeypat
     with pytest.raises(RuntimeError, match='compression failed'):
         compaction.compact_batch(conn, rows, lambda: True)
     assert [row[0] for row in conn.execute('SELECT body FROM llm_scenario_broker_evidence ORDER BY rowid')] == values
+
+
+def test_operational_batch_defers_when_next_tick_is_too_close(tmp_path, monkeypatch):
+    import time
+    from pathlib import Path
+    from tools import btc_review_event_compaction as guards
+    from tools.btc_account_compaction import guarded_operational_batch, manifest_sha256
+    from utils import btc_review_retention as retention
+    import live.shared_entry_coordinator as coordinator
+    import contextlib
+    path = tmp_path/'fixture.sqlite'
+    conn = sqlite3.connect(path, timeout=0)
+    conn.execute('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body)')
+    raw = json.dumps({'detail':'x'*4000})
+    conn.execute("INSERT INTO llm_scenario_broker_evidence VALUES('account',1,?)", (raw,))
+    conn.commit()
+    st = path.stat()
+    identity = hashlib.sha256(f'{path.resolve()}:{st.st_dev}:{st.st_ino}'.encode()).hexdigest()
+    manifest = {'source_identity':identity, 'cutoff':3, 'after_rowid':0, 'backup_proof_sha256':'b'*64,
+                'rows':[{'rowid':1, 'captured_at':1, 'sha256':hashlib.sha256(raw.encode()).hexdigest()}]}
+    monkeypatch.setattr(guards, 'SOURCE', Path(path))
+    monkeypatch.setattr(guards, 'resource_guard', lambda *a: True)
+    monkeypatch.setattr(retention, '_backup_idle', lambda *a: True)
+    monkeypatch.setattr(retention, '_runtime_safe', lambda *a: True)
+    monkeypatch.setattr(coordinator, 'mutation_lock', lambda _: contextlib.nullcontext())
+    monkeypatch.setattr(time, 'time', lambda: 1800000181.)
+    assert guarded_operational_batch(conn, manifest, manifest_sha256(manifest), 'b'*64)['status'] == 'DEFERRED'
+    assert conn.execute('SELECT body FROM llm_scenario_broker_evidence').fetchone()[0] == raw
+    monkeypatch.setattr(time, 'time', lambda: 1800000100.)
+    assert guarded_operational_batch(conn, manifest, manifest_sha256(manifest), 'b'*64)['updated'] == 1
