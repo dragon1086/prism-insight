@@ -5039,45 +5039,46 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     f"— simulator holding preserved, no skip notification"
                 )
                 logger.info(f"Simulator purchase recorded: {company_name} ({ticker}) @ ${current_price:.2f} (KIS order failed)")
-            else:
-                if trade_result.get("partial_success"):
-                    successful = trade_result.get("successful_accounts", [])
-                    failed = trade_result.get("failed_accounts", [])
-                    logger.warning(
-                        f"{ticker} partial success: {len(successful)}/{len(successful) + len(failed)} accounts"
+            elif trade_result.get("partial_success"):
+                successful = trade_result.get("successful_accounts", [])
+                failed = trade_result.get("failed_accounts", [])
+                logger.warning(
+                    f"{ticker} partial success: {len(successful)}/{len(successful) + len(failed)} accounts"
+                )
+
+            # Subscribers mirror the simulator like KR, ADD and SELL; trade_result says what our own order did.
+            if current_price > 0 and ticker not in signaled_tickers:
+                try:
+                    from messaging.redis_signal_publisher import publish_buy_signal
+                    await publish_buy_signal(
+                        ticker=ticker,
+                        company_name=company_name,
+                        price=current_price,
+                        scenario=scenario,
+                        source="AI분석",
+                        trade_result=trade_result,
+                        market="US"
                     )
+                except Exception as signal_err:
+                    logger.warning(f"Buy signal publish failed (non-critical): {signal_err}")
 
-                if ticker not in signaled_tickers:
-                    try:
-                        from messaging.redis_signal_publisher import publish_buy_signal
-                        await publish_buy_signal(
-                            ticker=ticker,
-                            company_name=company_name,
-                            price=current_price,
-                            scenario=scenario,
-                            source="AI분석",
-                            trade_result=trade_result,
-                            market="US"
-                        )
-                    except Exception as signal_err:
-                        logger.warning(f"Buy signal publish failed (non-critical): {signal_err}")
+                try:
+                    from messaging.gcp_pubsub_signal_publisher import publish_buy_signal as gcp_publish_buy_signal
+                    await gcp_publish_buy_signal(
+                        ticker=ticker,
+                        company_name=company_name,
+                        price=current_price,
+                        scenario=scenario,
+                        source="AI분석",
+                        trade_result=trade_result,
+                        market="US"
+                    )
+                except Exception as signal_err:
+                    logger.warning(f"GCP buy signal publish failed (non-critical): {signal_err}")
 
-                    try:
-                        from messaging.gcp_pubsub_signal_publisher import publish_buy_signal as gcp_publish_buy_signal
-                        await gcp_publish_buy_signal(
-                            ticker=ticker,
-                            company_name=company_name,
-                            price=current_price,
-                            scenario=scenario,
-                            source="AI분석",
-                            trade_result=trade_result,
-                            market="US"
-                        )
-                    except Exception as signal_err:
-                        logger.warning(f"GCP buy signal publish failed (non-critical): {signal_err}")
+                signaled_tickers.add(ticker)
 
-                    signaled_tickers.add(ticker)
-
+            if trade_actually_succeeded:
                 logger.info(f"Purchase complete: {company_name} ({ticker}) @ ${current_price:.2f}")
         else:
             state["should_save_watchlist"] = True
