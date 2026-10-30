@@ -128,7 +128,7 @@ def restore(bundle, snapshot, context, event_bodies):
     if not isinstance(bundle, dict):
         raise ValueError("reference_body_invalid")
     obj = copy.deepcopy(bundle)
-    if type(obj.get("version")) is not int or obj["version"] != 1:
+    if type(obj.get("version")) is not int or obj["version"] not in (1, 2):
         raise ValueError("unknown_version")
     if set(obj) != {"version", "tape", "references", "tape_sha256"}:
         raise ValueError("reference_body_invalid")
@@ -164,12 +164,37 @@ def restore(bundle, snapshot, context, event_bodies):
     for name, source in (("snapshot", snapshot), ("context", context)):
         tape["inputs"][name] = deref(tape["inputs"][name], name, None, source)
     sequence = 0
+    model_refs = 0
     for op in tape["operations"]:
         if op.get("kind") == "record":
             if sequence >= len(event_bodies):
                 raise ValueError("missing_event")
             op["event"] = deref(op["event"], "event", sequence, event_bodies[sequence])
             sequence += 1
+        elif obj['version'] == 2 and op.get('kind') == 'generate':
+            request, response = op.get('request'), op.get('text')
+            if isinstance(request, dict) and set(request) == {'$btc_model_ref'}:
+                ref = request['$btc_model_ref']
+                if (not isinstance(ref, dict) or set(ref) != {'sequence', 'order', 'request_sha256', 'response_sha256'}
+                        or type(ref['sequence']) is not int or not 0 <= ref['sequence'] < len(event_bodies)
+                        or response != {'$btc_model_ref': ref['sequence']}):
+                    raise ValueError('invalid_model_reference')
+                source = event_bodies[ref['sequence']]
+                if not isinstance(source, str) or len(source.encode('utf-8')) > MAX_BYTES:
+                    raise ValueError('invalid_reference_source')
+                event = json.loads(source)
+                if (not isinstance(event, dict) or event.get('kind') != 'MODEL_RAW'
+                        or not isinstance(event.get('actual_request'), dict) or not isinstance(event.get('raw'), str)
+                        or sha(canonical(event['actual_request'])) != ref['request_sha256']
+                        or sha(event['raw']) != ref['response_sha256']):
+                    raise ValueError('model_reference_changed')
+                op['request'] = restore_order(event['actual_request'], ref['order'])
+                op['text'] = event['raw']
+                model_refs += 1
+            elif not isinstance(request, dict) or ('text' in op and not isinstance(response, str)):
+                raise ValueError('invalid_model_reference')
+    if obj['version'] == 2 and not model_refs:
+        raise ValueError('missing_model_reference')
     if len(used) != len(refs):
         raise ValueError("unreferenced_metadata")
     result = json.dumps(tape, allow_nan=False)
