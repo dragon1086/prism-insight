@@ -231,6 +231,7 @@ def test_only_exact_b3_readonly_descriptor_can_be_allowed(tmp_path, monkeypatch)
     from utils.btc_review_retention import _backup_idle
 
     monkeypatch.setattr('time.time', lambda: 1800000100.)
+    monkeypatch.setattr(module, '_fresh_b3_idle_health', lambda: True)
     source = tmp_path / 'source.sqlite'
     source.write_bytes(b'fixture')
     proc = tmp_path / 'proc'
@@ -275,6 +276,32 @@ def test_b3_live_window_covers_regular_and_close_decisions(monkeypatch, local_ti
     timestamp = datetime.fromisoformat(local_time).replace(tzinfo=ZoneInfo('America/New_York')).timestamp()
     monkeypatch.setattr('time.time', lambda: timestamp)
     assert _outside_b3_live_window() is allowed
+
+
+def test_b3_health_requires_recent_completed_idle_tick(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from tools import btc_account_compaction as module
+    now = 1800000100.
+    monkeypatch.setattr('time.time', lambda: now)
+    path = tmp_path / 'health.json'
+    monkeypatch.setattr(module, '_B3_HEALTH', str(path))
+    stamp = lambda value: datetime.fromtimestamp(value, timezone.utc).isoformat()
+    good = {'contract': 'b3-ae-worker-v1', 'market': 'US', 'status': 'OUTSIDE_REGULAR_SESSION',
+            'orders_submitted': 0, 'at': stamp(now - 30), 'completed_at': stamp(now - 29)}
+    path.write_text(json.dumps(good))
+    assert module._fresh_b3_idle_health()
+    for update in ({'at': stamp(now - 121)}, {'status': 'COMPLETED'}, {'orders_submitted': 1},
+                   {'completed_at': stamp(now - 31)}, {'at': 'not-a-date'}, {'market': 'KR'}):
+        path.write_text(json.dumps(dict(good, **update)))
+        assert not module._fresh_b3_idle_health()
+    from zoneinfo import ZoneInfo
+    edge = datetime.fromisoformat('2026-10-30T20:05:15').replace(tzinfo=ZoneInfo('America/New_York')).timestamp()
+    monkeypatch.setattr('time.time', lambda: edge)
+    path.write_text(json.dumps(dict(good, at=stamp(edge - 16), completed_at=stamp(edge - 1))))
+    assert not module._fresh_b3_idle_health()
+    path.unlink()
+    path.symlink_to(tmp_path / 'missing')
+    assert not module._fresh_b3_idle_health()
 
 
 def test_b3_reader_exception_requires_wal(tmp_path, monkeypatch):

@@ -164,17 +164,51 @@ def compact_file_batch(conn, manifest, now, guard):
 _B3_LAUNCHER = '/root/.pyenv/versions/3.11.11/bin/python3'
 _B3_INTERPRETER = '/root/.pyenv/versions/3.11.11/bin/python3.11'
 _B3_SCRIPT = '/root/prism-insight/tools/run_b3_ae_shadow.py'
+_B3_HEALTH = '/root/prism-insight/runtime/b3-ae-health-us.json'
 
 
-def _outside_b3_live_window():
+def _outside_b3_live_window(timestamp=None):
     """B3 may send live orders through the US daily-close window as late as 20:00."""
     import datetime
     import time
     from zoneinfo import ZoneInfo
     try:
-        local = datetime.datetime.fromtimestamp(time.time(), ZoneInfo('America/New_York'))
+        local = datetime.datetime.fromtimestamp(time.time() if timestamp is None else timestamp, ZoneInfo('America/New_York'))
         return local.weekday() >= 5 or not datetime.time(9, 25) <= local.time() < datetime.time(20, 5)
     except (OSError, ValueError, OverflowError, KeyError):
+        return False
+
+
+def _fresh_b3_idle_health():
+    """Require a completed, recent tick that started outside both live windows."""
+    import datetime
+    import os
+    import stat
+    import time
+    try:
+        fd = os.open(_B3_HEALTH, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or info.st_mode & 0o022 or info.st_nlink != 1 or info.st_size > 65536):
+                return False
+            with os.fdopen(fd, 'rb') as stream:
+                fd = -1
+                value = json.load(stream)
+        finally:
+            if fd != -1:
+                os.close(fd)
+        start = datetime.datetime.fromisoformat(value['at'])
+        end = datetime.datetime.fromisoformat(value['completed_at'])
+        if start.tzinfo is None or end.tzinfo is None:
+            return False
+        started, completed, now = start.timestamp(), end.timestamp(), time.time()
+        return (value.get('contract') == 'b3-ae-worker-v1' and value.get('market') == 'US'
+                and value.get('status') == 'OUTSIDE_REGULAR_SESSION'
+                and type(value.get('orders_submitted')) is int and value['orders_submitted'] == 0
+                and 0 <= now - started <= 120 and started <= completed <= now + 5
+                and _outside_b3_live_window(started) and _outside_b3_live_window(now))
+    except (OSError, ValueError, TypeError, KeyError, OverflowError):
         return False
 
 
@@ -187,7 +221,7 @@ def _trusted_b3_readonly_fd(process, fd):
         if args[-1:] == [b'']:
             args.pop()
         expected = [os.fsencode(_B3_LAUNCHER), os.fsencode(_B3_SCRIPT), b'--market', b'us']
-        if (not _outside_b3_live_window() or args != expected or process.stat().st_uid != os.geteuid()
+        if (not _fresh_b3_idle_health() or args != expected or process.stat().st_uid != os.geteuid()
                 or (process / 'exe').resolve(strict=True) != Path(_B3_INTERPRETER).resolve(strict=True)):
             return False
         info = (process / 'fdinfo' / fd.name).read_text().splitlines()
