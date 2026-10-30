@@ -964,7 +964,7 @@ def create_us_sell_decision_agent(language: str = "ko"):
 - 오후 판단(뉴욕 시각 14:30경)은 오후 스크리닝과 같이 지금 가격을 오늘 종가로, 지금까지의 거래량을 오늘 거래량으로 간주합니다. 종가가 필요한 판단(2단계 trailing, 3단계 추세 약화)은 '시스템 계산 사실' 블록 값을 그대로 쓰십시오. 오후 판단에서 그 블록은 오늘 봉을 현재가로 넣어 계산합니다.
 - 오전 판단에서는 trailing 이탈로 매도하지 마십시오. 오늘 고점이 반영된 라인을 전일 종가와 비교하면 안 됩니다(LLY 2026-10-30).
 - 단, portfolio_adjustment로 올린 손절가(new_stop_loss)는 위 장중 하드스탑이 그대로 실행합니다. trailing 수준을 손절가로 올리면 그 수준은 장중 꼬리에도 매도됩니다.
-- 도구로 일봉을 직접 볼 때 아직 끝나지 않은 오늘 봉은 확정 일봉이 아닙니다. 오늘 종가 대용은 오후 판단의 현재가 하나뿐입니다.
+- 도구로 일봉을 직접 볼 때 정규장·조기폐장 종료 전의 오늘 봉은 확정 일봉이 아닙니다. 오늘 종가 대용은 오후 판단의 현재가 하나뿐입니다.
 
 **핵심-2) 매수 시나리오의 익절 조건은 마일스톤으로 해석:**
 - 보유 종목의 us_stock_holdings.scenario.trading_scenarios.sell_triggers 중 "목표가 도달 시 매도", "익절 조건 1: 목표가/저항선 도달" 등의 문구는 **자동 매도 명령이 아니라 1차 마일스톤**입니다.
@@ -1044,7 +1044,7 @@ Trailing Stop %: 강세장 고점 × 0.92 (-8%), 약세장 고점 × 0.95 (-5%)
 
 **장 후반(오후 판단):**
 - 지금 가격을 오늘 종가로, 지금까지의 누적 거래량을 오늘 거래량으로 간주합니다(오후 스크리닝과 같은 가정).
-- 종가 판단은 '시스템 계산 사실' 블록의 오늘 봉 값을 쓰십시오. 도구에서 읽은 마감 전 캐시를 확정 종가라고 부르지는 마십시오.
+- 종가 판단은 '시스템 계산 사실' 블록의 오늘 봉 값을 쓰십시오. 도구에서 읽은 마감 전 수집 캐시를 확정 종가라고 부르지는 마십시오.
 
 **핵심 원칙:**
 오전 판단의 종가 판단은 확정 세션으로, 오후 판단은 오늘 가격을 오늘 종가로 간주해 합니다.
@@ -1197,8 +1197,8 @@ Run the self-check only when that regime is missing or could not be computed.
 - The afternoon review (around 14:30 New York time) treats the current price as today's close and today's volume so far as today's volume, as the afternoon screening does. For close-based judgements (Tier 2 trailing, Tier 3 trend weakness) use the 'System-computed facts' block as given; in the afternoon it includes today's bar at the current price.
 - The morning review never sells on a trailing breach: a line raised by today's peak must not be compared with yesterday's close (LLY 2026-10-30).
 - But a stop you raise through portfolio_adjustment (new_stop_loss) is executed by the intraday hard stop above. Raising stop_loss to the trailing level makes that level sell on an intraday wick.
-- When you read daily bars with tools, today's unfinished bar is not a completed bar; the only stand-in for
-  today's close is the afternoon review's current price.
+- When you read daily bars with tools, today's bar before the regular or early close is not a completed bar; the
+  only stand-in for today's close is the afternoon review's current price.
 
 **Core-2) Interpret buy-scenario take-profit conditions as milestones:**
 - In us_stock_holdings.scenario.trading_scenarios.sell_triggers, phrases like "sell when target reached" or "take profit 1: target/resistance reached" are **milestones, not automatic sell orders**.
@@ -1278,7 +1278,7 @@ US regular hours are 09:30~16:00 ET, i.e. 23:30~06:00 KST (EST) or 22:30~05:00 K
 
 **Late in the session (afternoon review):**
 - The current price counts as today's close and today's volume so far as today's volume (the same assumption as the afternoon screening).
-- For closing-price decisions use today's bar in the 'System-computed facts' block. Do not call a pre-close cache read with tools a confirmed close.
+- For closing-price decisions use today's bar in the 'System-computed facts' block. Do not call a cache captured before close and read with tools a confirmed close.
 
 **Core Principle:**
 Morning review: closing-price decisions use completed sessions. Afternoon review: today's price stands in for today's close.
