@@ -65,6 +65,10 @@ def test_v2_reader_restores_model_request_and_response_from_durable_event():
     with pytest.raises(ValueError, match='invalid_model_reference'):
         refs.restore(changed, snapshot, context, events)
     changed = copy.deepcopy(bundle)
+    changed['tape']['operations'][0]['text'] = {'$btc_model_ref': False}
+    with pytest.raises(ValueError, match='invalid_model_reference'):
+        refs.restore(changed, snapshot, context, events)
+    changed = copy.deepcopy(bundle)
     changed['tape']['operations'][0]['request']['$btc_model_ref']['request_sha256'] = '0' * 64
     with pytest.raises(ValueError, match='model_reference_changed'):
         refs.restore(changed, snapshot, context, events)
