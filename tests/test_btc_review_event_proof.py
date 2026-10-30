@@ -48,6 +48,14 @@ def test_missing_or_malformed_evidence_fails_closed():
         event_proof(conn, True)
 
 
+def test_event_index_obeys_time_guard():
+    conn = fixture()
+    def expired():
+        raise TimeoutError('deadline')
+    with pytest.raises(TimeoutError, match='deadline'):
+        event_proof(conn, 1, guard=expired)
+
+
 def test_duplicate_recovery_and_event_bound_fail_closed():
     conn = fixture()
     conn.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?)', ('e', 1, 'OTHER', '{}'))
@@ -121,7 +129,7 @@ def test_snapshot_index_is_bounded_and_does_not_skip_candidates(monkeypatch):
     next_page = snapshot_event_index(conn, now, after_slot=bounded['last_scanned_slot'])
     assert next_page['items'][0]['candidate']['slot'] == bounded['last_scanned_slot'] + 1
     monkeypatch.setattr(proof_module, 'MAX_INDEX_BYTES', 700_000)
-    def worst_case(_conn, slot):
+    def worst_case(_conn, slot, *, guard=None):
         return {'slot': slot,
                 'events': [{'rowid': slot * 1000 + seq, 'sequence': seq, 'sha256': 'f' * 64} for seq in range(128)],
                 'recovery': [{'event_id': str(i).zfill(128), 'kind': 'x' * 80, 'sha256': 'e' * 64} for i in range(16)]}

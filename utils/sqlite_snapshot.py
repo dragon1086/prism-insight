@@ -205,13 +205,20 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
                                                  guard=lambda: progress(None, None, None))
                 if capture_review_event_proof:
                     from utils.btc_review_event_proof import snapshot_event_index
+                    # Optional indexing must leave time for compression and verification.
+                    proof_deadline = min(time.monotonic() + 20, deadline - 120)
+                    def proof_guard():
+                        if time.monotonic() >= proof_deadline:
+                            raise TimeoutError('event_proof_deadline')
                     try:
-                        index_conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
+                        proof_guard()
+                        index_conn.set_progress_handler(lambda: int(time.monotonic() >= proof_deadline), 10000)
                         index_conn.execute('PRAGMA query_only=ON')
                         index_conn.execute('BEGIN')
-                        event_proof_index = snapshot_event_index(index_conn, int(started), after_slot=after_slot)
+                        event_proof_index = snapshot_event_index(index_conn, int(started), after_slot=after_slot,
+                                                                 guard=proof_guard)
                         event_proof_status = 'CAPTURED'
-                    except (ValueError, sqlite3.Error):
+                    except (ValueError, sqlite3.Error, TimeoutError):
                         event_proof_status = 'UNAVAILABLE'
                     finally:
                         index_conn.rollback()

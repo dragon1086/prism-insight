@@ -370,11 +370,14 @@ def verify_event_proof_index(raw, manifest):
     else:
         from utils.btc_review_event_proof import snapshot_event_index
     deadline = time.monotonic() + 600
+    def guard():
+        if time.monotonic() >= deadline:
+            raise TimeoutError('event_proof_index_deadline')
     with closing(sqlite3.connect(raw.as_uri() + '?mode=ro', uri=True)) as db:
         db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
         db.execute('PRAGMA query_only=ON')
         db.execute('BEGIN')
-        if snapshot_event_index(db, int(started), after_slot=index.get('after_slot')) != index:
+        if snapshot_event_index(db, int(started), after_slot=index.get('after_slot'), guard=guard) != index:
             raise ValueError('event_proof_index_mismatch')
     return True
 

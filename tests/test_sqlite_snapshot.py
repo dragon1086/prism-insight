@@ -10,7 +10,7 @@ import pytest
 from utils.sqlite_snapshot import backup_database
 
 
-def test_optional_event_proof_failure_preserves_verified_backup(tmp_path):
+def test_optional_event_proof_failure_preserves_verified_backup(tmp_path, monkeypatch):
     source, destination = tmp_path / 'source.sqlite', tmp_path / 'snapshot.gz'
     context = {'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
                'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False}
@@ -28,6 +28,14 @@ def test_optional_event_proof_failure_preserves_verified_backup(tmp_path):
     assert result['btc_review_event_proof_status'] == 'UNAVAILABLE'
     assert 'btc_review_event_proof_index' not in result and destination.is_file()
     assert len(result['btc_retention_index']['candidates']) == 1
+    from utils import btc_review_event_proof
+    def expired(*_args, **_kwargs):
+        raise TimeoutError('event_proof_deadline')
+    monkeypatch.setattr(btc_review_event_proof, 'snapshot_event_index', expired)
+    timed = backup_database(source, tmp_path / 'timed.gz', reserve_bytes=0, capture_references=True,
+                            capture_review_event_proof=True)
+    assert timed['decompression_verified'] is True and timed['btc_review_event_proof_status'] == 'UNAVAILABLE'
+    assert 'btc_review_event_proof_index' not in timed
 
 
 def test_sparse_scan_only_punches_complete_zero_blocks(tmp_path, monkeypatch):
@@ -310,7 +318,7 @@ def test_missing_main_db_stops_retention_of_older_backups(tmp_path):
 
 
 @pytest.mark.parametrize('archive_success', [True, False])
-@pytest.mark.parametrize('event_retention', ['0', '1', 'invalid'])
+@pytest.mark.parametrize('event_retention', ['unset', '0', '1', 'invalid'])
 def test_backup_records_archive_ack_and_preserves_old_on_failure(tmp_path, archive_success, event_retention):
     import subprocess
     home = tmp_path / 'home'
@@ -357,8 +365,11 @@ esac
     script = Path(__file__).resolve().parents[1] / 'utils/backup_configs.sh'
     env = {**os.environ, 'HOME': str(home), 'PATH': str(tools) + ':' + os.environ['PATH'],
            'ARCHIVE_SUCCESS': '1' if archive_success else '0', 'SCHEDULE_LOG': str(tmp_path / 'scheduled'),
-           'REMOVE_LOG': str(tmp_path / 'removed'), 'SNAPSHOT_LOG': str(tmp_path / 'snapshot_args'),
-           'PRISM_BTC_EVENT_RETENTION': event_retention}
+           'REMOVE_LOG': str(tmp_path / 'removed'), 'SNAPSHOT_LOG': str(tmp_path / 'snapshot_args')}
+    if event_retention == 'unset':
+        env.pop('PRISM_BTC_EVENT_RETENTION', None)
+    else:
+        env['PRISM_BTC_EVENT_RETENTION'] = event_retention
     run = subprocess.run(['bash', str(script)], env=env, capture_output=True, text=True, timeout=30)
     assert (run.returncode == 0) is archive_success
     ack, = (home / 'prism_backups').glob('*/offsite_ack.json')
@@ -367,12 +378,12 @@ esac
     schedule = tmp_path / 'scheduled'
     assert schedule.exists() is (archive_success and event_retention != 'invalid')
     assert (tmp_path / 'removed').exists() is archive_success
-    assert ('--capture-review-event-proof' in (tmp_path / 'snapshot_args').read_text().splitlines()) == (event_retention == '1')
+    assert ('--capture-review-event-proof' in (tmp_path / 'snapshot_args').read_text().splitlines()) == (event_retention in ('unset', '1'))
     if archive_success and event_retention != 'invalid':
         assert 'run_btc_review_retention.py' in schedule.read_text()
         arguments = schedule.read_text().splitlines()
         assert '--timer-property=AccuracySec=1s' in arguments
-        if event_retention == '1':
+        if event_retention in ('unset', '1'):
             assert arguments.pop() == '--event-proof-only'
         assert arguments[-7:-3] == ['/usr/bin/bash', '-c', 'exec "$1" "$2" "$3" "${@:4}"', '--']
         assert arguments[-3] == str(fake)

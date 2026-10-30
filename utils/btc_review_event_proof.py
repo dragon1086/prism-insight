@@ -41,7 +41,7 @@ def _digest(text):
     return hashlib.sha256(raw).hexdigest(), len(raw)
 
 
-def event_proof(conn, slot):
+def event_proof(conn, slot, *, guard=None):
     """Read at most one slot, restoring all references without modifying them."""
     if type(slot) is not int or slot < 0:
         raise ValueError('proof_slot_invalid')
@@ -51,6 +51,8 @@ def event_proof(conn, slot):
         raise ValueError('proof_event_count_invalid')
     events, size = [], 0
     for expected, (rowid, sequence, stored) in enumerate(rows):
+        if guard is not None:
+            guard()
         if type(rowid) is not int or rowid <= 0 or type(sequence) is not int or sequence != expected:
             raise ValueError('proof_event_sequence_invalid')
         text = read_event(stored, conn, slot, sequence, decode_legacy=review_text)
@@ -65,6 +67,8 @@ def event_proof(conn, slot):
         raise ValueError('proof_recovery_count_invalid')
     recovery, seen = [], set()
     for event_id, kind, stored in rows:
+        if guard is not None:
+            guard()
         if (not isinstance(event_id, str) or not 1 <= len(event_id) <= 128 or event_id in seen
                 or not isinstance(kind, str) or not 1 <= len(kind) <= 80):
             raise ValueError('proof_recovery_identity_invalid')
@@ -78,7 +82,7 @@ def event_proof(conn, slot):
     return {'slot': slot, 'events': events, 'recovery': recovery}
 
 
-def snapshot_event_index(conn, now, *, after_slot=-1):
+def snapshot_event_index(conn, now, *, after_slot=-1, guard=None):
     """Index a bounded page of eligible WAITs within an existing read snapshot.
 
     The caller must bind and verify the result against its backup. This index
@@ -93,15 +97,17 @@ def snapshot_event_index(conn, now, *, after_slot=-1):
     items, scanned, size, last = [], 0, 0, after_slot
     cutoff = None
     while scanned < MAX_SCANNED:
-        page = candidates(conn, now, after_slot=last, limit=min(100, MAX_SCANNED - scanned))
+        page = candidates(conn, now, after_slot=last, limit=min(100, MAX_SCANNED - scanned), guard=guard)
         cutoff = page['cutoff_slot']
         for row in page['candidates']:
+            if guard is not None:
+                guard()
             if len(items) >= MAX_SLOTS:
                 return {'version': 2, 'cutoff_slot': cutoff, 'after_slot': after_slot,
                         'last_scanned_slot': items[-1]['candidate']['slot'], 'truncated': True, 'items': items}
             try:
                 decision = conn.execute('SELECT proposal FROM llm_scenario_decisions WHERE slot=?', (row['slot'],)).fetchone()
-                proof = event_proof(conn, row['slot']) if decision and _flat_noop_plan(decision[0]) else {
+                proof = event_proof(conn, row['slot'], guard=guard) if decision and _flat_noop_plan(decision[0]) else {
                     'slot': row['slot'], 'unavailable': True}
             except ValueError:
                 proof = {'slot': row['slot'], 'unavailable': True}
