@@ -606,8 +606,12 @@ def _capture(source, state, identity, stream, row, manifest_cache=None):
         _capture_review_tape(source,state,identity,row,body,now,manifest_cache)
         return
     kind = row['kind']
+    versioned_kinds = {'incident_epoch_v1', 'incident_entry_epoch_v1', 'incident_epoch_halt_v1',
+                       'incident_monitor_release_v1', 'incident_epoch_transport_v1',
+                       'incident_epoch_finance_cursor_v1', 'management_quarantine_v1',
+                       'management_quarantine_exit_v1'}
     attrs = {'source_stream': stream, 'source_rowid': row['source_rowid'],
-             'source_kind': kind if re.fullmatch(r'[A-Za-z_]{1,80}', kind) else 'UNKNOWN',
+             'source_kind': kind if kind in versioned_kinds or re.fullmatch(r'[A-Za-z_]{1,80}', kind) else 'UNKNOWN',
              'body_sha256': _hash(raw), 'facts': _facts(body), 'policy_evidence': 'UNKNOWN'}
     attrs['facts_scope'] = 'ALLOWLISTED_SUBSET_RAW_SOURCE_RETAINED'
     attrs['granular_fill_coverage'] = 'UNKNOWN_NOT_EXTRACTED'
