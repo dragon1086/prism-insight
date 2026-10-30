@@ -116,6 +116,12 @@ def test_reader_rejects_duplicate_or_recursive_sources():
             refs.read_event(encoded, conn, 100, 3, decode_legacy=review_text)
 
 
+def test_reader_rejects_oversized_compressed_marker():
+    encoded = refs.MAGIC + gzip.compress(b'x' * (refs.MAX_BYTES + 1), compresslevel=1, mtime=0)
+    with pytest.raises(ValueError, match='review_event_reference_invalid'):
+        refs.read_event(encoded, object(), 100, 3, decode_legacy=review_text)
+
+
 def test_all_reference_readers_preserve_logical_evidence(tmp_path):
     from observability import btc_scenario_export as exporter
     from utils import btc_offsite_archive, btc_recovery_references, btc_review_references
