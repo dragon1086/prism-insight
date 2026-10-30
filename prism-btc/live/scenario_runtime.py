@@ -50,6 +50,16 @@ def _fresh_safety_detail(code):
     }.get(code)
 
 
+def _fresh_safety_field(code):
+    """Expose only known context field names, never the compared values."""
+    prefix = 'review_guard_context_changed:'
+    if not isinstance(code, str) or not code.startswith(prefix):
+        return None
+    from live.scenario_review_guard import _OPTIONAL_STABLE, _REQUIRED_STABLE
+    field = code[len(prefix):]
+    return field if field in _REQUIRED_STABLE or field in _OPTIONAL_STABLE else None
+
+
 @contextmanager
 def _snapshot_mutation_lock(conn, diagnostics):
     """Wait only for OS-lock acquisition, never retry input persistence work."""
@@ -1287,6 +1297,9 @@ class ScenarioRuntime:
                 elif review_detail is not None:
                     outcome["failure_code"] = "fresh_safety_rejection"
                     outcome["failure_detail"] = review_detail
+                    field = _fresh_safety_field(review_code)
+                    if field is not None:
+                        outcome["failure_field"] = field
                 elif review_code in {"review_final_deadline", "review_guard_stale_input",
                         "review_guard_stale_review_clock", "review_guard_invalid_time"}:
                     outcome["failure_code"] = "review_deadline_failure"
