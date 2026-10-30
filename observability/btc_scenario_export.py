@@ -18,6 +18,7 @@ import time
 
 from .events import build_event
 from .review_storage import review_text
+from utils.btc_review_event_references import read_event
 from utils.btc_review_references import read_tape
 from utils.btc_financial_references import restore as restore_financial
 from utils.btc_audit_references import read_audit
@@ -354,7 +355,7 @@ def _source_text(stream, row, source=None):
     if stream == 'llm_scenario_review_tapes':
         return read_tape(row['body'], source, row['slot'], decode_legacy=review_text)
     if stream == 'llm_scenario_review_events':
-        return review_text(row['body'])
+        return read_event(row['body'], source, row['slot'], row['sequence'], decode_legacy=review_text)
     if stream == 'llm_scenario_recovery_events':
         if row['kind'] in ('MODEL_REQUEST', 'MODEL_RAW', 'INPUT'):
             return read_recovery(row['body'], source, row['slot'], decode_legacy=review_text,
@@ -375,7 +376,7 @@ def _anchor_hash(stream, row, source=None):
     if stream == 'llm_scenario_recovery_events':
         return _hash(_source_text(stream, row, source))
     if stream == 'llm_scenario_review_events':
-        return _hash(_json([row['slot'], row['sequence'], review_text(row['body'])]))
+        return _hash(_json([row['slot'], row['sequence'], _source_text(stream, row, source)]))
     if stream == 'llm_scenario_review_tapes':
         return _hash(_json([row['slot'], _source_text(stream, row, source)]))
     if stream == 'llm_scenario_broker_evidence' and row['kind'] == 'financial':
