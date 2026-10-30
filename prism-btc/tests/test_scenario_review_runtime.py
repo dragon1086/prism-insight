@@ -172,6 +172,30 @@ def test_model_raw_never_references_changed_source(tmp_path, monkeypatch):
     assert json.loads(review_text(stored)) == raw
 
 
+def test_model_raw_locks_reference_source_during_write(tmp_path, monkeypatch):
+    import random
+    from utils import btc_review_event_references as refs
+    r, _, _ = runtime(tmp_path)
+    request = {'kind': 'MODEL_REQUEST', 'phase': 'single', 'request': {
+        'prompt': random.Random(23).randbytes(16000).hex(), 'timeout': 50}}
+    raw = {'kind': 'MODEL_RAW', 'phase': 'single', 'actual_request': dict(request['request'], timeout=49), 'raw': 'x'}
+    r._record_calculated_review(12, request)
+    original_compact = refs.compact
+    lock_checked = []
+    def check_lock(*args):
+        with sqlite3.connect(tmp_path / 'runtime.db', timeout=0) as other:
+            with pytest.raises(sqlite3.OperationalError, match='locked'):
+                other.execute("UPDATE llm_scenario_review_events SET body='{}' WHERE slot=12 AND sequence=0")
+        lock_checked.append(True)
+        return original_compact(*args)
+    monkeypatch.setattr(refs, 'compact', check_lock)
+    r._record_calculated_review(12, raw)
+    stored = r.conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=12 AND sequence=1').fetchone()[0]
+    assert lock_checked == [True]
+    assert stored.startswith(EVENT_REF_MAGIC)
+    assert json.loads(read_event(stored, r.conn, 12, 1, decode_legacy=review_text)) == raw
+
+
 def test_review_event_storage_roundtrip_and_compression_failure_fallback(tmp_path, monkeypatch):
     import live.scenario_review_storage as storage
 
