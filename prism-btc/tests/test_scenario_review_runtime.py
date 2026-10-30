@@ -483,6 +483,40 @@ def test_actual_observing_first_wait_then_changed_evidence_probe(tmp_path):
     assert r.conn.execute("SELECT COUNT(*) FROM llm_scenario_recovery_events WHERE kind='PERMIT_CONSUMED'").fetchone()[0] == 1
 
 
+def test_recovery_two_call_wait_is_retained_only_with_both_model_phases(tmp_path):
+    from utils.btc_review_retention import candidates
+
+    r, broker, _, price = observing_runtime(tmp_path)
+    broker.ctx.update(historical_unsettled=[], incident_epoch_blocked=False, unknown_intents=False)
+    assert r.tick()['status'] == 'wait'
+    r.test_clock[0] += 300
+    broker.ctx['account_captured_at'] = r.clock()
+    price[0] += 1
+    captured = {}
+    def generate(**request):
+        schema = request['response_schema']['properties']
+        if 'wait_proposal' in schema:
+            result = {'wait_proposal': wire(captured, 'WAIT'), 'candidates': [wire(captured, 'OPEN')],
+                      'no_candidate_reason': ''}
+        else:
+            token = next(x for x in schema['selection_token']['enum'] if x.startswith('WAIT:'))
+            result = {'selection_token': token, 'rationale': '관망 선택'}
+        return SimpleNamespace(text=json.dumps(result))
+    propose = make_calculated_review_proposer(generate=generate, clock=r.clock)
+    def invoke(snapshot, ctx, *, record):
+        captured.update(deepcopy(ctx))
+        return propose(snapshot, ctx, record=record)
+    r.calculated_review_propose = invoke
+    assert r.tick()['status'] == 'wait'
+    assert not broker.executed
+    slot = int(r.test_clock[0] // 300)
+    at = r.test_clock[0] + 7 * 86400 + 300
+    assert [item['slot'] for item in candidates(r.conn, at, after_slot=slot-1)['candidates']] == [slot]
+    r.conn.execute("DELETE FROM llm_scenario_recovery_events WHERE event_id=(SELECT event_id FROM "
+                   "llm_scenario_recovery_events WHERE slot=? AND kind='MODEL_RAW' LIMIT 1)", (slot,))
+    assert not candidates(r.conn, at, after_slot=slot-1)['candidates']
+
+
 def test_observing_changed_fresh_guard_cannot_consume_permit(tmp_path):
     r, broker, calls, price = observing_runtime(tmp_path)
     assert r.tick()["status"] == "wait"
