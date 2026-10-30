@@ -52,7 +52,8 @@ def test_ssh_receiver_bootstrap_leaves_transfer_stdin_intact(monkeypatch):
             return stub
         if path.name in {'btc_review_references.py', 'btc_audit_references.py', 'btc_recovery_references.py',
                          'btc_financial_references.py', 'btc_accounting_audit_references.py',
-                         'btc_review_retention.py', 'review_storage.py'}:
+                         'btc_review_retention.py', 'review_storage.py', 'btc_review_event_proof.py',
+                         'btc_review_event_references.py'}:
             return ''
         return original_read(path, *args, **kwargs)
     def transport(args, **kwargs):
