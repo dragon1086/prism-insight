@@ -293,14 +293,35 @@ def test_backed_pair_batch_validates_every_pair_before_any_write(tmp_path):
 
 def test_backed_pair_cli_uses_identity_and_bounded_manifest(tmp_path, monkeypatch, capsys):
     import io
+    from utils import btc_review_retention
     conn, raw_proof, source_proof, _, _ = backed_model_pair(tmp_path)
     conn.close()
     source = tmp_path / 'pair.sqlite'
     manifest = {'source_identity':subject.source_identity(source), 'pairs':[{'raw':raw_proof,'source':source_proof}]}
     monkeypatch.setattr(subject, 'SOURCE', source)
     monkeypatch.setattr(subject, 'resource_guard', lambda *a:True)
+    monkeypatch.setattr(btc_review_retention, '_backup_idle', lambda *a:True)
     monkeypatch.setenv('PRISM_BTC_STORAGE_APPROVED', '1')
     monkeypatch.setattr(subject.sys, 'stdin', io.TextIOWrapper(io.BytesIO(json.dumps(manifest).encode())))
     subject.main()
     result = json.loads(capsys.readouterr().out)
     assert result['status'] == 'COMPLETE' and result['counts']['UPDATED'] == 1
+
+
+def test_backed_pair_cli_defers_while_backup_active(tmp_path, monkeypatch, capsys):
+    import io
+    from utils import btc_review_retention
+    conn, raw_proof, source_proof, _, _ = backed_model_pair(tmp_path)
+    before = conn.execute('SELECT body FROM llm_scenario_review_events WHERE rowid=2').fetchone()[0]
+    conn.close()
+    source = tmp_path / 'pair.sqlite'
+    manifest = {'source_identity':subject.source_identity(source), 'pairs':[{'raw':raw_proof,'source':source_proof}]}
+    monkeypatch.setattr(subject, 'SOURCE', source)
+    monkeypatch.setattr(subject, 'resource_guard', lambda *a:True)
+    monkeypatch.setattr(btc_review_retention, '_backup_idle', lambda *a:False)
+    monkeypatch.setenv('PRISM_BTC_STORAGE_APPROVED', '1')
+    monkeypatch.setattr(subject.sys, 'stdin', io.TextIOWrapper(io.BytesIO(json.dumps(manifest).encode())))
+    subject.main()
+    assert json.loads(capsys.readouterr().out)['status'] == 'RESOURCE_LIMIT'
+    with sqlite3.connect(source) as db:
+        assert db.execute('SELECT body FROM llm_scenario_review_events WHERE rowid=2').fetchone()[0] == before

@@ -264,7 +264,8 @@ def main():
     identity = manifest.get('source_identity') if isinstance(manifest, dict) else None
     if not isinstance(identity, str) or source_identity(SOURCE) != identity:
         raise ValueError('source_identity_changed')
-    guard = lambda: resource_guard(SOURCE, identity)
+    from utils.btc_review_retention import _backup_idle
+    guard = lambda: resource_guard(SOURCE, identity) and _backup_idle(SOURCE)
     if guard() is not True:
         print(json.dumps({'status':'RESOURCE_LIMIT','counts':{},'last_rowid':None}))
         return
