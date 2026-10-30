@@ -8,6 +8,7 @@ import sys
 from live.scenario_review_storage import MAGIC as GZIP_MAGIC, review_text, tape_storage
 from tools.btc_review_event_compaction import SOURCE, resource_guard, source_identity
 from utils.btc_review_references import MAGIC as REFS_MAGIC, read_tape
+from utils.btc_review_retention import _backup_idle
 
 
 def _sha(value):
@@ -50,7 +51,7 @@ def compact_one(conn, *, slot, expected_type, expected_sha256, expected_raw_sha2
                 return 'SOURCE_CHANGED'
             candidate = original
         else:
-            candidate = tape_storage(conn, slot, raw)
+            candidate = tape_storage(conn, slot, raw, allow_failed=True)
             if _sha(read_tape(candidate, conn, slot, decode_legacy=review_text)) != expected_raw_sha256:
                 raise ValueError('tape_roundtrip_mismatch')
             original_bytes = original.encode('utf-8') if isinstance(original, str) else original
@@ -125,7 +126,7 @@ def main():
     identity = manifest.get('source_identity') if isinstance(manifest, dict) else None
     if not isinstance(identity, str) or source_identity(SOURCE) != identity:
         raise ValueError('source_identity_changed')
-    guard = lambda: resource_guard(SOURCE, identity)
+    guard = lambda: resource_guard(SOURCE, identity) and _backup_idle(SOURCE)
     if guard() is not True:
         print(json.dumps({'status': 'RESOURCE_LIMIT', 'counts': {}, 'last_slot': None}))
         return

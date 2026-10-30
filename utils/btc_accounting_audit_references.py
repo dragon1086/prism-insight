@@ -12,6 +12,7 @@ else:
 
 TAG = '$btc_accounting_refs_v1'
 ORIGINAL_HASH = '$btc_accounting_original_sha256'
+CHILDREN_REF = '$btc_accounting_children_ref_v1'
 MAX_BYTES = 512 * 1024
 SOURCE_LIMIT = 8
 
@@ -64,21 +65,75 @@ def compact(raw, conn, observed_at):
         return raw
 
 
+def compact_children(raw, conn):
+    """Reuse an earlier audit's exact children; retain anchors while referenced."""
+    if not isinstance(raw, str) or conn is None or len(raw.encode()) > MAX_BYTES:
+        return raw
+    try:
+        event = json.loads(raw)
+        if (not isinstance(event, dict) or event.get(TAG) != 1 or CHILDREN_REF in event
+                or not isinstance(event.get('children'), list)):
+            return raw
+        expected = sha(canonical(event['children']))
+        rows = conn.execute("SELECT event_id,body FROM llm_scenario_audit_events "
+                            "WHERE kind='accounting_observation' ORDER BY rowid DESC LIMIT ?", (SOURCE_LIMIT,))
+        for event_id, body in rows:
+            if not isinstance(event_id, str) or not event_id or not isinstance(body, str) or len(body.encode()) > MAX_BYTES:
+                continue
+            source = json.loads(body)
+            if not isinstance(source, dict):
+                continue
+            marker = source.get(CHILDREN_REF)
+            if marker is None and isinstance(source.get('children'), list) and sha(canonical(source['children'])) == expected:
+                marker = {'event_id': event_id, 'sha256': expected}
+            if (not isinstance(marker, dict) or set(marker) != {'event_id', 'sha256'}
+                    or marker.get('sha256') != expected):
+                continue
+            projected = copy.deepcopy(event)
+            del projected['children']
+            projected[CHILDREN_REF] = marker
+            candidate = canonical(projected)
+            if len(candidate.encode()) < len(raw.encode()) and read_accounting(candidate, conn) == read_accounting(raw, conn):
+                return candidate
+    except (ValueError, TypeError, KeyError, OverflowError):
+        pass
+    return raw
+
+
 def read_accounting(raw, conn):
     if not isinstance(raw, str):
         raise ValueError('accounting_audit_invalid')
-    if TAG not in raw:
+    if TAG not in raw and CHILDREN_REF not in raw:
         return raw
     if len(raw.encode()) > MAX_BYTES:
         raise ValueError('accounting_audit_too_large')
     event = json.loads(raw)
-    if not isinstance(event, dict) or TAG not in event:
+    if not isinstance(event, dict) or (TAG not in event and CHILDREN_REF not in event):
         return raw
-    if type(event[TAG]) is not int or event[TAG] != 1 or not isinstance(event.get(ORIGINAL_HASH), str) or conn is None:
+    if type(event.get(TAG)) is not int or event[TAG] != 1 or not isinstance(event.get(ORIGINAL_HASH), str) or conn is None:
         raise ValueError('accounting_audit_reference_invalid')
     result = copy.deepcopy(event)
     expected = result.pop(ORIGINAL_HASH)
     result.pop(TAG)
+    if CHILDREN_REF in result:
+        marker = result.pop(CHILDREN_REF)
+        if ('children' in result or not isinstance(marker, dict)
+                or set(marker) != {'event_id', 'sha256'}
+                or not isinstance(marker['event_id'], str) or not marker['event_id']
+                or not isinstance(marker['sha256'], str)):
+            raise ValueError('accounting_children_reference_invalid')
+        row = conn.execute('SELECT kind,body FROM llm_scenario_audit_events WHERE event_id=?',
+                           (marker['event_id'],)).fetchone()
+        if not row or row[0] != 'accounting_observation' or not isinstance(row[1], str):
+            raise ValueError('accounting_children_source_missing')
+        if len(row[1].encode()) > MAX_BYTES:
+            raise ValueError('accounting_children_source_invalid')
+        source = json.loads(row[1])
+        if (not isinstance(source, dict) or CHILDREN_REF in source
+                or not isinstance(source.get('children'), list)
+                or sha(canonical(source['children'])) != marker['sha256']):
+            raise ValueError('accounting_children_source_changed')
+        result['children'] = source['children']
     for field, kind in (('observation', 'account'), ('financial_evidence', 'financial')):
         marker = result.get(field)
         if (not isinstance(marker, dict) or set(marker) != {'rowid', 'sha256', 'captured_at'}
