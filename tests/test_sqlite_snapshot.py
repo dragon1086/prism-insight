@@ -308,7 +308,7 @@ def test_missing_main_db_stops_retention_of_older_backups(tmp_path):
 
 
 @pytest.mark.parametrize('archive_success', [True, False])
-@pytest.mark.parametrize('event_retention', ['0', '1'])
+@pytest.mark.parametrize('event_retention', ['0', '1', 'invalid'])
 def test_backup_records_archive_ack_and_preserves_old_on_failure(tmp_path, archive_success, event_retention):
     import subprocess
     home = tmp_path / 'home'
@@ -363,10 +363,10 @@ esac
     assert json.loads(ack.read_text())['status'] == ('VERIFIED' if archive_success else 'ERROR')
     assert ack.stat().st_mode & 0o077 == 0
     schedule = tmp_path / 'scheduled'
-    assert schedule.exists() is archive_success
+    assert schedule.exists() is (archive_success and event_retention != 'invalid')
     assert (tmp_path / 'removed').exists() is archive_success
     assert ('--capture-review-event-proof' in (tmp_path / 'snapshot_args').read_text().splitlines()) == (event_retention == '1')
-    if archive_success:
+    if archive_success and event_retention != 'invalid':
         assert 'run_btc_review_retention.py' in schedule.read_text()
         arguments = schedule.read_text().splitlines()
         assert '--timer-property=AccuracySec=1s' in arguments

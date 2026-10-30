@@ -19,7 +19,7 @@ LOG_FILE=$BACKUP_BASE_DIR/backup.log
 EVENT_RETENTION=${PRISM_BTC_EVENT_RETENTION:-0}
 case "$EVENT_RETENTION" in
     0|1) ;;
-    *) echo "Invalid BTC event retention setting" >&2; exit 1 ;;
+    *) EVENT_RETENTION=invalid ;;
 esac
 SNAPSHOT_EXTRA=()
 RETENTION_EXTRA=()
@@ -124,7 +124,9 @@ if [ "$RETENTION_DELAY" -lt 10 ]; then
     RETENTION_DELAY=$((RETENTION_DELAY + 60))
 fi
 PYTHON_BIN=$(command -v python3)
-if systemd-run --quiet --collect --on-active="${RETENTION_DELAY}s" --timer-property=AccuracySec=1s \
+if [ "$EVENT_RETENTION" = invalid ]; then
+    log "⚠ 잘못된 BTC 정리 설정; 백업은 보존하고 정리는 건너뜁니다"
+elif systemd-run --quiet --collect --on-active="${RETENTION_DELAY}s" --timer-property=AccuracySec=1s \
     --unit="prism-btc-retention-${DATE}" --setenv="PATH=$PATH" \
     --setenv="PRISM_DISABLE_SIGNAL_PUBLISH=1" \
     --setenv="PYTHONPATH=$PROJECT_DIR/prism-btc:$PROJECT_DIR" \
