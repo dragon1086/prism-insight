@@ -1007,3 +1007,12 @@ def test_us_reentry_compares_the_ai_cap_with_slot_weighted_usage(monkeypatch, no
     legacy = _Agent("us_stock_holdings", slots=6)                       # legacy rows count as one slot each
     assert asyncio.run(_us(legacy, monkeypatch)(**_kwargs("US") | {"scenario": kwargs["scenario"]})) == \
         {"bought": False, "reason": "max_slots"}
+
+
+def test_a_signal_without_a_buy_target_is_skipped_not_an_order_error(tmp_path, live_on):
+    # SPOT 2026-10-30: SHAKEOUT_RECLAIM with target_rule "unsupported" raised in the BUY scenario contract
+    executor = FakeExecutor()
+    item = dict(_item(trigger="SHAKEOUT_RECLAIM"), target=None, target_rule="unsupported")
+    _, results = _process(tmp_path, [_record()], {"ev1": item}, executor)
+    assert [(r["reason"], r["status"]) for r in results] == [("no_target", "SKIPPED_NO_TARGET")]
+    assert executor.calls == []
