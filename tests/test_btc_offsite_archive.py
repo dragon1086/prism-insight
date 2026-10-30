@@ -1027,6 +1027,8 @@ def test_event_retention_end_to_end_with_isolated_archive(payload, monkeypatch):
     source = path / 'live.sqlite'
     context = {'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
                'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False}
+    plan = {'schema_version': 1, 'action': 'WAIT', 'side': None, 'hard_stop': None, 'chase': None,
+            'entries': [], 'take_profits': [], 'partial_stops': [], 'cancel_entry_ids': []}
     with sqlite3.connect(source) as conn:
         conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
                            'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);'
@@ -1035,7 +1037,7 @@ def test_event_retention_end_to_end_with_isolated_archive(payload, monkeypatch):
         for slot in (1, 2):
             conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (slot, '{}'))
             conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)',
-                         (slot, '{}', json.dumps(context), '{"action":"WAIT"}', '{"status":"wait"}'))
+                         (slot, '{}', json.dumps(context), json.dumps(plan), '{"status":"wait"}'))
             conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)',
                          (slot, 0, '{"kind":"MODEL_RAW"}'))
     identity = _identity(source)

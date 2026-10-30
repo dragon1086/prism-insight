@@ -148,9 +148,11 @@ def deletion_fixture():
                          'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body);')
     context = json.dumps({'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
                           'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False})
+    plan = json.dumps({'schema_version': 1, 'action': 'WAIT', 'side': None, 'hard_stop': None, 'chase': None,
+                       'entries': [], 'take_profits': [], 'partial_stops': [], 'cancel_entry_ids': []})
     for slot in (1, 2):
         source.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (slot, '{}'))
-        source.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)', (slot, '{}', context, '{"action":"WAIT"}', '{"status":"wait"}'))
+        source.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)', (slot, '{}', context, plan, '{"status":"wait"}'))
         source.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (slot, 0, '{"kind":"MODEL_RAW"}'))
     source.commit()
     exporter.executescript('CREATE TABLE meta(key PRIMARY KEY,value);CREATE TABLE cursors(stream PRIMARY KEY,seq);'
@@ -530,3 +532,46 @@ def test_cleanup_batches_delivery_queries_without_mixing_slots(tmp_path, monkeyp
     result = proof_module.cleanup_events(tmp_path, now=700000)
     assert result['status'] == 'COMPLETE' and result['removed_events'] == 140
     assert calls == [('tape', 2), ('events', 128), ('events', 12)]
+
+
+@pytest.mark.parametrize('change', ['cancel', 'renewal', 'missing_entries', 'stop', 'side', 'missing_version'])
+def test_wait_with_order_changes_or_missing_fields_is_not_deleted(change):
+    from utils.btc_review_event_proof import delete_confirmed_slot
+    from utils.btc_review_retention import candidates
+    source, exporter, archived, tape, events, identity, now = deletion_fixture()
+    plan = json.loads(source.execute('SELECT proposal FROM llm_scenario_decisions WHERE slot=1').fetchone()[0])
+    if change == 'cancel':
+        plan['cancel_entry_ids'] = ['old-entry']
+    elif change == 'renewal':
+        plan['pending_renewal'] = {'offer_id': 'renew'}
+    elif change == 'missing_entries':
+        del plan['entries']
+    elif change == 'stop':
+        plan['stop_revision'] = {'reason': 'changed'}
+    elif change == 'missing_version':
+        del plan['schema_version']
+    else:
+        plan['side'] = 'LONG'
+    source.execute('UPDATE llm_scenario_decisions SET proposal=? WHERE slot=1', (json.dumps(plan),))
+    source.commit()
+    archived['candidate'] = candidates(source, now)['candidates'][0]
+    result = delete_confirmed_slot(source, exporter, archived, tape, events, identity, now,
+                                   guard=lambda: True, lease_alive=lambda: True)
+    assert result == {'status': 'DEFERRED_NONNOOP_PLAN'}
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone() == (2,)
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_events').fetchone() == (2,)
+
+
+def test_normalized_v1_wait_can_omit_fields_removed_by_wire_validator():
+    from utils.btc_review_event_proof import delete_confirmed_slot
+    from utils.btc_review_retention import candidates
+    source, exporter, archived, tape, events, identity, now = deletion_fixture()
+    plan = json.loads(source.execute('SELECT proposal FROM llm_scenario_decisions WHERE slot=1').fetchone()[0])
+    for key in ('side', 'hard_stop', 'chase'):
+        del plan[key]
+    source.execute('UPDATE llm_scenario_decisions SET proposal=? WHERE slot=1', (json.dumps(plan),))
+    source.commit()
+    archived['candidate'] = candidates(source, now)['candidates'][0]
+    result = delete_confirmed_slot(source, exporter, archived, tape, events, identity, now,
+                                   guard=lambda: True, lease_alive=lambda: True)
+    assert result == {'status': 'REMOVED', 'events': 1}

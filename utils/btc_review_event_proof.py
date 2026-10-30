@@ -273,6 +273,23 @@ def _required_event_sequences(conn, slot, recovery_rows):
     return required
 
 
+def _flat_noop_plan(raw):
+    """A WAIT can still carry cancellations or renewal instructions."""
+    try:
+        plan = json.loads(raw)
+    except (TypeError, ValueError):
+        return False
+    if (not isinstance(plan, dict) or plan.get('action') != 'WAIT'
+            or type(plan.get('schema_version')) is not int or plan['schema_version'] != 1):
+        return False
+    if any(plan.get(key) != [] for key in ('entries', 'take_profits', 'partial_stops', 'cancel_entry_ids')):
+        return False
+    # The v1 wire validator removes these null fields from persisted WAIT plans.
+    if any(key in plan and plan[key] is not None for key in ('side', 'hard_stop', 'chase')):
+        return False
+    return all(plan.get(key) is None for key in ('stop_revision', 'pending_renewal'))
+
+
 def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliveries,
                           source_identity, now, *, guard, lease_alive):
     """Atomically delete one verified flat WAIT and its events under a held archive lease.
@@ -333,6 +350,9 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
                                   tape_deliveries, source_identity) != [candidate] or
                 candidate['rowid'] >= cursors['llm_scenario_review_tapes']):
             return {'status': 'DEFERRED_TAPE_EVIDENCE'}
+        decision = conn.execute('SELECT proposal FROM llm_scenario_decisions WHERE slot=?', (slot,)).fetchone()
+        if not decision or not _flat_noop_plan(decision[0]):
+            return {'status': 'DEFERRED_NONNOOP_PLAN'}
         current_proof = event_proof(conn, slot)
         if (not delivered_event_proof(current_proof, proof, event_deliveries, source_identity)
                 or any(event['rowid'] >= cursors['llm_scenario_review_events'] for event in current_proof['events'])):
