@@ -1,9 +1,26 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 
-from observability.events import build_event, emit_event
+import pytest
+
+from observability.events import build_event, emit_event, suppress_events
+
+
+def test_pytest_default_spool_is_discarded():
+    assert os.environ['PRISM_OBSERVABILITY_SPOOL'] == os.devnull
+
+
+def test_suppression_is_scoped_and_restored_on_error(tmp_path):
+    spool = tmp_path / 'events.jsonl'
+    with pytest.raises(RuntimeError):
+        with suppress_events():
+            assert emit_event('test.replay', service='fixture', spool_path=spool) is None
+            raise RuntimeError('failure')
+    assert not spool.exists()
+    assert emit_event('test.live', service='demo', spool_path=spool) is not None
 
 
 def test_build_event_has_correlation_and_provenance(monkeypatch):

@@ -7,6 +7,21 @@ from backtest.scenario_data import HistoricalScenarioData
 from engine.scenario_snapshot import TIMEFRAME_MS, candle_start
 
 
+def test_replay_does_not_emit_to_shared_observability_spool(tmp_path, monkeypatch):
+    from analysis import scenario_replay
+    from observability.events import emit_event
+    spool = tmp_path / 'events.jsonl'
+    monkeypatch.setenv('PRISM_OBSERVABILITY_SPOOL', str(spool))
+    def fake_replay(*args, **kwargs):
+        emit_event('btc.scenario.settlement_recorded', service='fixture')
+        return {'status': 'fixture'}
+    monkeypatch.setattr(scenario_replay, '_run_replay', fake_replay)
+    assert run_replay(None, None, None)['status'] == 'fixture'
+    assert not spool.exists()
+    emit_event('btc.scenario.decision_input', service='demo')
+    assert spool.exists()
+
+
 def inputs(duration_ms=600000):
     start=1790899200000;end=start+duration_ms
     index=pd.to_datetime(range(start-86400000,end,60000),unit='ms',utc=True)
