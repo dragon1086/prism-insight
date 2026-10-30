@@ -913,7 +913,8 @@ class ScenarioRuntime:
                 self.conn.commit()
                 stored_input = self.conn.execute(
                     "SELECT snapshot,context FROM llm_scenario_decisions WHERE slot=?", (slot,)).fetchone()
-                if stored_input is None or tuple(stored_input) != (_json(snap), _json(ctx)):
+                from observability.review_storage import review_text
+                if stored_input is None or (review_text(stored_input[0]), stored_input[1]) != (_json(snap), _json(ctx)):
                     raise ValueError("review_input_mutated")
                 if review_envelope.get("outcome", {}).get("status") != "COMPLETE":
                     failed = review_envelope.get("outcome", {})

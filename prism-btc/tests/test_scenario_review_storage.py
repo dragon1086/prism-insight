@@ -167,6 +167,14 @@ def test_referenced_tape_keeps_runtime_hash_and_fails_if_source_disappears():
     expected = _runtime_event_hash(conn)
     conn.execute('UPDATE llm_scenario_review_tapes SET body=?', (pack(compact(original, s, c, [e])),))
     assert _runtime_event_hash(conn) == expected
+    import gzip
+    from observability.review_storage import MAGIC
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + gzip.compress(s.encode()),))
+    assert _runtime_event_hash(conn) == expected
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + b'corrupt',))
+    with pytest.raises(ValueError):
+        _runtime_event_hash(conn)
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (s,))
     conn.execute('DELETE FROM llm_scenario_review_events')
     with pytest.raises(ValueError):
         _runtime_event_hash(conn)
@@ -200,6 +208,12 @@ def test_tape_writer_deduplicates_only_complete_recoverable_evidence(model_refer
     conn.commit()
     assert validate_tape_for_commit(conn, 1, raw, encoded) == encoded
     assert conn.in_transaction
+    conn.commit()
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (review_storage(canonical(snapshot)),))
+    compressed = tape_storage(conn, 1, raw)
+    assert compressed.startswith(REF_MAGIC)
+    assert read_tape(compressed, conn, 1, decode_legacy=review_text) == raw
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (canonical(snapshot),))
     conn.commit()
     conn.execute('DELETE FROM llm_scenario_review_events')
     conn.commit()

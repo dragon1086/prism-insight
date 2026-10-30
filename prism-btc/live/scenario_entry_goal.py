@@ -212,7 +212,9 @@ def stored_goal(conn, record):
         "WHERE slot=?", (record['resolved_goal']['decision_slot'],)).fetchall()
     if len(rows) != 1 or any(value is None for value in rows[0]):
         raise ValueError('entry_goal_original_decision_missing')
-    snapshot, context, proposal = map(json.loads, rows[0])
+    from observability.review_storage import review_text
+    snapshot = json.loads(review_text(rows[0][0]))
+    context, proposal = map(json.loads, rows[0][1:])
     if (context.get('entry_contract_version') != 2 or context.get('scenario_id') is not None
             or context.get('input_id') != origin['input_id']
             or context.get('entry_goal_decision_slot') != record['resolved_goal']['decision_slot']

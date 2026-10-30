@@ -751,7 +751,8 @@ class ScenarioExecution:
             (payload.get('action_id'),)).fetchall()
         if len(rows) != 1 or not all(rows[0]):
             self._fail('entry_convergence_decision_missing')
-        snapshot, context = map(json.loads, rows[0])
+        from observability.review_storage import review_text
+        snapshot, context = json.loads(review_text(rows[0][0])), json.loads(rows[0][1])
         if context.get('input_id') != payload.get('input_id'):
             self._fail('entry_convergence_input_mismatch')
         fact = entry_convergence(snapshot)

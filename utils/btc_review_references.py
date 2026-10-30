@@ -267,7 +267,10 @@ def read_tape(value, conn, slot, *, decode_legacy):
     decision = conn.execute(
         "SELECT snapshot,context FROM llm_scenario_decisions WHERE slot=?", (slot,)
     ).fetchone()
-    if not decision or not all(isinstance(item, str) for item in decision):
+    if not decision or not isinstance(decision[1], str):
+        raise ValueError("reference_decision_missing")
+    snapshot = decode_legacy(decision[0])
+    if not isinstance(snapshot, str):
         raise ValueError("reference_decision_missing")
     rows = conn.execute(
         "SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence LIMIT ?",
@@ -297,6 +300,6 @@ def read_tape(value, conn, slot, *, decode_legacy):
     if len(events) != event_count:
         raise ValueError("reference_event_sequence_invalid")
     try:
-        return restore(bundle, decision[0], decision[1], events)
+        return restore(bundle, snapshot, decision[1], events)
     except (KeyError, IndexError, TypeError) as exc:
         raise ValueError("reference_body_invalid") from exc

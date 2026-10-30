@@ -1,4 +1,5 @@
 import json
+import gzip
 import sqlite3
 
 import pytest
@@ -27,6 +28,19 @@ def test_exact_roundtrip_and_input_id_remains_queryable():
     assert len(encoded) < len(raw) and json.loads(encoded)[TAG] == 1
     assert conn.execute("SELECT json_extract(?, '$.input_id')", (encoded,)).fetchone() == ('fixture',)
     assert read_audit(encoded, conn, 100) == raw
+
+
+def test_compressed_snapshot_preserves_audit_reference_and_rejects_corruption():
+    from observability.review_storage import MAGIC
+    conn, event = fixture()
+    snapshot, context = conn.execute('SELECT snapshot,context FROM llm_scenario_decisions').fetchone()
+    raw = canonical(event)
+    encoded = compact(raw, snapshot, context)
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + gzip.compress(snapshot.encode()),))
+    assert read_audit(encoded, conn, 100) == raw
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + b'corrupt',))
+    with pytest.raises(ValueError):
+        read_audit(encoded, conn, 100)
 
 
 @pytest.mark.parametrize('change', ['missing', 'changed_snapshot', 'changed_context', 'duplicate'])
