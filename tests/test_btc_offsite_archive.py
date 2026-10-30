@@ -14,6 +14,23 @@ import pytest
 from utils import btc_offsite_archive as archive
 
 
+def test_snapshot_compression_keeps_commit_scan_and_rejects_corruption(tmp_path):
+    from observability.review_storage import MAGIC
+    path = tmp_path / 'source.sqlite'
+    snapshot = json.dumps({'git_revision': 'a' * 40, 'frame': 'x' * 1000})
+    with sqlite3.connect(path) as conn:
+        conn.execute('CREATE TABLE llm_scenario_decisions(snapshot TEXT,context TEXT)')
+        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?)', (snapshot, '{}'))
+    baseline = archive.referenced_commits(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + gzip.compress(snapshot.encode()),))
+    assert archive.referenced_commits(path) == baseline
+    with sqlite3.connect(path) as conn:
+        conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + b'corrupt',))
+    with pytest.raises(ValueError, match='snapshot_compression_unresolved'):
+        archive.referenced_commits(path)
+
+
 def test_ssh_receiver_bootstrap_stays_below_single_argument_limit(monkeypatch):
     commands = []
     def capture(args, **kwargs):
