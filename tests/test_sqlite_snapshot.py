@@ -45,6 +45,17 @@ def test_optional_event_proof_failure_preserves_verified_backup(tmp_path, monkey
                                capture_review_event_proof=True)
     assert fallback['decompression_verified'] is True and fallback['btc_review_event_proof_status'] == 'UNAVAILABLE'
     assert 'btc_review_event_proof_index' not in fallback and 'private fixture content' not in caplog.text
+    import builtins
+    real_import = builtins.__import__
+    def missing_proof(name, *args, **kwargs):
+        if name == 'utils.btc_review_event_proof':
+            raise ImportError('private fixture content')
+        return real_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', missing_proof)
+    missing = backup_database(source, tmp_path / 'missing.gz', reserve_bytes=0, capture_references=True,
+                              capture_review_event_proof=True)
+    assert missing['decompression_verified'] is True and missing['btc_review_event_proof_status'] == 'UNAVAILABLE'
+    assert 'btc_review_event_proof_index' not in missing and 'private fixture content' not in caplog.text
 
 
 def test_sparse_scan_only_punches_complete_zero_blocks(tmp_path, monkeypatch):

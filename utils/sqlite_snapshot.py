@@ -204,13 +204,13 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
                 retention_index = snapshot_index(index_conn, int(started), after_slot=after_slot,
                                                  guard=lambda: progress(None, None, None))
                 if capture_review_event_proof:
-                    from utils.btc_review_event_proof import snapshot_event_index
                     # Optional indexing must leave time for compression and verification.
                     proof_deadline = min(time.monotonic() + 20, deadline - 120)
                     def proof_guard():
                         if time.monotonic() >= proof_deadline:
                             raise TimeoutError('event_proof_deadline')
                     try:
+                        from utils.btc_review_event_proof import snapshot_event_index
                         proof_guard()
                         index_conn.set_progress_handler(lambda: int(time.monotonic() >= proof_deadline), 10000)
                         index_conn.execute('PRAGMA query_only=ON')
