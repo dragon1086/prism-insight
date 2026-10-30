@@ -382,6 +382,150 @@ def observing_runtime(tmp_path):
     return r, broker, calls, price
 
 
+def test_recovery_wait_retention_requires_complete_unchanged_journal(tmp_path):
+    import hashlib
+    import subprocess
+    import sys
+    from pathlib import Path
+    from utils.btc_review_retention import candidates, snapshot_index
+
+    r, broker, _, price = observing_runtime(tmp_path)
+    broker.ctx.update(historical_unsettled=[], incident_epoch_blocked=False, unknown_intents=False)
+    assert r.tick()['status'] == 'wait'
+    slot = int(r.test_clock[0] // 300)
+    at = r.test_clock[0] + 7 * 86400 + 300
+    selected = candidates(r.conn, at)['candidates']
+    assert [row['slot'] for row in selected] == [slot]
+    from utils.btc_offsite_archive import verify_retention_index
+    manifest = {'started_at': at, 'btc_retention_index': snapshot_index(r.conn, at)}
+    assert verify_retention_index(tmp_path / 'runtime.db', manifest) is True
+    root = Path(__file__).resolve().parents[2]
+    sources = [(name, (root / path).read_text()) for name, path in (
+        ('btc_review_storage_embedded', 'observability/review_storage.py'),
+        ('btc_review_refs_embedded', 'utils/btc_review_references.py'),
+        ('btc_retention_embedded', 'utils/btc_review_retention.py'),
+        ('btc_recovery_refs_embedded', 'utils/btc_recovery_references.py'))]
+    script = ("import sys,types,sqlite3,json\n"
+              "for name,source in " + repr(sources) + ":\n"
+              " m=types.ModuleType(name);exec(compile(source,name,'exec'),m.__dict__);sys.modules[name]=m\n"
+              "c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True)\n"
+              "print(json.dumps(sys.modules['btc_retention_embedded'].candidates(c,float(sys.argv[2]))['candidates']))")
+    child = subprocess.run([sys.executable, '-I', '-c', script, str(tmp_path / 'runtime.db'), str(at)],
+                           capture_output=True, text=True, check=True, timeout=15)
+    assert json.loads(child.stdout) == selected
+    from utils.btc_review_references import canonical, order_recipe, pack, sha, unpack
+    original_body = r.conn.execute('SELECT body FROM llm_scenario_review_tapes WHERE slot=?', (slot,)).fetchone()[0]
+    original = read_tape(original_body, r.conn, slot, decode_legacy=review_text)
+    tape, bundle = json.loads(original), unpack(original_body)
+    events = [op['event'] for op in tape['operations'] if op.get('kind') == 'record']
+    for index, op in enumerate(tape['operations']):
+        if op.get('kind') != 'generate':
+            continue
+        matches = [(i, event) for i, event in enumerate(events) if event.get('kind') == 'MODEL_RAW'
+                   and event.get('actual_request') == op['request'] and event.get('raw') == op['text']]
+        assert len(matches) == 1
+        sequence, event = matches[0]
+        bundle['tape']['operations'][index]['request'] = {'$btc_model_ref': {
+            'sequence': sequence, 'order': order_recipe(op['request']),
+            'request_sha256': sha(canonical(event['actual_request'])), 'response_sha256': sha(event['raw'])}}
+        bundle['tape']['operations'][index]['text'] = {'$btc_model_ref': sequence}
+    bundle['version'] = 2
+    r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (pack(bundle), slot))
+    r.conn.commit()
+    assert candidates(r.conn, at)['candidates'] == selected
+    assert verify_retention_index(tmp_path / 'runtime.db', manifest) is True
+    child = subprocess.run([sys.executable, '-I', '-c', script, str(tmp_path / 'runtime.db'), str(at)],
+                           capture_output=True, text=True, check=True, timeout=15)
+    assert json.loads(child.stdout) == selected
+    r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (original_body, slot))
+    r.conn.commit()
+    r.conn.execute('SAVEPOINT missing')
+    r.conn.execute("DELETE FROM llm_scenario_recovery_events WHERE slot=? AND kind='MODEL_RAW'", (slot,))
+    assert not candidates(r.conn, at)['candidates']
+    r.conn.execute('ROLLBACK TO missing')
+    r.conn.execute('RELEASE missing')
+    r.conn.execute('SAVEPOINT changed')
+    r.conn.execute("UPDATE llm_scenario_recovery_events SET body='{}' WHERE slot=? AND kind='DECISION'", (slot,))
+    assert not candidates(r.conn, at)['candidates']
+    r.conn.execute('ROLLBACK TO changed')
+    r.conn.execute('RELEASE changed')
+    r.conn.execute('SAVEPOINT extra')
+    r.conn.execute("INSERT INTO llm_scenario_recovery_events VALUES('extra',?,NULL,'PERMIT_CONSUMED',1,'{}')", (slot,))
+    assert not candidates(r.conn, at)['candidates']
+    r.conn.execute('ROLLBACK TO extra')
+    r.conn.execute('RELEASE extra')
+    r.conn.execute('SAVEPOINT missing_review')
+    original_body = r.conn.execute('SELECT body FROM llm_scenario_review_tapes WHERE slot=?', (slot,)).fetchone()[0]
+    original = read_tape(original_body, r.conn, slot, decode_legacy=review_text)
+    from live.scenario_review_storage import review_storage
+    r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (review_storage(original), slot))
+    r.conn.execute('DELETE FROM llm_scenario_review_events WHERE slot=? AND sequence=2', (slot,))
+    assert not candidates(r.conn, at)['candidates']
+    r.conn.execute('ROLLBACK TO missing_review')
+    r.conn.execute('RELEASE missing_review')
+    r.conn.execute('SAVEPOINT missing_fresh')
+    r.conn.execute('DELETE FROM llm_scenario_review_events WHERE slot=? AND sequence='
+                   '(SELECT max(sequence) FROM llm_scenario_review_events WHERE slot=?)', (slot, slot))
+    assert not candidates(r.conn, at)['candidates']
+    r.conn.execute('ROLLBACK TO missing_fresh')
+    r.conn.execute('RELEASE missing_fresh')
+    r.conn.execute('SAVEPOINT corrupt_tape')
+    r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (b'PRISM_REVIEW_REFS_V1\x00bad', slot))
+    assert not candidates(r.conn, at)['candidates']
+    r.conn.execute('ROLLBACK TO corrupt_tape')
+    r.conn.execute('RELEASE corrupt_tape')
+    r.conn.execute('DROP INDEX llm_scenario_recovery_slot_kind')
+    assert not candidates(r.conn, at)['candidates']
+    r.conn.execute('CREATE INDEX llm_scenario_recovery_slot_kind ON llm_scenario_recovery_events(kind,slot)')
+    assert not candidates(r.conn, at)['candidates']
+    r.conn.execute('DROP INDEX llm_scenario_recovery_slot_kind')
+    r.conn.execute('CREATE INDEX llm_scenario_recovery_slot_kind ON llm_scenario_recovery_events(slot,kind)')
+    from utils.btc_recovery_references import read_recovery
+    from utils.btc_review_retention import _delete_matched
+    from observability.btc_scenario_export import _anchor_hash
+    records = r.conn.execute('SELECT kind,body FROM llm_scenario_recovery_events WHERE slot=? ORDER BY rowid', (slot,)).fetchall()
+    def restored():
+        return [read_recovery(body, r.conn, slot, decode_legacy=review_text, expected_kind=kind)
+                for kind, body in records]
+    before = restored()
+    anchor_slot, anchor_body, identity = slot + 100, '{}', 'a' * 64
+    r.conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (anchor_slot, anchor_body))
+    r.conn.commit()
+    exporter = sqlite3.connect(':memory:')
+    exporter.executescript('CREATE TABLE meta(key PRIMARY KEY,value); CREATE TABLE cursors(stream PRIMARY KEY,seq);'
+                           'CREATE TABLE anchors(stream PRIMARY KEY,ref); CREATE TABLE outbox(id PRIMARY KEY,body);')
+    exporter.execute('INSERT INTO meta VALUES(?,?)', ('source_identity', identity))
+    exporter.execute('INSERT INTO cursors VALUES(?,?)', ('llm_scenario_review_tapes', anchor_slot))
+    anchor = _anchor_hash('llm_scenario_review_tapes', {'slot': anchor_slot, 'body': anchor_body}, r.conn)
+    exporter.execute('INSERT INTO anchors VALUES(?,?)', ('llm_scenario_review_tapes', anchor))
+    exporter.commit()
+    receipt = {'event_id': hashlib.sha256(f'{identity}:llm_scenario_review_tapes:{slot}'.encode()).hexdigest()[:32],
+               'event_type': 'btc.research.review_tape', 'source_identity': identity,
+               'body_sha256': selected[0]['tape_sha256'], 'tape_hash_status': 'MATCH'}
+    with pytest.raises(ValueError, match='retention_guard_failed'):
+        _delete_matched(r.conn, exporter, {'candidates': selected}, [receipt], identity, at,
+                        guard=lambda: True, lease_alive=lambda: False)
+    bad_receipt = dict(receipt, body_sha256='0' * 64)
+    assert _delete_matched(r.conn, exporter, {'candidates': selected}, [bad_receipt], identity, at,
+                           guard=lambda: True, lease_alive=lambda: True) == []
+    raw_id, raw_body = r.conn.execute("SELECT event_id,body FROM llm_scenario_recovery_events "
+                                      "WHERE slot=? AND kind='MODEL_RAW'", (slot,)).fetchone()
+    r.conn.execute('UPDATE llm_scenario_recovery_events SET body=? WHERE event_id=?', ('{}', raw_id))
+    r.conn.commit()
+    assert _delete_matched(r.conn, exporter, {'candidates': selected}, [receipt], identity, at,
+                           guard=lambda: True, lease_alive=lambda: True) == []
+    r.conn.execute('UPDATE llm_scenario_recovery_events SET body=? WHERE event_id=?', (raw_body, raw_id))
+    r.conn.commit()
+    assert _delete_matched(r.conn, exporter, {'candidates': selected}, [receipt], identity, at,
+                           guard=lambda: True, lease_alive=lambda: True) == [slot]
+    assert r.conn.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(anchor_slot,)]
+    assert restored() == before
+    r.test_clock[0] += 300
+    broker.ctx['account_captured_at'] = r.clock()
+    price[0] += 1
+    assert r.tick()['status'] == 'intent_pending'
+
+
 def test_actual_observing_first_wait_then_changed_evidence_probe(tmp_path):
     r, broker, calls, price = observing_runtime(tmp_path)
     first = r.tick()
@@ -399,6 +543,40 @@ def test_actual_observing_first_wait_then_changed_evidence_probe(tmp_path):
     assert state["recovery"]["budget"] == 50
     assert len(calls) == 3 and len(broker.executed) == 1
     assert r.conn.execute("SELECT COUNT(*) FROM llm_scenario_recovery_events WHERE kind='PERMIT_CONSUMED'").fetchone()[0] == 1
+
+
+def test_recovery_two_call_wait_is_retained_only_with_both_model_phases(tmp_path):
+    from utils.btc_review_retention import candidates
+
+    r, broker, _, price = observing_runtime(tmp_path)
+    broker.ctx.update(historical_unsettled=[], incident_epoch_blocked=False, unknown_intents=False)
+    assert r.tick()['status'] == 'wait'
+    r.test_clock[0] += 300
+    broker.ctx['account_captured_at'] = r.clock()
+    price[0] += 1
+    captured = {}
+    def generate(**request):
+        schema = request['response_schema']['properties']
+        if 'wait_proposal' in schema:
+            result = {'wait_proposal': wire(captured, 'WAIT'), 'candidates': [wire(captured, 'OPEN')],
+                      'no_candidate_reason': ''}
+        else:
+            token = next(x for x in schema['selection_token']['enum'] if x.startswith('WAIT:'))
+            result = {'selection_token': token, 'rationale': '관망 선택'}
+        return SimpleNamespace(text=json.dumps(result))
+    propose = make_calculated_review_proposer(generate=generate, clock=r.clock)
+    def invoke(snapshot, ctx, *, record):
+        captured.update(deepcopy(ctx))
+        return propose(snapshot, ctx, record=record)
+    r.calculated_review_propose = invoke
+    assert r.tick()['status'] == 'wait'
+    assert not broker.executed
+    slot = int(r.test_clock[0] // 300)
+    at = r.test_clock[0] + 7 * 86400 + 300
+    assert [item['slot'] for item in candidates(r.conn, at, after_slot=slot-1)['candidates']] == [slot]
+    r.conn.execute("DELETE FROM llm_scenario_recovery_events WHERE event_id=(SELECT event_id FROM "
+                   "llm_scenario_recovery_events WHERE slot=? AND kind='MODEL_RAW' LIMIT 1)", (slot,))
+    assert not candidates(r.conn, at, after_slot=slot-1)['candidates']
 
 
 def test_observing_changed_fresh_guard_cannot_consume_permit(tmp_path):
