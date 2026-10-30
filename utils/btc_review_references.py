@@ -194,7 +194,8 @@ def restore(bundle, snapshot, context, event_bodies):
                 ref = request['$btc_model_ref']
                 if (not isinstance(ref, dict) or set(ref) != {'sequence', 'order', 'request_sha256', 'response_sha256'}
                         or type(ref['sequence']) is not int or not 0 <= ref['sequence'] < len(event_bodies)
-                        or response != {'$btc_model_ref': ref['sequence']}):
+                        or not isinstance(response, dict) or set(response) != {'$btc_model_ref'}
+                        or type(response['$btc_model_ref']) is not int or response['$btc_model_ref'] != ref['sequence']):
                     raise ValueError('invalid_model_reference')
                 source = event_bodies[ref['sequence']]
                 if not isinstance(source, str) or len(source.encode('utf-8')) > MAX_BYTES:
