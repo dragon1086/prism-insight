@@ -399,3 +399,30 @@ def test_apply_cli_uses_sealed_manifest_and_refuses_unexplicit_invocation(tmp_pa
     assert result['status'] == 'COMMITTED' and result['updated'] == 1
     with sqlite3.connect(path) as conn:
         assert review_text(conn.execute('SELECT body FROM llm_scenario_broker_evidence').fetchone()[0]) == raw
+
+
+def test_manifest_transport_bounds_and_validates_ack(monkeypatch):
+    from types import SimpleNamespace
+    from tools import btc_account_compaction_transport as transport
+    from tools.btc_account_compaction import manifest_sha256
+    seen = []
+    proof, commit = 'b'*64, 'c'*40
+    manifest = {'source_identity':'d'*64,'cutoff':3,'after_rowid':0,'backup_proof_sha256':proof,
+                'rows':[{'rowid':1,'captured_at':1,'sha256':'e'*64}]}
+    seal = manifest_sha256(manifest)
+    def run(args, **kwargs):
+        seen.append((args, kwargs))
+        return SimpleNamespace(stdout=json.dumps({'status':'DEFERRED','manifest_sha256':seal}).encode())
+    monkeypatch.setattr(transport.subprocess, 'run', run)
+    assert transport.apply_remote(manifest, seal, proof, commit=commit)['status'] == 'DEFERRED'
+    assert json.loads(seen[0][1]['input']) == manifest and seen[0][1]['timeout'] == 25
+    assert 'prism-db' in seen[0][0]
+    with pytest.raises(ValueError, match='transport_identity_invalid'):
+        transport.apply_remote(manifest, seal, proof, commit='$(whoami)')
+    with pytest.raises(ValueError, match='transport_manifest_invalid'):
+        transport.apply_remote(dict(manifest, raw_account='secret'), seal, proof, commit=commit)
+    with pytest.raises(ValueError, match='transport_seal_mismatch'):
+        transport.apply_remote(manifest, '0'*64, proof, commit=commit)
+    monkeypatch.setattr(transport.subprocess, 'run', lambda *a, **k: SimpleNamespace(stdout=b'{"manifest_sha256":"wrong"}'))
+    with pytest.raises(ValueError, match='transport_response_invalid'):
+        transport.apply_remote(manifest, seal, proof, commit=commit)
