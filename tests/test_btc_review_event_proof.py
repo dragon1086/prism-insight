@@ -224,6 +224,15 @@ def test_recovery_reference_is_preserved_before_event_deletion():
     exporter.execute('INSERT INTO cursors VALUES(?,?)', ('llm_scenario_recovery_events', 1))
     exporter.execute('INSERT INTO anchors VALUES(?,?)', ('llm_scenario_recovery_events', anchor))
     exporter.commit()
+    exporter.execute('UPDATE anchors SET ref=? WHERE stream=?', ('0' * 64, 'llm_scenario_recovery_events'))
+    exporter.commit()
+    with pytest.raises(ValueError, match='event_delete_export_anchor_changed'):
+        delete_confirmed_slot(source, exporter, archived, tape, events, identity, now,
+                              guard=lambda: True, lease_alive=lambda: True)
+    assert source.execute('SELECT body FROM llm_scenario_recovery_events WHERE event_id=?', ('e',)).fetchone() == (stored,)
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_events').fetchone() == (2,)
+    exporter.execute('UPDATE anchors SET ref=? WHERE stream=?', (anchor, 'llm_scenario_recovery_events'))
+    exporter.commit()
     result = delete_confirmed_slot(source, exporter, archived, tape, events, identity, now,
                                    guard=lambda: True, lease_alive=lambda: True)
     assert result == {'status': 'REMOVED', 'events': 1}
