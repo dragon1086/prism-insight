@@ -196,6 +196,22 @@ def test_model_raw_locks_reference_source_during_write(tmp_path, monkeypatch):
     assert json.loads(read_event(stored, r.conn, 12, 1, decode_legacy=review_text)) == raw
 
 
+def test_model_raw_source_budget_preserves_unmodified_event(tmp_path, monkeypatch):
+    from analysis import scenario_review_tape
+    from utils import btc_review_event_references as refs
+    r, _, _ = runtime(tmp_path)
+    r._record_calculated_review(13, {'kind': 'MODEL_ERROR', 'detail': 'x' * 1500})
+    request = {'kind': 'MODEL_REQUEST', 'phase': 'single', 'request': {'prompt': 'short', 'timeout': 50}}
+    raw = {'kind': 'MODEL_RAW', 'phase': 'single', 'actual_request': dict(request['request'], timeout=49), 'raw': 'x'}
+    r._record_calculated_review(13, request)
+    monkeypatch.setattr(scenario_review_tape, 'MAX_BYTES', 1024)
+    monkeypatch.setattr(refs, 'compact', lambda *a: pytest.fail('source budget must stop before compaction'))
+    r._record_calculated_review(13, raw)
+    stored = r.conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=13 AND sequence=2').fetchone()[0]
+    assert not (isinstance(stored, bytes) and stored.startswith(EVENT_REF_MAGIC))
+    assert json.loads(review_text(stored)) == raw
+
+
 def test_review_event_storage_roundtrip_and_compression_failure_fallback(tmp_path, monkeypatch):
     import live.scenario_review_storage as storage
 
