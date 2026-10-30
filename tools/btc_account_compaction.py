@@ -9,6 +9,8 @@ from observability.btc_scenario_export import _anchor_hash
 from observability.review_storage import MAGIC, review_text
 from live.scenario_review_storage import review_storage
 
+MAX_BATCH_SOURCE_BYTES = 16_000_000
+
 
 def plan_old_accounts(conn, identity, cutoff, *, after_rowid=0, limit=1000):
     if (not conn.in_transaction or conn.execute('PRAGMA query_only').fetchone() != (1,)
@@ -19,8 +21,9 @@ def plan_old_accounts(conn, identity, cutoff, *, after_rowid=0, limit=1000):
         raise ValueError('invalid_plan_context')
     if [row[2] for row in conn.execute('PRAGMA index_info(llm_scenario_broker_evidence_kind)')] != ['kind']:
         raise ValueError('account_index_missing')
-    selected = conn.execute("SELECT rowid,captured_at,body FROM llm_scenario_broker_evidence INDEXED BY llm_scenario_broker_evidence_kind WHERE kind='account' AND rowid>? AND captured_at<? ORDER BY rowid LIMIT ?", (after_rowid, cutoff, limit)).fetchall()
+    selected = conn.execute("SELECT rowid,captured_at,body FROM llm_scenario_broker_evidence INDEXED BY llm_scenario_broker_evidence_kind WHERE kind='account' AND rowid>? AND captured_at<? ORDER BY rowid LIMIT ?", (after_rowid, cutoff, limit))
     rows = []
+    source_bytes = 0
     for rowid, captured, body in selected:
         if (type(rowid) is not int or rowid <= after_rowid or type(captured) not in (int, float)
                 or not math.isfinite(captured) or captured <= 0 or captured >= cutoff or not isinstance(body, str)):
@@ -28,6 +31,11 @@ def plan_old_accounts(conn, identity, cutoff, *, after_rowid=0, limit=1000):
         raw = body.encode()
         if len(raw) > 8_000_000 or not isinstance(json.loads(body), dict):
             raise ValueError('invalid_backup_body')
+        if source_bytes + len(raw) > MAX_BATCH_SOURCE_BYTES:
+            if not rows:
+                raise ValueError('batch_size_limit')
+            break
+        source_bytes += len(raw)
         rows.append({'rowid': rowid, 'captured_at': captured, 'sha256': hashlib.sha256(raw).hexdigest()})
     return {'source_identity': identity, 'cutoff': cutoff, 'after_rowid': after_rowid, 'rows': rows}
 
@@ -51,7 +59,7 @@ def compact_batch(conn, rows, guard):
         conn.execute('BEGIN IMMEDIATE')
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' AND tbl_name='llm_scenario_broker_evidence' LIMIT 1").fetchone():
             raise ValueError('unsupported_trigger')
-        updated = unchanged = saved = 0
+        updated = unchanged = saved = source_bytes = 0
         for index, proof in enumerate(rows):
             if index % 25 == 0 and guard() is not True:
                 raise ValueError('resource_guard')
@@ -65,7 +73,11 @@ def compact_batch(conn, rows, guard):
                 raw = review_text(current)
             else:
                 raise ValueError('source_type')
-            if hashlib.sha256(raw.encode()).hexdigest() != proof['sha256']:
+            raw_bytes = raw.encode()
+            source_bytes += len(raw_bytes)
+            if source_bytes > MAX_BATCH_SOURCE_BYTES:
+                raise ValueError('batch_size_limit')
+            if hashlib.sha256(raw_bytes).hexdigest() != proof['sha256']:
                 raise ValueError('source_changed')
             if isinstance(current, bytes):
                 unchanged += 1
@@ -83,7 +95,7 @@ def compact_batch(conn, rows, guard):
             if changed != 1:
                 raise ValueError('source_changed')
             updated += 1
-            saved += len(raw.encode()) - len(candidate)
+            saved += len(raw_bytes) - len(candidate)
         if guard() is not True:
             raise ValueError('resource_guard')
         conn.commit()

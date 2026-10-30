@@ -622,3 +622,24 @@ def test_operational_batch_defers_when_next_tick_is_too_close(tmp_path, monkeypa
     assert conn.execute('SELECT body FROM llm_scenario_broker_evidence').fetchone()[0] == raw
     monkeypatch.setattr(time, 'time', lambda: 1800000100.)
     assert guarded_operational_batch(conn, manifest, manifest_sha256(manifest), 'b'*64)['updated'] == 1
+
+
+def test_byte_budget_truncates_backup_plan_without_skipping_next_row(monkeypatch):
+    from tools import btc_account_compaction as module
+    conn, values, _ = fixture()
+    conn.execute('CREATE INDEX llm_scenario_broker_evidence_kind ON llm_scenario_broker_evidence(kind)')
+    conn.commit();conn.execute('PRAGMA query_only=ON');conn.execute('BEGIN')
+    monkeypatch.setattr(module, 'MAX_BATCH_SOURCE_BYTES', len(values[0].encode()) * 2)
+    first = module.plan_old_accounts(conn, 'a'*64, 4)
+    assert [r['rowid'] for r in first['rows']] == [1,2]
+    second = module.plan_old_accounts(conn, 'a'*64, 4, after_rowid=first['rows'][-1]['rowid'])
+    assert [r['rowid'] for r in second['rows']] == [3]
+
+
+def test_byte_budget_rolls_back_whole_write_batch(monkeypatch):
+    from tools import btc_account_compaction as module
+    conn, values, rows = fixture()
+    monkeypatch.setattr(module, 'MAX_BATCH_SOURCE_BYTES', len(values[0].encode()) * 2)
+    with pytest.raises(ValueError, match='batch_size_limit'):
+        module.compact_batch(conn, rows, lambda: True)
+    assert [row[0] for row in conn.execute('SELECT body FROM llm_scenario_broker_evidence ORDER BY rowid')] == values
