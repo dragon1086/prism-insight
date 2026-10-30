@@ -247,6 +247,8 @@ def test_shadow_dedup_respects_cross_type_collisions():
         {'event_id': 'd', 'event_type': 'other', 'timestamp': '01'},
         {'event_id': 'e', 'event_type': 'other', 'timestamp': '01'},
         {'event_id': 'e', 'event_type': evaluation, 'timestamp': '01'},
+        {'event_id': 'f', 'event_type': evaluation, 'timestamp': '01'},
+        {'event_id': 'f', 'event_type': ['invalid'], 'timestamp': '02'},
         {'event_type': evaluation, 'timestamp': '10'},
     ]
     assert [(row['event_id'], row['event_type']) for row in shadow._deduplicated(iter(rows))] == [

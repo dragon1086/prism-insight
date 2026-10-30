@@ -152,14 +152,10 @@ def emit_evaluation(
         experiment_ref = context["experiment_ref"]
         event_id = _stable("third-slot-evaluation", experiment_ref)
         target_path = Path(spool_path or DEFAULT_SPOOL_PATH)
-        existing = next(
-            (
-                event
-                for event in _load_events(target_path)
-                if event.get("event_id") == event_id
-            ),
-            None,
-        )
+        existing = None
+        for event in _load_events(target_path):
+            if existing is None and event.get("event_id") == event_id:
+                existing = event
         if existing is not None:
             return existing
         return emit_event(
@@ -200,7 +196,8 @@ def _deduplicated(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
         timestamp = str(event.get("timestamp") or "")
         existing = by_id.get(event_id)
         if existing is None or timestamp >= existing[0]:
-            relevant = event.get("event_type") in {EVALUATION_EVENT, OUTCOME_EVENT}
+            kind = event.get("event_type")
+            relevant = kind == EVALUATION_EVENT or kind == OUTCOME_EVENT
             by_id[event_id] = (timestamp, event if relevant else None)
     return [event for _, event in by_id.values() if event is not None]
 
