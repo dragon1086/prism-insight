@@ -22,10 +22,8 @@ case "$EVENT_RETENTION" in
     *) EVENT_RETENTION=invalid ;;
 esac
 SNAPSHOT_EXTRA=()
-RETENTION_EXTRA=()
 if [ "$EVENT_RETENTION" = 1 ]; then
     SNAPSHOT_EXTRA=(--capture-review-event-proof)
-    RETENTION_EXTRA=(--event-proof-only)
 fi
 
 # 로그 함수
@@ -121,24 +119,17 @@ else
     log "⚠ 원격 사본 재확인 실패; 로컬 DB 압축본을 보존합니다"
 fi
 
-# One transient timer starts a bounded cleanup in the existing idle window.
-CURRENT_SECOND=$((10#$(date +%S)))
-RETENTION_DELAY=$(((90 - CURRENT_SECOND) % 60))
-if [ "$RETENTION_DELAY" -lt 10 ]; then
-    RETENTION_DELAY=$((RETENTION_DELAY + 60))
-fi
-PYTHON_BIN=$(command -v python3)
+# The persistent daily timer consumes only this successfully verified backup.
 if [ "$EVENT_RETENTION" = invalid ]; then
     log "⚠ 잘못된 BTC 정리 설정; 백업은 보존하고 정리는 건너뜁니다"
-elif systemd-run --quiet --collect --on-active="${RETENTION_DELAY}s" --timer-property=AccuracySec=1s \
-    --unit="prism-btc-retention-${DATE}" --setenv="PATH=$PATH" \
-    --setenv="PRISM_DISABLE_SIGNAL_PUBLISH=1" \
-    --setenv="PYTHONPATH=$PROJECT_DIR/prism-btc:$PROJECT_DIR" \
-    /usr/bin/bash -c 'exec "$1" "$2" "$3" "${@:4}"' -- \
-    "$PYTHON_BIN" "$PROJECT_DIR/tools/run_btc_review_retention.py" "$BACKUP_DIR" ${RETENTION_EXTRA[@]+"${RETENTION_EXTRA[@]}"}; then
-    log "7일 정리 1회 등록; 실행 결과는 별도 확인"
+elif (set -C; printf '%s\n' "$EVENT_RETENTION" > "$BACKUP_DIR/.btc-retention-mode"); then
+    if systemctl is-active --quiet prism-btc-daily-retention.timer; then
+        log "7일 정리 백업 증거 준비; 정기 실행 결과는 별도 확인"
+    else
+        log "CRITICAL: BTC 정리 타이머 비활성; 백업은 보존하고 정리는 진행되지 않습니다"
+    fi
 else
-    log "⚠ 7일 정리 등록 실패; 다음 백업에서 재시도"
+    log "⚠ BTC 정리 표식 기록 실패; 백업은 보존하고 정리는 건너뜁니다"
 fi
 
 # 7일 이상 된 백업 삭제

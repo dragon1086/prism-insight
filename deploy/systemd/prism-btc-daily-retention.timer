@@ -1,0 +1,11 @@
+[Unit]
+Description=PRISM BTC verified daily review retention timer
+
+[Timer]
+OnCalendar=*-*-* 22:02:40 Asia/Seoul
+Persistent=true
+AccuracySec=1s
+Unit=prism-btc-daily-retention.service
+
+[Install]
+WantedBy=timers.target

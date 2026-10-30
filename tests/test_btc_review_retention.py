@@ -143,6 +143,81 @@ def test_backup_guard_rejects_snapshot_and_streamed_database_reader(tmp_path):
     assert _backup_idle(source, proc)
 
 
+def test_retention_allows_only_verified_b3_readonly_in_wal(tmp_path, monkeypatch):
+    import sqlite3
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1]/'prism-btc'))
+    from tools import btc_account_compaction as account, btc_review_event_compaction as resources
+    from utils import btc_review_retention as retention
+
+    source=tmp_path/'source.sqlite';db=sqlite3.connect(source)
+    assert db.execute('PRAGMA journal_mode=WAL').fetchone()[0]=='wal'
+    db.execute('CREATE TABLE fixture(value)');db.commit();db.close()
+    proc=tmp_path/'proc';process=proc/'99999999';(process/'fd').mkdir(parents=True);(process/'fdinfo').mkdir()
+    (process/'fd'/'4').symlink_to(source)
+    executable=tmp_path/'python';executable.write_bytes(b'fixture');(process/'exe').symlink_to(executable)
+    monkeypatch.setattr(account,'_B3_LAUNCHER','/fixture/python3')
+    monkeypatch.setattr(account,'_B3_INTERPRETER',str(executable))
+    monkeypatch.setattr(account,'_B3_SCRIPT','/fixture/run_b3_ae_shadow.py')
+    monkeypatch.setattr(account,'_fresh_b3_idle_health',lambda:True)
+    (process/'cmdline').write_bytes(b'/fixture/python3\0/fixture/run_b3_ae_shadow.py\0--market\0us\0')
+    (process/'fdinfo'/'4').write_text('flags:\t0100000\n')
+    original=retention._backup_idle
+    monkeypatch.setattr(retention,'_backup_idle',lambda path, *, allow_reader=None:original(path,proc,allow_reader=allow_reader))
+    monkeypatch.setattr(resources,'resource_guard',lambda *_:True)
+    assert not original(source,proc)
+    assert retention._resource_guard(source,'fixture')
+    (process/'fdinfo'/'4').write_text('flags:\t0100002\n')
+    assert not retention._resource_guard(source,'fixture')
+    (process/'fdinfo'/'4').write_text('flags:\t0100000\n')
+    backup=proc/'99999998';backup.mkdir();(backup/'cmdline').write_bytes(b'python3\0/fixture/sqlite_snapshot.py\0')
+    assert not retention._resource_guard(source,'fixture')
+    (backup/'cmdline').unlink();backup.rmdir()
+    db=sqlite3.connect(source);assert db.execute('PRAGMA journal_mode=DELETE').fetchone()[0]=='delete';db.close()
+    assert not retention._resource_guard(source,'fixture')
+
+
+def test_retention_wal_probe_keeps_existing_write_lock(tmp_path, monkeypatch):
+    import sqlite3
+    import subprocess
+    import sys
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1]/'prism-btc'))
+    from tools import btc_review_event_compaction as resources
+    from utils import btc_review_retention as retention
+
+    source=tmp_path/'source.sqlite';writer=sqlite3.connect(source,timeout=0)
+    assert writer.execute('PRAGMA journal_mode=WAL').fetchone()[0]=='wal'
+    writer.execute('CREATE TABLE fixture(value)');writer.execute('INSERT INTO fixture VALUES(1)');writer.commit()
+    writer.execute('BEGIN IMMEDIATE')
+    monkeypatch.setattr(resources,'resource_guard',lambda *_:True)
+    monkeypatch.setattr(retention,'_backup_idle',lambda path, *, allow_reader=None:allow_reader is not None)
+    assert retention._resource_guard(source,'fixture')
+    code="""import sqlite3,sys
+c=sqlite3.connect(sys.argv[1],timeout=0)
+try:
+ c.execute('BEGIN IMMEDIATE');print('UNEXPECTED_WRITE')
+except sqlite3.OperationalError:
+ print('LOCKED')
+"""
+    result=subprocess.run([sys.executable,'-c',code,str(source)],text=True,capture_output=True,timeout=10,check=True)
+    assert result.stdout.strip()=='LOCKED'
+    writer.execute('UPDATE fixture SET value=2');writer.commit()
+    assert writer.execute('SELECT value FROM fixture').fetchone()==(2,)
+    writer.close()
+
+
+def test_cleanup_reports_more_when_empty_page_is_truncated(tmp_path, monkeypatch):
+    from utils import btc_review_retention as retention
+    source=tmp_path/'source.sqlite'
+    db=sqlite3.connect(source);db.execute('CREATE TABLE llm_scenario_review_tapes(slot INTEGER,body TEXT)');db.commit();db.close()
+    exporter=tmp_path/'exporter.sqlite';exporter.touch()
+    index={'candidates':[],'truncated':True,'last_scanned_slot':42}
+    monkeypatch.setattr(retention,'SOURCE',source);monkeypatch.setattr(retention,'EXPORT_STATE',exporter)
+    monkeypatch.setattr(retention,'BACKUP_ROOT',tmp_path)
+    monkeypatch.setattr(retention,'_backup_evidence',lambda _: (tmp_path,'a'*64,b'{}',{},index))
+    assert retention.cleanup(tmp_path,now=1000)=={'status':'MORE_TO_SCAN','removed':0}
+    assert retention.read_cursor(tmp_path/'.btc-retention-cursor.json','a'*64)==42
+
+
 @pytest.mark.parametrize('second,delay', [(0, 25), (24, 1), (25, 0), (49, 0), (50, 35), (59, 26)])
 def test_single_idle_window_delay_is_bounded(second, delay):
     from utils.btc_review_retention import _window_delay
@@ -458,7 +533,7 @@ def test_cleanup_uses_backup_ack_delivery_lease_and_transaction(tmp_path, monkey
                     other.execute('UPDATE llm_scenario_decisions SET outcome=outcome WHERE slot=1')
         return True
     monkeypatch.setattr(retention, '_runtime_safe', runtime_safe)
-    assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': 0}
+    assert retention.cleanup(directory, now=now) == {'status': 'MORE_TO_SCAN', 'removed': 0}
     with sqlite3.connect(source_path) as db:
         assert db.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 2
         db.execute('UPDATE llm_scenario_decisions SET snapshot=? WHERE slot=1', ('{}',))
@@ -469,13 +544,13 @@ def test_cleanup_uses_backup_ack_delivery_lease_and_transaction(tmp_path, monkey
         return original_candidates(*args, **kwargs)
     monkeypatch.setattr(retention, 'candidates', count_candidates)
     runtime_checks.clear()
-    assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': 1}
+    assert retention.cleanup(directory, now=now) == {'status': 'MORE_TO_SCAN', 'removed': 1}
     assert checked.count(0) == 1  # The deleted row is fully rechecked only under the write lock.
     assert runtime_checks == [False, True]
     with sqlite3.connect(source_path) as db:
         assert db.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(2,)]
         assert db.execute('SELECT COUNT(*) FROM llm_scenario_decisions').fetchone()[0] == 2
-    assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': 0}
+    assert retention.cleanup(directory, now=now) == {'status': 'MORE_TO_SCAN', 'removed': 0}
     os.chmod(ack_path, 0o644)
     with pytest.raises(ValueError, match='retention_private_file_invalid'):
         retention.cleanup(directory, now=now)
@@ -532,14 +607,14 @@ def test_cleanup_processes_four_batches_and_resumes_cursor(tmp_path, monkeypatch
     monkeypatch.setattr(retention, 'fetch_deliveries', delivery)
     monkeypatch.setattr(retention, 'locked_remote_archive', lease)
     prepare(-1)
-    assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': 399 if missing_first else 400}
+    assert retention.cleanup(directory, now=now) == {'status': 'MORE_TO_SCAN', 'removed': 399 if missing_first else 400}
     assert calls == [100, 100, 100, 100]
     cursor = root / '.btc-retention-cursor.json'
     assert retention.read_cursor(cursor, identity) == (0 if missing_first else 400)
     prepare(retention.read_cursor(cursor, identity))
     expected_second = 2 if missing_first else 1
     missing_first = False
-    assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': expected_second}
+    assert retention.cleanup(directory, now=now) == {'status': 'MORE_TO_SCAN', 'removed': expected_second}
     assert retention.read_cursor(cursor, identity) == 401
     with sqlite3.connect(source_path) as db:
         assert db.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(402,)]
@@ -608,7 +683,7 @@ def test_cleanup_with_independently_restored_archive_and_real_lease(tmp_path, mo
     monkeypatch.setattr(retention, '_runtime_safe', lambda *_: True)
     monkeypatch.setattr(retention, 'fetch_deliveries', delivery)
     monkeypatch.setattr(retention.time, 'localtime', lambda *_: SimpleNamespace(tm_sec=30))
-    assert retention.cleanup(directory) == {'status': 'COMPLETE', 'removed': 1}
+    assert retention.cleanup(directory) == {'status': 'MORE_TO_SCAN', 'removed': 1}
     with sqlite3.connect(source_path) as db:
         assert db.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(2,)]
     assert (remote_root / ack['archive'] / 'receipt.json').is_file()
