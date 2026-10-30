@@ -113,6 +113,19 @@ def test_attested_pair_plan_reuses_verified_files_read_only(tmp_path):
     assert sorted(p.name for p in directory.iterdir()) == ['backup.typed.gz','restored.sqlite','verified-manifest.json']
 
 
+def test_attested_pair_plan_closes_backup_connection(tmp_path, monkeypatch):
+    _, proof = attested_pair_fixture(tmp_path)
+    original = sqlite3.connect
+    closed = []
+    class Tracked(sqlite3.Connection):
+        def close(self):
+            closed.append(True)
+            return super().close()
+    monkeypatch.setattr(subject.sqlite3,'connect',lambda *args,**kwargs:original(*args,factory=Tracked,**kwargs))
+    assert len(subject.plan_pairs_from_attestation(proof)['manifest']['pairs']) == 1
+    assert closed == [True]
+
+
 def test_attested_pair_plan_rejects_changed_backup_or_receipt(tmp_path):
     directory, proof = attested_pair_fixture(tmp_path)
     with (directory/'backup.typed.gz').open('ab') as stream:

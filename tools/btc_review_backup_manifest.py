@@ -1,5 +1,6 @@
 """Create private review-event fingerprints only after verifying a full backup."""
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -139,7 +140,7 @@ def plan_pairs_from_attestation(proof_path, *, after_rowid=0):
                 raise ValueError('backup_artifact_changed')
     check_files()
     from tools.btc_review_event_compaction import plan_backed_pairs
-    with sqlite3.connect(restored.resolve().as_uri() + '?mode=ro', uri=True, timeout=2) as conn:
+    with closing(sqlite3.connect(restored.resolve().as_uri() + '?mode=ro', uri=True, timeout=2)) as conn:
         conn.execute('PRAGMA query_only=ON')
         conn.execute('BEGIN')
         result = plan_backed_pairs(conn, proof['source_identity'], after_rowid=after_rowid)
