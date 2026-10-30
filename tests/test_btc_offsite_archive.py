@@ -391,6 +391,170 @@ def test_missing_source_commit_cannot_create_valid_bundle(payload):
         archive.make_bundle(repo, path / 'missing.bundle', ['0' * 40], path / 'missing.git')
 
 
+def test_sparse_restore_preserves_sqlite_bytes_and_rejects_wrong_zero_count(tmp_path, monkeypatch):
+    raw, zipped = tmp_path / 'source.sqlite', tmp_path / 'source.sqlite.gz'
+    with sqlite3.connect(raw) as db:
+        db.execute('PRAGMA secure_delete=ON')
+        db.execute('CREATE TABLE sample(v BLOB)')
+        db.execute('INSERT INTO sample VALUES(zeroblob(2200000))')
+        db.execute('DELETE FROM sample')
+    original = raw.read_bytes()
+    zipped.write_bytes(gzip.compress(original, mtime=0))
+    manifest = dict(sqlite_quick_check='ok', decompression_verified=True, source_writes=0,
+                    raw_bytes=len(original), raw_sha256=archive.digest(raw),
+                    compressed_bytes=zipped.stat().st_size, compressed_sha256=archive.digest(zipped))
+    zeros = sum(4096 for i in range(0, len(original), 4096) if original[i:i+4096] == bytes(4096))
+    assert zeros > 0
+    monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=100 * archive.CAP))
+    assert archive.verify_streamed_snapshot(zipped, manifest) == zeros
+    target = tmp_path / 'restored.sqlite'
+    archive.restore_snapshot(zipped, manifest, target, expected_zero_bytes=zeros)
+    assert target.read_bytes() == original
+    with sqlite3.connect(target) as db:
+        assert db.execute('PRAGMA quick_check').fetchone() == ('ok',)
+    with pytest.raises(ValueError, match='sparse_zero_mismatch'):
+        archive.restore_snapshot(zipped, manifest, tmp_path / 'wrong.sqlite', expected_zero_bytes=zeros + 4096)
+    with monkeypatch.context() as patched:
+        patched.setattr(archive.os, 'fstat', lambda _: SimpleNamespace(st_blocks=len(original) // 512 + 100))
+        with pytest.raises(ValueError, match='sparse_allocation_exceeded'):
+            archive.restore_snapshot(zipped, manifest, tmp_path / 'overallocated.sqlite', expected_zero_bytes=zeros)
+    with monkeypatch.context() as patched:
+        patched.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=archive.RESERVE + 1))
+        with pytest.raises(OSError, match='snapshot_restore_space_reserve_lost'):
+            archive.restore_snapshot(zipped, manifest, tmp_path / 'low-space.sqlite', expected_zero_bytes=zeros)
+
+
+def test_receiver_verifies_sparse_claim_and_preserves_previous_archive(payload, monkeypatch):
+    path, needed, manifest, _ = payload
+    monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=100 * archive.CAP))
+    monkeypatch.setattr(archive, '_require_sparse', lambda _: None)
+    zero = archive.verify_streamed_snapshot(path / archive.FILES[0], manifest)
+    metadata_path = path / archive.FILES[3]
+    metadata = json.loads(metadata_path.read_text())
+    metadata['sparse_zero_bytes'] = zero
+    metadata_path.write_text(json.dumps(metadata))
+    root = path / 'remote-sparse'
+    good = archive.receive(transfer(path), root, needed)
+    assert good['status'] == 'VERIFIED'
+    metadata['sparse_zero_bytes'] = zero + 4096 if zero + 4096 <= manifest['raw_bytes'] else zero - 4096
+    metadata_path.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match='sparse_zero_mismatch'):
+        archive.receive(transfer(path), root, needed)
+    metadata['sparse_zero_bytes'] = zero
+    metadata_path.write_text(json.dumps(metadata))
+    def unsupported(_):
+        raise ValueError('sparse_filesystem_unsupported')
+    monkeypatch.setattr(archive, '_require_sparse', unsupported)
+    with pytest.raises(ValueError, match='sparse_filesystem_unsupported'):
+        archive.receive(transfer(path), root, needed)
+    assert (root / good['archive'] / 'receipt.json').is_file()
+    assert not list(root.glob('.incoming-*'))
+
+
+def test_sparse_retained_archive_restore_checks_output_filesystem(payload, monkeypatch):
+    path, needed, manifest, _ = payload
+    monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=100 * archive.CAP))
+    probes = []
+    monkeypatch.setattr(archive, '_require_sparse', lambda root: probes.append(root))
+    zero = archive.verify_streamed_snapshot(path / archive.FILES[0], manifest)
+    metadata_path = path / archive.FILES[3]
+    metadata = json.loads(metadata_path.read_text())
+    metadata['sparse_zero_bytes'] = zero
+    metadata_path.write_text(json.dumps(metadata))
+    root, output = path / 'remote-sparse-replay', path / 'sparse-replay'
+    ack = archive.receive(transfer(path), root, needed)
+    result = archive.restore_archive(root, ack['archive'], output)
+    assert probes == [root, output]
+    assert archive.digest(Path(result['directory']) / 'snapshot.sqlite') == manifest['raw_sha256']
+    with monkeypatch.context() as limited:
+        limited.setattr(archive, '_sparse_raw_bound', lambda raw, empty: 1)
+        bundle_bytes = (root / ack['archive'] / archive.FILES[2]).stat().st_size
+        limited.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(
+            free=archive.RESERVE + 1 + 4 * bundle_bytes + 1024**2))
+        def reached_restore(*args, **kwargs):
+            assert kwargs['expected_zero_bytes'] == zero
+            raise RuntimeError('sparse_preflight_passed')
+        limited.setattr(archive, 'restore_snapshot', reached_restore)
+        with pytest.raises(RuntimeError, match='sparse_preflight_passed'):
+            archive.restore_archive(root, ack['archive'], path / 'limited-replay')
+        assert not list((path / 'limited-replay').glob('.restoring-*'))
+    def unsupported(_):
+        raise ValueError('sparse_filesystem_unsupported')
+    monkeypatch.setattr(archive, '_require_sparse', unsupported)
+    with pytest.raises(ValueError, match='sparse_filesystem_unsupported'):
+        archive.restore_archive(root, ack['archive'], path / 'unsupported-replay')
+    assert (root / ack['archive'] / 'receipt.json').is_file()
+    assert not list((path / 'unsupported-replay').glob('.restoring-*'))
+
+
+def test_sender_and_receiver_use_verified_sparse_bound(payload, monkeypatch):
+    from utils.sqlite_snapshot import backup_database
+
+    path, _, _, repo = payload
+    source = path / 'source.sqlite'
+    with sqlite3.connect(source) as db:
+        db.execute('PRAGMA secure_delete=ON')
+        db.execute('CREATE TABLE sparse_fixture(v BLOB)')
+        db.execute('INSERT INTO sparse_fixture VALUES(zeroblob(2200000))')
+        db.execute('DELETE FROM sparse_fixture')
+    snapshot = path / 'fresh-sparse.sqlite.gz'
+    manifest = backup_database(source, snapshot, reserve_bytes=0, capture_references=True)
+    root = path / 'remote-sparse-full'
+    monkeypatch.setattr(archive, 'backend_host', lambda _: 'fixture')
+    budget = []
+    def disk_usage(target):
+        return SimpleNamespace(free=budget[0] if str(target).startswith(str(root)) and budget else 100 * archive.CAP)
+    monkeypatch.setattr(archive.shutil, 'disk_usage', disk_usage)
+    monkeypatch.setattr(archive, '_sparse_raw_bound', lambda raw, zero: raw - zero)
+    monkeypatch.setattr(archive, '_require_sparse', lambda _: None)
+    real_restore = archive.restore_snapshot
+    def sparse_restore(zipped, details, raw, *, expected_zero_bytes=None):
+        if expected_zero_bytes is None:
+            return real_restore(zipped, details, raw)
+        # Model a sparse-capable receiver even when the test volume allocates holes.
+        blocks = (details['raw_bytes'] - expected_zero_bytes + 511) // 512
+        with monkeypatch.context() as patched:
+            patched.setattr(archive.os, 'fstat', lambda _: SimpleNamespace(st_blocks=blocks))
+            return real_restore(zipped, details, raw, expected_zero_bytes=expected_zero_bytes)
+    monkeypatch.setattr(archive, 'restore_snapshot', sparse_restore)
+    def ssh(_host, needed, *, stream=None):
+        if stream is None:
+            budget.append(archive.RESERVE + needed + 65536)
+            return SimpleNamespace(stdout=b'READY')
+        return SimpleNamespace(stdout=json.dumps(archive.receive(stream, root, needed)).encode())
+    monkeypatch.setattr(archive, 'ssh_archive', ssh)
+    ack = archive.archive(repo, snapshot, path / 'unused-config')
+    assert ack['status'] == 'VERIFIED'
+    saved = root / ack['archive']
+    meta = json.loads((saved / 'archive.json').read_text())
+    assert meta['sparse_zero_bytes'] > 0
+    manifest_size = Path(str(snapshot) + '.manifest.json').stat().st_size
+    dense = snapshot.stat().st_size + manifest_size + manifest['raw_bytes'] + 4 * (saved / 'history.bundle').stat().st_size + 1024**2
+    assert meta['required_space'] < dense
+    assert budget[0] < archive.RESERVE + dense
+    assert (saved / 'receipt.json').is_file()
+
+
+@pytest.mark.parametrize('zero', [True, -4096, 1, 8192])
+def test_invalid_sparse_bounds_are_rejected(zero):
+    with pytest.raises(ValueError, match='sparse_bound_invalid'):
+        archive._sparse_raw_bound(4096, zero)
+
+
+def test_sparse_bound_keeps_all_nonzero_bytes_and_conservative_slack():
+    raw, zero = 9336344576, 3049779200
+    nonzero = raw - zero
+    assert archive._sparse_raw_bound(raw, zero) == nonzero + max(64 * 1024**2, nonzero // 20)
+    assert archive._sparse_raw_bound(raw, 4096) == raw
+
+
+def test_sparse_probe_rejects_unsupported_filesystem_and_removes_probe(tmp_path, monkeypatch):
+    monkeypatch.setattr(archive.os, 'statvfs', lambda _: SimpleNamespace(f_frsize=8192))
+    with pytest.raises(ValueError, match='sparse_filesystem_unsupported'):
+        archive._require_sparse(tmp_path)
+    assert not list(tmp_path.iterdir())
+
+
 def test_expansion_limit_and_concurrent_receiver_preserve_existing(payload, monkeypatch):
     path, needed, manifest, _ = payload
     bad = dict(manifest, raw_bytes=1)

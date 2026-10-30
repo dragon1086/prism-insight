@@ -113,7 +113,7 @@ if [ "$RETENTION_DELAY" -lt 10 ]; then
     RETENTION_DELAY=$((RETENTION_DELAY + 60))
 fi
 PYTHON_BIN=$(command -v python3)
-if systemd-run --quiet --collect --on-active="${RETENTION_DELAY}s" \
+if systemd-run --quiet --collect --on-active="${RETENTION_DELAY}s" --timer-property=AccuracySec=1s \
     --unit="prism-btc-retention-${DATE}" --setenv="PATH=$PATH" \
     --setenv="PRISM_DISABLE_SIGNAL_PUBLISH=1" \
     --setenv="PYTHONPATH=$PROJECT_DIR/prism-btc:$PROJECT_DIR" \
