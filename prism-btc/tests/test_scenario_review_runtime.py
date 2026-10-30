@@ -225,6 +225,21 @@ def test_no_candidate_wait_has_one_call_and_no_intent(tmp_path):
     assert len(calls) == 1 and not broker.executed
 
 
+def test_flat_wait_becomes_retention_candidate_only_after_seven_days(tmp_path):
+    from utils.btc_review_retention import candidates
+
+    r, broker, _ = runtime(tmp_path, empty=True)
+    broker.ctx.update(historical_unsettled=[], incident_epoch_blocked=False, unknown_intents=False)
+    assert r.tick()['status'] == 'wait'
+    slot = int(r.test_clock[0] // 300)
+    assert not candidates(r.conn, r.test_clock[0] + 7 * 86400)['candidates']
+    assert [row['slot'] for row in candidates(r.conn, r.test_clock[0] + 7 * 86400 + 300)['candidates']] == [slot]
+    context = json.loads(r.conn.execute('SELECT context FROM llm_scenario_decisions WHERE slot=?', (slot,)).fetchone()[0])
+    context.pop('unknown_intents')
+    r.conn.execute('UPDATE llm_scenario_decisions SET context=? WHERE slot=?', (json.dumps(context), slot))
+    assert not candidates(r.conn, r.test_clock[0] + 7 * 86400 + 300)['candidates']
+
+
 @pytest.mark.parametrize("value", [1, 0, "false", None])
 def test_flag_is_strict_bool(tmp_path, value):
     with pytest.raises(ValueError, match="flag_must_be_bool"):
