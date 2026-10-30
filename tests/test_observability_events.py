@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from datetime import datetime, timezone
 
 import pytest
@@ -9,8 +11,16 @@ import pytest
 from observability.events import build_event, emit_event, suppress_events
 
 
-def test_pytest_default_spool_is_discarded():
+def test_pytest_default_spool_is_discarded(tmp_path):
     assert os.environ['PRISM_OBSERVABILITY_SPOOL'] == os.devnull
+    inherited = tmp_path / 'production-spool.jsonl'
+    env = {**os.environ, 'PRISM_OBSERVABILITY_SPOOL': str(inherited)}
+    code = ('import conftest, os; from observability.events import emit_event; '
+            'emit_event("test.collection", service="fixture"); '
+            'print(os.environ["PRISM_OBSERVABILITY_SPOOL"])')
+    result = subprocess.run([sys.executable, '-c', code], env=env, capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == os.devnull
+    assert not inherited.exists()
 
 
 def test_suppression_is_scoped_and_restored_on_error(tmp_path):
