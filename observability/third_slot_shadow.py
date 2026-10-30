@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Iterable, Iterator
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -176,8 +177,7 @@ def emit_evaluation(
         return None
 
 
-def _load_events(path: Path) -> list[dict[str, Any]]:
-    events = []
+def _load_events(path: Path) -> Iterator[dict[str, Any]]:
     try:
         with path.open("r", encoding="utf-8") as handle:
             for line in handle:
@@ -186,24 +186,23 @@ def _load_events(path: Path) -> list[dict[str, Any]]:
                 except json.JSONDecodeError:
                     continue
                 if isinstance(event, dict):
-                    events.append(event)
+                    yield event
     except OSError:
         pass
-    return events
 
 
-def _deduplicated(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _deduplicated(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     by_id = {}
     for event in events:
         event_id = str(event.get("event_id") or "")
         if not event_id:
             continue
+        timestamp = str(event.get("timestamp") or "")
         existing = by_id.get(event_id)
-        if existing is None or str(event.get("timestamp") or "") >= str(
-            existing.get("timestamp") or ""
-        ):
-            by_id[event_id] = event
-    return list(by_id.values())
+        if existing is None or timestamp >= existing[0]:
+            relevant = event.get("event_type") in {EVALUATION_EVENT, OUTCOME_EVENT}
+            by_id[event_id] = (timestamp, event if relevant else None)
+    return [event for _, event in by_id.values() if event is not None]
 
 
 def _frame_rows(frame: Any, *, after: str, through: str) -> list[dict[str, Any]]:
