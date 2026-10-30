@@ -82,11 +82,12 @@ def test_real_runtime_registers_original_source_and_renews_same_order(tmp_path, 
     record = deepcopy(active['entry_contract'])
     assert record['version'] == 2 and 'expected_progress' not in record['definition']
     assert r._entry_contract_registered(active)
-    from live.scenario_review_storage import review_storage
+    from live.scenario_review_storage import review_storage, review_text
     original_snapshot = r.conn.execute('SELECT snapshot FROM llm_scenario_decisions WHERE slot=?',
                                        (record['resolved_goal']['decision_slot'],)).fetchone()[0]
+    assert isinstance(original_snapshot, bytes)
     r.conn.execute('UPDATE llm_scenario_decisions SET snapshot=? WHERE slot=?',
-                   (review_storage(original_snapshot), record['resolved_goal']['decision_slot']))
+                   (review_storage(review_text(original_snapshot)), record['resolved_goal']['decision_slot']))
     r.conn.commit()
     assert r._entry_contract_registered(active)
     original = deepcopy(b.children()[0]['request'])

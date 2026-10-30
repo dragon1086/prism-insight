@@ -148,6 +148,20 @@ def test_recovery_compression_error_preserves_missing_evidence(monkeypatch):
         scenario_recovery.record_model_wire('x')
     assert conn.execute('SELECT COUNT(*) FROM llm_scenario_recovery_events').fetchone()[0] == 0
 
+
+def test_snapshot_storage_exact_roundtrip_and_fallback(monkeypatch):
+    from live import scenario_review_storage as storage
+    text = '{"price":"' + '가격' * 5000 + '"}'
+    encoded = storage.snapshot_storage(text)
+    assert isinstance(encoded, bytes) and storage.review_text(encoded) == text
+    assert storage.snapshot_storage('{}') == '{}'
+    monkeypatch.setattr(storage, 'review_storage', lambda _: (_ for _ in ()).throw(OSError('unavailable')))
+    assert storage.snapshot_storage(text) == text
+    monkeypatch.setattr(storage, 'review_storage', lambda _: 'changed')
+    assert storage.snapshot_storage(text) == text
+    with pytest.raises(ValueError, match='snapshot_body_type_invalid'):
+        storage.snapshot_storage(None)
+
 def test_referenced_tape_keeps_runtime_hash_and_fails_if_source_disappears():
     import json
     from utils.btc_review_references import canonical, compact, pack
