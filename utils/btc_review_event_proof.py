@@ -6,6 +6,7 @@ these fingerprints to an independently verified backup and delivery receipts.
 import hashlib
 import json
 import re
+import subprocess  # nosec B404 - fixed host-verified SSH and bounded query
 import sys
 
 if 'btc_review_storage_embedded' in sys.modules:
@@ -187,6 +188,42 @@ def verified_event_index(manifest_bytes, ack, source_identity):
     return index
 
 
+def fetch_event_deliveries(proof, source_identity):
+    """Read only the bounded event IDs needed for one archived slot."""
+    if (not isinstance(source_identity, str) or not re.fullmatch('[a-f0-9]{64}', source_identity)
+            or not isinstance(proof, dict) or not isinstance(proof.get('events'), list)
+            or not 1 <= len(proof['events']) <= MAX_EVENTS):
+        raise ValueError('event_delivery_query_invalid')
+    rowids = [row.get('rowid') if isinstance(row, dict) else None for row in proof['events']]
+    if any(type(rowid) is not int or rowid <= 0 for rowid in rowids) or len(set(rowids)) != len(rowids):
+        raise ValueError('event_delivery_query_invalid')
+    ids = [hashlib.sha256(f'{source_identity}:llm_scenario_review_events:{rowid}'.encode()).hexdigest()[:32]
+           for rowid in rowids]
+    sql = ("SELECT JSONExtractString(Body,'event_id') AS event_id, "
+           "JSONExtractString(Body,'event_type') AS event_type, "
+           "JSONExtractString(Body,'attributes','source_identity') AS source_identity, "
+           "JSONExtractString(Body,'attributes','body_sha256') AS body_sha256, "
+           "JSONExtractInt(Body,'attributes','source_rowid') AS source_rowid, "
+           "JSONExtractInt(Body,'attributes','source_sequence') AS source_sequence, "
+           "JSONExtractInt(Body,'attributes','decision_slot') AS decision_slot "
+           "FROM otel_logs WHERE LogAttributes['event.name']='btc.research.review' "
+           "AND JSONExtractString(Body,'event_id') IN {ids:Array(String)} LIMIT 257")
+    from pathlib import Path
+    from tools.clickstack_query import build_program
+    from utils.btc_offsite_archive import backend_host
+    host = backend_host(Path('/etc/prism-observability/tunnel.env'))
+    if host is None:
+        raise ValueError('event_delivery_backend_missing')
+    result = subprocess.run(['/usr/bin/ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', 'root@' + host,
+                             'set -a; . /etc/prism-observability/reader.env; set +a; python3 -'],
+                            input=build_program(sql, {'ids': ids}), text=True, capture_output=True,
+                            check=True, timeout=45)  # nosec B603  # nosemgrep
+    rows = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    if len(rows) > 256 or any(not isinstance(row, dict) or row.get('event_id') not in ids for row in rows):
+        raise ValueError('event_delivery_query_invalid')
+    return rows
+
+
 def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliveries,
                           source_identity, now, *, guard, lease_alive):
     """Atomically delete one verified flat WAIT and its events under a held archive lease.
@@ -273,3 +310,49 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
             conn.rollback()
         if exporter.in_transaction:
             exporter.rollback()
+
+
+def cleanup_events(backup_dir, *, now=None):
+    """Opt-in bounded cleanup; verify every source under the archive lease.
+
+    This does not advance the legacy tape cursor. A deferred slot stays intact.
+    """
+    import sqlite3
+    import time
+    from collections import Counter
+    from contextlib import closing
+    from utils import btc_review_retention as retention
+
+    _, identity, manifest, ack, _ = retention._backup_evidence(backup_dir)
+    index = verified_event_index(manifest, ack, identity)
+    if not index['items']:
+        return {'status': 'NO_CANDIDATES', 'removed_slots': 0, 'removed_events': 0}
+    if retention.EXPORT_STATE.is_symlink() or not retention.EXPORT_STATE.is_file():
+        raise ValueError('event_delete_export_state_invalid')
+    at = time.time() if now is None else now
+    prepared = []
+    for item in index['items']:
+        tape_receipts = retention.fetch_deliveries([item['candidate']], identity)
+        event_receipts = fetch_event_deliveries(item['proof'], identity)
+        prepared.append((item, tape_receipts, event_receipts))
+    statuses, removed_slots, removed_events = Counter(), 0, 0
+    try:
+        with retention.locked_remote_archive(ack, require_event_proof=True) as lease, closing(sqlite3.connect(
+                retention.SOURCE.resolve().as_uri() + '?mode=rw', uri=True, timeout=.1)) as conn, closing(sqlite3.connect(
+                retention.EXPORT_STATE.resolve().as_uri() + '?mode=rw', uri=True, timeout=.1)) as exporter:
+            def guard():
+                return retention._resource_guard(retention.SOURCE, identity) and retention._runtime_safe(conn)
+            for item, tape_receipts, event_receipts in prepared:
+                result = delete_confirmed_slot(conn, exporter, item, tape_receipts, event_receipts,
+                                               identity, at, guard=guard, lease_alive=lease)
+                statuses[result['status']] += 1
+                if result['status'] == 'REMOVED':
+                    removed_slots += 1
+                    removed_events += result['events']
+    except Exception as exc:
+        if removed_slots:
+            return {'status': 'PARTIAL', 'removed_slots': removed_slots, 'removed_events': removed_events,
+                    'error_type': type(exc).__name__}
+        raise
+    return {'status': 'DEFERRED' if any(k != 'REMOVED' for k in statuses) else 'COMPLETE',
+            'removed_slots': removed_slots, 'removed_events': removed_events, 'outcomes': dict(statuses)}

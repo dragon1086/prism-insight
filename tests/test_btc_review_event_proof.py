@@ -239,3 +239,65 @@ def test_unknown_dependency_or_missing_anchor_never_deletes(damage):
                               guard=lambda: True, lease_alive=lambda: True)
     assert source.execute('SELECT slot FROM llm_scenario_review_tapes ORDER BY slot').fetchall() == [(1,), (2,)]
     assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_events WHERE slot=1').fetchone() == (1,)
+
+
+def test_event_delivery_lookup_is_read_only_and_bounded(monkeypatch):
+    from types import SimpleNamespace
+    from utils import btc_offsite_archive, btc_review_event_proof as proof_module
+    proof = event_proof(fixture(), 1)
+    identity = 'a' * 64
+    rowid = proof['events'][0]['rowid']
+    event_id = hashlib.sha256(f'{identity}:llm_scenario_review_events:{rowid}'.encode()).hexdigest()[:32]
+    response = {'event_id': event_id, 'event_type': 'btc.research.review'}
+    calls = []
+    monkeypatch.setattr(btc_offsite_archive, 'backend_host', lambda _: 'fixture.local')
+    def execute(command, **kwargs):
+        calls.append(command)
+        assert event_id in kwargs['input'] and 'readonly' in kwargs['input'] and 'LIMIT 257' in kwargs['input']
+        return SimpleNamespace(stdout=json.dumps(response) + '\n')
+    monkeypatch.setattr(proof_module.subprocess, 'run', execute)
+    assert proof_module.fetch_event_deliveries(proof, identity) == [response]
+    assert len(calls) == 1 and calls[0][0] == '/usr/bin/ssh'
+    with pytest.raises(ValueError, match='event_delivery_query_invalid'):
+        proof_module.fetch_event_deliveries({'events': [{'rowid': '1 OR 1=1'}]}, identity)
+
+
+def test_cleanup_links_proof_receipts_and_lease_before_deletion(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from utils import btc_review_event_proof as proof_module, btc_review_retention as retention
+    source, exporter, archived, tape, events, identity, now = deletion_fixture()
+    source_path, exporter_path = tmp_path / 'source.sqlite', tmp_path / 'export.sqlite'
+    with sqlite3.connect(source_path) as target:
+        source.backup(target)
+    with sqlite3.connect(exporter_path) as target:
+        exporter.backup(target)
+    started = now
+    base = {'version': 1, 'as_of': int(started), 'cutoff_slot': int((started - 7 * 86400) // 300),
+            'after_slot': -1, 'last_scanned_slot': 2, 'scanned': 2, 'truncated': False,
+            'candidates': [archived['candidate']]}
+    index = {'version': 2, 'cutoff_slot': base['cutoff_slot'], 'after_slot': -1, 'last_scanned_slot': 2,
+             'truncated': False, 'items': [archived]}
+    manifest = json.dumps({'source_identity_sha256': identity, 'started_at': started, 'completed_at': started + 1,
+                           'raw_sha256': 'b' * 64, 'compressed_sha256': 'c' * 64, 'btc_retention_index': base,
+                           'btc_review_event_proof_status': 'CAPTURED', 'btc_review_event_proof_index': index}).encode()
+    ack = {'status': 'VERIFIED', 'retention_index_verified': True, 'review_event_proof_index_verified': True,
+           'archive': 'archive-' + 'd' * 32, 'raw_sha256': 'b' * 64, 'compressed_sha256': 'c' * 64,
+           'manifest_sha256': hashlib.sha256(manifest).hexdigest()}
+    monkeypatch.setattr(retention, 'SOURCE', source_path)
+    monkeypatch.setattr(retention, 'EXPORT_STATE', exporter_path)
+    monkeypatch.setattr(retention, '_backup_evidence', lambda _: (tmp_path, identity, manifest, ack, base))
+    monkeypatch.setattr(retention, 'fetch_deliveries', lambda *_: tape)
+    monkeypatch.setattr(proof_module, 'fetch_event_deliveries', lambda *_: events)
+    monkeypatch.setattr(retention, '_resource_guard', lambda *_: True)
+    monkeypatch.setattr(retention, '_runtime_safe', lambda *_: True)
+    @contextmanager
+    def locked(actual_ack, *, require_event_proof):
+        assert actual_ack == ack and require_event_proof is True
+        yield lambda: True
+    monkeypatch.setattr(retention, 'locked_remote_archive', locked)
+    result = proof_module.cleanup_events(tmp_path, now=now)
+    assert result['status'] == 'COMPLETE' and result['removed_slots'] == result['removed_events'] == 1
+    with sqlite3.connect(source_path) as check:
+        assert check.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(2,)]
+        assert check.execute('SELECT slot FROM llm_scenario_review_events').fetchall() == [(2,)]
+        assert check.execute('SELECT COUNT(*) FROM llm_scenario_decisions').fetchone() == (2,)

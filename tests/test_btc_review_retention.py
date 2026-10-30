@@ -235,6 +235,16 @@ def test_remote_archive_rechecks_files_and_rejects_tampering(tmp_path, monkeypat
         return real_popen([os.sys.executable, '-I', '-c', code], **kwargs)
     monkeypatch.setattr(btc_offsite_archive, 'backend_host', lambda _: 'fixture.local')
     monkeypatch.setattr(btc_review_retention.subprocess, 'Popen', local_ssh)
+    with pytest.raises(ValueError, match='retention_archive_unverified'):
+        with btc_review_retention.locked_remote_archive(ack, require_event_proof=True):
+            pass
+    ack['review_event_proof_index_verified'] = True
+    with pytest.raises(ValueError, match='retention_archive_unverified'):
+        with btc_review_retention.locked_remote_archive(ack, require_event_proof=True):
+            pass
+    receipt.write_text(json.dumps({k: v for k, v in ack.items() if k != 'archive'}))
+    with btc_review_retention.locked_remote_archive(ack, require_event_proof=True) as alive:
+        assert alive()
     with btc_review_retention.locked_remote_archive(ack) as alive:
         assert alive()
         with (root / '.receive.lock').open('r+') as lock:
@@ -633,3 +643,14 @@ def test_runner_reports_result_and_redacts_exception(monkeypatch, capsys):
     monkeypatch.setattr(runner, 'cleanup', guarded)
     assert runner.main(['/fixture']) == 1
     assert json.loads(capsys.readouterr().out)['reason'] == 'retention_guard_failed'
+
+
+def test_event_proof_runner_is_explicit_opt_in(monkeypatch, capsys):
+    from tools import run_btc_review_retention as runner
+    from utils import btc_review_event_proof
+    monkeypatch.setattr(runner, 'cleanup', lambda _: {'status': 'NO_CANDIDATES', 'removed': 0})
+    monkeypatch.setattr(btc_review_event_proof, 'cleanup_events', lambda _: {'status': 'COMPLETE', 'removed_slots': 1})
+    assert runner.main(['/fixture']) == 0
+    assert json.loads(capsys.readouterr().out)['status'] == 'NO_CANDIDATES'
+    assert runner.main(['/fixture', '--event-proof-only']) == 0
+    assert json.loads(capsys.readouterr().out)['removed_slots'] == 1
