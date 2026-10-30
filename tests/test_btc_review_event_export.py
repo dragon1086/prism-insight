@@ -324,7 +324,8 @@ def test_compressed_and_legacy_rows_share_export_anchor(stream):
     assert export._anchor_hash(stream, row) == export._anchor_hash(stream, packed)
 
 
-def test_referenced_tape_restores_export_anchor_and_fails_on_missing_source(lane):
+@pytest.mark.parametrize('with_generate', [False, True])
+def test_referenced_tape_restores_export_anchor_and_fails_on_missing_source(lane, with_generate):
     from utils.btc_review_references import canonical, compact, pack
 
     snapshot = {'z': 1, 'a': {'second': 2, 'first': 1}}
@@ -332,15 +333,15 @@ def test_referenced_tape_restores_export_anchor_and_fails_on_missing_source(lane
     request = {'system_prompt': 'private fixture', 'schema': {'z': 1, 'a': 2}}
     event = {'kind': 'MODEL_RAW', 'actual_request': request, 'raw': 'private fixture'}
     inputs = {'snapshot': snapshot, 'context': context, 'bindings': {}}
+    operations = ([{'kind': 'generate', 'request': request, 'text': 'private fixture'}] if with_generate else [])
     body = {'version': 1, 'inputs': inputs, 'inputs_sha256': tape_digest(inputs), 'calls': 0,
-            'operations': [{'kind': 'generate', 'request': request, 'text': 'private fixture'},
-                           {'kind': 'record', 'event': event}],
+            'operations': operations + [{'kind': 'record', 'event': event}],
             'outcome': {'status': 'COMPLETE', 'result': {}}}
     body['sha256'] = tape_digest(body)
     original = json.dumps(body)
     snapshot_text, context_text, event_text = map(canonical, (snapshot, context, event))
     bundle = compact(original, snapshot_text, context_text, [event_text])
-    assert bundle['version'] == 2
+    assert bundle['version'] == (2 if with_generate else 1)
     packed = pack(bundle)
     create_review(lane[0])
     with sqlite3.connect(lane[0]) as conn:
