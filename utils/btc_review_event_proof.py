@@ -14,6 +14,7 @@ from utils.btc_review_event_references import read_event
 MAX_EVENTS = 128
 MAX_RECOVERY = 16
 MAX_BYTES = 8_000_000
+MAX_SLOTS = 20
 
 
 def _digest(text):
@@ -63,6 +64,24 @@ def event_proof(conn, slot):
             raise ValueError('proof_size_exceeded')
         recovery.append({'event_id': event_id, 'kind': kind, 'sha256': digest})
     return {'slot': slot, 'events': events, 'recovery': recovery}
+
+
+def snapshot_event_index(conn, now, *, after_slot=-1):
+    """Index a bounded page of eligible WAITs within an existing read snapshot.
+
+    The caller must bind and verify the result against its backup. This index
+    alone is not authority to delete any data.
+    """
+    if not conn.in_transaction:
+        raise ValueError('proof_snapshot_transaction_required')
+    from utils.btc_review_retention import candidates
+    page = candidates(conn, now, after_slot=after_slot, limit=100)
+    selected = page['candidates'][:MAX_SLOTS]
+    items = [{'candidate': row, 'proof': event_proof(conn, row['slot'])} for row in selected]
+    capped = len(page['candidates']) > MAX_SLOTS
+    last = selected[-1]['slot'] if capped else page['last_scanned_slot']
+    return {'version': 2, 'cutoff_slot': page['cutoff_slot'], 'after_slot': after_slot,
+            'last_scanned_slot': last, 'truncated': capped or page['scanned'] == 100, 'items': items}
 
 
 def delivered_event_proof(current, archived, deliveries, source_identity):

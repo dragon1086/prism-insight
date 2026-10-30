@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 
 from utils.btc_recovery_references import canonical, compact, pack
-from utils.btc_review_event_proof import delivered_event_proof, event_proof
+from utils.btc_review_event_proof import delivered_event_proof, event_proof, snapshot_event_index
 
 
 def fixture():
@@ -77,3 +77,28 @@ def test_backup_and_every_delivery_must_match_exactly():
     assert not delivered_event_proof(proof, changed, [receipt], identity)
     with pytest.raises(ValueError, match='proof_source_invalid'):
         delivered_event_proof(proof, proof, [receipt], 'invalid')
+
+
+def test_snapshot_index_is_bounded_and_does_not_skip_candidates():
+    conn = sqlite3.connect(':memory:')
+    conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
+                       'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);'
+                       'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body);'
+                       'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body);')
+    context = json.dumps({'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
+                          'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False})
+    for slot in range(1, 24):
+        conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (slot, '{}'))
+        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)', (slot, '{}', context, '{"action":"WAIT"}', '{"status":"wait"}'))
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (slot, 0, '{"kind":"MODEL_RAW"}'))
+    conn.commit()
+    now = 7 * 86400 + 100 * 300
+    with pytest.raises(ValueError, match='proof_snapshot_transaction_required'):
+        snapshot_event_index(conn, now)
+    conn.execute('BEGIN')
+    first = snapshot_event_index(conn, now)
+    assert len(first['items']) == 20 and first['truncated'] and first['last_scanned_slot'] == 20
+    second = snapshot_event_index(conn, now, after_slot=first['last_scanned_slot'])
+    assert [item['candidate']['slot'] for item in second['items']] == [21, 22, 23]
+    assert not second['truncated']
+    conn.rollback()
