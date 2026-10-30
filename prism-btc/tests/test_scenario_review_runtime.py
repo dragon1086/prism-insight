@@ -392,6 +392,32 @@ def test_recovery_wait_retention_requires_complete_unchanged_journal(tmp_path):
     child = subprocess.run([sys.executable, '-I', '-c', script, str(tmp_path / 'runtime.db'), str(at)],
                            capture_output=True, text=True, check=True, timeout=15)
     assert json.loads(child.stdout) == selected
+    from utils.btc_review_references import canonical, order_recipe, pack, sha, unpack
+    original_body = r.conn.execute('SELECT body FROM llm_scenario_review_tapes WHERE slot=?', (slot,)).fetchone()[0]
+    original = read_tape(original_body, r.conn, slot, decode_legacy=review_text)
+    tape, bundle = json.loads(original), unpack(original_body)
+    events = [op['event'] for op in tape['operations'] if op.get('kind') == 'record']
+    for index, op in enumerate(tape['operations']):
+        if op.get('kind') != 'generate':
+            continue
+        matches = [(i, event) for i, event in enumerate(events) if event.get('kind') == 'MODEL_RAW'
+                   and event.get('actual_request') == op['request'] and event.get('raw') == op['text']]
+        assert len(matches) == 1
+        sequence, event = matches[0]
+        bundle['tape']['operations'][index]['request'] = {'$btc_model_ref': {
+            'sequence': sequence, 'order': order_recipe(op['request']),
+            'request_sha256': sha(canonical(event['actual_request'])), 'response_sha256': sha(event['raw'])}}
+        bundle['tape']['operations'][index]['text'] = {'$btc_model_ref': sequence}
+    bundle['version'] = 2
+    r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (pack(bundle), slot))
+    r.conn.commit()
+    assert candidates(r.conn, at)['candidates'] == selected
+    assert verify_retention_index(tmp_path / 'runtime.db', manifest) is True
+    child = subprocess.run([sys.executable, '-I', '-c', script, str(tmp_path / 'runtime.db'), str(at)],
+                           capture_output=True, text=True, check=True, timeout=15)
+    assert json.loads(child.stdout) == selected
+    r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (original_body, slot))
+    r.conn.commit()
     r.conn.execute('SAVEPOINT missing')
     r.conn.execute("DELETE FROM llm_scenario_recovery_events WHERE slot=? AND kind='MODEL_RAW'", (slot,))
     assert not candidates(r.conn, at)['candidates']
