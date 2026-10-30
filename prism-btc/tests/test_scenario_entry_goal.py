@@ -82,11 +82,12 @@ def test_real_runtime_registers_original_source_and_renews_same_order(tmp_path, 
     record = deepcopy(active['entry_contract'])
     assert record['version'] == 2 and 'expected_progress' not in record['definition']
     assert r._entry_contract_registered(active)
-    from live.scenario_review_storage import review_storage
+    from live.scenario_review_storage import review_storage, review_text
     original_snapshot = r.conn.execute('SELECT snapshot FROM llm_scenario_decisions WHERE slot=?',
                                        (record['resolved_goal']['decision_slot'],)).fetchone()[0]
+    assert isinstance(original_snapshot, bytes)
     r.conn.execute('UPDATE llm_scenario_decisions SET snapshot=? WHERE slot=?',
-                   (review_storage(original_snapshot), record['resolved_goal']['decision_slot']))
+                   (review_storage(review_text(original_snapshot)), record['resolved_goal']['decision_slot']))
     r.conn.commit()
     assert r._entry_contract_registered(active)
     original = deepcopy(b.children()[0]['request'])
@@ -606,7 +607,8 @@ def test_goal_source_loss_does_not_disable_registered_numeric_failure_exit(tmp_p
         elif damage == 'decision_missing':
             r.conn.execute('DELETE FROM llm_scenario_decisions WHERE slot=?', (slot,))
         else:
-            snap = json.loads(r.conn.execute('SELECT snapshot FROM llm_scenario_decisions WHERE slot=?', (slot,)).fetchone()[0])
+            from live.scenario_review_storage import review_text
+            snap = json.loads(review_text(r.conn.execute('SELECT snapshot FROM llm_scenario_decisions WHERE slot=?', (slot,)).fetchone()[0]))
             snap['timeframes']['4h']['ma_path']['confirmed_points'][0]['ma35'] += 1
             r.conn.execute('UPDATE llm_scenario_decisions SET snapshot=? WHERE slot=?', (json.dumps(snap), slot))
         r.conn.commit()

@@ -212,13 +212,15 @@ def test_resealed_source_replay_and_fresh_guard_still_allow_failed_exit(field, v
 def test_assembled_prompts_delegate_claims_and_keep_one_v1_namespace(tmp_path, action):
     import json
     from live.scenario_model_input import restore_model_input
+    from live.scenario_review_storage import review_text
     from live.scenario_analysis_frames import analysis_model_view
     from engine.scenario_ma_context import build_ma_structure_context
     from tests.test_scenario_explanation_pipeline import run_pipeline
     runtime, _, outcome, _, requests, old_plan = run_pipeline(tmp_path, action)
     assert outcome['status'] in {'wait', 'intent_pending'}
-    snap, original_ctx = map(json.loads, runtime.conn.execute(
-        'SELECT snapshot,context FROM llm_scenario_decisions').fetchone())
+    snapshot_raw, context_raw = runtime.conn.execute(
+        'SELECT snapshot,context FROM llm_scenario_decisions').fetchone()
+    snap, original_ctx = json.loads(review_text(snapshot_raw)), json.loads(context_raw)
     expected = analysis_model_view(dict(market_snapshot=snap,
         contract_context=dict(ma_structure=build_ma_structure_context(snap, original_ctx))))
     for request in requests:

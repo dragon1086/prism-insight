@@ -878,8 +878,9 @@ class ScenarioRuntime:
                     # Baseline, mandatory INPUT and the full decision input must
                     # share one commit. _save() would commit the baseline early.
                     self.conn.execute("UPDATE llm_scenario_state SET body=? WHERE id=1", (_json(current),))
+                from live.scenario_review_storage import snapshot_storage
                 self.conn.execute("UPDATE llm_scenario_decisions SET snapshot=?, context=? WHERE slot=?",
-                                  (_json(snap), _json(ctx), slot))
+                                  (snapshot_storage(_json(snap)), _json(ctx), slot))
                 if ctx.get("recovery_observing"):
                     recovery.compact_input_event(self.conn, recovery_input_event, slot)
                 self.conn.commit()
