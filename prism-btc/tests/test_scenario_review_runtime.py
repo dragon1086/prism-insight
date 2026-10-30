@@ -212,6 +212,32 @@ def test_model_raw_source_budget_preserves_unmodified_event(tmp_path, monkeypatc
     assert json.loads(review_text(stored)) == raw
 
 
+def test_model_raw_rechecks_record_limit_after_acquiring_write_lock(tmp_path):
+    r, _, _ = runtime(tmp_path)
+    r.conn.executemany('INSERT INTO llm_scenario_review_events VALUES(?,?,?)',
+                       [(14, n, '{}') for n in range(127)])
+    r.conn.commit()
+    real = r.conn
+    class RacingConnection:
+        raced = False
+        def __getattr__(self, name):
+            return getattr(real, name)
+        def execute(self, statement, parameters=()):
+            if not self.raced and statement.startswith('SELECT COUNT(*) FROM llm_scenario_review_events'):
+                self.raced = True
+                old = real.execute(statement, parameters).fetchone()
+                with sqlite3.connect(tmp_path / 'runtime.db', timeout=0) as other:
+                    other.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (14, 127, '{}'))
+                return SimpleNamespace(fetchone=lambda: old)
+            return real.execute(statement, parameters)
+    r.conn = RacingConnection()
+    raw = {'kind': 'MODEL_RAW', 'phase': 'single', 'actual_request': {'timeout': 1}, 'raw': 'x'}
+    with pytest.raises(ValueError, match='review_record_bound'):
+        r._record_calculated_review(14, raw)
+    assert real.execute('SELECT count(*) FROM llm_scenario_review_events WHERE slot=14').fetchone()[0] == 128
+    real.rollback()
+
+
 def test_review_event_storage_roundtrip_and_compression_failure_fallback(tmp_path, monkeypatch):
     import live.scenario_review_storage as storage
 
