@@ -268,6 +268,7 @@ def test_captured_references_avoid_sender_restore_but_receiver_verifies(payload,
 def test_standalone_receiver_recomputes_retention_index(payload, monkeypatch):
     import shlex
     from utils.sqlite_snapshot import backup_database
+    from utils.btc_review_event_proof import snapshot_event_index
 
     path, _, _, repo = payload
     source = path / 'retention.sqlite'
@@ -275,13 +276,21 @@ def test_standalone_receiver_recomputes_retention_index(payload, monkeypatch):
            'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False}
     with sqlite3.connect(source) as conn:
         conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
-                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,context TEXT,proposal TEXT,outcome TEXT,snapshot TEXT DEFAULT "{}");')
+                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,context TEXT,proposal TEXT,outcome TEXT,snapshot TEXT DEFAULT "{}");'
+                           'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT);'
+                           'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body TEXT);')
         conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (1, '{"kind":"WAIT"}'))
         conn.execute('INSERT INTO llm_scenario_decisions(slot,context,proposal,outcome) VALUES(?,?,?,?)',
                      (1, json.dumps(ctx), json.dumps({'action': 'WAIT'}), json.dumps({'status': 'wait'})))
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 0, '{"kind":"MODEL_RAW"}'))
     snapshot = path / 'retention.sqlite.gz'
     manifest = backup_database(source, snapshot, reserve_bytes=0, capture_references=True)
     assert len(manifest['btc_retention_index']['candidates']) == 1
+    with sqlite3.connect(source) as conn:
+        conn.execute('BEGIN')
+        manifest['btc_review_event_proof_index'] = snapshot_event_index(conn, int(manifest['started_at']))
+    manifest_path = Path(str(snapshot) + '.manifest.json')
+    manifest_path.write_text(json.dumps(manifest))
     root = path / 'embedded-remote'
     original_run = archive.subprocess.run
     def local_ssh(args, **kwargs):
@@ -295,9 +304,14 @@ def test_standalone_receiver_recomputes_retention_index(payload, monkeypatch):
     monkeypatch.setattr(archive, 'backend_host', lambda _: 'fixture')
     ack = archive.archive(repo, snapshot, path / 'unused-config')
     assert ack['retention_index_verified'] is True
-    manifest_path = Path(str(snapshot) + '.manifest.json')
+    assert ack['review_event_proof_index_verified'] is True
     altered = json.loads(manifest_path.read_text())
     altered['btc_retention_index']['candidates'][0]['tape_sha256'] = '0' * 64
+    manifest_path.write_text(json.dumps(altered))
+    with pytest.raises(subprocess.CalledProcessError):
+        archive.archive(repo, snapshot, path / 'unused-config')
+    altered = json.loads(json.dumps(manifest))
+    altered['btc_review_event_proof_index']['items'][0]['proof']['events'][0]['sha256'] = '0' * 64
     manifest_path.write_text(json.dumps(altered))
     with pytest.raises(subprocess.CalledProcessError):
         archive.archive(repo, snapshot, path / 'unused-config')

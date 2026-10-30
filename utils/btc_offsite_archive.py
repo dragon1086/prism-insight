@@ -108,6 +108,7 @@ def ssh_archive(host, needed, *, stream=None, restore=None):
     accounting_source = Path(__file__).with_name('btc_accounting_audit_references.py').read_text()
     storage_source = Path(__file__).resolve().parent.parent.joinpath('observability/review_storage.py').read_text()
     retention_source = Path(__file__).with_name('btc_review_retention.py').read_text()
+    event_proof_source = Path(__file__).with_name('btc_review_event_proof.py').read_text()
     prelude = ("import sys,types\n"
                "_btc_event_refs=types.ModuleType('btc_review_event_refs_embedded')\n"
                "exec(compile(" + repr(event_refs_source) + ",'<btc_review_event_refs>','exec'),_btc_event_refs.__dict__)\n"
@@ -132,7 +133,10 @@ def ssh_archive(host, needed, *, stream=None, restore=None):
                "sys.modules['btc_audit_refs_embedded']=_btc_audit\n"
                "_btc_recovery=types.ModuleType('btc_recovery_refs_embedded')\n"
                "exec(compile(" + repr(recovery_source) + ",'<btc_recovery_refs>','exec'),_btc_recovery.__dict__)\n"
-               "sys.modules['btc_recovery_refs_embedded']=_btc_recovery\n")
+               "sys.modules['btc_recovery_refs_embedded']=_btc_recovery\n"
+               "_btc_event_proof=types.ModuleType('btc_review_event_proof_embedded')\n"
+               "exec(compile(" + repr(event_proof_source) + ",'<btc_review_event_proof>','exec'),_btc_event_proof.__dict__)\n"
+               "sys.modules['btc_review_event_proof_embedded']=_btc_event_proof\n")
     if restore is not None:
         suffix = '\nprint(json.dumps(restore_archive(REMOTE_ROOT, ' + repr(restore) + ', REPLAY_ROOT)))\n'
     else:
@@ -347,6 +351,28 @@ def verify_retention_index(raw, manifest):
     return True
 
 
+def verify_event_proof_index(raw, manifest):
+    """Recompute optional event evidence from the restored snapshot itself."""
+    if 'btc_review_event_proof_index' not in manifest:
+        return False
+    started, index = manifest.get('started_at'), manifest['btc_review_event_proof_index']
+    if (type(started) not in (int, float) or not math.isfinite(started) or started <= 7 * 86400
+            or not isinstance(index, dict) or index.get('version') != 2):
+        raise ValueError('event_proof_index_invalid')
+    if 'btc_review_event_proof_embedded' in sys.modules:
+        from btc_review_event_proof_embedded import snapshot_event_index
+    else:
+        from utils.btc_review_event_proof import snapshot_event_index
+    deadline = time.monotonic() + 600
+    with closing(sqlite3.connect(raw.as_uri() + '?mode=ro', uri=True)) as db:
+        db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
+        db.execute('PRAGMA query_only=ON')
+        db.execute('BEGIN')
+        if snapshot_event_index(db, int(started), after_slot=index.get('after_slot')) != index:
+            raise ValueError('event_proof_index_mismatch')
+    return True
+
+
 def referenced_commits(raw, *, deadline=None):
     """Find exact observed revisions in retained JSON; never manufacture missing refs."""
     found = set()
@@ -555,6 +581,7 @@ def receive(stream, root, needed):
         else:
             restore_snapshot(stage / FILES[0], manifest, raw, expected_zero_bytes=zero_bytes)
         retention_verified = verify_retention_index(raw, manifest)
+        event_proof_verified = verify_event_proof_index(raw, manifest)
         actual, coverage = referenced_commits(raw)
         if actual != metadata['referenced_commits']:
             raise ValueError('archive_commit_manifest_mismatch')
@@ -579,6 +606,8 @@ def receive(stream, root, needed):
                    referenced_commit_count=len(actual), code_reference_coverage=coverage)
         if retention_verified:
             ack['retention_index_verified'] = True
+        if event_proof_verified:
+            ack['review_event_proof_index_verified'] = True
         with (stage / 'receipt.json').open('x') as dst:
             json.dump(ack, dst)
             dst.flush()
@@ -654,6 +683,10 @@ def restore_archive(root, name, output_root):
         checked = verify_retention_index(raw, manifest)
         if 'btc_retention_index' in manifest and (not checked or receipt.get('retention_index_verified') is not True):
             raise ValueError('restore_retention_index_unverified')
+        checked_events = verify_event_proof_index(raw, manifest)
+        if 'btc_review_event_proof_index' in manifest and (
+                not checked_events or receipt.get('review_event_proof_index_verified') is not True):
+            raise ValueError('restore_event_proof_index_unverified')
         commits, coverage = referenced_commits(raw)
         if commits != metadata.get('referenced_commits') or coverage != metadata.get('code_reference_coverage'):
             raise ValueError('restore_reference_mismatch')
@@ -762,6 +795,8 @@ def archive(repo, snapshot, config):
             raise ValueError('archive_ack_mismatch')
         if 'btc_retention_index' in manifest and ack.get('retention_index_verified') is not True:
             raise ValueError('archive_retention_index_unverified')
+        if 'btc_review_event_proof_index' in manifest and ack.get('review_event_proof_index_verified') is not True:
+            raise ValueError('archive_event_proof_index_unverified')
         return ack
 
 

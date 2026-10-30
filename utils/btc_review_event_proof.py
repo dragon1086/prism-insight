@@ -6,10 +6,16 @@ these fingerprints to an independently verified backup and delivery receipts.
 import hashlib
 import json
 import re
+import sys
 
-from observability.review_storage import review_text
-from utils.btc_recovery_references import read_recovery
-from utils.btc_review_event_references import read_event
+if 'btc_review_storage_embedded' in sys.modules:
+    from btc_review_storage_embedded import review_text
+    from btc_recovery_refs_embedded import read_recovery
+    from btc_review_event_refs_embedded import read_event
+else:
+    from observability.review_storage import review_text
+    from utils.btc_recovery_references import read_recovery
+    from utils.btc_review_event_references import read_event
 
 MAX_EVENTS = 128
 MAX_RECOVERY = 16
@@ -74,7 +80,10 @@ def snapshot_event_index(conn, now, *, after_slot=-1):
     """
     if not conn.in_transaction:
         raise ValueError('proof_snapshot_transaction_required')
-    from utils.btc_review_retention import candidates
+    if 'btc_retention_embedded' in sys.modules:
+        from btc_retention_embedded import candidates
+    else:
+        from utils.btc_review_retention import candidates
     page = candidates(conn, now, after_slot=after_slot, limit=100)
     selected = page['candidates'][:MAX_SLOTS]
     items = [{'candidate': row, 'proof': event_proof(conn, row['slot'])} for row in selected]
