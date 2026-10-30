@@ -10,6 +10,77 @@ import pytest
 from utils.sqlite_snapshot import backup_database
 
 
+def test_sparse_scan_only_punches_complete_zero_blocks(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from utils import sqlite_snapshot
+    path = tmp_path / 'snapshot.sqlite'
+    original = b'x' * 4096 + bytes(8192) + b'y' * 4096 + bytes(100)
+    path.write_bytes(original)
+    calls = []
+    class Punch:
+        def __call__(self, fd, mode, offset, length):
+            calls.append((mode, offset, length))
+            return 0
+    monkeypatch.setattr(sqlite_snapshot.sys, 'platform', 'linux')
+    monkeypatch.setattr(sqlite_snapshot.os, 'statvfs', lambda _: SimpleNamespace(f_frsize=4096))
+    monkeypatch.setattr(sqlite_snapshot.ctypes, 'CDLL', lambda *a, **kw: SimpleNamespace(fallocate=Punch()))
+    sparse = sqlite_snapshot._SparseSnapshot(path)
+    try:
+        sparse.scan()
+        sparse.scan()
+    finally:
+        sparse.close()
+    assert calls == [(3, 4096, 8192)]
+    assert path.read_bytes() == original
+
+
+def test_sparse_scan_falls_back_only_for_unsupported_filesystems(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from utils import sqlite_snapshot
+    path = tmp_path / 'snapshot.sqlite'
+    path.write_bytes(bytes(4096))
+    class Punch:
+        def __call__(self, *args):
+            return -1
+    monkeypatch.setattr(sqlite_snapshot.sys, 'platform', 'linux')
+    monkeypatch.setattr(sqlite_snapshot.os, 'statvfs', lambda _: SimpleNamespace(f_frsize=4096))
+    monkeypatch.setattr(sqlite_snapshot.ctypes, 'CDLL', lambda *a, **kw: SimpleNamespace(fallocate=Punch()))
+    monkeypatch.setattr(sqlite_snapshot.ctypes, 'get_errno', lambda: sqlite_snapshot.errno.EOPNOTSUPP)
+    sparse = sqlite_snapshot._SparseSnapshot(path)
+    sparse.scan()
+    assert sparse.fd is None and path.read_bytes() == bytes(4096)
+    monkeypatch.setattr(sqlite_snapshot.ctypes, 'get_errno', lambda: sqlite_snapshot.errno.EIO)
+    sparse = sqlite_snapshot._SparseSnapshot(path)
+    try:
+        with pytest.raises(OSError, match='snapshot_sparse_punch_failed'):
+            sparse.scan()
+    finally:
+        sparse.close()
+
+
+def test_sparse_scan_failure_preserves_previous_backup(tmp_path, monkeypatch):
+    from utils import sqlite_snapshot
+    source = tmp_path / 'source.sqlite'
+    with sqlite3.connect(source) as db:
+        db.execute('CREATE TABLE evidence(value TEXT)')
+        db.execute("INSERT INTO evidence VALUES('preserved')")
+    old = tmp_path / 'old.gz'
+    old.write_bytes(b'previous backup')
+    class Failure:
+        def __init__(self, path): pass
+        def scan(self): raise OSError('snapshot_sparse_punch_failed')
+        def close(self): pass
+    monkeypatch.setattr(sqlite_snapshot, '_SparseSnapshot', Failure)
+    with pytest.raises(OSError, match='snapshot_sparse_punch_failed'):
+        backup_database(source, tmp_path / 'new.gz', reserve_bytes=0)
+    assert old.read_bytes() == b'previous backup'
+    assert not (tmp_path / 'new.gz').exists()
+    assert not list(tmp_path.glob('.sqlite-snapshot-*'))
+    assert not list(tmp_path.glob('*.lock'))
+    with sqlite3.connect(source) as db:
+        assert db.execute('SELECT value FROM evidence').fetchone()[0] == 'preserved'
+
+
 def test_online_backup_includes_committed_wal_and_roundtrips(tmp_path, caplog):
     caplog.set_level(logging.INFO, logger='utils.sqlite_snapshot')
     source = tmp_path / 'source.sqlite'
@@ -276,6 +347,7 @@ esac
     if archive_success:
         assert 'run_btc_review_retention.py' in schedule.read_text()
         arguments = schedule.read_text().splitlines()
+        assert '--timer-property=AccuracySec=1s' in arguments
         assert arguments[-7:-3] == ['/usr/bin/bash', '-c', 'exec "$1" "$2" "$3"', '--']
         assert arguments[-3] == str(fake)
     if not archive_success:
