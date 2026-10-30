@@ -91,6 +91,7 @@ RUNTIME_EVENT_QUERIES = {
 
 def _runtime_event_hash(conn):
     from live.scenario_review_storage import review_text
+    from utils.btc_review_event_references import read_event
     from utils.btc_review_references import read_tape
     from utils.btc_financial_references import restore as restore_financial
     from utils.btc_audit_references import read_audit
@@ -106,9 +107,11 @@ def _runtime_event_hash(conn):
         rows = cursor.fetchall()
         if name in ('llm_scenario_review_events', 'llm_scenario_review_tapes') and 'body' in columns:
             index = columns.index('body')
-            slot_index = columns.index('slot') if name == 'llm_scenario_review_tapes' else None
+            slot_index = columns.index('slot')
+            sequence_index = columns.index('sequence') if name == 'llm_scenario_review_events' else None
             rows = [tuple((read_tape(value, conn, row[slot_index], decode_legacy=review_text)
-                           if slot_index is not None else review_text(value)) if i == index else value
+                           if sequence_index is None else read_event(value, conn, row[slot_index], row[sequence_index],
+                                                                     decode_legacy=review_text)) if i == index else value
                           for i, value in enumerate(row)) for row in rows]
         if name == 'llm_scenario_recovery_events' and 'body' in columns:
             index = columns.index('body')
@@ -754,8 +757,10 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
                 report["readiness"]["insufficiency_reasons"].append("STOPPED_TECHNICAL_FAILURE")
         if policy_profile in REJECTION_PROFILES:
             from live.scenario_review_storage import review_text
-            events = [(slot, json.loads(review_text(body))) for slot, body in conn.execute(
-                "SELECT slot,body FROM llm_scenario_review_events ORDER BY slot,sequence")]
+            from utils.btc_review_event_references import read_event
+            events = [(slot, json.loads(read_event(body, conn, slot, sequence, decode_legacy=review_text)))
+                      for slot, sequence, body in conn.execute(
+                "SELECT slot,sequence,body FROM llm_scenario_review_events ORDER BY slot,sequence")]
             rejected_slots = set()
             candidates = {}
             for slot, event in events:
