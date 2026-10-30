@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 
 from live import scenario_recovery as recovery
+from live.scenario_review_storage import review_text
 from live.scenario_runtime import ScenarioRuntime
 from tests.test_scenario_runtime import Broker, proposal, wait_proposal, terminal, settlement
 
@@ -289,7 +290,7 @@ def test_recheck_records_account_change_before_stale_denial(probe):
         return payload
     r.propose = change_account
     assert r.tick()["status"] == "stale_proposal"
-    body = json.loads(r.conn.execute("SELECT body FROM llm_scenario_recovery_events WHERE slot=? AND kind='RECHECK'", (int(now[0] // 300),)).fetchone()[0])
+    body = json.loads(review_text(r.conn.execute("SELECT body FROM llm_scenario_recovery_events WHERE slot=? AND kind='RECHECK'", (int(now[0] // 300),)).fetchone()[0]))
     assert body["input_account_version"] == "1"
     assert body["context"]["account_version"] == "changed-after-call"
     assert body["input_id"]

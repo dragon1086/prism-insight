@@ -36,6 +36,19 @@ def test_resolves_recovery_reference_and_changes_when_event_changes():
         event_proof(conn, 1)
 
 
+def test_compressed_recheck_has_identical_cleanup_proof():
+    from observability.review_storage import MAGIC
+    import gzip
+    conn = fixture()
+    body = json.dumps({'context': 'x' * 4000}, sort_keys=True)
+    conn.execute("INSERT INTO llm_scenario_recovery_events(event_id,slot,kind,body) VALUES(?,?,?,?)",
+                 ('recheck', 1, 'RECHECK', body))
+    before = event_proof(conn, 1)
+    conn.execute("UPDATE llm_scenario_recovery_events SET body=? WHERE event_id='recheck'",
+                 (MAGIC + gzip.compress(body.encode()),))
+    assert event_proof(conn, 1) == before
+
+
 def test_missing_or_malformed_evidence_fails_closed():
     conn = fixture()
     conn.execute('DELETE FROM llm_scenario_review_events')
