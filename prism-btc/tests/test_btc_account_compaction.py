@@ -563,6 +563,16 @@ def test_attested_backup_to_guarded_batches_end_to_end(tmp_path, monkeypatch):
     assert result['status'] == 'COMPLETE' and result['updated'] == 8 and result['batches'] == 1
     assert [review_text(row[0]) for row in source.execute('SELECT body FROM llm_scenario_broker_evidence ORDER BY rowid')] == bodies
     assert digest(restored) == backup_sha
+    from tools.btc_account_compaction_controller import run_once
+    def local_apply(manifest, seal, proof_sha, *, commit):
+        assert commit == 'a'*40
+        return guarded_operational_batch(source, manifest, seal, proof_sha)
+    state = tmp_path/'account-state.json'
+    resumed = run_once(state, proof, 10, 1254, verify=lambda _: 'a'*40,
+                       plan=plan_attested_accounts, apply=local_apply, run_batches=run_bounded_batches)
+    assert resumed['status'] == 'COMPLETE' and resumed['unchanged_total'] == 8
+    assert resumed['updated_total'] == 0 and resumed['saved_bytes_total'] == 0
+    assert digest(restored) == backup_sha
 
 
 def test_compaction_error_rolls_back_instead_of_advancing_as_unchanged(monkeypatch):
