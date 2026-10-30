@@ -29,6 +29,7 @@ RAW_CAP = 20 * 1024**3
 REMOTE_ROOT = Path('/root/prism-btc-archive')
 REPLAY_ROOT = Path('/root/prism-btc-replays')
 FILES = ('snapshot.sqlite.gz', 'snapshot.manifest.json', 'history.bundle', 'archive.json')
+ZERO_BLOCK = bytes(4096)
 COMMIT_KEYS = {'git_revision', 'source_commit', 'code_commit', 'source_reference'}
 EVIDENCE_QUERIES = {
     'llm_scenario_audit_manifests': {'body': 'SELECT body FROM llm_scenario_audit_manifests'},
@@ -190,7 +191,39 @@ def space(root, needed, *, staging=False):
         raise OSError('archive_space_limit')
 
 
-def restore_snapshot(zipped, manifest, raw):
+def _zero_bytes(chunk):
+    return sum(4096 for offset in range(0, len(chunk) - 4095, 4096)
+               if chunk[offset:offset + 4096] == ZERO_BLOCK)
+
+
+def _sparse_raw_bound(raw_bytes, zero_bytes):
+    if (type(raw_bytes) is not int or not 0 < raw_bytes <= RAW_CAP or type(zero_bytes) is not int
+            or not 0 <= zero_bytes <= raw_bytes or zero_bytes % 4096):
+        raise ValueError('sparse_bound_invalid')
+    data = raw_bytes - zero_bytes
+    return min(raw_bytes, data + max(64 * 1024**2, data // 20))
+
+
+def _require_sparse(root):
+    if os.statvfs(root).f_frsize != 4096:
+        raise ValueError('sparse_filesystem_unsupported')
+    fd, name = tempfile.mkstemp(prefix='.sparse-probe-', dir=root)
+    try:
+        if os.pwrite(fd, b'A' * 4096, 0) != 4096 or os.pwrite(fd, b'B' * 4096, 1024 * 1024) != 4096:
+            raise OSError('sparse_probe_short_write')
+        os.fsync(fd)
+        info = os.fstat(fd)
+        if (info.st_size != 1024 * 1024 + 4096 or info.st_blocks * 512 > 64 * 1024
+                or os.pread(fd, 4096, 0) != b'A' * 4096
+                or os.pread(fd, 4096, 4096) != ZERO_BLOCK
+                or os.pread(fd, 4096, 1024 * 1024) != b'B' * 4096):
+            raise ValueError('sparse_filesystem_unsupported')
+    finally:
+        os.close(fd)
+        os.unlink(name)
+
+
+def restore_snapshot(zipped, manifest, raw, *, expected_zero_bytes=None):
     if (manifest.get('sqlite_quick_check') != 'ok' or
             manifest.get('decompression_verified') is not True or
             manifest.get('source_writes') != 0 or
@@ -199,18 +232,64 @@ def restore_snapshot(zipped, manifest, raw):
             zipped.stat().st_size != manifest.get('compressed_bytes') or
             digest(zipped) != manifest.get('compressed_sha256')):
         raise ValueError('snapshot_manifest_mismatch')
-    total = 0
+    total = zero_bytes = data_bytes = 0
+    sparse_bound = None
+    if expected_zero_bytes is not None:
+        sparse_bound = _sparse_raw_bound(manifest['raw_bytes'], expected_zero_bytes)
     deadline = time.monotonic() + 600
-    with gzip.open(zipped, 'rb') as src, raw.open('xb') as dst:
+    with gzip.open(zipped, 'rb') as src, raw.open('xb', buffering=0) as dst:
         while chunk := src.read(1024 * 1024):
+            start = total
             total += len(chunk)
             if total > manifest['raw_bytes'] or time.monotonic() > deadline:
                 raise ValueError('snapshot_expansion_bound')
-            if shutil.disk_usage(raw.parent).free < RESERVE:
+            if total < manifest['raw_bytes'] and len(chunk) % 4096:
+                raise ValueError('snapshot_block_alignment')
+            if shutil.disk_usage(raw.parent).free < RESERVE + len(chunk):
                 raise OSError('snapshot_restore_space_reserve_lost')
-            dst.write(chunk)
-        dst.flush()
+            if expected_zero_bytes is None:
+                data = memoryview(chunk)
+                while data:
+                    written = os.pwrite(dst.fileno(), data, start)
+                    if written <= 0:
+                        raise OSError('snapshot_restore_short_write')
+                    start += written
+                    data = data[written:]
+                continue
+            offset = 0
+            while offset < len(chunk):
+                begin = offset
+                end = min(begin + 4096, len(chunk))
+                empty = end - begin == 4096 and chunk[begin:end] == ZERO_BLOCK
+                offset = end
+                while offset < len(chunk):
+                    end = min(offset + 4096, len(chunk))
+                    next_empty = end - offset == 4096 and chunk[offset:end] == ZERO_BLOCK
+                    if next_empty != empty:
+                        break
+                    offset = end
+                if empty:
+                    zero_bytes += offset - begin
+                else:
+                    data_bytes += offset - begin
+                    if data_bytes > manifest['raw_bytes'] - expected_zero_bytes:
+                        raise ValueError('sparse_zero_mismatch')
+                    data = memoryview(chunk)[begin:offset]
+                    position = start + begin
+                    while data:
+                        written = os.pwrite(dst.fileno(), data, position)
+                        if written <= 0:
+                            raise OSError('snapshot_restore_short_write')
+                        position += written
+                        data = data[written:]
+        if expected_zero_bytes is not None and zero_bytes != expected_zero_bytes:
+            raise ValueError('sparse_zero_mismatch')
+        os.ftruncate(dst.fileno(), total)
         os.fsync(dst.fileno())
+        if sparse_bound is not None and os.fstat(dst.fileno()).st_blocks * 512 > sparse_bound:
+            raise ValueError('sparse_allocation_exceeded')
+        if shutil.disk_usage(raw.parent).free < RESERVE:
+            raise OSError('snapshot_restore_space_reserve_lost')
     if total != manifest['raw_bytes'] or digest(raw) != manifest.get('raw_sha256'):
         raise ValueError('snapshot_raw_mismatch')
     with closing(sqlite3.connect(raw.as_uri() + '?mode=ro', uri=True)) as db:
@@ -227,16 +306,20 @@ def verify_streamed_snapshot(zipped, manifest):
             or zipped.stat().st_size != manifest.get('compressed_bytes')
             or digest(zipped) != manifest.get('compressed_sha256')):
         raise ValueError('snapshot_manifest_mismatch')
-    total, raw_hash = 0, hashlib.sha256()
+    total, zero_bytes, raw_hash = 0, 0, hashlib.sha256()
     deadline = time.monotonic() + 600
     with gzip.open(zipped, 'rb') as source:
         while chunk := source.read(1024 * 1024):
             total += len(chunk)
             if total > manifest['raw_bytes'] or time.monotonic() > deadline:
                 raise ValueError('snapshot_expansion_bound')
+            if total < manifest['raw_bytes'] and len(chunk) % 4096:
+                raise ValueError('snapshot_block_alignment')
             raw_hash.update(chunk)
+            zero_bytes += _zero_bytes(chunk)
     if total != manifest['raw_bytes'] or raw_hash.hexdigest() != manifest.get('raw_sha256'):
         raise ValueError('snapshot_raw_mismatch')
+    return zero_bytes
 
 
 def verify_retention_index(raw, manifest):
@@ -458,11 +541,19 @@ def receive(stream, root, needed):
                 raise ValueError('archive_checksum_mismatch')
         if metadata['required_space'] != needed:
             raise ValueError('archive_space_binding')
-        if needed < (transferred + int(manifest['raw_bytes']) + 3 * (stage / 'history.bundle').stat().st_size):
+        zero_bytes = metadata.get('sparse_zero_bytes')
+        raw_bound = (int(manifest['raw_bytes']) if zero_bytes is None else
+                     _sparse_raw_bound(manifest['raw_bytes'], zero_bytes))
+        if needed < (transferred + raw_bound + 3 * (stage / 'history.bundle').stat().st_size):
             raise ValueError('archive_restore_space_bound')
         space(root, needed - transferred, staging=True)
+        if zero_bytes is not None:
+            _require_sparse(root)
         raw = stage / 'restored.sqlite'
-        restore_snapshot(stage / FILES[0], manifest, raw)
+        if zero_bytes is None:
+            restore_snapshot(stage / FILES[0], manifest, raw)
+        else:
+            restore_snapshot(stage / FILES[0], manifest, raw, expected_zero_bytes=zero_bytes)
         retention_verified = verify_retention_index(raw, manifest)
         actual, coverage = referenced_commits(raw)
         if actual != metadata['referenced_commits']:
@@ -549,12 +640,17 @@ def restore_archive(root, name, output_root):
                 raise ValueError('restore_archive_checksum_mismatch')
         if receipt.get('raw_sha256') != manifest.get('raw_sha256'):
             raise ValueError('restore_receipt_invalid')
-        needed = int(manifest['raw_bytes']) + 4 * (archive / FILES[2]).stat().st_size + 1024**2
+        zero_bytes = metadata.get('sparse_zero_bytes')
+        raw_bound = (int(manifest['raw_bytes']) if zero_bytes is None else
+                     _sparse_raw_bound(manifest['raw_bytes'], zero_bytes))
+        needed = raw_bound + 4 * (archive / FILES[2]).stat().st_size + 1024**2
         if needed <= 0 or needed > 4 * RAW_CAP or shutil.disk_usage(output_root).free < RESERVE + needed:
             raise OSError('restore_space_limit')
+        if zero_bytes is not None:
+            _require_sparse(output_root)
         stage = Path(tempfile.mkdtemp(prefix='.restoring-', dir=output_root))
         raw = stage / 'snapshot.sqlite'
-        restore_snapshot(archive / FILES[0], manifest, raw)
+        restore_snapshot(archive / FILES[0], manifest, raw, expected_zero_bytes=zero_bytes)
         checked = verify_retention_index(raw, manifest)
         if 'btc_retention_index' in manifest and (not checked or receipt.get('retention_index_verified') is not True):
             raise ValueError('restore_retention_index_unverified')
@@ -628,17 +724,25 @@ def archive(repo, snapshot, config):
             raw = stage / 'snapshot.sqlite'
             restore_snapshot(snapshot, manifest, raw)
             commits, coverage = referenced_commits(raw)
+            zero_bytes = None
         else:
-            verify_streamed_snapshot(snapshot, manifest)
+            zero_bytes = verify_streamed_snapshot(snapshot, manifest)
             commits, coverage = scan['commits'], scan['coverage']
         source_head = run(['git', 'rev-parse', 'HEAD'], cwd=repo).strip()
         bundle = stage / 'history.bundle'
         make_bundle(repo, bundle, sorted(set(commits) | {source_head}), stage / 'source.git')
         hashes = {FILES[0]: digest(snapshot), FILES[1]: digest(manifest_path), FILES[2]: digest(bundle)}
         # Includes gz+manifest+bundle, raw SQLite, bare Git expansion and conservative slack.
-        needed = snapshot.stat().st_size + manifest_path.stat().st_size + int(manifest['raw_bytes']) + 4 * bundle.stat().st_size + 1024**2
+        raw_bound = int(manifest['raw_bytes'])
+        if zero_bytes is not None and _sparse_raw_bound(raw_bound, zero_bytes) < raw_bound:
+            raw_bound = _sparse_raw_bound(raw_bound, zero_bytes)
+        else:
+            zero_bytes = None
+        needed = snapshot.stat().st_size + manifest_path.stat().st_size + raw_bound + 4 * bundle.stat().st_size + 1024**2
         metadata = dict(schema_version=1, source_head=source_head, referenced_commits=commits,
                         code_reference_coverage=coverage, sha256=hashes, required_space=needed)
+        if zero_bytes is not None:
+            metadata['sparse_zero_bytes'] = zero_bytes
         meta = stage / 'archive.json'
         meta.write_text(json.dumps(metadata, sort_keys=True))
         if ssh_archive(host, needed).stdout.decode().strip() != 'READY':
