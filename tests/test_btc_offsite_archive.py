@@ -990,3 +990,87 @@ def test_archive_resolves_accounting_reference_in_standalone_receiver(tmp_path):
         conn.execute('DELETE FROM llm_scenario_broker_evidence WHERE kind="account"')
     with pytest.raises(ValueError, match='reference_accounting_unresolved'):
         archive.referenced_commits(path)
+
+
+def test_event_retention_end_to_end_with_isolated_archive(payload, monkeypatch):
+    import hashlib
+    import shlex
+    from observability.btc_scenario_export import _anchor_hash, _identity
+    from utils import btc_review_event_proof as proof_module, btc_review_retention as retention
+    from utils.sqlite_snapshot import backup_database
+
+    path, _, _, repo = payload
+    source = path / 'live.sqlite'
+    context = {'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
+               'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False}
+    with sqlite3.connect(source) as conn:
+        conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
+                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);'
+                           'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body);'
+                           'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body);')
+        for slot in (1, 2):
+            conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (slot, '{}'))
+            conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)',
+                         (slot, '{}', json.dumps(context), '{"action":"WAIT"}', '{"status":"wait"}'))
+            conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)',
+                         (slot, 0, '{"kind":"MODEL_RAW"}'))
+    identity = _identity(source)
+    export = path / 'export.sqlite'
+    with sqlite3.connect(source) as live, sqlite3.connect(export) as state:
+        state.executescript('CREATE TABLE meta(key PRIMARY KEY,value);CREATE TABLE cursors(stream PRIMARY KEY,seq);'
+                            'CREATE TABLE anchors(stream PRIMARY KEY,ref);CREATE TABLE outbox(id PRIMARY KEY,body);')
+        state.execute('INSERT INTO meta VALUES(?,?)', ('source_identity', identity))
+        for stream, anchor in (('llm_scenario_review_tapes', {'slot': 2, 'body': '{}'}),
+                               ('llm_scenario_review_events', {'slot': 2, 'sequence': 0, 'body': '{"kind":"MODEL_RAW"}'})):
+            state.execute('INSERT INTO cursors VALUES(?,?)', (stream, 2))
+            state.execute('INSERT INTO anchors VALUES(?,?)', (stream, _anchor_hash(stream, anchor, live)))
+    backup_root, remote_root = path / 'backups', path / 'remote'
+    directory = backup_root / '20261030_020000'
+    directory.mkdir(mode=0o700, parents=True)
+    snapshot = directory / 'stock_tracking_db.sqlite.gz'
+    manifest = backup_database(source, snapshot, reserve_bytes=0, capture_references=True,
+                               capture_review_event_proof=True)
+    assert manifest['btc_review_event_proof_status'] == 'CAPTURED'
+    real_run, real_popen = subprocess.run, subprocess.Popen
+    def local_run(args, **kwargs):
+        if args[0] != '/usr/bin/ssh':
+            return real_run(args, **kwargs)
+        command = shlex.split(args[-1])
+        return real_run([os.sys.executable, '-I', '-c', command[2].replace('/root/prism-btc-archive', str(remote_root))], **kwargs)
+    def local_popen(args, **kwargs):
+        if args[0] != '/usr/bin/ssh':
+            return real_popen(args, **kwargs)
+        command = shlex.split(args[-1])
+        return real_popen([os.sys.executable, '-I', '-c', command[2].replace('/root/prism-btc-archive', str(remote_root))], **kwargs)
+    monkeypatch.setattr(archive.subprocess, 'run', local_run)
+    monkeypatch.setattr(retention.subprocess, 'Popen', local_popen)
+    monkeypatch.setattr(archive, 'backend_host', lambda _: 'fixture.local')
+    monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=100 * archive.CAP))
+    ack = archive.archive(repo, snapshot, path / 'unused-config')
+    assert ack['review_event_proof_index_verified'] is True
+    receipt = directory / 'offsite_ack.json'
+    receipt.write_text(json.dumps(ack))
+    receipt.chmod(0o600)
+    monkeypatch.setattr(retention, 'SOURCE', source)
+    monkeypatch.setattr(retention, 'EXPORT_STATE', export)
+    monkeypatch.setattr(retention, 'BACKUP_ROOT', backup_root)
+    monkeypatch.setattr(retention, '_resource_guard', lambda *_: True)
+    monkeypatch.setattr(retention, '_runtime_safe', lambda *_: True)
+    def tape_receipts(rows, source_identity):
+        return [{'event_id': hashlib.sha256(f'{source_identity}:llm_scenario_review_tapes:{row["rowid"]}'.encode()).hexdigest()[:32],
+                 'event_type': 'btc.research.review_tape', 'source_identity': source_identity,
+                 'body_sha256': row['tape_sha256'], 'tape_hash_status': 'MATCH'} for row in rows]
+    def event_receipts(proof, source_identity):
+        return [{'event_id': hashlib.sha256(f'{source_identity}:llm_scenario_review_events:{row["rowid"]}'.encode()).hexdigest()[:32],
+                 'event_type': 'btc.research.review', 'source_identity': source_identity, 'body_sha256': row['sha256'],
+                 'source_rowid': row['rowid'], 'source_sequence': row['sequence'], 'decision_slot': proof['slot']}
+                for row in proof['events']]
+    monkeypatch.setattr(retention, 'fetch_deliveries', tape_receipts)
+    monkeypatch.setattr(proof_module, 'fetch_event_deliveries', event_receipts)
+    result = proof_module.cleanup_events(directory)
+    assert result['status'] == 'DEFERRED' and result['removed_slots'] == result['removed_events'] == 1
+    with sqlite3.connect(source) as conn:
+        assert conn.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(2,)]
+        assert conn.execute('SELECT slot FROM llm_scenario_review_events').fetchall() == [(2,)]
+        assert conn.execute('SELECT COUNT(*) FROM llm_scenario_decisions').fetchone() == (2,)
+    assert (remote_root / ack['archive'] / 'snapshot.sqlite.gz').is_file()
