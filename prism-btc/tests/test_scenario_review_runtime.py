@@ -124,11 +124,17 @@ def test_review_event_storage_roundtrip_and_compression_failure_fallback(tmp_pat
 
 
 def test_optin_complete_proof_before_simulated_intent(tmp_path):
+    from utils.btc_review_references import unpack
     r, broker, calls = runtime(tmp_path)
     outcome = r.tick()
     assert outcome["status"] == "intent_pending", outcome
     assert len(calls) == 2 and len(broker.executed) == 1
-    tape = json.loads(read_tape(r.conn.execute("SELECT body FROM llm_scenario_review_tapes").fetchone()[0], r.conn, r.conn.execute("SELECT slot FROM llm_scenario_review_tapes").fetchone()[0], decode_legacy=review_text))
+    stored = r.conn.execute("SELECT body FROM llm_scenario_review_tapes").fetchone()[0]
+    bundle = unpack(stored)
+    assert bundle['version'] == 2
+    generated = [op for op in bundle['tape']['operations'] if op.get('kind') == 'generate']
+    assert len(generated) == 2 and all('$btc_model_ref' in op['request'] for op in generated)
+    tape = json.loads(read_tape(stored, r.conn, r.conn.execute("SELECT slot FROM llm_scenario_review_tapes").fetchone()[0], decode_legacy=review_text))
     proposal = json.loads(r.conn.execute("SELECT proposal FROM llm_scenario_decisions").fetchone()[0])
     assert tape["outcome"]["status"] == "COMPLETE"
     assert proposal["action"] == "OPEN" and "operations" not in proposal
@@ -217,6 +223,21 @@ def test_tampered_complete_tape_fails_before_intent(tmp_path):
     assert r.tick()["status"] == "blocked"
     assert broker.executed == []
     assert r.conn.execute("SELECT COUNT(*) FROM llm_scenario_intents").fetchone()[0] == 0
+
+
+def test_runtime_wait_writes_model_reference_with_replayable_evidence(tmp_path):
+    from utils.btc_review_references import read_tape, unpack
+
+    r, broker, calls = runtime(tmp_path, empty=True)
+    assert r.tick()['status'] == 'wait'
+    assert len(calls) == 1 and broker.executed == []
+    slot, body = r.conn.execute('SELECT slot,body FROM llm_scenario_review_tapes').fetchone()
+    assert unpack(body)['version'] == 2
+    tape = json.loads(read_tape(body, r.conn, slot, decode_legacy=review_text))
+    assert tape['outcome']['status'] == 'COMPLETE'
+    r.conn.execute('DELETE FROM llm_scenario_review_events WHERE slot=?', (slot,))
+    with pytest.raises(ValueError):
+        read_tape(body, r.conn, slot, decode_legacy=review_text)
 
 
 def test_no_candidate_wait_has_one_call_and_no_intent(tmp_path):
