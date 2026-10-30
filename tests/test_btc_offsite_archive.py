@@ -268,7 +268,6 @@ def test_captured_references_avoid_sender_restore_but_receiver_verifies(payload,
 def test_standalone_receiver_recomputes_retention_index(payload, monkeypatch):
     import shlex
     from utils.sqlite_snapshot import backup_database
-    from utils.btc_review_event_proof import snapshot_event_index
 
     path, _, _, repo = payload
     source = path / 'retention.sqlite'
@@ -284,11 +283,11 @@ def test_standalone_receiver_recomputes_retention_index(payload, monkeypatch):
                      (1, json.dumps(ctx), json.dumps({'action': 'WAIT'}), json.dumps({'status': 'wait'})))
         conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 0, '{"kind":"MODEL_RAW"}'))
     snapshot = path / 'retention.sqlite.gz'
-    manifest = backup_database(source, snapshot, reserve_bytes=0, capture_references=True)
+    manifest = backup_database(source, snapshot, reserve_bytes=0, capture_references=True,
+                               capture_review_event_proof=True)
     assert len(manifest['btc_retention_index']['candidates']) == 1
-    with sqlite3.connect(source) as conn:
-        conn.execute('BEGIN')
-        manifest['btc_review_event_proof_index'] = snapshot_event_index(conn, int(manifest['started_at']))
+    assert manifest['btc_review_event_proof_status'] == 'CAPTURED'
+    assert len(manifest['btc_review_event_proof_index']['items']) == 1
     manifest_path = Path(str(snapshot) + '.manifest.json')
     manifest_path.write_text(json.dumps(manifest))
     root = path / 'embedded-remote'

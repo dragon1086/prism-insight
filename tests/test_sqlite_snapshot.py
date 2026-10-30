@@ -10,6 +10,24 @@ import pytest
 from utils.sqlite_snapshot import backup_database
 
 
+def test_optional_event_proof_failure_preserves_verified_backup(tmp_path):
+    source, destination = tmp_path / 'source.sqlite', tmp_path / 'snapshot.gz'
+    context = {'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
+               'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False}
+    with sqlite3.connect(source) as conn:
+        conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
+                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);')
+        conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (1, '{}'))
+        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)',
+                     (1, '{}', json.dumps(context), '{"action":"WAIT"}', '{"status":"wait"}'))
+    result = backup_database(source, destination, reserve_bytes=0, capture_references=True,
+                             capture_review_event_proof=True)
+    assert result['decompression_verified'] is True
+    assert result['btc_review_event_proof_status'] == 'UNAVAILABLE'
+    assert 'btc_review_event_proof_index' not in result and destination.is_file()
+    assert len(result['btc_retention_index']['candidates']) == 1
+
+
 def test_sparse_scan_only_punches_complete_zero_blocks(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from utils import sqlite_snapshot

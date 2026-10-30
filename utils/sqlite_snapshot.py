@@ -116,7 +116,7 @@ def _compress_in_place(path, raw_bytes, progress):
 
 
 def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024**3,
-                    capture_references=False, retention_cursor=None):
+                    capture_references=False, retention_cursor=None, capture_review_event_proof=False):
     source, destination = Path(source), Path(destination)
     if not source.is_file() or source.is_symlink() or destination.suffix != ".gz":
         raise ValueError("invalid_snapshot_paths")
@@ -125,6 +125,8 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
     if (type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0
             or type(reserve_bytes) is not int or reserve_bytes < 0):
         raise ValueError("invalid_snapshot_limits")
+    if type(capture_review_event_proof) is not bool or (capture_review_event_proof and not capture_references):
+        raise ValueError("invalid_event_proof_option")
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if destination.parent.is_symlink():
         raise ValueError("snapshot_directory_symlink")
@@ -185,6 +187,8 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
         with raw.open("rb") as stream:
             raw_hash, raw_bytes = _hash_stream(stream, deadline)
         reference_scan = None
+        event_proof_index = None
+        event_proof_status = None
         if capture_references:
             logging.getLogger(__name__).info('snapshot_stage=reference_scan')
             if __package__:
@@ -199,6 +203,18 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
             with closing(sqlite3.connect(raw.resolve().as_uri() + '?mode=ro', uri=True)) as index_conn:
                 retention_index = snapshot_index(index_conn, int(started), after_slot=after_slot,
                                                  guard=lambda: progress(None, None, None))
+                if capture_review_event_proof:
+                    from utils.btc_review_event_proof import snapshot_event_index
+                    try:
+                        index_conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
+                        index_conn.execute('PRAGMA query_only=ON')
+                        index_conn.execute('BEGIN')
+                        event_proof_index = snapshot_event_index(index_conn, int(started), after_slot=after_slot)
+                        event_proof_status = 'CAPTURED'
+                    except (ValueError, sqlite3.Error):
+                        event_proof_status = 'UNAVAILABLE'
+                    finally:
+                        index_conn.rollback()
             progress(None, None, None)
             reference_scan = {'commits': commits, 'coverage': coverage}
         logging.getLogger(__name__).info('snapshot_stage=compress')
@@ -220,6 +236,10 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
         if reference_scan is not None:
             result['code_reference_scan'] = reference_scan
             result['btc_retention_index'] = retention_index
+        if capture_review_event_proof:
+            result['btc_review_event_proof_status'] = event_proof_status
+            if event_proof_index is not None:
+                result['btc_review_event_proof_index'] = event_proof_index
         manifest = temp(".json")
         with manifest.open("w", encoding="utf-8") as stream:
             json.dump(result, stream, indent=2, allow_nan=False)
@@ -259,9 +279,11 @@ def main():
     parser.add_argument("--timeout", type=float, default=180)
     parser.add_argument("--capture-references", action="store_true")
     parser.add_argument("--retention-cursor", type=Path)
+    parser.add_argument("--capture-review-event-proof", action="store_true")
     args = parser.parse_args()
     result = backup_database(args.source, args.destination, timeout=args.timeout,
-                             capture_references=args.capture_references, retention_cursor=args.retention_cursor)
+                             capture_references=args.capture_references, retention_cursor=args.retention_cursor,
+                             capture_review_event_proof=args.capture_review_event_proof)
     print(json.dumps(dict(status="ok", destination=str(args.destination), **result)))
 
 
