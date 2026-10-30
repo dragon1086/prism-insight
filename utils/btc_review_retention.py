@@ -679,9 +679,19 @@ def cleanup(backup_dir, *, now=None):
         try:
             with locked_remote_archive(ack, align=True) as lease, closing(sqlite3.connect(
                     EXPORT_STATE.resolve().as_uri() + '?mode=rw', uri=True, timeout=.1)) as exporter:
-                def guard():
-                    return _resource_guard(SOURCE, identity) and _runtime_safe(conn)
                 for start in range(0, len(matched), 100):
+                    cached_state = []
+                    def guard():
+                        if not _resource_guard(SOURCE, identity):
+                            return False
+                        if not conn.in_transaction:
+                            return _runtime_safe(conn)
+                        if not cached_state:
+                            trigger = conn.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' "
+                                                   "AND tbl_name='llm_scenario_review_tapes' LIMIT 1").fetchone()
+                            foreign_keys = conn.execute('PRAGMA foreign_keys').fetchone()
+                            cached_state.append(None if trigger or foreign_keys != (0,) else _runtime_safe(conn))
+                        return _runtime_safe(conn) if cached_state[0] is None else cached_state[0]
                     batch = {'candidates': matched[start:start + 100]}
                     removed.extend(_delete_matched(conn, exporter, batch, delivered, identity, at,
                                                    guard=guard, lease_alive=lease))
