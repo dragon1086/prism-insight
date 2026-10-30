@@ -167,6 +167,14 @@ def test_referenced_tape_keeps_runtime_hash_and_fails_if_source_disappears():
     expected = _runtime_event_hash(conn)
     conn.execute('UPDATE llm_scenario_review_tapes SET body=?', (pack(compact(original, s, c, [e])),))
     assert _runtime_event_hash(conn) == expected
+    import gzip
+    from observability.review_storage import MAGIC
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + gzip.compress(s.encode()),))
+    assert _runtime_event_hash(conn) == expected
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + b'corrupt',))
+    with pytest.raises(ValueError):
+        _runtime_event_hash(conn)
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (s,))
     conn.execute('DELETE FROM llm_scenario_review_events')
     with pytest.raises(ValueError):
         _runtime_event_hash(conn)
