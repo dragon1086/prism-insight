@@ -517,7 +517,10 @@ class Decisions:
 
 
 def run_replay(bundle,market,output,**kwargs):
-    with replay_identity_scope(economic=kwargs.get("policy_profile", "") in ECONOMIC_PROFILES,
+    if str(ROOT) not in sys.path:
+        sys.path.append(str(ROOT))
+    from observability.events import suppress_events
+    with suppress_events(), replay_identity_scope(economic=kwargs.get("policy_profile", "") in ECONOMIC_PROFILES,
                                stable_process_id=kwargs.get("policy_profile") == "economic-reject-goal-v2"):
         return _run_replay(bundle,market,output,**kwargs)
 
