@@ -25,12 +25,12 @@ if 'btc_review_storage_embedded' in sys.modules:
 else:
     from observability.review_storage import review_text
 if 'btc_review_refs_embedded' in sys.modules:
-    from btc_review_refs_embedded import read_tape
+    from btc_review_refs_embedded import MAGIC as REVIEW_REFERENCE_MAGIC, read_tape
 else:
-    from utils.btc_review_references import read_tape
+    from utils.btc_review_references import MAGIC as REVIEW_REFERENCE_MAGIC, read_tape
 
 
-def _recovery_wait_proven(conn, slot, snapshot, context, plan, outcome, original):
+def _recovery_wait_proven(conn, slot, snapshot, context, plan, outcome, original, *, reference_verified=False):
     """Require the independently retained recovery journal for a flat WAIT."""
     try:
         recovery = context.get('recovery')
@@ -109,14 +109,15 @@ def _recovery_wait_proven(conn, slot, snapshot, context, plan, outcome, original
         records = [op.get('event') for op in operations if op['kind'] == 'record']
         if not records or any(not isinstance(event, dict) for event in records):
             return False
-        if [row[2] for row in conn.execute('PRAGMA index_info(sqlite_autoindex_llm_scenario_review_events_1)')] != ['slot', 'sequence']:
-            return False
-        review_rows = conn.execute('SELECT sequence,body FROM llm_scenario_review_events '
-                                   'WHERE slot=? ORDER BY sequence LIMIT ?', (slot, len(records))).fetchall()
-        if (len(review_rows) != len(records) or any(
-                sequence != index or full_hash(json.loads(review_text(body))) != full_hash(records[index])
-                for index, (sequence, body) in enumerate(review_rows))):
-            return False
+        if not reference_verified:
+            if [row[2] for row in conn.execute('PRAGMA index_info(sqlite_autoindex_llm_scenario_review_events_1)')] != ['slot', 'sequence']:
+                return False
+            review_rows = conn.execute('SELECT sequence,body FROM llm_scenario_review_events '
+                                       'WHERE slot=? ORDER BY sequence LIMIT ?', (slot, len(records))).fetchall()
+            if (len(review_rows) != len(records) or any(
+                    sequence != index or full_hash(json.loads(review_text(body))) != full_hash(records[index])
+                    for index, (sequence, body) in enumerate(review_rows))):
+                return False
         expected, phases = [], Counter()
         for operation in operations:
             event = operation.get('event') if isinstance(operation, dict) and operation.get('kind') == 'record' else None
@@ -177,6 +178,9 @@ def candidates(conn, now, *, after_slot=-1, limit=100, guard=None):
         observing = ctx.get('recovery_observing', False)
         if observing is not True and (observing is not False or 'recovery' in ctx or 'recovery_contract_version' in ctx):
             continue
+        if observing is True and [row[2] for row in conn.execute(
+                'PRAGMA index_info(sqlite_autoindex_llm_scenario_review_events_1)')] != ['slot', 'sequence']:
+            continue
         try:
             original = read_tape(tape, conn, slot, decode_legacy=review_text)
         except (ValueError, TypeError):
@@ -184,7 +188,9 @@ def candidates(conn, now, *, after_slot=-1, limit=100, guard=None):
                 continue
             raise
         if observing is True:
-            if not _recovery_wait_proven(conn, slot, market, ctx, plan, result, original):
+            reference_verified = isinstance(tape, bytes) and tape.startswith(REVIEW_REFERENCE_MAGIC)
+            if not _recovery_wait_proven(conn, slot, market, ctx, plan, result, original,
+                                         reference_verified=reference_verified):
                 continue
         digest = hashlib.sha256(original.encode('utf-8')).hexdigest()
         decision = hashlib.sha256(json.dumps([snapshot, context, proposal, outcome], ensure_ascii=True,
@@ -636,8 +642,8 @@ def cleanup(backup_dir, *, now=None):
             slot = item['slot']
             if type(slot) is not int or slot < 0:
                 raise ValueError('retention_source_invalid')
-            current = candidates(conn, at, after_slot=slot - 1, limit=1)['candidates']
-            if current and current[0] == item:
+            current = conn.execute('SELECT rowid FROM llm_scenario_review_tapes WHERE slot=?', (slot,)).fetchone()
+            if current and current[0] == item.get('rowid'):
                 selected.append(item)
                 if len(selected) == 400:
                     break
@@ -650,9 +656,14 @@ def cleanup(backup_dir, *, now=None):
         matched = matching_evidence({'candidates': selected}, {'candidates': selected}, delivered, identity)
         progress = ({'truncated': True, 'last_scanned_slot': selected[-1]['slot']}
                     if len(selected) == 400 else index)
+        def unchanged(item):
+            current = candidates(conn, at, after_slot=item['slot'] - 1, limit=1)['candidates']
+            return bool(current and current[0] == item)
         if not matched:
-            _save_cursor({'truncated': True, 'last_scanned_slot': selected[0]['slot'] - 1}, identity)
-            return {'status': 'DEFERRED', 'removed': 0}
+            remaining = [item['slot'] for item in selected if unchanged(item)]
+            _save_cursor({'truncated': True, 'last_scanned_slot': min(remaining) - 1} if remaining else progress,
+                         identity)
+            return {'status': 'DEFERRED' if remaining else 'NO_CANDIDATES', 'removed': 0}
         removed = []
         try:
             with locked_remote_archive(ack, align=True) as lease, closing(sqlite3.connect(
@@ -668,7 +679,7 @@ def cleanup(backup_dir, *, now=None):
                 return {'status': 'PARTIAL', 'removed': len(removed), 'error_type': type(exc).__name__}
             raise
         removed_slots = set(removed)
-        remaining = [item['slot'] for item in selected if item['slot'] not in removed_slots]
+        remaining = [item['slot'] for item in selected if item['slot'] not in removed_slots and unchanged(item)]
         if remaining:
             progress = {'truncated': True, 'last_scanned_slot': min(remaining) - 1}
         _save_cursor(progress, identity)

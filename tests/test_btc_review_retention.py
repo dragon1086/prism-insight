@@ -400,7 +400,20 @@ def test_cleanup_uses_backup_ack_delivery_lease_and_transaction(tmp_path, monkey
     with sqlite3.connect(source_path) as db:
         assert db.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 2
     monkeypatch.setattr(retention, 'fetch_deliveries', delivery)
+    with sqlite3.connect(source_path) as db:
+        db.execute('UPDATE llm_scenario_decisions SET snapshot=? WHERE slot=1', ('{"changed":1}',))
+    assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': 0}
+    with sqlite3.connect(source_path) as db:
+        assert db.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 2
+        db.execute('UPDATE llm_scenario_decisions SET snapshot=? WHERE slot=1', ('{}',))
+    checked = []
+    original_candidates = retention.candidates
+    def count_candidates(*args, **kwargs):
+        checked.append(kwargs.get('after_slot'))
+        return original_candidates(*args, **kwargs)
+    monkeypatch.setattr(retention, 'candidates', count_candidates)
     assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': 1}
+    assert checked.count(0) == 1  # The deleted row is fully rechecked only under the write lock.
     with sqlite3.connect(source_path) as db:
         assert db.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(2,)]
         assert db.execute('SELECT COUNT(*) FROM llm_scenario_decisions').fetchone()[0] == 2
