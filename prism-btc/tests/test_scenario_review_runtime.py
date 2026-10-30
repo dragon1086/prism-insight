@@ -124,11 +124,17 @@ def test_review_event_storage_roundtrip_and_compression_failure_fallback(tmp_pat
 
 
 def test_optin_complete_proof_before_simulated_intent(tmp_path):
+    from utils.btc_review_references import unpack
     r, broker, calls = runtime(tmp_path)
     outcome = r.tick()
     assert outcome["status"] == "intent_pending", outcome
     assert len(calls) == 2 and len(broker.executed) == 1
-    tape = json.loads(read_tape(r.conn.execute("SELECT body FROM llm_scenario_review_tapes").fetchone()[0], r.conn, r.conn.execute("SELECT slot FROM llm_scenario_review_tapes").fetchone()[0], decode_legacy=review_text))
+    stored = r.conn.execute("SELECT body FROM llm_scenario_review_tapes").fetchone()[0]
+    bundle = unpack(stored)
+    assert bundle['version'] == 2
+    generated = [op for op in bundle['tape']['operations'] if op.get('kind') == 'generate']
+    assert len(generated) == 2 and all('$btc_model_ref' in op['request'] for op in generated)
+    tape = json.loads(read_tape(stored, r.conn, r.conn.execute("SELECT slot FROM llm_scenario_review_tapes").fetchone()[0], decode_legacy=review_text))
     proposal = json.loads(r.conn.execute("SELECT proposal FROM llm_scenario_decisions").fetchone()[0])
     assert tape["outcome"]["status"] == "COMPLETE"
     assert proposal["action"] == "OPEN" and "operations" not in proposal
