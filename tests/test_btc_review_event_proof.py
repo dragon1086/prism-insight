@@ -444,3 +444,43 @@ def test_recovery_keeps_transitive_event_source_and_deletes_unreferenced_event()
     stored = source.execute('SELECT body FROM llm_scenario_recovery_events WHERE event_id=?', ('e',)).fetchone()[0]
     assert stored == recovery_ref
     assert read_recovery(stored, source, 1, decode_legacy=review_text, expected_kind='MODEL_RAW') == recovery_text
+
+
+def test_noncontiguous_recovery_source_survives_future_archive_scan(tmp_path):
+    from observability.btc_scenario_export import _anchor_hash
+    from observability.review_storage import review_text
+    from utils import btc_offsite_archive
+    from utils.btc_review_event_proof import delete_confirmed_slot
+    from utils.btc_recovery_references import read_recovery
+    source, exporter, archived, tape, _, identity, now = deletion_fixture()
+    review = canonical({'kind': 'MODEL_REQUEST', 'source_commit': 'c' * 40, 'prompt': 'x' * 3000})
+    recovery = canonical(dict(json.loads(review), calculated_review_version=1, input_id='fixture'))
+    ref = pack(compact(review, recovery, 1, 2))
+    source.execute('UPDATE llm_scenario_review_events SET rowid=5 WHERE slot=2')
+    source.execute('INSERT INTO llm_scenario_review_events(rowid,slot,sequence,body) VALUES(?,?,?,?)',
+                   (3, 1, 1, '{"kind":"RESEARCH_RESULT"}'))
+    source.execute('INSERT INTO llm_scenario_review_events(rowid,slot,sequence,body) VALUES(?,?,?,?)', (4, 1, 2, review))
+    source.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?)', ('e', 1, 'MODEL_REQUEST', ref))
+    source.commit()
+    exporter.execute('UPDATE cursors SET seq=5 WHERE stream=?', ('llm_scenario_review_events',))
+    anchor = _anchor_hash('llm_scenario_recovery_events', {'slot': 1, 'kind': 'MODEL_REQUEST', 'body': ref}, source)
+    exporter.execute('INSERT INTO cursors VALUES(?,?)', ('llm_scenario_recovery_events', 1))
+    exporter.execute('INSERT INTO anchors VALUES(?,?)', ('llm_scenario_recovery_events', anchor))
+    exporter.commit()
+    archived['proof'] = event_proof(source, 1)
+    deliveries = []
+    for event in archived['proof']['events']:
+        event_id = hashlib.sha256(f'{identity}:llm_scenario_review_events:{event["rowid"]}'.encode()).hexdigest()[:32]
+        deliveries.append({'event_id': event_id, 'event_type': 'btc.research.review', 'source_identity': identity,
+                           'body_sha256': event['sha256'], 'source_rowid': event['rowid'],
+                           'source_sequence': event['sequence'], 'decision_slot': 1})
+    assert delete_confirmed_slot(source, exporter, archived, tape, deliveries, identity, now,
+                                 guard=lambda: True, lease_alive=lambda: True) == {'status': 'REMOVED', 'events': 2}
+    assert source.execute('SELECT sequence FROM llm_scenario_review_events WHERE slot=1').fetchall() == [(2,)]
+    stored = source.execute('SELECT body FROM llm_scenario_recovery_events WHERE event_id="e"').fetchone()[0]
+    assert read_recovery(stored, source, 1, decode_legacy=review_text, expected_kind='MODEL_REQUEST') == recovery
+    path = tmp_path / 'small.sqlite'
+    with sqlite3.connect(path) as snapshot:
+        source.backup(snapshot)
+    commits, coverage = btc_offsite_archive.referenced_commits(path)
+    assert 'c' * 40 in commits and coverage['malformed_evidence_rows'] == 0
