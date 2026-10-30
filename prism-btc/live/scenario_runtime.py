@@ -251,6 +251,29 @@ class ScenarioRuntime:
             "SELECT COUNT(*) FROM llm_scenario_review_events WHERE slot=?", (slot,)).fetchone()[0]
         if sequence >= 128:
             raise ValueError("review_record_bound")
+        if isinstance(event, dict) and event.get('kind') == 'MODEL_RAW':
+            try:
+                from live.scenario_review_storage import review_text
+                from utils.btc_review_event_references import compact, read_event
+                if not self.conn.in_transaction:
+                    self.conn.execute('BEGIN IMMEDIATE')
+                sequence = self.conn.execute(
+                    "SELECT COUNT(*) FROM llm_scenario_review_events WHERE slot=?", (slot,)).fetchone()[0]
+                if sequence >= 128:
+                    raise ValueError("review_record_bound")
+                sources = [(number, read_event(value, self.conn, slot, number, decode_legacy=review_text))
+                           for number, value in self.conn.execute(
+                    "SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence LIMIT 128", (slot,))]
+                candidate = compact(body, sources, slot, sequence)
+                old_size = len(stored.encode('utf-8')) if isinstance(stored, str) else len(stored)
+                if (isinstance(candidate, bytes) and len(candidate) < old_size
+                        and read_event(candidate, self.conn, slot, sequence, decode_legacy=review_text) == body):
+                    stored = candidate
+            except Exception:
+                # Optional deduplication cannot prevent storing the original evidence.
+                pass
+        if sequence >= 128:
+            raise ValueError("review_record_bound")
         self.conn.execute("INSERT INTO llm_scenario_review_events VALUES(?,?,?)",
                           (slot, sequence, stored))
         if commit:
