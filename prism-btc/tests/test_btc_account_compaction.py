@@ -365,3 +365,37 @@ def test_bounded_batch_runner_respects_batch_cap_without_waiting():
         return {'status':'COMMITTED','manifest_sha256':seal,'updated':1,'unchanged':0,'saved_bytes':10}
     result = run_bounded_batches('proof', 3, planner, apply, max_batches=1)
     assert result['status'] == 'LIMIT_REACHED' and result['after_rowid'] == 1 and calls == [1]
+
+
+def test_apply_cli_uses_sealed_manifest_and_refuses_unexplicit_invocation(tmp_path, monkeypatch, capsys):
+    import contextlib
+    import io
+    import sys
+    from tools import btc_account_compaction as module
+    from tools import btc_review_event_compaction as guards
+    from utils import btc_review_retention as retention
+    import live.shared_entry_coordinator as coordinator
+    path = tmp_path/'fixture.sqlite'
+    raw = json.dumps({'detail':'x'*4000})
+    with sqlite3.connect(path) as conn:
+        conn.execute('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body)')
+        conn.execute("INSERT INTO llm_scenario_broker_evidence VALUES('account',1,?)", (raw,))
+    stat = path.stat()
+    identity = hashlib.sha256(f'{path.resolve()}:{stat.st_dev}:{stat.st_ino}'.encode()).hexdigest()
+    manifest = {'source_identity':identity, 'cutoff':3, 'after_rowid':0, 'backup_proof_sha256':'b'*64,
+                'rows':[{'rowid':1, 'captured_at':1, 'sha256':hashlib.sha256(raw.encode()).hexdigest()}]}
+    monkeypatch.setattr(guards, 'SOURCE', path)
+    monkeypatch.setattr(guards, 'resource_guard', lambda *a: True)
+    monkeypatch.setattr(retention, '_backup_idle', lambda *a: True)
+    monkeypatch.setattr(retention, '_runtime_safe', lambda *a: True)
+    monkeypatch.setattr(coordinator, 'mutation_lock', lambda _: contextlib.nullcontext())
+    monkeypatch.setattr(sys, 'stdin', type('Input', (), {'buffer': io.BytesIO(json.dumps(manifest).encode())})())
+    monkeypatch.setattr(sys, 'argv', ['tool'])
+    with pytest.raises(ValueError, match='explicit_apply_required'):
+        module.main()
+    monkeypatch.setattr(sys, 'argv', ['tool', '--apply', module.manifest_sha256(manifest), 'b'*64])
+    module.main()
+    result = json.loads(capsys.readouterr().out)
+    assert result['status'] == 'COMMITTED' and result['updated'] == 1
+    with sqlite3.connect(path) as conn:
+        assert review_text(conn.execute('SELECT body FROM llm_scenario_broker_evidence').fetchone()[0]) == raw

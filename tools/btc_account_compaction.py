@@ -3,6 +3,7 @@ import hashlib
 import json
 import math
 import re
+import sqlite3
 
 from observability.btc_scenario_export import _anchor_hash
 from observability.review_storage import MAGIC, review_text
@@ -228,3 +229,23 @@ def run_bounded_batches(proof_path, cutoff, planner, apply, *, after_rowid=0, ma
         except Exception as exc:
             return {'status': 'ERROR', 'error_type': type(exc).__name__, 'after_rowid': after_rowid, **totals}
     return {'status': 'LIMIT_REACHED', 'after_rowid': after_rowid, **totals}
+
+
+def main():
+    """Apply one sealed manifest; callers verify its backup before transport."""
+    import sys
+    from contextlib import closing
+    from tools.btc_review_event_compaction import SOURCE
+    if len(sys.argv) != 4 or sys.argv[1] != '--apply':
+        raise ValueError('explicit_apply_required')
+    raw = sys.stdin.buffer.read(512 * 1024 + 1)
+    if len(raw) > 512 * 1024:
+        raise ValueError('manifest_size_limit')
+    manifest = json.loads(raw)
+    with closing(sqlite3.connect(SOURCE.resolve().as_uri() + '?mode=rw', uri=True, timeout=0)) as conn:
+        result = guarded_operational_batch(conn, manifest, sys.argv[2], sys.argv[3])
+    print(json.dumps(result, sort_keys=True))
+
+
+if __name__ == '__main__':
+    main()
