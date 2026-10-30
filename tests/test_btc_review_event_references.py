@@ -76,7 +76,9 @@ def test_database_reader_preserves_legacy_and_fails_closed_on_source_loss():
     compressed = LEGACY_MAGIC + gzip.compress(request.encode(), mtime=0)
     with sqlite3.connect(':memory:') as conn:
         conn.execute('CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body BLOB,PRIMARY KEY(slot,sequence))')
-        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (100, 2, compressed))
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (100, 2, request))
+        assert refs.read_event(encoded, conn, 100, 3, decode_legacy=review_text) == raw
+        conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=?', (compressed, 100))
         assert refs.read_event(compressed, conn, 100, 2, decode_legacy=review_text) == request
         assert refs.read_event(encoded, conn, 100, 3, decode_legacy=review_text) == raw
         conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=?', (request + ' ', 100))
