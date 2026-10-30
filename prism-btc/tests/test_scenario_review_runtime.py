@@ -1,4 +1,5 @@
 from utils.btc_review_references import read_tape
+from utils.btc_review_event_references import MAGIC as EVENT_REF_MAGIC, read_event
 from live.scenario_review_storage import review_text
 from copy import deepcopy
 import json
@@ -64,9 +65,10 @@ def runtime(tmp_path, *, change=None, tape_change=None, fail_second=False, empty
         assert request["retry_transport"] is False
         calls.append(deepcopy(request))
         with sqlite3.connect(path) as observed:
-            events = [json.loads(review_text(r[0])) for r in observed.execute(
-                "SELECT body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence",
-                (int(now[0] // 300),))]
+            slot = int(now[0] // 300)
+            events = [json.loads(read_event(body, observed, slot, sequence, decode_legacy=review_text))
+                      for sequence, body in observed.execute(
+                "SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence", (slot,))]
             assert events[-1]["kind"] == "MODEL_REQUEST"
         if "wait_proposal" in request["response_schema"]["properties"]:
             first = captured.get("recovery", {}).get("first_observation", False)
@@ -105,6 +107,137 @@ def runtime(tmp_path, *, change=None, tape_change=None, fail_second=False, empty
         r._save(state)
         broker.ctx.update(positions=[dict(price=100, quantity=1)], previous_hard_stop=90)
     return r, broker, calls
+
+
+def test_model_raw_references_unique_request_and_falls_back_safely(tmp_path, monkeypatch):
+    import random
+    from utils import btc_review_event_references as refs
+    r, _, _ = runtime(tmp_path)
+    request = {'kind': 'MODEL_REQUEST', 'phase': 'single', 'request': {
+        'prompt': random.Random(17).randbytes(16000).hex(), 'timeout': 50.0}}
+    raw = {'kind': 'MODEL_RAW', 'phase': 'single',
+           'actual_request': dict(request['request'], timeout=49.0), 'raw': 'fixture'}
+    original = json.dumps(raw, sort_keys=True, allow_nan=False)
+    r._record_calculated_review(7, request)
+    r._record_calculated_review(7, raw)
+    stored = r.conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=7 AND sequence=1').fetchone()[0]
+    assert isinstance(stored, bytes) and stored.startswith(EVENT_REF_MAGIC)
+    assert read_event(stored, r.conn, 7, 1, decode_legacy=review_text) == original
+
+    r._record_calculated_review(8, request)
+    r._record_calculated_review(8, request)
+    r._record_calculated_review(8, raw)
+    ambiguous = r.conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=8 AND sequence=2').fetchone()[0]
+    assert not (isinstance(ambiguous, bytes) and ambiguous.startswith(EVENT_REF_MAGIC))
+    assert review_text(ambiguous) == original
+
+    r._record_calculated_review(9, request)
+    monkeypatch.setattr(refs, 'compact', lambda *a: (_ for _ in ()).throw(ValueError('fixture')))
+    r._record_calculated_review(9, raw)
+    fallback = r.conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=9 AND sequence=1').fetchone()[0]
+    from live.scenario_review_storage import MAGIC as GZIP_MAGIC
+    assert isinstance(fallback, bytes) and fallback.startswith(GZIP_MAGIC)
+    assert review_text(fallback) == original
+
+
+def test_model_raw_reference_does_not_commit_caller_transaction(tmp_path):
+    import random
+    r, _, _ = runtime(tmp_path)
+    request = {'kind': 'MODEL_REQUEST', 'phase': 'single', 'request': {
+        'prompt': random.Random(7).randbytes(16000).hex(), 'timeout': 50}}
+    raw = {'kind': 'MODEL_RAW', 'phase': 'single', 'actual_request': dict(request['request'], timeout=49), 'raw': 'x'}
+    r._record_calculated_review(10, request, commit=False)
+    r._record_calculated_review(10, raw, commit=False)
+    assert r.conn.in_transaction
+    assert r.conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=10 AND sequence=1').fetchone()[0].startswith(EVENT_REF_MAGIC)
+    r.conn.rollback()
+    assert r.conn.execute('SELECT count(*) FROM llm_scenario_review_events WHERE slot=10').fetchone()[0] == 0
+
+
+def test_model_raw_never_references_changed_source(tmp_path, monkeypatch):
+    import random
+    from utils import btc_review_event_references as refs
+    r, _, _ = runtime(tmp_path)
+    request = {'kind': 'MODEL_REQUEST', 'phase': 'single', 'request': {
+        'prompt': random.Random(19).randbytes(16000).hex(), 'timeout': 50}}
+    raw = {'kind': 'MODEL_RAW', 'phase': 'single', 'actual_request': dict(request['request'], timeout=49), 'raw': 'x'}
+    r._record_calculated_review(11, request)
+    original_compact = refs.compact
+    def mutate(*args):
+        candidate = original_compact(*args)
+        r.conn.execute("UPDATE llm_scenario_review_events SET body='{}' WHERE slot=11 AND sequence=0")
+        return candidate
+    monkeypatch.setattr(refs, 'compact', mutate)
+    r._record_calculated_review(11, raw)
+    stored = r.conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=11 AND sequence=1').fetchone()[0]
+    assert not (isinstance(stored, bytes) and stored.startswith(EVENT_REF_MAGIC))
+    assert json.loads(review_text(stored)) == raw
+
+
+def test_model_raw_locks_reference_source_during_write(tmp_path, monkeypatch):
+    import random
+    from utils import btc_review_event_references as refs
+    r, _, _ = runtime(tmp_path)
+    request = {'kind': 'MODEL_REQUEST', 'phase': 'single', 'request': {
+        'prompt': random.Random(23).randbytes(16000).hex(), 'timeout': 50}}
+    raw = {'kind': 'MODEL_RAW', 'phase': 'single', 'actual_request': dict(request['request'], timeout=49), 'raw': 'x'}
+    r._record_calculated_review(12, request)
+    original_compact = refs.compact
+    lock_checked = []
+    def check_lock(*args):
+        with sqlite3.connect(tmp_path / 'runtime.db', timeout=0) as other:
+            with pytest.raises(sqlite3.OperationalError, match='locked'):
+                other.execute("UPDATE llm_scenario_review_events SET body='{}' WHERE slot=12 AND sequence=0")
+        lock_checked.append(True)
+        return original_compact(*args)
+    monkeypatch.setattr(refs, 'compact', check_lock)
+    r._record_calculated_review(12, raw)
+    stored = r.conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=12 AND sequence=1').fetchone()[0]
+    assert lock_checked == [True]
+    assert stored.startswith(EVENT_REF_MAGIC)
+    assert json.loads(read_event(stored, r.conn, 12, 1, decode_legacy=review_text)) == raw
+
+
+def test_model_raw_source_budget_preserves_unmodified_event(tmp_path, monkeypatch):
+    from analysis import scenario_review_tape
+    from utils import btc_review_event_references as refs
+    r, _, _ = runtime(tmp_path)
+    r._record_calculated_review(13, {'kind': 'MODEL_ERROR', 'detail': 'x' * 1500})
+    request = {'kind': 'MODEL_REQUEST', 'phase': 'single', 'request': {'prompt': 'short', 'timeout': 50}}
+    raw = {'kind': 'MODEL_RAW', 'phase': 'single', 'actual_request': dict(request['request'], timeout=49), 'raw': 'x'}
+    r._record_calculated_review(13, request)
+    monkeypatch.setattr(scenario_review_tape, 'MAX_BYTES', 1024)
+    monkeypatch.setattr(refs, 'compact', lambda *a: pytest.fail('source budget must stop before compaction'))
+    r._record_calculated_review(13, raw)
+    stored = r.conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=13 AND sequence=2').fetchone()[0]
+    assert not (isinstance(stored, bytes) and stored.startswith(EVENT_REF_MAGIC))
+    assert json.loads(review_text(stored)) == raw
+
+
+def test_model_raw_rechecks_record_limit_after_acquiring_write_lock(tmp_path):
+    r, _, _ = runtime(tmp_path)
+    r.conn.executemany('INSERT INTO llm_scenario_review_events VALUES(?,?,?)',
+                       [(14, n, '{}') for n in range(127)])
+    r.conn.commit()
+    real = r.conn
+    class RacingConnection:
+        raced = False
+        def __getattr__(self, name):
+            return getattr(real, name)
+        def execute(self, statement, parameters=()):
+            if not self.raced and statement.startswith('SELECT COUNT(*) FROM llm_scenario_review_events'):
+                self.raced = True
+                old = real.execute(statement, parameters).fetchone()
+                with sqlite3.connect(tmp_path / 'runtime.db', timeout=0) as other:
+                    other.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (14, 127, '{}'))
+                return SimpleNamespace(fetchone=lambda: old)
+            return real.execute(statement, parameters)
+    r.conn = RacingConnection()
+    raw = {'kind': 'MODEL_RAW', 'phase': 'single', 'actual_request': {'timeout': 1}, 'raw': 'x'}
+    with pytest.raises(ValueError, match='review_record_bound'):
+        r._record_calculated_review(14, raw)
+    assert real.execute('SELECT count(*) FROM llm_scenario_review_events WHERE slot=14').fetchone()[0] == 128
+    real.rollback()
 
 
 def test_review_event_storage_roundtrip_and_compression_failure_fallback(tmp_path, monkeypatch):
@@ -213,7 +346,8 @@ def test_failed_second_call_persists_failed_tape_and_raw_first_phase(tmp_path):
     assert len(calls) == 2 and broker.executed == []
     tape = json.loads(read_tape(r.conn.execute("SELECT body FROM llm_scenario_review_tapes").fetchone()[0], r.conn, r.conn.execute("SELECT slot FROM llm_scenario_review_tapes").fetchone()[0], decode_legacy=review_text))
     assert tape["outcome"]["status"] == "FAILED"
-    events = [json.loads(review_text(x[0])) for x in r.conn.execute("SELECT body FROM llm_scenario_review_events")]
+    events = [json.loads(read_event(body, r.conn, slot, sequence, decode_legacy=review_text))
+              for slot, sequence, body in r.conn.execute("SELECT slot,sequence,body FROM llm_scenario_review_events")]
     assert any(e["kind"] == "MODEL_RAW" and e["phase"] == "candidate" for e in events)
     assert any(e["kind"] == "MODEL_ERROR" and e["phase"] == "selection" for e in events)
 
@@ -447,9 +581,9 @@ def test_recovery_wait_retention_requires_complete_unchanged_journal(tmp_path):
     prior = []
     changed = False
     for seq, body in rows:
-        decoded = decode_event(body)
+        decoded = read_event(body, r.conn, slot, seq, decode_legacy=decode_event)
         if json.loads(decoded).get('kind') == 'MODEL_RAW':
-            compacted = compact_event(decoded, prior, slot, seq)
+            compacted = body if isinstance(body, bytes) and body.startswith(EVENT_REF_MAGIC) else compact_event(decoded, prior, slot, seq)
             if isinstance(compacted, bytes):
                 r.conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=? AND sequence=?',
                                (compacted, slot, seq))
