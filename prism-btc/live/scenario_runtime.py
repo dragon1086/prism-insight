@@ -261,9 +261,14 @@ class ScenarioRuntime:
                     "SELECT COUNT(*) FROM llm_scenario_review_events WHERE slot=?", (slot,)).fetchone()[0]
                 if sequence >= 128:
                     raise ValueError("review_record_bound")
-                sources = [(number, read_event(value, self.conn, slot, number, decode_legacy=review_text))
-                           for number, value in self.conn.execute(
-                    "SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence LIMIT 128", (slot,))]
+                sources, source_bytes = [], 0
+                for number, value in self.conn.execute(
+                        "SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence LIMIT 128", (slot,)):
+                    text = read_event(value, self.conn, slot, number, decode_legacy=review_text)
+                    source_bytes += len(text.encode('utf-8'))
+                    if source_bytes > MAX_BYTES:
+                        raise ValueError('review_reference_source_budget')
+                    sources.append((number, text))
                 candidate = compact(body, sources, slot, sequence)
                 old_size = len(stored.encode('utf-8')) if isinstance(stored, str) else len(stored)
                 if (isinstance(candidate, bytes) and len(candidate) < old_size
