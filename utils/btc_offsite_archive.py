@@ -353,8 +353,14 @@ def verify_retention_index(raw, manifest):
 
 def verify_event_proof_index(raw, manifest):
     """Recompute optional event evidence from the restored snapshot itself."""
-    if 'btc_review_event_proof_index' not in manifest:
+    status = manifest.get('btc_review_event_proof_status')
+    has_index = 'btc_review_event_proof_index' in manifest
+    if status is None and not has_index:
         return False
+    if status == 'UNAVAILABLE' and not has_index:
+        return False
+    if status != 'CAPTURED' or not has_index:
+        raise ValueError('event_proof_status_mismatch')
     started, index = manifest.get('started_at'), manifest['btc_review_event_proof_index']
     if (type(started) not in (int, float) or not math.isfinite(started) or started <= 7 * 86400
             or not isinstance(index, dict) or index.get('version') != 2):

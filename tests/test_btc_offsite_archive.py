@@ -304,6 +304,14 @@ def test_standalone_receiver_recomputes_retention_index(payload, monkeypatch):
     ack = archive.archive(repo, snapshot, path / 'unused-config')
     assert ack['retention_index_verified'] is True
     assert ack['review_event_proof_index_verified'] is True
+    unavailable = json.loads(json.dumps(manifest))
+    unavailable['btc_review_event_proof_status'] = 'UNAVAILABLE'
+    unavailable.pop('btc_review_event_proof_index')
+    manifest_path.write_text(json.dumps(unavailable))
+    backup_only = archive.archive(repo, snapshot, path / 'unused-config')
+    assert backup_only['status'] == 'VERIFIED'
+    assert 'review_event_proof_index_verified' not in backup_only
+    manifest_path.write_text(json.dumps(manifest))
     altered = json.loads(manifest_path.read_text())
     altered['btc_retention_index']['candidates'][0]['tape_sha256'] = '0' * 64
     manifest_path.write_text(json.dumps(altered))
@@ -315,6 +323,17 @@ def test_standalone_receiver_recomputes_retention_index(payload, monkeypatch):
     with pytest.raises(subprocess.CalledProcessError):
         archive.archive(repo, snapshot, path / 'unused-config')
     assert (root / ack['archive'] / 'receipt.json').is_file()
+
+
+def test_event_proof_status_cannot_claim_missing_or_unavailable_index(tmp_path):
+    raw = tmp_path / 'unused.sqlite'
+    assert archive.verify_event_proof_index(raw, {}) is False
+    assert archive.verify_event_proof_index(raw, {'btc_review_event_proof_status': 'UNAVAILABLE'}) is False
+    for manifest in ({'btc_review_event_proof_status': 'CAPTURED'},
+                     {'btc_review_event_proof_status': 'UNAVAILABLE', 'btc_review_event_proof_index': {}},
+                     {'btc_review_event_proof_index': {}}, {'btc_review_event_proof_status': 'UNKNOWN'}):
+        with pytest.raises(ValueError, match='event_proof_status_mismatch'):
+            archive.verify_event_proof_index(raw, manifest)
 
 
 @pytest.mark.parametrize('fault', ['checksum', 'partial', 'env', 'raw_hash', 'understated_space', 'missing_ref'])
