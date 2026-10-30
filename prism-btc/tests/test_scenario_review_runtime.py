@@ -416,6 +416,12 @@ def test_recovery_wait_retention_requires_complete_unchanged_journal(tmp_path):
     assert not candidates(r.conn, at)['candidates']
     r.conn.execute('ROLLBACK TO missing_review')
     r.conn.execute('RELEASE missing_review')
+    r.conn.execute('SAVEPOINT missing_fresh')
+    r.conn.execute('DELETE FROM llm_scenario_review_events WHERE slot=? AND sequence='
+                   '(SELECT max(sequence) FROM llm_scenario_review_events WHERE slot=?)', (slot, slot))
+    assert not candidates(r.conn, at)['candidates']
+    r.conn.execute('ROLLBACK TO missing_fresh')
+    r.conn.execute('RELEASE missing_fresh')
     r.conn.execute('SAVEPOINT corrupt_tape')
     r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (b'PRISM_REVIEW_REFS_V1\x00bad', slot))
     assert not candidates(r.conn, at)['candidates']

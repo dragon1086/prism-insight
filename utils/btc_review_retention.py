@@ -118,6 +118,17 @@ def _recovery_wait_proven(conn, slot, snapshot, context, plan, outcome, original
                     sequence != index or full_hash(json.loads(review_text(body))) != full_hash(records[index])
                     for index, (sequence, body) in enumerate(review_rows))):
                 return False
+        final_rows = conn.execute('SELECT sequence,body FROM llm_scenario_review_events '
+                                  'INDEXED BY sqlite_autoindex_llm_scenario_review_events_1 '
+                                  'WHERE slot=? AND sequence>=? ORDER BY sequence LIMIT 2',
+                                  (slot, len(records))).fetchall()
+        if len(final_rows) != 1 or final_rows[0][0] != len(records):
+            return False
+        final_event = json.loads(review_text(final_rows[0][1]))
+        expected_final = {'kind': 'FRESH_REVIEW_RECEIPT',
+                          'receipt': {key: value for key, value in selection.items() if key != 'input_id'}}
+        if full_hash(final_event) != full_hash(expected_final):
+            return False
         expected, phases = [], Counter()
         for operation in operations:
             event = operation.get('event') if isinstance(operation, dict) and operation.get('kind') == 'record' else None
