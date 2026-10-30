@@ -297,7 +297,9 @@ def test_standalone_receiver_recomputes_retention_index(payload, monkeypatch):
                            'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body TEXT);')
         conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (1, '{"kind":"WAIT"}'))
         conn.execute('INSERT INTO llm_scenario_decisions(slot,context,proposal,outcome) VALUES(?,?,?,?)',
-                     (1, json.dumps(ctx), json.dumps({'action': 'WAIT'}), json.dumps({'status': 'wait'})))
+                     (1, json.dumps(ctx), json.dumps({'schema_version': 1, 'action': 'WAIT', 'entries': [],
+                                                       'take_profits': [], 'partial_stops': [], 'cancel_entry_ids': []}),
+                      json.dumps({'status': 'wait'})))
         conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 0, '{"kind":"MODEL_RAW"}'))
     snapshot = path / 'retention.sqlite.gz'
     manifest = backup_database(source, snapshot, reserve_bytes=0, capture_references=True,

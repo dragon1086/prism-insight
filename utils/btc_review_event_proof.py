@@ -91,7 +91,11 @@ def snapshot_event_index(conn, now, *, after_slot=-1):
     items = []
     for row in selected:
         try:
-            proof = event_proof(conn, row['slot'])
+            decision = conn.execute('SELECT proposal FROM llm_scenario_decisions WHERE slot=?', (row['slot'],)).fetchone()
+            if not decision or not _flat_noop_plan(decision[0]):
+                proof = {'slot': row['slot'], 'unavailable': True}
+            else:
+                proof = event_proof(conn, row['slot'])
         except ValueError:
             # Preserve the unavailable slot, but do not block other verified slots.
             proof = {'slot': row['slot'], 'unavailable': True}

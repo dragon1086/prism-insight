@@ -19,7 +19,9 @@ def test_optional_event_proof_failure_preserves_verified_backup(tmp_path):
                            'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);')
         conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (1, '{}'))
         conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)',
-                     (1, '{}', json.dumps(context), '{"action":"WAIT"}', '{"status":"wait"}'))
+                     (1, '{}', json.dumps(context), json.dumps({'schema_version': 1, 'action': 'WAIT', 'entries': [],
+                                                               'take_profits': [], 'partial_stops': [], 'cancel_entry_ids': []}),
+                      '{"status":"wait"}'))
     result = backup_database(source, destination, reserve_bytes=0, capture_references=True,
                              capture_review_event_proof=True)
     assert result['decompression_verified'] is True

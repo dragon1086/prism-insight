@@ -91,11 +91,15 @@ def test_snapshot_index_is_bounded_and_does_not_skip_candidates():
                        'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body);')
     context = json.dumps({'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
                           'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False})
+    noop = {'schema_version': 1, 'action': 'WAIT', 'entries': [], 'take_profits': [],
+            'partial_stops': [], 'cancel_entry_ids': []}
     for slot in range(1, 24):
         conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (slot, '{}'))
-        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)', (slot, '{}', context, '{"action":"WAIT"}', '{"status":"wait"}'))
+        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)', (slot, '{}', context, json.dumps(noop), '{"status":"wait"}'))
         conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (slot, 0, '{"kind":"MODEL_RAW"}'))
     conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=2', ('not-json',))
+    conn.execute('UPDATE llm_scenario_decisions SET proposal=? WHERE slot=3',
+                 (json.dumps(dict(noop, cancel_entry_ids=['entry'])),))
     conn.commit()
     now = 7 * 86400 + 100 * 300
     with pytest.raises(ValueError, match='proof_snapshot_transaction_required'):
@@ -104,7 +108,8 @@ def test_snapshot_index_is_bounded_and_does_not_skip_candidates():
     first = snapshot_event_index(conn, now)
     assert len(first['items']) == 20 and first['truncated'] and first['last_scanned_slot'] == 20
     assert first['items'][1]['proof'] == {'slot': 2, 'unavailable': True}
-    assert first['items'][2]['proof']['events']
+    assert first['items'][2]['proof'] == {'slot': 3, 'unavailable': True}
+    assert first['items'][3]['proof']['events']
     second = snapshot_event_index(conn, now, after_slot=first['last_scanned_slot'])
     assert [item['candidate']['slot'] for item in second['items']] == [21, 22, 23]
     assert not second['truncated']
