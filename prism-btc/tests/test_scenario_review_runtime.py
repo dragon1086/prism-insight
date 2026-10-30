@@ -135,6 +135,8 @@ def test_model_raw_references_unique_request_and_falls_back_safely(tmp_path, mon
     monkeypatch.setattr(refs, 'compact', lambda *a: (_ for _ in ()).throw(ValueError('fixture')))
     r._record_calculated_review(9, raw)
     fallback = r.conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=9 AND sequence=1').fetchone()[0]
+    from live.scenario_review_storage import MAGIC as GZIP_MAGIC
+    assert isinstance(fallback, bytes) and fallback.startswith(GZIP_MAGIC)
     assert review_text(fallback) == original
 
 
