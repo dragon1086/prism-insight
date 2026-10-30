@@ -25,6 +25,16 @@ def sha(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
+def _account_text(value):
+    if isinstance(value, str):
+        return value
+    if 'btc_review_storage_embedded' in sys.modules:
+        from btc_review_storage_embedded import review_text
+    else:
+        from observability.review_storage import review_text
+    return review_text(value)
+
+
 def compact(raw, conn, observed_at):
     """Reference only exact earlier broker evidence; otherwise preserve the original."""
     if (not isinstance(raw, str) or len(raw.encode()) > MAX_BYTES or conn is None
@@ -45,10 +55,10 @@ def compact(raw, conn, observed_at):
                                 (kind, observed_at, SOURCE_LIMIT))
             for rowid, captured_at, body in rows:
                 if (type(captured_at) not in (int, float) or not math.isfinite(captured_at) or captured_at <= 0
-                        or not isinstance(body, str) or len(body.encode()) > MAX_BYTES):
+                        or not isinstance(body, (str, bytes)) or len(body.encode() if isinstance(body, str) else body) > MAX_BYTES):
                     continue
                 try:
-                    value = json.loads(restore_financial(body) if kind == 'financial' else body)
+                    value = json.loads(restore_financial(body) if kind == 'financial' else _account_text(body))
                     if isinstance(value, dict) and canonical(value) == expected:
                         match = (rowid, captured_at)
                         break
@@ -144,9 +154,9 @@ def read_accounting(raw, conn):
             raise ValueError('accounting_audit_reference_invalid')
         row = conn.execute('SELECT kind,captured_at,body FROM llm_scenario_broker_evidence WHERE rowid=?',
                            (marker['rowid'],)).fetchone()
-        if not row or row[0] != kind or row[1] != marker['captured_at'] or not isinstance(row[2], str):
+        if not row or row[0] != kind or row[1] != marker['captured_at'] or not isinstance(row[2], (str, bytes)):
             raise ValueError('accounting_audit_source_missing')
-        value = json.loads(restore_financial(row[2]) if kind == 'financial' else row[2])
+        value = json.loads(restore_financial(row[2]) if kind == 'financial' else _account_text(row[2]))
         if not isinstance(value, dict) or sha(canonical(value)) != marker['sha256']:
             raise ValueError('accounting_audit_source_changed')
         result[field] = value

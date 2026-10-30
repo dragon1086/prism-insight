@@ -202,6 +202,13 @@ class ScenarioDemoBroker(ScenarioExecution):
     def _save(self, kind, body):
         text = json.dumps(body, allow_nan=False, sort_keys=True,
                           separators=(',', ':') if kind == 'account' else None)
+        if kind == 'account':
+            original = text
+            try:
+                from live.scenario_review_storage import snapshot_storage
+                text = snapshot_storage(text)
+            except Exception:
+                text = original
         if kind == 'financial':
             original = text
             try:

@@ -288,3 +288,12 @@ def test_long_reason_explicitly_marks_a_bounded_excerpt():
     result = _safe_reason(text)
     assert len(result) <= 100 and result.endswith('…')
     assert _safe_reason('짧은 근거입니다.') == '짧은 근거입니다.'
+
+
+def test_compressed_account_produces_same_daily_report():
+    from live.scenario_review_storage import review_storage
+    conn = fixture()
+    expected = build_report(conn, now=NOW)
+    raw = conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='account'").fetchone()[0]
+    conn.execute("UPDATE llm_scenario_broker_evidence SET body=? WHERE kind='account'", (review_storage(raw),))
+    assert build_report(conn, now=NOW) == expected

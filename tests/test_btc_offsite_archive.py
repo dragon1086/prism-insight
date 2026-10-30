@@ -14,6 +14,12 @@ import pytest
 from utils import btc_offsite_archive as archive
 
 
+
+def _test_gzip(text):
+    import gzip
+    from observability.review_storage import MAGIC
+    return MAGIC + gzip.compress(text.encode(), compresslevel=1, mtime=0)
+
 def test_snapshot_compression_keeps_commit_scan_and_rejects_corruption(tmp_path):
     from observability.review_storage import MAGIC
     path = tmp_path / 'source.sqlite'
@@ -980,7 +986,8 @@ def test_archive_resolves_audit_reference_in_standalone_receiver(tmp_path):
         archive.referenced_commits(path)
 
 
-def test_archive_resolves_accounting_reference_in_standalone_receiver(tmp_path):
+@pytest.mark.parametrize('account_compressed', [False, True])
+def test_archive_resolves_accounting_reference_in_standalone_receiver(tmp_path, account_compressed):
     from utils.btc_accounting_audit_references import CHILDREN_REF, TAG, ORIGINAL_HASH, canonical, sha
 
     path = tmp_path / 'accounting.sqlite'
@@ -993,7 +1000,7 @@ def test_archive_resolves_accounting_reference_in_standalone_receiver(tmp_path):
         conn.execute('CREATE TABLE llm_scenario_broker_evidence(kind,captured_at,body)')
         conn.execute('CREATE TABLE llm_scenario_audit_events(event_id,kind,decision_slot,body)')
         conn.executemany('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)',
-                         [('account', 1, json.dumps(account, sort_keys=True)),
+                         [('account', 1, _test_gzip(json.dumps(account, sort_keys=True)) if account_compressed else json.dumps(account, sort_keys=True)),
                           ('financial', 1, json.dumps(financial, sort_keys=True))])
         conn.executemany("INSERT INTO llm_scenario_audit_events VALUES(?,'accounting_observation',1,?)",
                          [('source', original), ('target', original)])
@@ -1009,7 +1016,10 @@ def test_archive_resolves_accounting_reference_in_standalone_receiver(tmp_path):
     financial_source = Path(archive.__file__).with_name('btc_financial_references.py').read_text()
     accounting_source = Path(archive.__file__).with_name('btc_accounting_audit_references.py').read_text()
     source = Path(archive.__file__).read_text()
-    child_script = ("import sys,types; f=types.ModuleType('btc_financial_refs_embedded'); "
+    storage_source = Path(archive.__file__).resolve().parent.parent.joinpath('observability/review_storage.py').read_text()
+    child_script = ("import sys,types; st=types.ModuleType('btc_review_storage_embedded'); "
+                    "exec(compile(%r,'<storage>','exec'),st.__dict__); sys.modules['btc_review_storage_embedded']=st; "
+                    "f=types.ModuleType('btc_financial_refs_embedded'); "
                     "exec(compile(%r,'<financial>','exec'),f.__dict__); "
                     "sys.modules['btc_financial_refs_embedded']=f; "
                     "m=types.ModuleType('btc_accounting_refs_embedded'); "
@@ -1017,7 +1027,7 @@ def test_archive_resolves_accounting_reference_in_standalone_receiver(tmp_path):
                     "sys.modules['btc_accounting_refs_embedded']=m; ns={'__name__':'receiver'}; "
                     "exec(compile(%r,'<archive>','exec'),ns); "
                     "print(ns['referenced_commits'](ns['Path'](sys.argv[1]))[0][0])"
-                    % (financial_source, accounting_source, source))
+                    % (storage_source, financial_source, accounting_source, source))
     child = subprocess.run([os.sys.executable, '-I', '-c', child_script, str(path)], cwd=tmp_path,
                            capture_output=True, text=True, timeout=15, check=True)
     assert child.stdout.strip() == 'e' * 40

@@ -363,6 +363,8 @@ def _source_text(stream, row, source=None):
         return review_text(row['body'])
     if stream == 'llm_scenario_broker_evidence' and row['kind'] == 'financial':
         return restore_financial(row['body'])
+    if stream == 'llm_scenario_broker_evidence' and row['kind'] == 'account':
+        return review_text(row['body'])
     if stream == 'llm_scenario_audit_events' and row['kind'] == 'decision_input':
         return read_audit(row['body'], source, row['decision_slot'])
     if stream == 'llm_scenario_audit_events' and row['kind'] == 'accounting_observation':
@@ -379,7 +381,7 @@ def _anchor_hash(stream, row, source=None):
         return _hash(_json([row['slot'], row['sequence'], _source_text(stream, row, source)]))
     if stream == 'llm_scenario_review_tapes':
         return _hash(_json([row['slot'], _source_text(stream, row, source)]))
-    if stream == 'llm_scenario_broker_evidence' and row['kind'] == 'financial':
+    if stream == 'llm_scenario_broker_evidence' and row['kind'] in ('financial', 'account'):
         return _hash(_source_text(stream, row, source))
     if stream == 'llm_scenario_audit_events' and row['kind'] == 'decision_input':
         return _hash(_source_text(stream, row, source))
@@ -593,7 +595,8 @@ def _capture(source, state, identity, stream, row, manifest_cache=None):
     if stream == 'llm_scenario_outbox':
         _notice(state, identity, row, now)
         return
-    if stream in ('llm_scenario_review_events', 'llm_scenario_review_tapes', 'llm_scenario_recovery_events'):
+    if (stream in ('llm_scenario_review_events', 'llm_scenario_review_tapes', 'llm_scenario_recovery_events')
+            or (stream == 'llm_scenario_broker_evidence' and row['kind'] == 'account')):
         row = dict(row)
         row['body'] = _source_text(stream, row, source)
     raw = row['body']

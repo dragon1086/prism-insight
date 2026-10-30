@@ -96,6 +96,10 @@ def _read(db):
                 for row in rows:
                     if row.get('snapshot') is not None:
                         row['snapshot'] = review_text(row['snapshot'])
+            if name == 'llm_scenario_broker_evidence':
+                for row in rows:
+                    if row.get('kind') == 'account':
+                        row['body'] = review_text(row['body'])
             data[name] = sorted(rows, key=canonical)
         for name, query in OPTIONAL.items():
             rows = [dict(r) for r in conn.execute(query)] if name in names else []
