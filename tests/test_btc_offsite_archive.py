@@ -858,13 +858,6 @@ def test_archive_resolves_recovery_input_reference(tmp_path):
     child = subprocess.run([os.sys.executable, '-I', '-c', child_script, str(path)], cwd=tmp_path,
                            capture_output=True, text=True, timeout=15, check=True)
     assert child.stdout.strip() == 'e' * 40
-    if audit_compressed:
-        with sqlite3.connect(path) as conn:
-            conn.execute("UPDATE llm_scenario_audit_events SET body=? WHERE event_id='target'", (_test_gzip(canonical(encoded))[:-2],))
-        with pytest.raises(ValueError, match='reference_accounting_unresolved'):
-            archive.referenced_commits(path)
-        with sqlite3.connect(path) as conn:
-            conn.execute("UPDATE llm_scenario_audit_events SET body=? WHERE event_id='target'", (_test_gzip(canonical(encoded)),))
     with sqlite3.connect(path) as conn:
         conn.execute('DELETE FROM llm_scenario_decisions')
     with pytest.raises(ValueError, match='reference_recovery_unresolved'):
@@ -1041,6 +1034,13 @@ def test_archive_resolves_accounting_reference_in_standalone_receiver(tmp_path, 
     child = subprocess.run([os.sys.executable, '-I', '-c', child_script, str(path)], cwd=tmp_path,
                            capture_output=True, text=True, timeout=15, check=True)
     assert child.stdout.strip() == 'e' * 40
+    if audit_compressed:
+        with sqlite3.connect(path) as conn:
+            conn.execute("UPDATE llm_scenario_audit_events SET body=? WHERE event_id='target'", (_test_gzip(canonical(encoded))[:-2],))
+        with pytest.raises(ValueError, match='reference_accounting_unresolved'):
+            archive.referenced_commits(path)
+        with sqlite3.connect(path) as conn:
+            conn.execute("UPDATE llm_scenario_audit_events SET body=? WHERE event_id='target'", (_test_gzip(canonical(encoded)),))
     with sqlite3.connect(path) as conn:
         conn.execute("DELETE FROM llm_scenario_audit_events WHERE event_id='source'")
     with pytest.raises(ValueError, match='reference_accounting_unresolved'):
