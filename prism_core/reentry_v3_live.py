@@ -58,7 +58,7 @@ APPROVE = {"진입", "enter", "entry"}
 SUBPROCESS_TIMEOUT = 600
 # Status of an outcome reason (the rest is BOUGHT / NOT_BOUGHT / ERROR).
 REASON_STATUS = {"deadline": "SKIPPED_DEADLINE", "no_micro_plan": "SKIPPED_NO_MICRO_PLAN",
-                 "outside_band": "SKIPPED_BAND", "entry_lock_busy": "SKIPPED_LOCK"}
+                 "outside_band": "SKIPPED_BAND", "entry_lock_busy": "SKIPPED_LOCK", "no_target": "SKIPPED_NO_TARGET"}
 
 
 def _flag(name, default):
@@ -367,6 +367,10 @@ def plan(market, decision_day, records, items, journal, now):
             reason = "duplicate"
         elif item["ticker"] in tickers_today or item["ticker"] in {e["ticker"] for e in to_submit}:
             reason = "ticker_already_today"
+        elif not item.get("target"):
+            # A shakeout reclaim fires without a BUY target (target_rule "unsupported"); the BUY scenario
+            # contract and the final R/R gate need one, so it never buys (SPOT 2026-10-30 raised instead).
+            reason = "no_target"
         elif len(to_submit) >= remaining:
             reason = "daily_cap"
         elif not in_safe_window(market, now):
