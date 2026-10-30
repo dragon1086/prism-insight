@@ -4,11 +4,11 @@ This module neither selects safe WAITs nor deletes records. Callers must bind
 these fingerprints to an independently verified backup and delivery receipts.
 """
 import hashlib
-import gzip
 import json
 import re
 import subprocess  # nosec B404 - fixed host-verified SSH and bounded query
 import sys
+import zlib
 
 if 'btc_review_storage_embedded' in sys.modules:
     from btc_review_storage_embedded import review_text
@@ -232,13 +232,54 @@ def fetch_event_deliveries(proof, source_identity):
     return rows
 
 
+def _required_event_sequences(conn, slot, recovery_rows):
+    """Keep direct and transitive review sources needed by recovery records."""
+    from utils.btc_recovery_references import MAGIC as RECOVERY_MAGIC, TAG, INPUT_TAG, MAX_BYTES as RECOVERY_MAX
+    from utils.btc_review_event_references import MAGIC as EVENT_MAGIC, _unpack
+    rows = conn.execute('SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence LIMIT ?',
+                        (slot, MAX_EVENTS + 1)).fetchall()
+    by_sequence = {sequence: body for sequence, body in rows}
+    if len(rows) > MAX_EVENTS or len(by_sequence) != len(rows):
+        raise ValueError('event_delete_reference_invalid')
+    required = set()
+    for _, _, _, stored in recovery_rows:
+        if not isinstance(stored, bytes) or not stored.startswith(RECOVERY_MAGIC):
+            continue
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        raw = decoder.decompress(stored[len(RECOVERY_MAGIC):], RECOVERY_MAX + 1)
+        if len(raw) > RECOVERY_MAX or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+            raise ValueError('event_delete_reference_invalid')
+        marker = json.loads(raw)
+        if not isinstance(marker, dict):
+            raise ValueError('event_delete_reference_invalid')
+        if TAG in marker:
+            seq = marker.get('sequence')
+            if type(seq) is not int or seq not in by_sequence:
+                raise ValueError('event_delete_reference_invalid')
+            required.add(seq)
+        elif INPUT_TAG not in marker:
+            raise ValueError('event_delete_reference_invalid')
+    pending = list(required)
+    while pending:
+        seq = pending.pop()
+        body = by_sequence[seq]
+        if isinstance(body, bytes) and body.startswith(EVENT_MAGIC):
+            source = _unpack(body).get('source_sequence')
+            if type(source) is not int or source >= seq or source not in by_sequence:
+                raise ValueError('event_delete_reference_invalid')
+            if source not in required:
+                required.add(source)
+                pending.append(source)
+    return required
+
+
 def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliveries,
                           source_identity, now, *, guard, lease_alive):
     """Atomically delete one verified flat WAIT and its events under a held archive lease.
 
     This is not a standalone authority: the caller must validate archived using
     verified_event_index while holding the matching verified remote archive lease.
-    Recovery references are detached losslessly within the same transaction.
+    Review-event sources required by recovery records remain in the database.
     """
     from observability.btc_scenario_export import _anchor_hash
     from utils.btc_recovery_references import MAGIC as RECOVERY_MAGIC
@@ -318,21 +359,16 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
                 raise ValueError('event_delete_export_anchor_changed')
         if guard() is not True or lease_alive() is not True:
             raise ValueError('event_delete_guard_failed')
-        if refs:
-            from observability.review_storage import MAGIC as REVIEW_MAGIC
-            for rowid, event_id, kind, stored in refs:
-                raw = read_recovery(stored, conn, slot, decode_legacy=review_text, expected_kind=kind)
-                packed = REVIEW_MAGIC + gzip.compress(raw.encode('utf-8'), compresslevel=1, mtime=0)
-                replacement = packed if len(packed) < len(raw.encode('utf-8')) else raw
-                if review_text(replacement) != raw or conn.execute(
-                        'UPDATE llm_scenario_recovery_events SET body=? WHERE rowid=? AND slot=? AND event_id=? AND body=?',
-                        (replacement, rowid, slot, event_id, stored)).rowcount != 1:
-                    raise ValueError('event_delete_recovery_changed')
+        required = _required_event_sequences(conn, slot, recovery_rows)
+        removed_events = 0
         for event in current_proof['events']:
+            if event['sequence'] in required:
+                continue
             changed = conn.execute('DELETE FROM llm_scenario_review_events WHERE rowid=? AND slot=? AND sequence=?',
                                    (event['rowid'], slot, event['sequence'])).rowcount
             if changed != 1:
                 raise ValueError('event_delete_source_changed')
+            removed_events += 1
         if conn.execute('DELETE FROM llm_scenario_review_tapes WHERE rowid=? AND slot=?',
                         (candidate['rowid'], slot)).rowcount != 1:
             raise ValueError('event_delete_source_changed')
@@ -355,7 +391,7 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
         if guard() is not True or lease_alive() is not True:
             raise ValueError('event_delete_guard_failed')
         conn.commit()
-        return {'status': 'REMOVED', 'events': len(current_proof['events'])}
+        return {'status': 'REMOVED', 'events': removed_events}
     finally:
         if conn.in_transaction:
             conn.rollback()
