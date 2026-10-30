@@ -247,7 +247,9 @@ def monitor(broker, *, refresh=False):
             broker.conn.commit()
             observed_bodies.append(body)
         sources = account_sources(broker)
-        owned_ids = {c['order_id'] for c in broker.children() if c['order_id']}
+        children = broker.children()
+        owned_ids = {c['order_id'] for c in children if c['order_id']}
+        owned_links = {c['link_id'] for c in children if c['link_id']}
         active = broker._active()
         for source in sources:
             for position in source.get('positions', {}).get('result', {}).get('list', []):
@@ -255,7 +257,11 @@ def monitor(broker, *, refresh=False):
                     and source['scope'] == {'settleCoin': 'USDT'}
                     and position.get('symbol') == 'BTCUSDT' and position.get('positionIdx') == 0), 'foreign_position')
             for order in source.get('orders', {}).get('result', {}).get('list', []):
-                require(order.get('orderId') in owned_ids, 'foreign_order')
+                # Our own order can be on the exchange before its id is saved: an entry's
+                # attached stop exists from the fill, its row only after reconciliation.
+                require(order.get('orderId') in owned_ids or order.get('orderLinkId') in owned_links
+                        or (order.get('parentOrderLinkId') in owned_links and order.get('reduceOnly') is True
+                            and order.get('stopOrderType') == 'StopLoss'), 'foreign_order')
         require(0 <= broker.clock()-started <= 10, 'monitor_account_deadline')
         broker._incident_observation = dict(epoch_id=receipt(broker.conn)['epoch_id'], started_at=started,
                                             source_sha256=digest(observed_bodies))
