@@ -1,5 +1,6 @@
 """Private verified BTC database/Git archive over existing host-verified SSH."""
 import argparse
+import base64
 from contextlib import closing
 import fcntl
 import gzip
@@ -133,8 +134,14 @@ def ssh_archive(host, needed, *, stream=None, restore=None):
     else:
         suffix = ('\nprivate_root(REMOTE_ROOT); space(REMOTE_ROOT, ' + str(needed) + ', staging=True); print("READY")\n'
                   if stream is None else '\nprint(json.dumps(receive(sys.stdin.buffer, REMOTE_ROOT, ' + str(needed) + ')))\n')
-    command = '/usr/bin/python3 -c ' + shlex.quote(
-        "exec(compile(" + repr(prelude + source + suffix) + ", '<archive>', 'exec'), {'__name__':'offsite_receiver'})")
+    packed = base64.b85encode(zlib.compress((prelude + source).encode('utf-8'), 9)).decode('ascii')
+    bootstrap = ("import base64,zlib;ns={'__name__':'offsite_receiver'};"
+                 "exec(compile(zlib.decompress(base64.b85decode(" + repr(packed) + ")), '<archive>', 'exec'),ns);"
+                 "ns['REMOTE_ROOT']=ns['Path'](" + repr(str(REMOTE_ROOT)) + ");"
+                 "ns['REPLAY_ROOT']=ns['Path'](" + repr(str(REPLAY_ROOT)) + ");exec(" + repr(suffix) + ",ns)")
+    command = '/usr/bin/python3 -c ' + shlex.quote(bootstrap)
+    if len(command.encode()) > 120000:
+        raise ValueError('archive_bootstrap_too_large')
     # Only this repository's receiver source and a bounded integer reach the remote command.
     return subprocess.run(['/usr/bin/ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',  # nosec B603  # nosemgrep
                            '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=15',
