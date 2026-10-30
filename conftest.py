@@ -48,6 +48,10 @@ os.environ.setdefault("CANDIDATE_LEDGER_ENABLED", "false")
 # BUY/SELL prompts read official filings (SEC / KIS 공시) on every decision; hermetic
 # prompt tests must not reach the network. tests/test_corporate_filings.py opts in.
 os.environ.setdefault("CORP_FILINGS_ENABLED", "false")
+# Ops alerts go to the real maintenance chat once load_dotenv() runs; a server test run sent a fake
+# "AAPL synthetic broker rejection" there (2026-10-30). Blank values survive load_dotenv (no override).
+for _alert_var in ("OPS_ALERT_CHAT_ID", "OPS_ALERT_BOT_TOKEN", "OAUTH_ALERT_CHAT_ID", "OAUTH_ALERT_BOT_TOKEN"):
+    os.environ[_alert_var] = ""
 
 
 # ---------------------------------------------------------------------------

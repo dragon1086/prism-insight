@@ -29,6 +29,13 @@ def _valid_row(rowid, slot, sequence, expected_type, expected_sha256):
             and len(expected_sha256) == 64 and all(c in '0123456789abcdef' for c in expected_sha256))
 
 
+def _unique_review_index(conn):
+    indexes = [row for row in conn.execute('PRAGMA index_list(llm_scenario_review_events)')
+               if row[1] == 'sqlite_autoindex_llm_scenario_review_events_1']
+    columns = [row[2] for row in conn.execute('PRAGMA index_info(sqlite_autoindex_llm_scenario_review_events_1)')]
+    return len(indexes) == 1 and indexes[0][2] == 1 and indexes[0][4] == 0 and columns == ['slot', 'sequence']
+
+
 def compact_one(conn, *, rowid, slot, sequence, expected_type, expected_sha256, guard):
     """Change one unchanged backed-up row, preserving its original logical text."""
     if (not _valid_row(rowid, slot, sequence, expected_type, expected_sha256)
@@ -71,6 +78,83 @@ def compact_one(conn, *, rowid, slot, sequence, expected_type, expected_sha256, 
         updated = conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE rowid=? AND body=?',
                                (candidate, rowid, original))
         if updated.rowcount != 1:
+            raise ValueError('review_source_changed')
+        conn.commit()
+        return 'UPDATED'
+    except BaseException:
+        conn.rollback()
+        raise
+
+
+def compact_backed_model_pair(conn, raw_row, source_row, *, guard):
+    """Compact one pair only after the caller verifies both rows against a backup."""
+    fields = {'rowid', 'slot', 'sequence', 'expected_type', 'expected_sha256'}
+    if (conn.in_transaction or not callable(guard) or not isinstance(raw_row, dict)
+            or not isinstance(source_row, dict) or set(raw_row) != fields or set(source_row) != fields
+            or not _valid_row(**raw_row) or not _valid_row(**source_row)
+            or raw_row['slot'] != source_row['slot'] or raw_row['sequence'] >= 128
+            or source_row['sequence'] >= raw_row['sequence']):
+        raise ValueError('invalid_compaction_context')
+    if guard() is not True:
+        return 'RESOURCE_LIMIT'
+    from utils.btc_review_event_references import MAX_BYTES, MAGIC as REF_MAGIC, _unpack, compact, read_event
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        if guard() is not True:
+            conn.rollback()
+            return 'RESOURCE_LIMIT'
+        if not _unique_review_index(conn):
+            conn.rollback()
+            return 'SOURCE_CHANGED'
+        def load(proof):
+            return conn.execute('SELECT slot,sequence,body FROM llm_scenario_review_events WHERE rowid=?',
+                                (proof['rowid'],)).fetchone()
+        def matches(proof, row):
+            return (row is not None and row[0] == proof['slot'] and row[1] == proof['sequence']
+                    and ('text' if isinstance(row[2], str) else 'blob' if isinstance(row[2], bytes) else 'invalid') == proof['expected_type']
+                    and hashlib.sha256(_bytes(row[2])).hexdigest() == proof['expected_sha256'])
+        source = load(source_row)
+        raw = load(raw_row)
+        if not matches(source_row, source) or raw is None or raw[0] != raw_row['slot'] or raw[1] != raw_row['sequence']:
+            conn.rollback()
+            return 'SOURCE_CHANGED'
+        slot, sequence = raw_row['slot'], raw_row['sequence']
+        if not matches(raw_row, raw):
+            value = raw[2]
+            if not isinstance(value, bytes) or not value.startswith(REF_MAGIC) or _unpack(value)['source_sequence'] != source_row['sequence']:
+                conn.rollback()
+                return 'SOURCE_CHANGED'
+            original = read_event(value, conn, slot, sequence, decode_legacy=review_text)
+            prior = original if raw_row['expected_type'] == 'text' else review_storage(original)
+            if hashlib.sha256(_bytes(prior)).hexdigest() != raw_row['expected_sha256']:
+                conn.rollback()
+                return 'SOURCE_CHANGED'
+            conn.rollback()
+            return 'UNCHANGED'
+        original = read_event(raw[2], conn, slot, sequence, decode_legacy=review_text)
+        sources, source_bytes = [], 0
+        for number, value in conn.execute('SELECT sequence,body FROM llm_scenario_review_events '
+                                          'WHERE slot=? AND sequence<? ORDER BY sequence LIMIT 128', (slot, sequence)):
+            text = read_event(value, conn, slot, number, decode_legacy=review_text)
+            source_bytes += len(text.encode('utf-8'))
+            if source_bytes > MAX_BYTES:
+                conn.rollback()
+                return 'UNCHANGED'
+            sources.append((number, text))
+        candidate = compact(original, sources, slot, sequence)
+        if (not isinstance(candidate, bytes) or not candidate.startswith(REF_MAGIC)
+                or _unpack(candidate)['source_sequence'] != source_row['sequence']
+                or len(candidate) >= len(_bytes(raw[2]))):
+            conn.rollback()
+            return 'UNCHANGED'
+        if read_event(candidate, conn, slot, sequence, decode_legacy=review_text) != original:
+            raise ValueError('review_roundtrip_mismatch')
+        if guard() is not True:
+            conn.rollback()
+            return 'RESOURCE_LIMIT'
+        changed = conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE rowid=? AND body=?',
+                               (candidate, raw_row['rowid'], raw[2]))
+        if changed.rowcount != 1:
             raise ValueError('review_source_changed')
         conn.commit()
         return 'UPDATED'
@@ -142,6 +226,99 @@ def compact_batch(conn, manifest, guard):
     return {'counts':counts, 'last_rowid':last}
 
 
+def compact_backed_pairs(conn, manifest, guard):
+    if not isinstance(manifest, dict) or set(manifest) != {'source_identity', 'pairs'}:
+        raise ValueError('invalid_manifest')
+    identity, pairs = manifest['source_identity'], manifest['pairs']
+    fields = {'rowid','slot','sequence','expected_type','expected_sha256'}
+    if (not isinstance(identity, str) or len(identity) != 64 or any(c not in '0123456789abcdef' for c in identity)
+            or not isinstance(pairs, list) or not 1 <= len(pairs) <= 20
+            or not all(isinstance(pair, dict) and set(pair) == {'raw','source'}
+                       and all(isinstance(pair[k], dict) and set(pair[k]) == fields and _valid_row(**pair[k])
+                               for k in ('raw','source'))
+                       and pair['raw']['slot'] == pair['source']['slot']
+                       and pair['raw']['sequence'] < 128 and pair['source']['sequence'] < pair['raw']['sequence']
+                       for pair in pairs)):
+        raise ValueError('invalid_manifest')
+    ids = [pair['raw']['rowid'] for pair in pairs]
+    if ids != sorted(set(ids)):
+        raise ValueError('invalid_manifest')
+    counts = {'UPDATED':0, 'UNCHANGED':0, 'SOURCE_CHANGED':0, 'RESOURCE_LIMIT':0, 'ERROR':0}
+    last = None
+    for pair in pairs:
+        try:
+            status = compact_backed_model_pair(conn, pair['raw'], pair['source'], guard=guard)
+        except Exception:
+            counts['ERROR'] += 1
+            break
+        counts[status] += 1
+        if status in ('SOURCE_CHANGED', 'RESOURCE_LIMIT'):
+            break
+        last = pair['raw']['rowid']
+    return {'counts':counts, 'last_rowid':last}
+
+
+def plan_backed_pairs(conn, identity, *, after_rowid=0):
+    """Plan at most 20 pairs from a caller-verified, read-only backup."""
+    if (not isinstance(identity, str) or len(identity) != 64 or any(c not in '0123456789abcdef' for c in identity)
+            or type(after_rowid) is not int or not 0 <= after_rowid <= 9223372036854775807 or not _unique_review_index(conn)
+            or conn.execute('PRAGMA query_only').fetchone()[0] != 1):
+        raise ValueError('invalid_manifest')
+    from utils.btc_review_event_references import MAX_BYTES, MAGIC as REF_MAGIC, _unpack, compact, read_event
+    pairs, unreadable_rows, unreferenced_rows = [], [], []
+    scanned, last = 0, after_rowid
+    rows = conn.execute('SELECT rowid,slot,sequence,body FROM llm_scenario_review_events '
+                        'WHERE rowid>? ORDER BY rowid LIMIT 200', (after_rowid,))
+    for rowid, slot, sequence, body in rows:
+        last, scanned = rowid, scanned + 1
+        if type(slot) is not int or slot < 0 or type(sequence) is not int or not 0 <= sequence < 128:
+            unreadable_rows.append(rowid)
+            continue
+        try:
+            if len(_bytes(body)) > 2 * MAX_BYTES:
+                raise ValueError('review_body_too_large')
+            text = read_event(body, conn, slot, sequence, decode_legacy=review_text)
+            if len(text.encode('utf-8')) > MAX_BYTES:
+                raise ValueError('review_body_too_large')
+            event = json.loads(text)
+            if not isinstance(event, dict):
+                raise ValueError('review_body_invalid')
+            if event.get('kind') != 'MODEL_RAW':
+                continue
+            sources, total = [], 0
+            for source_id, number, value in conn.execute(
+                    'SELECT rowid,sequence,body FROM llm_scenario_review_events '
+                    'WHERE slot=? AND sequence<? ORDER BY sequence LIMIT 128', (slot, sequence)):
+                if len(_bytes(value)) > 2 * MAX_BYTES:
+                    raise ValueError('review_body_too_large')
+                original = read_event(value, conn, slot, number, decode_legacy=review_text)
+                total += len(original.encode('utf-8')) + len(_bytes(value))
+                if total > 2 * MAX_BYTES:
+                    raise ValueError('review_reference_source_budget')
+                sources.append((source_id, number, value, original))
+            encoded = compact(text, [(n, original) for _, n, _, original in sources], slot, sequence)
+            if not isinstance(encoded, bytes) or not encoded.startswith(REF_MAGIC) or len(encoded) >= len(_bytes(body)):
+                unreferenced_rows.append(rowid)
+                continue
+            source_sequence = _unpack(encoded)['source_sequence']
+            found = [item for item in sources if item[1] == source_sequence]
+            if len(found) != 1:
+                raise ValueError('review_reference_source_invalid')
+            def fingerprint(rid, number, value):
+                return {'rowid':rid,'slot':slot,'sequence':number,
+                        'expected_type':'text' if isinstance(value,str) else 'blob',
+                        'expected_sha256':hashlib.sha256(_bytes(value)).hexdigest()}
+            pairs.append({'raw':fingerprint(rowid,sequence,body),
+                          'source':fingerprint(found[0][0],source_sequence,found[0][2])})
+            if len(pairs) == 20:
+                break
+        except (ValueError, TypeError, KeyError, UnicodeError):
+            unreadable_rows.append(rowid)
+    return {'manifest':{'source_identity':identity,'pairs':pairs},'scanned':scanned,
+            'unreadable':len(unreadable_rows),'unreadable_rowids':unreadable_rows,
+            'unreferenced_raw_rowids':unreferenced_rows,'last_scanned_rowid':last}
+
+
 def main():
     if os.environ.get('PRISM_BTC_STORAGE_APPROVED') != '1':
         raise RuntimeError('explicit_storage_approval_required')
@@ -152,12 +329,16 @@ def main():
     identity = manifest.get('source_identity') if isinstance(manifest, dict) else None
     if not isinstance(identity, str) or source_identity(SOURCE) != identity:
         raise ValueError('source_identity_changed')
-    guard = lambda: resource_guard(SOURCE, identity)
+    from utils.btc_review_retention import _backup_idle
+    guard = lambda: resource_guard(SOURCE, identity) and _backup_idle(SOURCE)
     if guard() is not True:
         print(json.dumps({'status':'RESOURCE_LIMIT','counts':{},'last_rowid':None}))
         return
     with sqlite3.connect(SOURCE, timeout=0, isolation_level=None) as conn:
-        result = compact_batch(conn, manifest, guard)
+        from live.shared_entry_coordinator import mutation_lock
+        with mutation_lock(conn):
+            result = (compact_backed_pairs(conn, manifest, guard) if isinstance(manifest, dict) and 'pairs' in manifest
+                      else compact_batch(conn, manifest, guard))
     print(json.dumps({'status':'STOPPED' if any(result['counts'][key] for key in ('SOURCE_CHANGED','RESOURCE_LIMIT','ERROR'))
                       else 'COMPLETE', **result}))
 
