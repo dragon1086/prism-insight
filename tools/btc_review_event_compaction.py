@@ -96,6 +96,12 @@ def compact_backed_model_pair(conn, raw_row, source_row, *, guard):
         if guard() is not True:
             conn.rollback()
             return 'RESOURCE_LIMIT'
+        indexes = [row for row in conn.execute('PRAGMA index_list(llm_scenario_review_events)')
+                   if row[1] == 'sqlite_autoindex_llm_scenario_review_events_1']
+        columns = [row[2] for row in conn.execute('PRAGMA index_info(sqlite_autoindex_llm_scenario_review_events_1)')]
+        if len(indexes) != 1 or indexes[0][2] != 1 or indexes[0][4] != 0 or columns != ['slot', 'sequence']:
+            conn.rollback()
+            return 'SOURCE_CHANGED'
         def load(proof):
             return conn.execute('SELECT slot,sequence,body FROM llm_scenario_review_events WHERE rowid=?',
                                 (proof['rowid'],)).fetchone()

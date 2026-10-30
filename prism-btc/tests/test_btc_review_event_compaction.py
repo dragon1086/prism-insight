@@ -245,6 +245,18 @@ def test_backed_model_pair_rejects_changed_source_and_lost_guard(tmp_path):
     conn.close()
 
 
+def test_backed_model_pair_rejects_missing_unique_slot_index(tmp_path):
+    conn, raw_proof, source_proof, _, _ = backed_model_pair(tmp_path)
+    conn.executescript('ALTER TABLE llm_scenario_review_events RENAME TO old_events;'
+                       'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body BLOB);'
+                       'INSERT INTO llm_scenario_review_events SELECT * FROM old_events ORDER BY rowid;'
+                       'DROP TABLE old_events;')
+    before = conn.execute('SELECT body FROM llm_scenario_review_events WHERE rowid=2').fetchone()[0]
+    assert subject.compact_backed_model_pair(conn,raw_proof,source_proof,guard=lambda:True) == 'SOURCE_CHANGED'
+    assert conn.execute('SELECT body FROM llm_scenario_review_events WHERE rowid=2').fetchone()[0] == before
+    conn.close()
+
+
 def test_backed_model_pair_holds_write_lock_on_source(tmp_path, monkeypatch):
     from utils import btc_review_event_references as refs
     conn, raw_proof, source_proof, raw, _ = backed_model_pair(tmp_path)
