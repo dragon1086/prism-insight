@@ -7,6 +7,8 @@ the trading path.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import json
 import os
@@ -24,6 +26,17 @@ SCHEMA_VERSION = 1
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SPOOL_PATH = PROJECT_ROOT / "logs" / "prism_events.jsonl"
 MAX_EVENT_BYTES = 256 * 1024
+_events_suppressed = ContextVar('prism_observability_suppressed', default=False)
+
+
+@contextmanager
+def suppress_events():
+    """Keep isolated replay events out of the shared trading ledger."""
+    token = _events_suppressed.set(True)
+    try:
+        yield
+    finally:
+        _events_suppressed.reset(token)
 
 _SENSITIVE_KEY_PARTS = (
     "account",
@@ -205,6 +218,8 @@ def emit_event(
     Observability must never block or fail a trading decision. Callers should
     not retry synchronously.
     """
+    if _events_suppressed.get():
+        return None
     try:
         event = build_event(
             event_type,
@@ -243,4 +258,4 @@ def emit_event(
         return None
 
 
-__all__ = ["build_event", "emit_event"]
+__all__ = ["build_event", "emit_event", "suppress_events"]

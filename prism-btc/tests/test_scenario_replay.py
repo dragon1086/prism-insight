@@ -7,6 +7,21 @@ from backtest.scenario_data import HistoricalScenarioData
 from engine.scenario_snapshot import TIMEFRAME_MS, candle_start
 
 
+def test_replay_does_not_emit_to_shared_observability_spool(tmp_path, monkeypatch):
+    from analysis import scenario_replay
+    from observability.events import emit_event
+    spool = tmp_path / 'events.jsonl'
+    monkeypatch.setenv('PRISM_OBSERVABILITY_SPOOL', str(spool))
+    def fake_replay(*args, **kwargs):
+        emit_event('btc.scenario.settlement_recorded', service='fixture')
+        return {'status': 'fixture'}
+    monkeypatch.setattr(scenario_replay, '_run_replay', fake_replay)
+    assert run_replay(None, None, None)['status'] == 'fixture'
+    assert not spool.exists()
+    emit_event('btc.scenario.decision_input', service='demo')
+    assert spool.exists()
+
+
 def inputs(duration_ms=600000):
     start=1790899200000;end=start+duration_ms
     index=pd.to_datetime(range(start-86400000,end,60000),unit='ms',utc=True)
@@ -110,7 +125,16 @@ def test_offline_network_boundary_denies_exchange_socket():
     assert blocked==['blocked_network']
 
 
-def test_real_runtime_simulated_open_exit_and_exact_tape_replay(tmp_path):
+def test_real_runtime_simulated_open_exit_and_exact_tape_replay(tmp_path, monkeypatch):
+    from observability import events
+    spool=tmp_path/'shared-events.jsonl'
+    monkeypatch.setenv('PRISM_OBSERVABILITY_SPOOL', str(spool))
+    calls=[]
+    original=events.emit_event
+    def capture(*args, **kwargs):
+        calls.append(args[0])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(events, 'emit_event', capture)
     b,m=inputs();tape=tmp_path/'trade-tape'
     def policy(s,c):
         base=dict(wait_policy(s,c),scenario_id=c['scenario_id'] or 'fixture-trade',
@@ -124,6 +148,8 @@ def test_real_runtime_simulated_open_exit_and_exact_tape_replay(tmp_path):
         first=run_replay(b,m,tmp_path/'open',mode='fixture',tape_path=tape,policy=policy)
         second=run_replay(b,m,tmp_path/'copy',mode='frozen',tape_path=tape)
     assert not blocked
+    assert calls
+    assert not spool.exists()
     assert first['economic']['completed_scenarios']==1
     assert first['economic']['fees']>0 and first['economic']['open_quantity']==0
     assert first['result_hash']==second['result_hash']
