@@ -617,12 +617,17 @@ def restore_archive(root, name, output_root):
                 raise ValueError('restore_archive_checksum_mismatch')
         if receipt.get('raw_sha256') != manifest.get('raw_sha256'):
             raise ValueError('restore_receipt_invalid')
-        needed = int(manifest['raw_bytes']) + 4 * (archive / FILES[2]).stat().st_size + 1024**2
+        zero_bytes = metadata.get('sparse_zero_bytes')
+        raw_bound = (int(manifest['raw_bytes']) if zero_bytes is None else
+                     _sparse_raw_bound(manifest['raw_bytes'], zero_bytes))
+        needed = raw_bound + 4 * (archive / FILES[2]).stat().st_size + 1024**2
         if needed <= 0 or needed > 4 * RAW_CAP or shutil.disk_usage(output_root).free < RESERVE + needed:
             raise OSError('restore_space_limit')
+        if zero_bytes is not None:
+            _require_sparse(output_root)
         stage = Path(tempfile.mkdtemp(prefix='.restoring-', dir=output_root))
         raw = stage / 'snapshot.sqlite'
-        restore_snapshot(archive / FILES[0], manifest, raw)
+        restore_snapshot(archive / FILES[0], manifest, raw, expected_zero_bytes=zero_bytes)
         checked = verify_retention_index(raw, manifest)
         if 'btc_retention_index' in manifest and (not checked or receipt.get('retention_index_verified') is not True):
             raise ValueError('restore_retention_index_unverified')

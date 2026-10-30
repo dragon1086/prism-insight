@@ -451,6 +451,30 @@ def test_receiver_verifies_sparse_claim_and_preserves_previous_archive(payload, 
     assert not list(root.glob('.incoming-*'))
 
 
+def test_sparse_retained_archive_restore_checks_output_filesystem(payload, monkeypatch):
+    path, needed, manifest, _ = payload
+    monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=100 * archive.CAP))
+    probes = []
+    monkeypatch.setattr(archive, '_require_sparse', lambda root: probes.append(root))
+    zero = archive.verify_streamed_snapshot(path / archive.FILES[0], manifest)
+    metadata_path = path / archive.FILES[3]
+    metadata = json.loads(metadata_path.read_text())
+    metadata['sparse_zero_bytes'] = zero
+    metadata_path.write_text(json.dumps(metadata))
+    root, output = path / 'remote-sparse-replay', path / 'sparse-replay'
+    ack = archive.receive(transfer(path), root, needed)
+    result = archive.restore_archive(root, ack['archive'], output)
+    assert probes == [root, output]
+    assert archive.digest(Path(result['directory']) / 'snapshot.sqlite') == manifest['raw_sha256']
+    def unsupported(_):
+        raise ValueError('sparse_filesystem_unsupported')
+    monkeypatch.setattr(archive, '_require_sparse', unsupported)
+    with pytest.raises(ValueError, match='sparse_filesystem_unsupported'):
+        archive.restore_archive(root, ack['archive'], path / 'unsupported-replay')
+    assert (root / ack['archive'] / 'receipt.json').is_file()
+    assert not list((path / 'unsupported-replay').glob('.restoring-*'))
+
+
 def test_sender_and_receiver_use_verified_sparse_bound(payload, monkeypatch):
     from utils.sqlite_snapshot import backup_database
 
