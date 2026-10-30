@@ -365,6 +365,14 @@ def test_failed_snapshot_logs_failure_and_preserves_old_backup(tmp_path):
     assert not list((home/'prism_backups').glob('*/offsite_ack.json'))
 
 
+def test_backup_script_is_tracked_as_executable():
+    import subprocess
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.check_output(['git', 'ls-files', '--stage', '--', 'utils/backup_configs.sh'],
+                                     cwd=root, text=True, timeout=10)
+    assert result.startswith('100755 ')
+
+
 @pytest.mark.parametrize('archive_success', [True, False])
 @pytest.mark.parametrize('event_retention', ['unset', '0', '1', 'invalid'])
 def test_backup_records_archive_ack_and_preserves_old_on_failure(tmp_path, archive_success, event_retention):
