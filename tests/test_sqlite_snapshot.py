@@ -347,6 +347,7 @@ esac
     if archive_success:
         assert 'run_btc_review_retention.py' in schedule.read_text()
         arguments = schedule.read_text().splitlines()
+        assert '--timer-property=AccuracySec=1s' in arguments
         assert arguments[-7:-3] == ['/usr/bin/bash', '-c', 'exec "$1" "$2" "$3"', '--']
         assert arguments[-3] == str(fake)
     if not archive_success:
