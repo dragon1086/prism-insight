@@ -564,6 +564,7 @@ def test_pending_renewal_reads_compressed_selected_tape(tmp_path, monkeypatch, c
 def test_runtime_durable_event_comparison_reads_compressed_events(tmp_path, monkeypatch):
     import gzip
     from live.scenario_review_storage import MAGIC
+    from utils.btc_review_event_references import read_event
     r, b, e, _, _ = renewal_runtime(tmp_path)
     original = r._record_calculated_review
 
@@ -571,7 +572,7 @@ def test_runtime_durable_event_comparison_reads_compressed_events(tmp_path, monk
         original(slot, event, commit=commit)
         seq, body = r.conn.execute('SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence DESC LIMIT 1', (slot,)).fetchone()
         r.conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=? AND sequence=?',
-                       (MAGIC + gzip.compress(review_text(body).encode(), mtime=0), slot, seq))
+                       (MAGIC + gzip.compress(read_event(body, r.conn, slot, seq, decode_legacy=review_text).encode(), mtime=0), slot, seq))
         if commit:
             r.conn.commit()
 
@@ -621,6 +622,7 @@ def test_runtime_compressed_tape_exports_with_matching_original_seal(tmp_path):
 @pytest.mark.parametrize('corrupt', [False, True])
 def test_pending_renewal_reads_referenced_tape_and_rejects_changed_source(tmp_path, monkeypatch, corrupt):
     from utils.btc_review_references import compact, pack
+    from utils.btc_review_event_references import read_event
 
     r, b, e, _, _ = renewal_runtime(tmp_path)
     assert r.tick()['status'] == 'intent_pending'
@@ -630,7 +632,8 @@ def test_pending_renewal_reads_referenced_tape_and_rejects_changed_source(tmp_pa
         slot = r.conn.execute('SELECT slot FROM llm_scenario_decisions WHERE json_extract(proposal, "$.action_id")=?', (ident,)).fetchone()[0]
         stored = r.conn.execute('SELECT body FROM llm_scenario_review_tapes WHERE slot=?', (slot,)).fetchone()[0]
         snapshot, context = r.conn.execute('SELECT snapshot,context FROM llm_scenario_decisions WHERE slot=?', (slot,)).fetchone()
-        events = [review_text(row[0]) for row in r.conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence', (slot,))]
+        events = [read_event(body, r.conn, slot, seq, decode_legacy=review_text)
+                  for seq, body in r.conn.execute('SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence', (slot,))]
         value = pack(compact(read_tape(stored, r.conn, slot, decode_legacy=review_text), snapshot, context, events))
         r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (value, slot))
         if corrupt:
