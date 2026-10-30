@@ -10,7 +10,7 @@ WorkingDirectory=/root/prism-insight
 Environment=PYTHONPATH=/root/prism-insight:/root/prism-insight/prism-btc
 Environment=PRISM_DISABLE_SIGNAL_PUBLISH=1
 Environment=PRISM_OBSERVABILITY_SPOOL=/dev/null
-ExecStart=/root/.pyenv/versions/3.11.11/bin/python /root/prism-insight/tools/run_btc_review_retention_daily.py
+ExecStart=/usr/bin/env /root/.pyenv/versions/3.11.11/bin/python /root/prism-insight/tools/run_btc_review_retention_daily.py
 Nice=19
 IOSchedulingClass=idle
 TimeoutStartSec=600
