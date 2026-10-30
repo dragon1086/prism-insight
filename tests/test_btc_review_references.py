@@ -74,6 +74,28 @@ def test_v2_reader_restores_model_request_and_response_from_durable_event():
         refs.restore(changed, snapshot, context, events)
 
 
+@pytest.mark.parametrize('variant,version', [('exact', 2), ('changed', 1), ('ambiguous', 1), ('type_changed', 1)])
+def test_writer_uses_model_reference_only_for_one_exact_durable_event(variant, version):
+    request = {'z': {'second': 2, 'first': 1}, 'payload': 'abc' * 10000, 'flag': True}
+    text = 'model response' * 300
+    event = {'kind': 'MODEL_RAW', 'actual_request': copy.deepcopy(request), 'raw': text}
+    if variant == 'changed':
+        event['raw'] += '!'
+    if variant == 'type_changed':
+        event['actual_request']['flag'] = 1
+    operations = [{'kind': 'generate', 'request': request, 'text': text}, {'kind': 'record', 'event': event}]
+    events = [refs.canonical(event)]
+    if variant == 'ambiguous':
+        operations.append({'kind': 'record', 'event': copy.deepcopy(event)})
+        events.append(events[0])
+    tape = {'inputs': {'snapshot': {'v': 1}, 'context': {'v': 2}}, 'operations': operations}
+    raw = json.dumps(tape, allow_nan=False)
+    snapshot, context = (refs.canonical(tape['inputs'][key]) for key in ('snapshot', 'context'))
+    bundle = refs.compact(raw, snapshot, context, events)
+    assert bundle['version'] == version
+    assert refs.restore(refs.unpack(refs.pack(bundle)), snapshot, context, events) == raw
+
+
 def test_references_fail_closed_for_missing_or_changed_sources_and_order():
     raw, snapshot, context, events = example()
     bundle = refs.compact(raw, snapshot, context, events)
