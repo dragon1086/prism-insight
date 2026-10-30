@@ -16,6 +16,20 @@ def _sha(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
+def _unpack(encoded):
+    try:
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        unpacked = decoder.decompress(encoded[len(MAGIC):], MAX_BYTES + 1)
+        if len(unpacked) > MAX_BYTES or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+            raise ValueError('review_event_reference_invalid')
+        marker = json.loads(unpacked)
+        if not isinstance(marker, dict):
+            raise ValueError('review_event_reference_invalid')
+        return marker
+    except (UnicodeError, zlib.error, json.JSONDecodeError) as exc:
+        raise ValueError('review_event_reference_invalid') from exc
+
+
 def compact(raw_text, sources, slot, sequence):
     """Return a reference only for a unique, exactly reconstructible request."""
     if (not isinstance(raw_text, str) or len(raw_text.encode()) > MAX_BYTES
@@ -63,12 +77,8 @@ def restore(encoded, source_text, slot, sequence):
             or type(sequence) is not int or sequence < 0):
         raise ValueError('review_event_reference_invalid')
     try:
-        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
-        unpacked = decoder.decompress(encoded[len(MAGIC):], MAX_BYTES + 1)
-        if len(unpacked) > MAX_BYTES or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
-            raise ValueError('review_event_reference_invalid')
-        marker = json.loads(unpacked)
-        if (not isinstance(marker, dict) or set(marker) != {'slot', 'sequence', 'source_sequence', 'source_sha256',
+        marker = _unpack(encoded)
+        if (set(marker) != {'slot', 'sequence', 'source_sequence', 'source_sha256',
                 'raw_sha256', 'actual_timeout', 'event'} or type(marker['slot']) is not int or marker['slot'] != slot
                 or type(marker['sequence']) is not int or marker['sequence'] != sequence
                 or type(marker['source_sequence']) is not int or not 0 <= marker['source_sequence'] < sequence
@@ -87,5 +97,21 @@ def restore(encoded, source_text, slot, sequence):
         if len(result.encode()) > MAX_BYTES or _sha(result) != marker['raw_sha256']:
             raise ValueError('review_event_reference_changed')
         return result
-    except (KeyError, TypeError, UnicodeError, zlib.error, json.JSONDecodeError, OverflowError) as exc:
+    except (KeyError, TypeError, UnicodeError, json.JSONDecodeError, OverflowError) as exc:
         raise ValueError('review_event_reference_invalid') from exc
+
+
+def read_event(value, conn, slot, sequence, *, decode_legacy):
+    if not isinstance(value, bytes) or not value.startswith(MAGIC):
+        return decode_legacy(value)
+    if conn is None or type(slot) is not int or slot < 0 or type(sequence) is not int or sequence < 0:
+        raise ValueError('review_event_reference_context_missing')
+    marker = _unpack(value)
+    source_sequence = marker.get('source_sequence')
+    if type(source_sequence) is not int or not 0 <= source_sequence < sequence:
+        raise ValueError('review_event_reference_invalid')
+    rows = conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=? AND sequence=? LIMIT 2',
+                        (slot, source_sequence)).fetchall()
+    if len(rows) != 1 or isinstance(rows[0][0], bytes) and rows[0][0].startswith(MAGIC):
+        raise ValueError('review_event_reference_source_missing')
+    return restore(value, decode_legacy(rows[0][0]), slot, sequence)
