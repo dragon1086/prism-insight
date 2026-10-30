@@ -14,6 +14,12 @@ import pytest
 from utils import btc_offsite_archive as archive
 
 
+
+def _test_gzip(text):
+    import gzip
+    from observability.review_storage import MAGIC
+    return MAGIC + gzip.compress(text.encode(), compresslevel=1, mtime=0)
+
 def test_snapshot_compression_keeps_commit_scan_and_rejects_corruption(tmp_path):
     from observability.review_storage import MAGIC
     path = tmp_path / 'source.sqlite'
@@ -982,7 +988,6 @@ def test_archive_resolves_audit_reference_in_standalone_receiver(tmp_path):
 
 @pytest.mark.parametrize('account_compressed', [False, True])
 def test_archive_resolves_accounting_reference_in_standalone_receiver(tmp_path, account_compressed):
-    from live.scenario_review_storage import review_storage
     from utils.btc_accounting_audit_references import CHILDREN_REF, TAG, ORIGINAL_HASH, canonical, sha
 
     path = tmp_path / 'accounting.sqlite'
@@ -995,7 +1000,7 @@ def test_archive_resolves_accounting_reference_in_standalone_receiver(tmp_path, 
         conn.execute('CREATE TABLE llm_scenario_broker_evidence(kind,captured_at,body)')
         conn.execute('CREATE TABLE llm_scenario_audit_events(event_id,kind,decision_slot,body)')
         conn.executemany('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)',
-                         [('account', 1, review_storage(json.dumps(account, sort_keys=True)) if account_compressed else json.dumps(account, sort_keys=True)),
+                         [('account', 1, _test_gzip(json.dumps(account, sort_keys=True)) if account_compressed else json.dumps(account, sort_keys=True)),
                           ('financial', 1, json.dumps(financial, sort_keys=True))])
         conn.executemany("INSERT INTO llm_scenario_audit_events VALUES(?,'accounting_observation',1,?)",
                          [('source', original), ('target', original)])
