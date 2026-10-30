@@ -3,7 +3,7 @@ import sqlite3
 
 import pytest
 
-from utils.btc_accounting_audit_references import CHILDREN_REF, TAG, ORIGINAL_HASH, canonical, compact, read_accounting, sha
+from utils.btc_accounting_audit_references import CHILDREN_REF, TAG, ORIGINAL_HASH, canonical, compact, compact_children, read_accounting, sha
 
 
 def fixture(conn):
@@ -72,6 +72,45 @@ def test_children_reference_restores_original_and_export_anchor():
         before = {'kind': 'accounting_observation', 'body': raw}
         after = {'kind': 'accounting_observation', 'body': encoded}
         assert _anchor_hash('llm_scenario_audit_events', before, conn) == _anchor_hash('llm_scenario_audit_events', after, conn)
+
+
+def test_children_writer_uses_one_anchor_across_many_events_and_preserves_original():
+    with sqlite3.connect(':memory:') as conn:
+        raw, encoded = fixture(conn)
+        original, event = json.loads(raw), json.loads(encoded)
+        original['children'] = event['children'] = [{'id': 'one', 'detail': 'x' * 2000}]
+        raw = canonical(original)
+        event[ORIGINAL_HASH] = sha(raw)
+        encoded = canonical(event)
+        assert compact_children(encoded, conn) == encoded
+        conn.execute("INSERT INTO llm_scenario_audit_events VALUES('anchor','r','accounting_observation',2,NULL,NULL,1,NULL,?)", (encoded,))
+        for n in range(12):
+            candidate = compact_children(encoded, conn)
+            assert len(candidate) < len(encoded)
+            assert json.loads(candidate)[CHILDREN_REF]['event_id'] == 'anchor'
+            assert read_accounting(candidate, conn) == raw
+            conn.execute("INSERT INTO llm_scenario_audit_events VALUES(?,'r','accounting_observation',2,NULL,NULL,1,NULL,?)", (str(n), candidate))
+        conn.execute("DELETE FROM llm_scenario_audit_events WHERE event_id='anchor'")
+        assert compact_children(encoded, conn) == encoded
+
+
+def test_audit_flush_writes_direct_reference_and_preserves_both_originals(tmp_path, monkeypatch):
+    from live import scenario_ledger, scenario_provenance
+    monkeypatch.setattr(scenario_ledger, 'forward_audits', lambda events: None)
+    path = tmp_path / 'audit.sqlite'
+    with sqlite3.connect(path) as conn:
+        raw, _ = fixture(conn)
+        original = json.loads(raw)
+        original['children'] = [{'id': 'one', 'detail': 'x' * 2000}]
+        raw = canonical(original)
+    events = [(str(n), 'run', 'accounting_observation', 2, None, None, 1, 'manifest', raw) for n in range(2)]
+    scenario_provenance._flush({'path': path, 'manifest_id': 'manifest', 'manifest': '{}', 'events': events})
+    with sqlite3.connect(path) as conn:
+        rows = conn.execute('SELECT event_id,body FROM llm_scenario_audit_events ORDER BY rowid').fetchall()
+        assert len(rows) == 2
+        assert CHILDREN_REF not in json.loads(rows[0][1])
+        assert json.loads(rows[1][1])[CHILDREN_REF]['event_id'] == rows[0][0]
+        assert all(read_accounting(body, conn) == raw for _, body in rows)
 
 
 @pytest.mark.parametrize('damage', ['missing', 'wrong_kind', 'changed', 'chain', 'digest', 'marker', 'duplicate_children', 'missing_tag'])

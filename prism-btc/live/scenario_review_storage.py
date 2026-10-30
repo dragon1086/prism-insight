@@ -33,14 +33,15 @@ def review_text(value):
     return raw.decode('utf-8')
 
 
-def tape_storage(conn, slot, text):
+def tape_storage(conn, slot, text, *, allow_failed=False):
     """Use references only when already durable evidence restores the exact tape."""
     from utils.btc_review_references import MAX_REFERENCES, compact, pack, restore
     import json
 
     original = review_storage(text)
     tape = json.loads(text)
-    if tape.get('outcome', {}).get('status') != 'COMPLETE':
+    status = tape.get('outcome', {}).get('status')
+    if status != 'COMPLETE' and not (allow_failed is True and status == 'FAILED'):
         return original
     decision = conn.execute('SELECT snapshot,context FROM llm_scenario_decisions WHERE slot=?',
                             (slot,)).fetchone()
