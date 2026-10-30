@@ -497,6 +497,7 @@ def test_merged_pr_guard_requires_exact_head_and_all_checks(monkeypatch):
              'Test (Python 3.10)','Test (Python 3.11)','Test (Python 3.12)','Codacy Static Code Analysis']
     pr = {'state':'MERGED','headRefOid':'a'*40,'mergeCommit':{'oid':'b'*40},
           'statusCheckRollup':[{'name':name,'status':'COMPLETED','conclusion':'SUCCESS'} for name in names]}
+    monkeypatch.setattr(transport.shutil, 'which', lambda _: '/usr/bin/gh')
     monkeypatch.setattr(transport.subprocess, 'run', lambda *a, **k: SimpleNamespace(stdout=json.dumps(pr)))
     monkeypatch.setattr(transport.subprocess, 'check_output', lambda args, **k: 'a'*40+'\n' if args[1]=='rev-parse' else '')
     assert transport.verified_merge(1) == 'b'*40

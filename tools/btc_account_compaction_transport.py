@@ -2,15 +2,17 @@
 import hashlib
 import json
 import math
+import os
 import re
 import shlex
-import subprocess
+import shutil
+import subprocess  # nosec B404 - validated arguments and fixed commands
 
 REMOTE = r'''
 import os, subprocess, sys
 root='/root/prism-insight'; expected,seal,proof=sys.argv[1:]
-head=subprocess.check_output(['git','-C',root,'rev-parse','HEAD'],text=True,timeout=10).strip()
-status=subprocess.check_output(['git','-C',root,'status','--porcelain'],text=True,timeout=10)
+head=subprocess.check_output(['/usr/bin/git','-C',root,'rev-parse','HEAD'],text=True,timeout=10).strip()
+status=subprocess.check_output(['/usr/bin/git','-C',root,'status','--porcelain'],text=True,timeout=10)
 if head!=expected or status.strip(): raise SystemExit('server_checkout_changed')
 sys.path[:0]=[root+'/prism-btc',root]
 from tools.btc_account_compaction import main
@@ -45,9 +47,7 @@ def apply_remote(manifest, seal, proof_sha, *, commit):
     args = ['env', 'PYTHONDONTWRITEBYTECODE=1', 'PRISM_DISABLE_SIGNAL_PUBLISH=1',
             'PRISM_OBSERVABILITY_SPOOL=/dev/null', '/root/.pyenv/versions/3.11.11/bin/python',
             '-c', REMOTE, commit, seal, proof_sha]
-    result = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'LogLevel=ERROR',
-                             'prism-db', shlex.join(args)], input=payload, capture_output=True,
-                            timeout=25, check=True)  # nosec B603
+    result = subprocess.run(['/usr/bin/ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'LogLevel=ERROR', 'prism-db', shlex.join(args)], input=payload, capture_output=True, timeout=25, check=True)  # nosec B603 # nosemgrep
     if len(result.stdout) > 8192:
         raise ValueError('transport_response_limit')
     answer = json.loads(result.stdout)
@@ -61,11 +61,13 @@ def verified_merge(pr_number):
     if type(pr_number) is not int or pr_number <= 0:
         raise ValueError('invalid_pr_number')
     fields = 'state,headRefOid,mergeCommit,statusCheckRollup'
-    proc = subprocess.run(['gh', 'pr', 'view', str(pr_number), '--repo', 'dragon1086/prism-insight',
-                           '--json', fields], capture_output=True, text=True, timeout=15, check=True)  # nosec B603
+    gh = shutil.which('gh')
+    if not gh or not os.path.isabs(gh):
+        raise ValueError('gh_unavailable')
+    proc = subprocess.run([gh, 'pr', 'view', str(pr_number), '--repo', 'dragon1086/prism-insight', '--json', fields], capture_output=True, text=True, timeout=15, check=True)  # nosec B603 # nosemgrep
     pr = json.loads(proc.stdout)
-    head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True, timeout=10).strip()
-    dirty = subprocess.check_output(['git', 'status', '--porcelain'], text=True, timeout=10)
+    head = subprocess.check_output(['/usr/bin/git', 'rev-parse', 'HEAD'], text=True, timeout=10).strip()  # nosec B603 # nosemgrep
+    dirty = subprocess.check_output(['/usr/bin/git', 'status', '--porcelain'], text=True, timeout=10)  # nosec B603 # nosemgrep
     checks = pr.get('statusCheckRollup') or []
     required = {'Third-party license compliance', 'CLA', 'report-data', 'Dashboard production build',
                 'Test (Python 3.10)', 'Test (Python 3.11)', 'Test (Python 3.12)', 'Codacy Static Code Analysis'}
