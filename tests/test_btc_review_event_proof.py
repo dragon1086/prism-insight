@@ -1,10 +1,12 @@
 import json
+import hashlib
+from copy import deepcopy
 import sqlite3
 
 import pytest
 
 from utils.btc_recovery_references import canonical, compact, pack
-from utils.btc_review_event_proof import event_proof
+from utils.btc_review_event_proof import delivered_event_proof, event_proof
 
 
 def fixture():
@@ -56,3 +58,22 @@ def test_duplicate_recovery_and_event_bound_fail_closed():
                      [(1, i, '{}') for i in range(1, 129)])
     with pytest.raises(ValueError, match='proof_event_count_invalid'):
         event_proof(conn, 1)
+
+
+def test_backup_and_every_delivery_must_match_exactly():
+    proof = event_proof(fixture(), 1)
+    identity = 'a' * 64
+    event = proof['events'][0]
+    event_id = hashlib.sha256(f'{identity}:llm_scenario_review_events:{event["rowid"]}'.encode()).hexdigest()[:32]
+    receipt = {'event_id': event_id, 'event_type': 'btc.research.review', 'source_identity': identity,
+               'body_sha256': event['sha256'], 'source_rowid': event['rowid'],
+               'source_sequence': event['sequence'], 'decision_slot': proof['slot']}
+    assert delivered_event_proof(proof, deepcopy(proof), [receipt], identity)
+    assert not delivered_event_proof(proof, deepcopy(proof), [], identity)
+    assert not delivered_event_proof(proof, deepcopy(proof), [dict(receipt, body_sha256='0' * 64)], identity)
+    assert not delivered_event_proof(proof, deepcopy(proof), [dict(receipt, decision_slot=True)], identity)
+    changed = deepcopy(proof)
+    changed['recovery'][0]['sha256'] = '0' * 64
+    assert not delivered_event_proof(proof, changed, [receipt], identity)
+    with pytest.raises(ValueError, match='proof_source_invalid'):
+        delivered_event_proof(proof, proof, [receipt], 'invalid')
