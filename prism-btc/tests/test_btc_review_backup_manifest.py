@@ -205,3 +205,14 @@ def test_backup_attestation_rechecks_first_file_after_second_hash(tmp_path, monk
     with pytest.raises(ValueError, match='backup_artifact_changed'):
         subject.create_backup_attestation(directory,tmp_path/'proof.json')
     assert not (tmp_path/'proof.json').exists()
+
+
+def test_custom_attested_planner_rechecks_backup_after_scan(tmp_path):
+    directory, proof = attested_pair_fixture(tmp_path)
+    def planner(conn, identity, *, after_rowid):
+        assert conn.execute('PRAGMA query_only').fetchone() == (1,)
+        with (directory/'backup.typed.gz').open('ab') as stream:
+            stream.write(b'changed during planning')
+        return {'source_identity':identity, 'rows':[]}
+    with pytest.raises(ValueError, match='backup_artifact_changed'):
+        subject.plan_pairs_from_attestation(proof, planner=planner)
