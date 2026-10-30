@@ -52,7 +52,8 @@ def test_ssh_receiver_bootstrap_leaves_transfer_stdin_intact(monkeypatch):
             return stub
         if path.name in {'btc_review_references.py', 'btc_audit_references.py', 'btc_recovery_references.py',
                          'btc_financial_references.py', 'btc_accounting_audit_references.py',
-                         'btc_review_retention.py', 'review_storage.py'}:
+                         'btc_review_retention.py', 'review_storage.py', 'btc_review_event_proof.py',
+                         'btc_review_event_references.py'}:
             return ''
         return original_read(path, *args, **kwargs)
     def transport(args, **kwargs):
@@ -292,13 +293,24 @@ def test_standalone_receiver_recomputes_retention_index(payload, monkeypatch):
            'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False}
     with sqlite3.connect(source) as conn:
         conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
-                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,context TEXT,proposal TEXT,outcome TEXT,snapshot TEXT DEFAULT "{}");')
+                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,context TEXT,proposal TEXT,outcome TEXT,snapshot TEXT DEFAULT "{}");'
+                           'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT);'
+                           'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body TEXT,scenario_id TEXT);'
+                           'CREATE INDEX llm_scenario_recovery_slot_kind ON llm_scenario_recovery_events(slot,kind);')
         conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (1, '{"kind":"WAIT"}'))
         conn.execute('INSERT INTO llm_scenario_decisions(slot,context,proposal,outcome) VALUES(?,?,?,?)',
-                     (1, json.dumps(ctx), json.dumps({'action': 'WAIT'}), json.dumps({'status': 'wait'})))
+                     (1, json.dumps(ctx), json.dumps({'schema_version': 1, 'action': 'WAIT', 'entries': [],
+                                                       'take_profits': [], 'partial_stops': [], 'cancel_entry_ids': []}),
+                      json.dumps({'status': 'wait'})))
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 0, '{"kind":"MODEL_RAW"}'))
     snapshot = path / 'retention.sqlite.gz'
-    manifest = backup_database(source, snapshot, reserve_bytes=0, capture_references=True)
+    manifest = backup_database(source, snapshot, reserve_bytes=0, capture_references=True,
+                               capture_review_event_proof=True)
     assert len(manifest['btc_retention_index']['candidates']) == 1
+    assert manifest['btc_review_event_proof_status'] == 'CAPTURED'
+    assert len(manifest['btc_review_event_proof_index']['items']) == 1
+    manifest_path = Path(str(snapshot) + '.manifest.json')
+    manifest_path.write_text(json.dumps(manifest))
     root = path / 'embedded-remote'
     original_run = archive.subprocess.run
     def local_ssh(args, **kwargs):
@@ -312,13 +324,37 @@ def test_standalone_receiver_recomputes_retention_index(payload, monkeypatch):
     monkeypatch.setattr(archive, 'backend_host', lambda _: 'fixture')
     ack = archive.archive(repo, snapshot, path / 'unused-config')
     assert ack['retention_index_verified'] is True
-    manifest_path = Path(str(snapshot) + '.manifest.json')
+    assert ack['review_event_proof_index_verified'] is True
+    unavailable = json.loads(json.dumps(manifest))
+    unavailable['btc_review_event_proof_status'] = 'UNAVAILABLE'
+    unavailable.pop('btc_review_event_proof_index')
+    manifest_path.write_text(json.dumps(unavailable))
+    backup_only = archive.archive(repo, snapshot, path / 'unused-config')
+    assert backup_only['status'] == 'VERIFIED'
+    assert 'review_event_proof_index_verified' not in backup_only
+    manifest_path.write_text(json.dumps(manifest))
     altered = json.loads(manifest_path.read_text())
     altered['btc_retention_index']['candidates'][0]['tape_sha256'] = '0' * 64
     manifest_path.write_text(json.dumps(altered))
     with pytest.raises(subprocess.CalledProcessError):
         archive.archive(repo, snapshot, path / 'unused-config')
+    altered = json.loads(json.dumps(manifest))
+    altered['btc_review_event_proof_index']['items'][0]['proof']['events'][0]['sha256'] = '0' * 64
+    manifest_path.write_text(json.dumps(altered))
+    with pytest.raises(subprocess.CalledProcessError):
+        archive.archive(repo, snapshot, path / 'unused-config')
     assert (root / ack['archive'] / 'receipt.json').is_file()
+
+
+def test_event_proof_status_cannot_claim_missing_or_unavailable_index(tmp_path):
+    raw = tmp_path / 'unused.sqlite'
+    assert archive.verify_event_proof_index(raw, {}) is False
+    assert archive.verify_event_proof_index(raw, {'btc_review_event_proof_status': 'UNAVAILABLE'}) is False
+    for manifest in ({'btc_review_event_proof_status': 'CAPTURED'},
+                     {'btc_review_event_proof_status': 'UNAVAILABLE', 'btc_review_event_proof_index': {}},
+                     {'btc_review_event_proof_index': {}}, {'btc_review_event_proof_status': 'UNKNOWN'}):
+        with pytest.raises(ValueError, match='event_proof_status_mismatch'):
+            archive.verify_event_proof_index(raw, manifest)
 
 
 @pytest.mark.parametrize('fault', ['checksum', 'partial', 'env', 'raw_hash', 'understated_space', 'missing_ref'])
@@ -982,3 +1018,96 @@ def test_archive_resolves_accounting_reference_in_standalone_receiver(tmp_path):
         conn.execute('DELETE FROM llm_scenario_broker_evidence WHERE kind="account"')
     with pytest.raises(ValueError, match='reference_accounting_unresolved'):
         archive.referenced_commits(path)
+
+
+def test_event_retention_end_to_end_with_isolated_archive(payload, monkeypatch):
+    import hashlib
+    import shlex
+    from observability.btc_scenario_export import _anchor_hash, _identity
+    from utils import btc_review_event_proof as proof_module, btc_review_retention as retention
+    from utils.sqlite_snapshot import backup_database
+
+    path, _, _, repo = payload
+    source = path / 'live.sqlite'
+    context = {'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
+               'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False}
+    plan = {'schema_version': 1, 'action': 'WAIT', 'side': None, 'hard_stop': None, 'chase': None,
+            'entries': [], 'take_profits': [], 'partial_stops': [], 'cancel_entry_ids': []}
+    with sqlite3.connect(source) as conn:
+        conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
+                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);'
+                           'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body);'
+                           'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body,scenario_id TEXT);'
+                           'CREATE INDEX llm_scenario_recovery_slot_kind ON llm_scenario_recovery_events(slot,kind);')
+        for slot in (1, 2):
+            conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (slot, '{}'))
+            conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)',
+                         (slot, '{}', json.dumps(context), json.dumps(plan), '{"status":"wait"}'))
+            conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)',
+                         (slot, 0, '{"kind":"MODEL_RAW"}'))
+    identity = _identity(source)
+    export = path / 'export.sqlite'
+    with sqlite3.connect(source) as live, sqlite3.connect(export) as state:
+        state.executescript('CREATE TABLE meta(key PRIMARY KEY,value);CREATE TABLE cursors(stream PRIMARY KEY,seq);'
+                            'CREATE TABLE anchors(stream PRIMARY KEY,ref);CREATE TABLE outbox(id PRIMARY KEY,body);')
+        state.execute('INSERT INTO meta VALUES(?,?)', ('source_identity', identity))
+        for stream, anchor in (('llm_scenario_review_tapes', {'slot': 2, 'body': '{}'}),
+                               ('llm_scenario_review_events', {'slot': 2, 'sequence': 0, 'body': '{"kind":"MODEL_RAW"}'})):
+            state.execute('INSERT INTO cursors VALUES(?,?)', (stream, 2))
+            state.execute('INSERT INTO anchors VALUES(?,?)', (stream, _anchor_hash(stream, anchor, live)))
+    backup_root, remote_root = path / 'backups', path / 'remote'
+    directory = backup_root / '20261030_020000'
+    directory.mkdir(mode=0o700, parents=True)
+    snapshot = directory / 'stock_tracking_db.sqlite.gz'
+    manifest = backup_database(source, snapshot, reserve_bytes=0, capture_references=True,
+                               capture_review_event_proof=True)
+    assert manifest['btc_review_event_proof_status'] == 'CAPTURED'
+    real_run, real_popen = subprocess.run, subprocess.Popen
+    def local_run(args, **kwargs):
+        if args[0] != '/usr/bin/ssh':
+            return real_run(args, **kwargs)
+        command = shlex.split(args[-1])
+        return real_run([os.sys.executable, '-I', '-c', command[2].replace('/root/prism-btc-archive', str(remote_root))], **kwargs)
+    def local_popen(args, **kwargs):
+        if args[0] != '/usr/bin/ssh':
+            return real_popen(args, **kwargs)
+        command = shlex.split(args[-1])
+        return real_popen([os.sys.executable, '-I', '-c', command[2].replace('/root/prism-btc-archive', str(remote_root))], **kwargs)
+    monkeypatch.setattr(archive.subprocess, 'run', local_run)
+    monkeypatch.setattr(retention.subprocess, 'Popen', local_popen)
+    monkeypatch.setattr(archive, 'backend_host', lambda _: 'fixture.local')
+    monkeypatch.setattr(archive.shutil, 'disk_usage', lambda _: SimpleNamespace(free=100 * archive.CAP))
+    ack = archive.archive(repo, snapshot, path / 'unused-config')
+    assert ack['review_event_proof_index_verified'] is True
+    receipt = directory / 'offsite_ack.json'
+    receipt.write_text(json.dumps(ack))
+    receipt.chmod(0o600)
+    monkeypatch.setattr(retention, 'SOURCE', source)
+    monkeypatch.setattr(retention, 'EXPORT_STATE', export)
+    monkeypatch.setattr(retention, 'BACKUP_ROOT', backup_root)
+    monkeypatch.setattr(retention, '_resource_guard', lambda *_: True)
+    monkeypatch.setattr(retention, '_runtime_safe', lambda *_: True)
+    calls = {'tape': 0, 'events': 0}
+    def tape_receipts(rows, source_identity):
+        calls['tape'] += 1
+        return [{'event_id': hashlib.sha256(f'{source_identity}:llm_scenario_review_tapes:{row["rowid"]}'.encode()).hexdigest()[:32],
+                 'event_type': 'btc.research.review_tape', 'source_identity': source_identity,
+                 'body_sha256': row['tape_sha256'], 'tape_hash_status': 'MATCH'} for row in rows]
+    def event_receipts(proof, source_identity):
+        calls['events'] += 1
+        with sqlite3.connect(source) as conn:
+            slots = {rowid: slot for rowid, slot in conn.execute('SELECT rowid,slot FROM llm_scenario_review_events')}
+        return [{'event_id': hashlib.sha256(f'{source_identity}:llm_scenario_review_events:{row["rowid"]}'.encode()).hexdigest()[:32],
+                 'event_type': 'btc.research.review', 'source_identity': source_identity, 'body_sha256': row['sha256'],
+                 'source_rowid': row['rowid'], 'source_sequence': row['sequence'], 'decision_slot': slots[row['rowid']]}
+                for row in proof['events']]
+    monkeypatch.setattr(retention, 'fetch_deliveries', tape_receipts)
+    monkeypatch.setattr(proof_module, 'fetch_event_deliveries', event_receipts)
+    result = proof_module.cleanup_events(directory)
+    assert result['status'] == 'DEFERRED' and result['removed_slots'] == result['removed_events'] == 1
+    assert calls == {'tape': 1, 'events': 1}
+    with sqlite3.connect(source) as conn:
+        assert conn.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(2,)]
+        assert conn.execute('SELECT slot FROM llm_scenario_review_events').fetchall() == [(2,)]
+        assert conn.execute('SELECT COUNT(*) FROM llm_scenario_decisions').fetchone() == (2,)
+    assert (remote_root / ack['archive'] / 'snapshot.sqlite.gz').is_file()

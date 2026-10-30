@@ -504,8 +504,8 @@ def test_final_time_check_rejects_expiry_and_original_age_limits(tmp_path, field
         r._assert_calculated_review_time(dict(operations=[dict(kind="clock", value=1000)]), context, fresh, payload)
 
 
-def observing_runtime(tmp_path):
-    r, broker, calls = runtime(tmp_path, recovery=True)
+def observing_runtime(tmp_path, *, empty=False):
+    r, broker, calls = runtime(tmp_path, recovery=True, empty=empty)
     price = [100.]
     r.snapshot = lambda: dict(valid=True, as_of_ms=r.clock()*1000,
         timeframes={"30m": {"closed": {"close": price[0], "ma10": 99.}}})
@@ -530,6 +530,13 @@ def test_recovery_wait_retention_requires_complete_unchanged_journal(tmp_path):
     at = r.test_clock[0] + 7 * 86400 + 300
     selected = candidates(r.conn, at)['candidates']
     assert [row['slot'] for row in selected] == [slot]
+    # Legacy snapshots can lack this index even when the same journal is safe.
+    r.conn.execute('SAVEPOINT legacy_missing_index')
+    r.conn.execute('DROP INDEX llm_scenario_recovery_slot_kind')
+    assert candidates(r.conn, at)['candidates'] == []
+    r.conn.execute('ROLLBACK TO legacy_missing_index')
+    r.conn.execute('RELEASE legacy_missing_index')
+    assert candidates(r.conn, at)['candidates'] == selected
     from utils.btc_offsite_archive import verify_retention_index
     manifest = {'started_at': at, 'btc_retention_index': snapshot_index(r.conn, at)}
     assert verify_retention_index(tmp_path / 'runtime.db', manifest) is True
@@ -836,3 +843,76 @@ def test_persisted_review_replays_order_sensitive_recovery_projection(tmp_path, 
     with pytest.raises(TapeMismatch, match='replay_mismatch'):
         replay_review(lossy, research_review, inputs['snapshot'], inputs['context'],
                       inputs['contract'], bindings=inputs['bindings'])
+
+
+def test_old_recovery_wait_model_records_can_be_pruned_with_full_evidence(tmp_path):
+    import hashlib
+    import json
+    import sqlite3
+    from observability.btc_scenario_export import _anchor_hash
+    from utils.btc_review_event_proof import delete_confirmed_slot, event_proof
+    from utils.btc_review_retention import candidates
+
+    r, broker, _, price = observing_runtime(tmp_path, empty=True)
+    broker.ctx.update(historical_unsettled=[], incident_epoch_blocked=False, unknown_intents=False)
+    assert r.tick()['status'] == 'wait'
+    r.test_clock[0] += 300
+    broker.ctx['account_captured_at'] = r.test_clock[0]
+    price[0] += 1
+    second = r.tick()
+    assert second['status'] == 'wait', second
+    slot = int(r.test_clock[0] // 300)
+    at = r.test_clock[0] + 7 * 86400 + 300
+    candidate = next(row for row in candidates(r.conn, at)['candidates'] if row['slot'] == slot)
+    proof = event_proof(r.conn, slot)
+    models = [row for row in proof['recovery'] if row['kind'] in ('MODEL_REQUEST', 'MODEL_RAW')]
+    assert models and all(row['scenario_is_null'] for row in models)
+    preserved = [row for row in proof['recovery'] if row not in models]
+    original_events = len(proof['events'])
+    anchor_slot = slot + 100
+    r.conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (anchor_slot, '{}'))
+    for offset in (100, 101):
+        r.conn.execute('INSERT INTO llm_scenario_decisions(slot,snapshot,context,proposal,outcome) VALUES(?,?,?,?,?)',
+                       (slot + offset, '{}', '{}', '{}', '{}'))
+    r.conn.execute('INSERT INTO llm_scenario_review_events(slot,sequence,body) VALUES(?,?,?)',
+                   (anchor_slot, 0, '{"kind":"RESEARCH_RESULT"}'))
+    event_anchor_rowid = r.conn.execute('SELECT rowid FROM llm_scenario_review_events WHERE slot=?', (anchor_slot,)).fetchone()[0]
+    r.conn.execute('INSERT INTO llm_scenario_recovery_events(event_id,slot,scenario_id,kind,observed_at,body) '
+                   'VALUES(?,?,?,?,?,?)', ('fixture-anchor', anchor_slot, None, 'OUTCOME', at, '{}'))
+    recovery_anchor_rowid = r.conn.execute('SELECT rowid FROM llm_scenario_recovery_events WHERE event_id=?',
+                                           ('fixture-anchor',)).fetchone()[0]
+    r.conn.commit()
+    exporter = sqlite3.connect(':memory:')
+    exporter.executescript('CREATE TABLE meta(key PRIMARY KEY,value);CREATE TABLE cursors(stream PRIMARY KEY,seq);'
+                           'CREATE TABLE anchors(stream PRIMARY KEY,ref);CREATE TABLE outbox(id PRIMARY KEY,body);')
+    identity = 'a' * 64
+    exporter.execute('INSERT INTO meta VALUES(?,?)', ('source_identity', identity))
+    anchor_rows = [('llm_scenario_review_tapes', anchor_slot, {'slot': anchor_slot, 'body': '{}'}),
+                   ('llm_scenario_review_events', event_anchor_rowid,
+                    {'slot': anchor_slot, 'sequence': 0, 'body': '{"kind":"RESEARCH_RESULT"}'}),
+                   ('llm_scenario_recovery_events', recovery_anchor_rowid,
+                    {'slot': anchor_slot, 'kind': 'OUTCOME', 'body': '{}'})]
+    for stream, rowid, row in anchor_rows:
+        exporter.execute('INSERT INTO cursors VALUES(?,?)', (stream, rowid))
+        exporter.execute('INSERT INTO anchors VALUES(?,?)', (stream, _anchor_hash(stream, row, r.conn)))
+    exporter.commit()
+    def eid(stream, rowid):
+        return hashlib.sha256(f'{identity}:{stream}:{rowid}'.encode()).hexdigest()[:32]
+    tape = [{'event_id': eid('llm_scenario_review_tapes', candidate['rowid']),
+             'event_type': 'btc.research.review_tape', 'source_identity': identity,
+             'body_sha256': candidate['tape_sha256'], 'tape_hash_status': 'MATCH'}]
+    events = [{'event_id': eid('llm_scenario_review_events', row['rowid']), 'event_type': 'btc.research.review',
+               'source_identity': identity, 'body_sha256': row['sha256'], 'source_rowid': row['rowid'],
+               'source_sequence': row['sequence'], 'decision_slot': slot} for row in proof['events']]
+    recovery = [{'event_id': eid('llm_scenario_recovery_events', row['rowid']), 'event_type': 'btc.research.source',
+                 'source_stream': 'llm_scenario_recovery_events', 'source_identity': identity,
+                 'source_kind': row['kind'], 'body_sha256': row['sha256'], 'source_rowid': row['rowid'],
+                 'decision_slot': slot} for row in models]
+    result = delete_confirmed_slot(r.conn, exporter, {'candidate': candidate, 'proof': proof}, tape, events,
+                                   identity, at, guard=lambda: True, lease_alive=lambda: True,
+                                   recovery_deliveries=recovery)
+    assert result == {'status': 'REMOVED', 'events': original_events, 'recovery_model_events': len(models)}
+    assert r.conn.execute('SELECT count(*) FROM llm_scenario_review_tapes WHERE slot=?', (slot,)).fetchone() == (0,)
+    assert r.conn.execute('SELECT count(*) FROM llm_scenario_review_events WHERE slot=?', (slot,)).fetchone() == (0,)
+    assert r.conn.execute('SELECT count(*) FROM llm_scenario_recovery_events WHERE slot=?', (slot,)).fetchone() == (len(preserved),)
+    assert r.conn.execute('SELECT count(*) FROM llm_scenario_decisions WHERE slot=?', (slot,)).fetchone() == (1,)

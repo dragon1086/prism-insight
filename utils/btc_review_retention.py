@@ -409,7 +409,7 @@ def _window_delay(second):
 
 
 @contextmanager
-def locked_remote_archive(ack, *, align=False):
+def locked_remote_archive(ack, *, align=False, require_event_proof=False):
     """Verify the archive while holding the receiver's lock until cleanup ends."""
     if (not isinstance(ack, dict) or ack.get('status') != 'VERIFIED'
             or ack.get('retention_index_verified') is not True
@@ -419,8 +419,13 @@ def locked_remote_archive(ack, *, align=False):
                    for key in ('raw_sha256', 'compressed_sha256', 'manifest_sha256',
                                'bundle_sha256', 'archive_metadata_sha256'))):
         raise ValueError('retention_archive_unverified')
+    if type(require_event_proof) is not bool or (require_event_proof and
+                                                 ack.get('review_event_proof_index_verified') is not True):
+        raise ValueError('retention_archive_unverified')
     expected = {key: ack[key] for key in ('archive', 'raw_sha256', 'compressed_sha256', 'manifest_sha256',
                                            'bundle_sha256', 'archive_metadata_sha256')}
+    if require_event_proof:
+        expected['review_event_proof_index_verified'] = True
     remote = r'''
 import fcntl,hashlib,json,os,select,stat,sys,time
 from pathlib import Path

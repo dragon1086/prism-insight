@@ -10,6 +10,54 @@ import pytest
 from utils.sqlite_snapshot import backup_database
 
 
+def test_optional_event_proof_failure_preserves_verified_backup(tmp_path, monkeypatch, caplog):
+    source, destination = tmp_path / 'source.sqlite', tmp_path / 'snapshot.gz'
+    context = {'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
+               'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False}
+    with sqlite3.connect(source) as conn:
+        conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
+                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);'
+                           'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT);'
+                           'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body TEXT);')
+        conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (1, '{}'))
+        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)',
+                     (1, '{}', json.dumps(context), json.dumps({'schema_version': 1, 'action': 'WAIT', 'entries': [],
+                                                               'take_profits': [], 'partial_stops': [], 'cancel_entry_ids': []}),
+                      '{"status":"wait"}'))
+    result = backup_database(source, destination, reserve_bytes=0, capture_references=True,
+                             capture_review_event_proof=True)
+    assert result['decompression_verified'] is True
+    assert result['btc_review_event_proof_status'] == 'UNAVAILABLE'
+    assert 'btc_review_event_proof_index' not in result and destination.is_file()
+    assert len(result['btc_retention_index']['candidates']) == 1
+    from utils import btc_review_event_proof
+    def expired(*_args, **_kwargs):
+        raise TimeoutError('event_proof_deadline')
+    monkeypatch.setattr(btc_review_event_proof, 'snapshot_event_index', expired)
+    timed = backup_database(source, tmp_path / 'timed.gz', reserve_bytes=0, capture_references=True,
+                            capture_review_event_proof=True)
+    assert timed['decompression_verified'] is True and timed['btc_review_event_proof_status'] == 'UNAVAILABLE'
+    assert 'btc_review_event_proof_index' not in timed
+    def unexpected(*_args, **_kwargs):
+        raise RuntimeError('private fixture content')
+    monkeypatch.setattr(btc_review_event_proof, 'snapshot_event_index', unexpected)
+    fallback = backup_database(source, tmp_path / 'unexpected.gz', reserve_bytes=0, capture_references=True,
+                               capture_review_event_proof=True)
+    assert fallback['decompression_verified'] is True and fallback['btc_review_event_proof_status'] == 'UNAVAILABLE'
+    assert 'btc_review_event_proof_index' not in fallback and 'private fixture content' not in caplog.text
+    import builtins
+    real_import = builtins.__import__
+    def missing_proof(name, *args, **kwargs):
+        if name == 'utils.btc_review_event_proof':
+            raise ImportError('private fixture content')
+        return real_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', missing_proof)
+    missing = backup_database(source, tmp_path / 'missing.gz', reserve_bytes=0, capture_references=True,
+                              capture_review_event_proof=True)
+    assert missing['decompression_verified'] is True and missing['btc_review_event_proof_status'] == 'UNAVAILABLE'
+    assert 'btc_review_event_proof_index' not in missing and 'private fixture content' not in caplog.text
+
+
 def test_sparse_scan_only_punches_complete_zero_blocks(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from utils import sqlite_snapshot
@@ -290,7 +338,8 @@ def test_missing_main_db_stops_retention_of_older_backups(tmp_path):
 
 
 @pytest.mark.parametrize('archive_success', [True, False])
-def test_backup_records_archive_ack_and_preserves_old_on_failure(tmp_path, archive_success):
+@pytest.mark.parametrize('event_retention', ['unset', '0', '1', 'invalid'])
+def test_backup_records_archive_ack_and_preserves_old_on_failure(tmp_path, archive_success, event_retention):
     import subprocess
     home = tmp_path / 'home'
     project = home / 'prism-insight'
@@ -306,6 +355,7 @@ def test_backup_records_archive_ack_and_preserves_old_on_failure(tmp_path, archi
     fake.write_text('''#!/bin/sh
 case "$1" in
   */sqlite_snapshot.py)
+    printf '%s\n' "$@" > "$SNAPSHOT_LOG"
     while [ "$#" -gt 0 ]; do
       if [ "$1" = "--destination" ]; then shift; target="$1"; fi
       shift
@@ -335,20 +385,27 @@ esac
     script = Path(__file__).resolve().parents[1] / 'utils/backup_configs.sh'
     env = {**os.environ, 'HOME': str(home), 'PATH': str(tools) + ':' + os.environ['PATH'],
            'ARCHIVE_SUCCESS': '1' if archive_success else '0', 'SCHEDULE_LOG': str(tmp_path / 'scheduled'),
-           'REMOVE_LOG': str(tmp_path / 'removed')}
+           'REMOVE_LOG': str(tmp_path / 'removed'), 'SNAPSHOT_LOG': str(tmp_path / 'snapshot_args')}
+    if event_retention == 'unset':
+        env.pop('PRISM_BTC_EVENT_RETENTION', None)
+    else:
+        env['PRISM_BTC_EVENT_RETENTION'] = event_retention
     run = subprocess.run(['bash', str(script)], env=env, capture_output=True, text=True, timeout=30)
     assert (run.returncode == 0) is archive_success
     ack, = (home / 'prism_backups').glob('*/offsite_ack.json')
     assert json.loads(ack.read_text())['status'] == ('VERIFIED' if archive_success else 'ERROR')
     assert ack.stat().st_mode & 0o077 == 0
     schedule = tmp_path / 'scheduled'
-    assert schedule.exists() is archive_success
+    assert schedule.exists() is (archive_success and event_retention != 'invalid')
     assert (tmp_path / 'removed').exists() is archive_success
-    if archive_success:
+    assert ('--capture-review-event-proof' in (tmp_path / 'snapshot_args').read_text().splitlines()) == (event_retention in ('unset', '1'))
+    if archive_success and event_retention != 'invalid':
         assert 'run_btc_review_retention.py' in schedule.read_text()
         arguments = schedule.read_text().splitlines()
         assert '--timer-property=AccuracySec=1s' in arguments
-        assert arguments[-7:-3] == ['/usr/bin/bash', '-c', 'exec "$1" "$2" "$3"', '--']
+        if event_retention in ('unset', '1'):
+            assert arguments.pop() == '--event-proof-only'
+        assert arguments[-7:-3] == ['/usr/bin/bash', '-c', 'exec "$1" "$2" "$3" "${@:4}"', '--']
         assert arguments[-3] == str(fake)
     if not archive_success:
         assert (old / 'evidence').read_bytes() == b'keep'
