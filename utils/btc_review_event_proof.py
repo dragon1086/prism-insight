@@ -296,6 +296,11 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
         if (not delivered_event_proof(current_proof, proof, event_deliveries, source_identity)
                 or any(event['rowid'] >= cursors['llm_scenario_review_events'] for event in current_proof['events'])):
             return {'status': 'DEFERRED_EVENT_EVIDENCE'}
+        def stored_bytes():
+            tables = ('llm_scenario_review_tapes', 'llm_scenario_review_events', 'llm_scenario_recovery_events')
+            return sum(conn.execute('SELECT coalesce(sum(length(cast(body AS BLOB))),0) FROM ' + table +
+                                    ' WHERE slot=?', (slot,)).fetchone()[0] for table in tables)
+        before_bytes = stored_bytes()
         recovery_rows = conn.execute('SELECT rowid,event_id,kind,body FROM llm_scenario_recovery_events '
                                      'WHERE slot=? ORDER BY event_id LIMIT ?',
                                      (slot, MAX_RECOVERY + 1)).fetchall()
@@ -345,6 +350,8 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
             anchor = {'slot': row[0], 'kind': row[1], 'body': row[2]} if row else None
             if anchor is None or _anchor_hash('llm_scenario_recovery_events', anchor, conn) != saved[0]:
                 raise ValueError('event_delete_export_anchor_changed')
+        if stored_bytes() >= before_bytes:
+            return {'status': 'DEFERRED_NO_STORAGE_GAIN'}
         if guard() is not True or lease_alive() is not True:
             raise ValueError('event_delete_guard_failed')
         conn.commit()

@@ -373,3 +373,33 @@ def test_recovery_detachment_failure_rolls_back_all_changes(monkeypatch):
     assert source.execute('SELECT body FROM llm_scenario_recovery_events WHERE event_id=?', ('e',)).fetchone() == (encoded,)
     assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_events').fetchone() == (2,)
     assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone() == (2,)
+
+
+def test_recovery_detachment_that_increases_storage_is_rolled_back():
+    import gzip
+    from observability.btc_scenario_export import _anchor_hash
+    from observability.review_storage import MAGIC
+    from utils import btc_review_event_proof as proof_module
+    source, exporter, archived, tape, events, identity, now = deletion_fixture()
+    prompt = ''.join(hashlib.sha256(str(i).encode()).hexdigest() for i in range(300))
+    review = canonical({'kind': 'MODEL_REQUEST', 'prompt': prompt})
+    recovery = canonical({'kind': 'MODEL_REQUEST', 'prompt': prompt, 'calculated_review_version': 1,
+                          'input_id': 'fixture'})
+    event_blob = MAGIC + gzip.compress(review.encode(), compresslevel=1, mtime=0)
+    ref = pack(compact(review, recovery, 1, 0))
+    source.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=1', (event_blob,))
+    source.executemany('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?)',
+                       [('e1', 1, 'MODEL_REQUEST', ref), ('e2', 1, 'MODEL_REQUEST', ref)])
+    source.commit()
+    archived['proof'] = event_proof(source, 1)
+    events[0]['body_sha256'] = archived['proof']['events'][0]['sha256']
+    anchor = _anchor_hash('llm_scenario_recovery_events', {'slot': 1, 'kind': 'MODEL_REQUEST', 'body': ref}, source)
+    exporter.execute('INSERT INTO cursors VALUES(?,?)', ('llm_scenario_recovery_events', 2))
+    exporter.execute('INSERT INTO anchors VALUES(?,?)', ('llm_scenario_recovery_events', anchor))
+    exporter.commit()
+    result = proof_module.delete_confirmed_slot(source, exporter, archived, tape, events, identity, now,
+                                                 guard=lambda: True, lease_alive=lambda: True)
+    assert result == {'status': 'DEFERRED_NO_STORAGE_GAIN'}
+    assert source.execute('SELECT body FROM llm_scenario_review_events WHERE slot=1').fetchone() == (event_blob,)
+    assert source.execute('SELECT body FROM llm_scenario_recovery_events ORDER BY event_id').fetchall() == [(ref,), (ref,)]
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone() == (2,)
