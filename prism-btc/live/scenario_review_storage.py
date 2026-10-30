@@ -33,6 +33,18 @@ def review_text(value):
     return raw.decode('utf-8')
 
 
+def snapshot_storage(text):
+    """Compress a decision snapshot only when its exact source is recoverable."""
+    if not isinstance(text, str):
+        raise ValueError('snapshot_body_type_invalid')
+    try:
+        candidate = review_storage(text)
+        return candidate if review_text(candidate) == text else text
+    except Exception:
+        # Optional storage savings must never prevent recording the original input.
+        return text
+
+
 def tape_storage(conn, slot, text, *, allow_failed=False):
     """Use references only when already durable evidence restores the exact tape."""
     from utils.btc_review_references import MAX_REFERENCES, compact, pack, restore
