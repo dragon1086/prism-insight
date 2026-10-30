@@ -34,7 +34,8 @@ def _account(conn, now, activated):
     row = conn.execute("SELECT captured_at,body FROM llm_scenario_broker_evidence WHERE kind='account' ORDER BY rowid DESC LIMIT 1").fetchone()
     if not row:
         raise ValueError('account_missing')
-    observed = json.loads(row[1])
+    from observability.review_storage import review_text
+    observed = json.loads(review_text(row[1]))
     captured = number(observed['captured_at'])
     stored = number(row[0])
     if not (activated <= captured <= now and 0 <= now-captured <= 180

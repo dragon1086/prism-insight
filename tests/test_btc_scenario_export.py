@@ -26,6 +26,12 @@ def events(spool):
     return [json.loads(line) for line in spool.read_text().splitlines() if line.strip()]
 
 
+
+def _test_gzip(text):
+    import gzip
+    from observability.review_storage import MAGIC
+    return MAGIC + gzip.compress(text.encode(), compresslevel=1, mtime=0)
+
 def test_cutover_no_backfill_restart_and_secret_safety(lane):
     db, state, spool = lane
     add(db, 1)
@@ -108,8 +114,9 @@ def test_source_replacement_and_anchor_change_fail_closed(lane):
     assert export.export_once(*lane)['status'] == 'UNAVAILABLE'
 
 
+@pytest.mark.parametrize('compressed', [False, True])
 @pytest.mark.parametrize('separators', [None, (',', ':')])
-def test_account_ticker_observation_exports_only_market_fields_and_times(lane, separators):
+def test_account_ticker_observation_exports_only_market_fields_and_times(lane, separators, compressed):
     db, state, spool = lane
     with sqlite3.connect(db) as conn:
         conn.execute('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body TEXT)')
@@ -120,7 +127,8 @@ def test_account_ticker_observation_exports_only_market_fields_and_times(lane, s
                               'exchange_response_time_ms': 1699999000000},
             'wallet': {'api_key': 'SECRET'}}
     with sqlite3.connect(db) as conn:
-        conn.execute('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)', ('account', 1700000001, json.dumps(body, separators=separators)))
+        text = json.dumps(body, separators=separators)
+        conn.execute('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)', ('account', 1700000001, _test_gzip(text) if compressed else text))
     assert export.export_once(db, state, spool)['captured'] == 1
     row = next(r for r in events(spool) if r.get('attributes', {}).get('source_kind') == 'account')
     observed = row['attributes']['ticker_observation']
@@ -430,3 +438,13 @@ def test_compressed_recovery_budget_counts_original_bytes_and_resumes(lane):
     second = export.export_once(*lane)
     assert second['captured'] == 1 and second['status'] != 'UNAVAILABLE'
     assert 'xxxxx' not in lane[2].read_text()
+
+
+def test_account_anchor_and_source_equal_for_legacy_and_compressed():
+    from observability.btc_scenario_export import _anchor_hash, _source_text
+    original = json.dumps({'ticker': {'bid1Price': '100'}, 'detail': 'x' * 2000}, sort_keys=True)
+    old = {'kind': 'account', 'body': original}
+    new = {'kind': 'account', 'body': _test_gzip(original)}
+    assert isinstance(new['body'], bytes)
+    assert _source_text('llm_scenario_broker_evidence', new) == original
+    assert _anchor_hash('llm_scenario_broker_evidence', old) == _anchor_hash('llm_scenario_broker_evidence', new)

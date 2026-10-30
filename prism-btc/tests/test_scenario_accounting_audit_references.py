@@ -210,3 +210,29 @@ def test_export_emits_restored_accounting_and_keeps_its_anchor(tmp_path):
     row = next(event for event in events if event.get('attributes', {}).get('source_kind') == 'accounting_observation')
     assert row['attributes']['body_sha256'] == sha(raw)
     assert export.export_once(db, state, spool)['status'] == 'OK'
+
+
+def test_account_reference_restores_compressed_source_and_detects_damage():
+    from live.scenario_review_storage import review_storage
+    with sqlite3.connect(':memory:') as conn:
+        raw, encoded = fixture(conn)
+        original = conn.execute('SELECT body FROM llm_scenario_broker_evidence WHERE rowid=1').fetchone()[0]
+        packed = review_storage(original)
+        assert isinstance(packed, bytes)
+        conn.execute('UPDATE llm_scenario_broker_evidence SET body=? WHERE rowid=1', (packed,))
+        assert read_accounting(encoded, conn) == raw
+        assert read_accounting(compact(raw, conn, 2), conn) == raw
+        conn.execute('UPDATE llm_scenario_broker_evidence SET body=? WHERE rowid=1', (packed[:-2],))
+        with pytest.raises(ValueError):
+            read_accounting(encoded, conn)
+
+
+def test_runtime_evidence_hash_is_unchanged_for_compressed_account():
+    from analysis.scenario_replay import _runtime_event_hash
+    from live.scenario_review_storage import review_storage
+    with sqlite3.connect(':memory:') as conn:
+        fixture(conn)
+        before = _runtime_event_hash(conn)
+        raw = conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='account'").fetchone()[0]
+        conn.execute("UPDATE llm_scenario_broker_evidence SET body=? WHERE kind='account'", (review_storage(raw),))
+        assert _runtime_event_hash(conn) == before

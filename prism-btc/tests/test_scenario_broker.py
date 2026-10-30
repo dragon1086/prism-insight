@@ -85,8 +85,9 @@ def test_account_evidence_omits_whitespace_without_losing_observation(setup):
     b, _ = setup
     observed = b.capture_account()
     stored = b.conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='account' ORDER BY rowid DESC LIMIT 1").fetchone()[0]
-    assert json.loads(stored) == json.loads(json.dumps(observed, allow_nan=False, sort_keys=True))
-    assert stored == json.dumps(observed, allow_nan=False, sort_keys=True, separators=(',', ':'))
+    from observability.review_storage import review_text
+    assert json.loads(review_text(stored)) == json.loads(json.dumps(observed, allow_nan=False, sort_keys=True))
+    assert review_text(stored) == json.dumps(observed, allow_nan=False, sort_keys=True, separators=(',', ':'))
     assert len(stored) < len(json.dumps(observed, allow_nan=False, sort_keys=True))
 
 
@@ -386,7 +387,8 @@ def test_ticker_request_span_is_saved_without_extra_read_or_changed_account_vers
     assert calls == [dict(category='linear', symbol='BTCUSDT')]
     assert observed['ticker_timing'] == dict(request_started_at=1800000000.0,
         response_received_at=1800000000.125, exchange_response_time_ms=1800000000100)
-    saved = json.loads(b.conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='account' ORDER BY rowid DESC LIMIT 1").fetchone()[0])
+    from observability.review_storage import review_text
+    saved = json.loads(review_text(b.conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='account' ORDER BY rowid DESC LIMIT 1").fetchone()[0]))
     assert saved['ticker_timing'] == observed['ticker_timing']
     assert observed['account_version'] == before['account_version']
     assert observed['execution_ready'] is before['execution_ready'] is False
@@ -413,3 +415,15 @@ def test_ticker_timing_does_not_extend_snapshot_freshness(setup):
     session.get_tickers = slow_ticker
     with pytest.raises(BrokerNotReady, match='account_snapshot_stale'):
         b.capture_account()
+
+
+def test_account_compression_failure_preserves_original_observation(setup, monkeypatch):
+    import json
+    b, _ = setup
+    def fail(_):
+        raise RuntimeError('compression unavailable')
+    monkeypatch.setattr('live.scenario_review_storage.snapshot_storage', fail)
+    observed = b.capture_account()
+    stored = b.conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='account' ORDER BY rowid DESC LIMIT 1").fetchone()[0]
+    assert isinstance(stored, str)
+    assert json.loads(stored) == json.loads(json.dumps(observed, allow_nan=False))

@@ -764,3 +764,14 @@ def test_unmapped_event_never_uses_overall_verified_as_domain_proof(db):
     assert item["loaded_code_status"] == "UNKNOWN"
     assert item["audit_links"][0]["loaded_code_status"] == "UNKNOWN"
     assert item["manifest_loaded_code_statuses"] == ["VERIFIED"]
+
+
+def test_compressed_account_preserves_forward_packet_source(db):
+    from live.scenario_review_storage import review_storage
+    raw = json.dumps({'ticker': {'price': '100'}, 'detail': 'x' * 2000})
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO llm_scenario_broker_evidence VALUES('account', 1, ?)", (raw,))
+    expected = packet._read(db)
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE llm_scenario_broker_evidence SET body=? WHERE kind='account' AND captured_at=1", (review_storage(raw),))
+    assert packet._read(db) == expected
