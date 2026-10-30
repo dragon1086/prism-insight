@@ -4,6 +4,7 @@ import copy
 import gzip
 import hashlib
 import json
+import sys
 import zlib
 
 MAGIC = b"PRISM_REVIEW_REFS_V1\x00"
@@ -277,7 +278,16 @@ def read_tape(value, conn, slot, *, decode_legacy):
     for sequence, body in rows:
         if type(sequence) is not int or sequence != len(events):
             raise ValueError("reference_event_sequence_invalid")
-        text = decode_legacy(body)
+        if isinstance(body, bytes) and body.startswith(b'PRISM_REVIEW_EVENT_REF_V1\x00'):
+            if 'btc_review_event_refs_embedded' in sys.modules:
+                from btc_review_event_refs_embedded import read_event
+            elif __package__:
+                from .btc_review_event_references import read_event
+            else:
+                from btc_review_event_references import read_event
+            text = read_event(body, conn, slot, sequence, decode_legacy=decode_legacy)
+        else:
+            text = decode_legacy(body)
         if not isinstance(text, str):
             raise ValueError("invalid_reference_source")
         total_bytes += len(text.encode("utf-8"))
