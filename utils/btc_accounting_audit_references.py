@@ -65,6 +65,41 @@ def compact(raw, conn, observed_at):
         return raw
 
 
+def compact_children(raw, conn):
+    """Reuse an earlier audit's exact children; retain anchors while referenced."""
+    if not isinstance(raw, str) or conn is None or len(raw.encode()) > MAX_BYTES:
+        return raw
+    try:
+        event = json.loads(raw)
+        if (not isinstance(event, dict) or event.get(TAG) != 1 or CHILDREN_REF in event
+                or not isinstance(event.get('children'), list)):
+            return raw
+        expected = sha(canonical(event['children']))
+        rows = conn.execute("SELECT event_id,body FROM llm_scenario_audit_events "
+                            "WHERE kind='accounting_observation' ORDER BY rowid DESC LIMIT ?", (SOURCE_LIMIT,))
+        for event_id, body in rows:
+            if not isinstance(event_id, str) or not event_id or not isinstance(body, str) or len(body.encode()) > MAX_BYTES:
+                continue
+            source = json.loads(body)
+            if not isinstance(source, dict):
+                continue
+            marker = source.get(CHILDREN_REF)
+            if marker is None and isinstance(source.get('children'), list) and sha(canonical(source['children'])) == expected:
+                marker = {'event_id': event_id, 'sha256': expected}
+            if (not isinstance(marker, dict) or set(marker) != {'event_id', 'sha256'}
+                    or marker.get('sha256') != expected):
+                continue
+            projected = copy.deepcopy(event)
+            del projected['children']
+            projected[CHILDREN_REF] = marker
+            candidate = canonical(projected)
+            if len(candidate.encode()) < len(raw.encode()) and read_accounting(candidate, conn) == read_accounting(raw, conn):
+                return candidate
+    except (ValueError, TypeError, KeyError, OverflowError):
+        pass
+    return raw
+
+
 def read_accounting(raw, conn):
     if not isinstance(raw, str):
         raise ValueError('accounting_audit_invalid')

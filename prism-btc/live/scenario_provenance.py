@@ -492,8 +492,9 @@ def _flush(capture):
                     stored_event = event
             elif event[2] == 'accounting_observation':
                 try:
-                    from utils.btc_accounting_audit_references import compact, read_accounting
+                    from utils.btc_accounting_audit_references import compact, compact_children, read_accounting
                     candidate = compact(event[8], conn, event[3])
+                    candidate = compact_children(candidate, conn)
                     if candidate != event[8] and read_accounting(candidate, conn) == event[8]:
                         stored_event = (*event[:8], candidate)
                 except Exception:

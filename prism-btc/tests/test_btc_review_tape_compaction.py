@@ -1,6 +1,9 @@
 import hashlib
+import io
 import json
 import sqlite3
+import sys
+from types import SimpleNamespace
 import pytest
 
 from live.scenario_review_storage import review_storage, review_text
@@ -50,12 +53,62 @@ def test_guard_and_backup_mismatch_do_not_write(tmp_path):
     assert conn.execute('SELECT body FROM llm_scenario_review_tapes').fetchone()[0] == before
 
 
+def test_main_stops_before_opening_database_when_backup_or_reader_is_active(tmp_path, monkeypatch, capsys):
+    conn, _, args = fixture(tmp_path)
+    before = conn.execute('SELECT body FROM llm_scenario_review_tapes').fetchone()[0]
+    manifest = {'source_identity': 'a' * 64, 'rows': [{k: v for k, v in args.items() if k != 'guard'}]}
+    monkeypatch.setenv('PRISM_BTC_STORAGE_APPROVED', '1')
+    monkeypatch.setattr(subject, 'SOURCE', tmp_path/'tape.sqlite')
+    monkeypatch.setattr(subject, 'source_identity', lambda path: 'a' * 64)
+    monkeypatch.setattr(subject, 'resource_guard', lambda path, identity: True)
+    monkeypatch.setattr(subject, '_backup_idle', lambda path: False)
+    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(manifest).encode())))
+    subject.main()
+    assert json.loads(capsys.readouterr().out)['status'] == 'RESOURCE_LIMIT'
+    assert conn.execute('SELECT body FROM llm_scenario_review_tapes').fetchone()[0] == before
+
+
+def test_failed_tape_compaction_preserves_original_and_export_anchor(tmp_path):
+    from utils.btc_review_references import MAGIC
+    conn, raw, args = fixture(tmp_path)
+    value = json.loads(raw)
+    value['outcome']['status'] = 'FAILED'
+    failed = json.dumps(value)
+    original = review_storage(failed)
+    conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=1', (original,))
+    conn.commit()
+    row = lambda: conn.execute('SELECT rowid AS source_rowid,slot,body FROM llm_scenario_review_tapes').fetchone()
+    anchor = _anchor_hash('llm_scenario_review_tapes', row(), conn)
+    args.update(expected_sha256=hashlib.sha256(original).hexdigest(),
+                expected_raw_sha256=hashlib.sha256(failed.encode()).hexdigest())
+    assert subject.compact_one(conn, **args) == 'UPDATED'
+    encoded = row()['body']
+    assert encoded.startswith(MAGIC) and len(encoded) < len(original)
+    assert read_tape(encoded, conn, 1, decode_legacy=review_text) == failed
+    assert _anchor_hash('llm_scenario_review_tapes', row(), conn) == anchor
+
+
+def test_failed_tape_without_source_remains_unchanged(tmp_path):
+    conn, raw, args = fixture(tmp_path)
+    value = json.loads(raw)
+    value['outcome']['status'] = 'FAILED'
+    failed = json.dumps(value)
+    original = review_storage(failed)
+    conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=1', (original,))
+    conn.execute('DELETE FROM llm_scenario_review_events')
+    conn.commit()
+    args.update(expected_sha256=hashlib.sha256(original).hexdigest(),
+                expected_raw_sha256=hashlib.sha256(failed.encode()).hexdigest())
+    assert subject.compact_one(conn, **args) == 'UNCHANGED'
+    assert conn.execute('SELECT body FROM llm_scenario_review_tapes').fetchone()[0] == original
+
+
 def test_reference_change_before_write_stops(tmp_path, monkeypatch):
     conn, _, args = fixture(tmp_path)
     before = conn.execute('SELECT body FROM llm_scenario_review_tapes').fetchone()[0]
     original = subject.tape_storage
-    def change_reference(connection, slot, raw):
-        candidate = original(connection, slot, raw)
+    def change_reference(connection, slot, raw, **kwargs):
+        candidate = original(connection, slot, raw, **kwargs)
         other = sqlite3.connect(tmp_path/'tape.sqlite', timeout=0)
         other.execute('UPDATE llm_scenario_decisions SET context=? WHERE slot=1', ('{}',))
         other.commit()
