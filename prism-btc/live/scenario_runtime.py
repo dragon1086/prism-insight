@@ -885,8 +885,10 @@ class ScenarioRuntime:
                         raise ScenarioModelError("input_size")
                     raise ValueError("review_tape_incomplete")
                 from live.scenario_review_storage import review_text
-                recorded_events = [json.loads(review_text(row[0])) for row in self.conn.execute(
-                    "SELECT body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence", (slot,))]
+                from utils.btc_review_event_references import read_event
+                recorded_events = [json.loads(read_event(body, self.conn, slot, sequence, decode_legacy=review_text))
+                                   for sequence, body in self.conn.execute(
+                    "SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence", (slot,))]
                 expected_events = [operation["event"] for operation in review_envelope["operations"]
                                    if operation["kind"] == "record"]
                 if recorded_events != expected_events:

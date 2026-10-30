@@ -2,6 +2,7 @@
 import hashlib
 import gzip
 import json
+import sys
 import zlib
 
 TAG = '$btc_recovery_review_ref_v1'
@@ -151,7 +152,17 @@ def read_recovery(value, conn, slot, *, decode_legacy, expected_kind=None):
                         (slot, sequence)).fetchall()
     if len(rows) != 1:
         raise ValueError('recovery_reference_source_missing')
-    restored = restore(raw, decode_legacy(rows[0][0]), slot, sequence)
+    if isinstance(rows[0][0], bytes) and rows[0][0].startswith(b'PRISM_REVIEW_EVENT_REF_V1\x00'):
+        if 'btc_review_event_refs_embedded' in sys.modules:
+            from btc_review_event_refs_embedded import read_event
+        elif __package__:
+            from .btc_review_event_references import read_event
+        else:
+            from btc_review_event_references import read_event
+        source = read_event(rows[0][0], conn, slot, sequence, decode_legacy=decode_legacy)
+    else:
+        source = decode_legacy(rows[0][0])
+    restored = restore(raw, source, slot, sequence)
     if expected_kind not in ('MODEL_REQUEST', 'MODEL_RAW') or json.loads(restored).get('kind') != expected_kind:
         raise ValueError('recovery_reference_kind_mismatch')
     return restored
