@@ -84,6 +84,8 @@ def test_daily_timer_is_persistent_and_uses_b3_safe_window(monkeypatch):
     root=Path(__file__).resolve().parents[1]
     timer=(root/'deploy/systemd/prism-btc-daily-retention.timer').read_text()
     assert 'OnCalendar=*-*-* 22:02:40 Asia/Seoul' in timer and 'Persistent=true' in timer
+    service=(root/'deploy/systemd/prism-btc-daily-retention.service').read_text()
+    assert 'ExecStart=/usr/bin/env /root/.pyenv/versions/3.11.11/bin/python ' in service
     for month in (1,7):
         at=datetime.datetime(2026,month,15,22,2,40,tzinfo=ZoneInfo('Asia/Seoul'))
         assert _outside_b3_live_window(at.timestamp())
