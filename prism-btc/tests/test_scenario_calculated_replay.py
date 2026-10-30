@@ -12,6 +12,7 @@ from tests.test_scenario_replay import inputs, wait_policy
 from tests.test_scenario_review_runtime import wire as runtime_wire
 from live.scenario_model_input import restore_model_input
 from live.scenario_review_storage import review_text
+from utils.btc_review_event_references import read_event
 
 
 def wire(ctx, action):
@@ -290,7 +291,7 @@ def test_post_review_durable_record_delay_cannot_extend_deadline(tmp_path,monkey
     class DelayedConnection(sqlite3.Connection):
         def execute(self, sql, parameters=()):
             result=super().execute(sql,parameters)
-            if sql.startswith("INSERT INTO llm_scenario_review_events") and json.loads(review_text(parameters[2]))["kind"]=="FRESH_REVIEW_RECEIPT":
+            if sql.startswith("INSERT INTO llm_scenario_review_events") and json.loads(read_event(parameters[2], self, parameters[0], parameters[1], decode_legacy=review_text))["kind"]=="FRESH_REVIEW_RECEIPT":
                 wall[0]+=76
             return result
     monkeypatch.setattr(sqlite3,"connect",lambda *args,**kwargs:original(*args,factory=DelayedConnection,**kwargs))
@@ -398,7 +399,7 @@ def test_record_fault_replays_true_durable_effect_without_duplicate_guard_effect
             self.injected=False
         def execute(self,sql,parameters=()):
             inject=(self.fresh and not self.injected and sql.startswith("INSERT INTO llm_scenario_review_events")
-                    and json.loads(review_text(parameters[2]))["kind"]=="MODEL_REQUEST")
+                    and json.loads(read_event(parameters[2], self, parameters[0], parameters[1], decode_legacy=review_text))["kind"]=="MODEL_REQUEST")
             if inject:
                 self.injected=True
                 if fault=="before_commit":
@@ -501,7 +502,9 @@ def test_consumed_recovery_exact_all_runtime_review_exchange_tables(tmp_path,pro
                 assert outcome["status"]==("wait" if holding_action=="WAIT" else "intent_pending")
                 assert one.execute("SELECT count(*) FROM llm_scenario_intents").fetchone()[0]==(1 if holding_action=="WAIT" else 2)
                 if holding_action=="EXIT":
-                    events = (json.loads(review_text(r[0])) for r in one.execute("SELECT body FROM llm_scenario_review_events WHERE slot=?",(stop_minute//300000,)))
+                    slot = stop_minute//300000
+                    events = (json.loads(read_event(body, one, slot, sequence, decode_legacy=review_text))
+                              for sequence, body in one.execute("SELECT sequence,body FROM llm_scenario_review_events WHERE slot=?",(slot,)))
                     final = next(event for event in events if event['kind'] == 'FINAL_FRESH_REVIEW_RECEIPT')
                     assert round((final["post_validation_checked_at"]-final["receipt"]["checked_at"])*1000)==1
                 else:
@@ -528,7 +531,7 @@ def test_observing_post_record_stop_crossing_never_consumes_permit(tmp_path,monk
         def execute(self,sql,parameters=()):
             result=super().execute(sql,parameters)
             if (sql.startswith("INSERT INTO llm_scenario_review_events") and parameters[0]==stop_minute//300000
-                    and json.loads(review_text(parameters[2]))["kind"]=="FRESH_REVIEW_RECEIPT"):
+                    and json.loads(read_event(parameters[2], self, parameters[0], parameters[1], decode_legacy=review_text))["kind"]=="FRESH_REVIEW_RECEIPT"):
                 wall[0]+=40
             return result
     monkeypatch.setattr(sqlite3,"connect",lambda *args,**kwargs:original(*args,factory=DelayedConnection,**kwargs))
