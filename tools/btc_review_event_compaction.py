@@ -79,6 +79,80 @@ def compact_one(conn, *, rowid, slot, sequence, expected_type, expected_sha256, 
         raise
 
 
+def compact_backed_model_pair(conn, raw_row, source_row, *, guard):
+    """Compact one pair only after the caller verifies both rows against a backup."""
+    fields = {'rowid', 'slot', 'sequence', 'expected_type', 'expected_sha256'}
+    if (conn.in_transaction or not callable(guard) or not isinstance(raw_row, dict)
+            or not isinstance(source_row, dict) or set(raw_row) != fields or set(source_row) != fields
+            or not _valid_row(**raw_row) or not _valid_row(**source_row)
+            or raw_row['slot'] != source_row['slot'] or raw_row['sequence'] >= 128
+            or source_row['sequence'] >= raw_row['sequence']):
+        raise ValueError('invalid_compaction_context')
+    if guard() is not True:
+        return 'RESOURCE_LIMIT'
+    from utils.btc_review_event_references import MAX_BYTES, MAGIC as REF_MAGIC, _unpack, compact, read_event
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        if guard() is not True:
+            conn.rollback()
+            return 'RESOURCE_LIMIT'
+        def load(proof):
+            return conn.execute('SELECT slot,sequence,body FROM llm_scenario_review_events WHERE rowid=?',
+                                (proof['rowid'],)).fetchone()
+        def matches(proof, row):
+            return (row is not None and row[0] == proof['slot'] and row[1] == proof['sequence']
+                    and ('text' if isinstance(row[2], str) else 'blob' if isinstance(row[2], bytes) else 'invalid') == proof['expected_type']
+                    and hashlib.sha256(_bytes(row[2])).hexdigest() == proof['expected_sha256'])
+        source = load(source_row)
+        raw = load(raw_row)
+        if not matches(source_row, source) or raw is None or raw[0] != raw_row['slot'] or raw[1] != raw_row['sequence']:
+            conn.rollback()
+            return 'SOURCE_CHANGED'
+        slot, sequence = raw_row['slot'], raw_row['sequence']
+        if not matches(raw_row, raw):
+            value = raw[2]
+            if not isinstance(value, bytes) or not value.startswith(REF_MAGIC) or _unpack(value)['source_sequence'] != source_row['sequence']:
+                conn.rollback()
+                return 'SOURCE_CHANGED'
+            original = read_event(value, conn, slot, sequence, decode_legacy=review_text)
+            prior = original if raw_row['expected_type'] == 'text' else review_storage(original)
+            if hashlib.sha256(_bytes(prior)).hexdigest() != raw_row['expected_sha256']:
+                conn.rollback()
+                return 'SOURCE_CHANGED'
+            conn.rollback()
+            return 'UNCHANGED'
+        original = read_event(raw[2], conn, slot, sequence, decode_legacy=review_text)
+        sources, source_bytes = [], 0
+        for number, value in conn.execute('SELECT sequence,body FROM llm_scenario_review_events '
+                                          'WHERE slot=? AND sequence<? ORDER BY sequence LIMIT 128', (slot, sequence)):
+            text = read_event(value, conn, slot, number, decode_legacy=review_text)
+            source_bytes += len(text.encode('utf-8'))
+            if source_bytes > MAX_BYTES:
+                conn.rollback()
+                return 'UNCHANGED'
+            sources.append((number, text))
+        candidate = compact(original, sources, slot, sequence)
+        if (not isinstance(candidate, bytes) or not candidate.startswith(REF_MAGIC)
+                or _unpack(candidate)['source_sequence'] != source_row['sequence']
+                or len(candidate) >= len(_bytes(raw[2]))):
+            conn.rollback()
+            return 'UNCHANGED'
+        if read_event(candidate, conn, slot, sequence, decode_legacy=review_text) != original:
+            raise ValueError('review_roundtrip_mismatch')
+        if guard() is not True:
+            conn.rollback()
+            return 'RESOURCE_LIMIT'
+        changed = conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE rowid=? AND body=?',
+                               (candidate, raw_row['rowid'], raw[2]))
+        if changed.rowcount != 1:
+            raise ValueError('review_source_changed')
+        conn.commit()
+        return 'UPDATED'
+    except BaseException:
+        conn.rollback()
+        raise
+
+
 def source_identity(path):
     stat = path.stat()
     return hashlib.sha256(f'{path.resolve()}:{stat.st_dev}:{stat.st_ino}'.encode()).hexdigest()
@@ -142,6 +216,38 @@ def compact_batch(conn, manifest, guard):
     return {'counts':counts, 'last_rowid':last}
 
 
+def compact_backed_pairs(conn, manifest, guard):
+    if not isinstance(manifest, dict) or set(manifest) != {'source_identity', 'pairs'}:
+        raise ValueError('invalid_manifest')
+    identity, pairs = manifest['source_identity'], manifest['pairs']
+    fields = {'rowid','slot','sequence','expected_type','expected_sha256'}
+    if (not isinstance(identity, str) or len(identity) != 64 or any(c not in '0123456789abcdef' for c in identity)
+            or not isinstance(pairs, list) or not 1 <= len(pairs) <= 20
+            or not all(isinstance(pair, dict) and set(pair) == {'raw','source'}
+                       and all(isinstance(pair[k], dict) and set(pair[k]) == fields and _valid_row(**pair[k])
+                               for k in ('raw','source'))
+                       and pair['raw']['slot'] == pair['source']['slot']
+                       and pair['raw']['sequence'] < 128 and pair['source']['sequence'] < pair['raw']['sequence']
+                       for pair in pairs)):
+        raise ValueError('invalid_manifest')
+    ids = [pair['raw']['rowid'] for pair in pairs]
+    if ids != sorted(set(ids)):
+        raise ValueError('invalid_manifest')
+    counts = {'UPDATED':0, 'UNCHANGED':0, 'SOURCE_CHANGED':0, 'RESOURCE_LIMIT':0, 'ERROR':0}
+    last = None
+    for pair in pairs:
+        try:
+            status = compact_backed_model_pair(conn, pair['raw'], pair['source'], guard=guard)
+        except Exception:
+            counts['ERROR'] += 1
+            break
+        counts[status] += 1
+        if status in ('SOURCE_CHANGED', 'RESOURCE_LIMIT'):
+            break
+        last = pair['raw']['rowid']
+    return {'counts':counts, 'last_rowid':last}
+
+
 def main():
     if os.environ.get('PRISM_BTC_STORAGE_APPROVED') != '1':
         raise RuntimeError('explicit_storage_approval_required')
@@ -157,7 +263,10 @@ def main():
         print(json.dumps({'status':'RESOURCE_LIMIT','counts':{},'last_rowid':None}))
         return
     with sqlite3.connect(SOURCE, timeout=0, isolation_level=None) as conn:
-        result = compact_batch(conn, manifest, guard)
+        from live.shared_entry_coordinator import mutation_lock
+        with mutation_lock(conn):
+            result = (compact_backed_pairs(conn, manifest, guard) if isinstance(manifest, dict) and 'pairs' in manifest
+                      else compact_batch(conn, manifest, guard))
     print(json.dumps({'status':'STOPPED' if any(result['counts'][key] for key in ('SOURCE_CHANGED','RESOURCE_LIMIT','ERROR'))
                       else 'COMPLETE', **result}))
 
