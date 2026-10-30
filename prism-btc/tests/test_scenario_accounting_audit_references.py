@@ -3,7 +3,7 @@ import sqlite3
 
 import pytest
 
-from utils.btc_accounting_audit_references import TAG, ORIGINAL_HASH, canonical, compact, read_accounting, sha
+from utils.btc_accounting_audit_references import CHILDREN_REF, TAG, ORIGINAL_HASH, canonical, compact, read_accounting, sha
 
 
 def fixture(conn):
@@ -53,6 +53,41 @@ def test_reference_restores_exact_original_and_accepts_legacy():
         raw, encoded = fixture(conn)
         assert read_accounting(raw, conn) == raw
         assert read_accounting(encoded, conn) == raw
+
+
+def children_reference_fixture(conn):
+    raw, encoded = fixture(conn)
+    source = json.loads(encoded)
+    children = source.pop('children')
+    conn.execute("INSERT INTO llm_scenario_audit_events VALUES('source','r','accounting_observation',2,NULL,NULL,1,NULL,?)", (encoded,))
+    source[CHILDREN_REF] = {'event_id': 'source', 'sha256': sha(canonical(children))}
+    return raw, canonical(source)
+
+
+def test_children_reference_restores_original_and_export_anchor():
+    from observability.btc_scenario_export import _anchor_hash
+    with sqlite3.connect(':memory:') as conn:
+        raw, encoded = children_reference_fixture(conn)
+        assert read_accounting(encoded, conn) == raw
+        before = {'kind': 'accounting_observation', 'body': raw}
+        after = {'kind': 'accounting_observation', 'body': encoded}
+        assert _anchor_hash('llm_scenario_audit_events', before, conn) == _anchor_hash('llm_scenario_audit_events', after, conn)
+
+
+@pytest.mark.parametrize('damage', ['missing', 'wrong_kind', 'changed', 'chain', 'digest', 'marker', 'duplicate_children', 'missing_tag'])
+def test_children_reference_missing_or_tampered_fails_closed(damage):
+    with sqlite3.connect(':memory:') as conn:
+        _, encoded = children_reference_fixture(conn)
+        value = json.loads(encoded)
+        if damage == 'missing': conn.execute('DELETE FROM llm_scenario_audit_events')
+        if damage == 'wrong_kind': conn.execute("UPDATE llm_scenario_audit_events SET kind='other'")
+        if damage == 'changed': conn.execute("UPDATE llm_scenario_audit_events SET body=?", (canonical({'children': [1]}),))
+        if damage == 'chain': conn.execute("UPDATE llm_scenario_audit_events SET body=?", (encoded,))
+        if damage == 'digest': value[CHILDREN_REF]['sha256'] = 'bad'
+        if damage == 'marker': value[CHILDREN_REF]['extra'] = 1
+        if damage == 'duplicate_children': value['children'] = []
+        if damage == 'missing_tag': value.pop(TAG)
+        with pytest.raises(ValueError): read_accounting(canonical(value), conn)
 
 
 def test_reference_accepts_already_compacted_financial_source():

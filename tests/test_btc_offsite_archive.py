@@ -908,26 +908,30 @@ def test_archive_resolves_audit_reference_in_standalone_receiver(tmp_path):
 
 
 def test_archive_resolves_accounting_reference_in_standalone_receiver(tmp_path):
-    from utils.btc_accounting_audit_references import TAG, ORIGINAL_HASH, canonical, sha
+    from utils.btc_accounting_audit_references import CHILDREN_REF, TAG, ORIGINAL_HASH, canonical, sha
 
     path = tmp_path / 'accounting.sqlite'
     account = {'source_commit': 'e' * 40, 'wallet': {'detail': 'x' * 1000}}
     financial = {'trades': [], 'raw_executions': []}
-    event = {'observation': account, 'financial_evidence': financial, 'result': {'status': 'confirmed'}}
+    event = {'observation': account, 'financial_evidence': financial, 'children': [{'id': 'one'}],
+             'result': {'status': 'confirmed'}}
     original = canonical(event)
     with sqlite3.connect(path) as conn:
         conn.execute('CREATE TABLE llm_scenario_broker_evidence(kind,captured_at,body)')
-        conn.execute('CREATE TABLE llm_scenario_audit_events(kind,decision_slot,body)')
+        conn.execute('CREATE TABLE llm_scenario_audit_events(event_id,kind,decision_slot,body)')
         conn.executemany('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)',
                          [('account', 1, json.dumps(account, sort_keys=True)),
                           ('financial', 1, json.dumps(financial, sort_keys=True))])
-        conn.execute("INSERT INTO llm_scenario_audit_events VALUES('accounting_observation',1,?)", (original,))
+        conn.executemany("INSERT INTO llm_scenario_audit_events VALUES(?,'accounting_observation',1,?)",
+                         [('source', original), ('target', original)])
     baseline = archive.referenced_commits(path)
     encoded = dict(event, **{TAG: 1, ORIGINAL_HASH: sha(original)})
     encoded['observation'] = {'rowid': 1, 'captured_at': 1, 'sha256': sha(canonical(account))}
     encoded['financial_evidence'] = {'rowid': 2, 'captured_at': 1, 'sha256': sha(canonical(financial))}
+    children = encoded.pop('children')
+    encoded[CHILDREN_REF] = {'event_id': 'source', 'sha256': sha(canonical(children))}
     with sqlite3.connect(path) as conn:
-        conn.execute('UPDATE llm_scenario_audit_events SET body=?', (canonical(encoded),))
+        conn.execute("UPDATE llm_scenario_audit_events SET body=? WHERE event_id='target'", (canonical(encoded),))
     assert archive.referenced_commits(path) == baseline
     financial_source = Path(archive.__file__).with_name('btc_financial_references.py').read_text()
     accounting_source = Path(archive.__file__).with_name('btc_accounting_audit_references.py').read_text()
@@ -944,6 +948,12 @@ def test_archive_resolves_accounting_reference_in_standalone_receiver(tmp_path):
     child = subprocess.run([os.sys.executable, '-I', '-c', child_script, str(path)], cwd=tmp_path,
                            capture_output=True, text=True, timeout=15, check=True)
     assert child.stdout.strip() == 'e' * 40
+    with sqlite3.connect(path) as conn:
+        conn.execute("DELETE FROM llm_scenario_audit_events WHERE event_id='source'")
+    with pytest.raises(ValueError, match='reference_accounting_unresolved'):
+        archive.referenced_commits(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("INSERT INTO llm_scenario_audit_events VALUES('source','accounting_observation',1,?)", (original,))
     with sqlite3.connect(path) as conn:
         conn.execute('DELETE FROM llm_scenario_broker_evidence WHERE kind="account"')
     with pytest.raises(ValueError, match='reference_accounting_unresolved'):
