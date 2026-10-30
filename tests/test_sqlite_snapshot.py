@@ -337,6 +337,34 @@ def test_missing_main_db_stops_retention_of_older_backups(tmp_path):
     assert valuable.read_bytes() == b'keep older evidence'
 
 
+def test_failed_snapshot_logs_failure_and_preserves_old_backup(tmp_path):
+    import os
+    import subprocess
+    home = tmp_path/'home'
+    project = home/'prism-insight'
+    project.mkdir(parents=True)
+    (project/'stock_tracking_db.sqlite').write_bytes(b'fixture')
+    older = home/'prism_backups'/'old'
+    older.mkdir(parents=True)
+    valuable = older/'stock_tracking_db.sqlite'
+    valuable.write_bytes(b'keep older evidence')
+    os.utime(older, (1, 1))
+    tools = tmp_path/'bin'
+    tools.mkdir()
+    fake = tools/'python3'
+    fake.write_text('#!/bin/sh\nexit 42\n')
+    fake.chmod(0o755)
+    script = Path(__file__).resolve().parents[1]/'utils/backup_configs.sh'
+    env = {**os.environ, 'HOME':str(home), 'PATH':str(tools)+':'+os.environ['PATH']}
+    run = subprocess.run(['bash',str(script)],env=env,capture_output=True,text=True,timeout=10)
+    assert run.returncode != 0
+    assert valuable.read_bytes() == b'keep older evidence'
+    log = (home/'prism_backups'/'backup.log').read_text()
+    assert 'CRITICAL: SQLite 스냅샷 실패' in log
+    assert '원격 전송과 7일 정리 중단' in log
+    assert not list((home/'prism_backups').glob('*/offsite_ack.json'))
+
+
 @pytest.mark.parametrize('archive_success', [True, False])
 @pytest.mark.parametrize('event_retention', ['unset', '0', '1', 'invalid'])
 def test_backup_records_archive_ack_and_preserves_old_on_failure(tmp_path, archive_success, event_retention):
