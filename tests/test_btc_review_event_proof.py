@@ -12,14 +12,14 @@ from utils.btc_review_event_proof import delivered_event_proof, event_proof, sna
 def fixture():
     conn = sqlite3.connect(':memory:')
     conn.executescript('CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body);'
-                       'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body);')
+                       'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body,scenario_id TEXT);')
     review = {'kind': 'MODEL_REQUEST', 'prompt': 'x' * 3000}
     recovery = dict(review, calculated_review_version=1, input_id='fixture')
     review_text, recovery_text = canonical(review), canonical(recovery)
     ref = compact(review_text, recovery_text, 1, 0)
     assert ref != recovery_text
     conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 0, review_text))
-    conn.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?)', ('e', 1, 'MODEL_REQUEST', pack(ref)))
+    conn.execute('INSERT INTO llm_scenario_recovery_events(event_id,slot,kind,body) VALUES(?,?,?,?)', ('e', 1, 'MODEL_REQUEST', pack(ref)))
     conn.commit()
     return conn
 
@@ -58,11 +58,11 @@ def test_event_index_obeys_time_guard():
 
 def test_duplicate_recovery_and_event_bound_fail_closed():
     conn = fixture()
-    conn.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?)', ('e', 1, 'OTHER', '{}'))
+    conn.execute('INSERT INTO llm_scenario_recovery_events(event_id,slot,kind,body) VALUES(?,?,?,?)', ('e', 1, 'OTHER', '{}'))
     with pytest.raises(ValueError, match='proof_recovery_identity_invalid'):
         event_proof(conn, 1)
     conn.execute('DELETE FROM llm_scenario_recovery_events')
-    conn.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?)', ('x' * 129, 1, 'OTHER', '{}'))
+    conn.execute('INSERT INTO llm_scenario_recovery_events(event_id,slot,kind,body) VALUES(?,?,?,?)', ('x' * 129, 1, 'OTHER', '{}'))
     with pytest.raises(ValueError, match='proof_recovery_identity_invalid'):
         event_proof(conn, 1)
     conn.execute('DELETE FROM llm_scenario_recovery_events')
@@ -96,7 +96,7 @@ def test_snapshot_index_is_bounded_and_does_not_skip_candidates(monkeypatch):
     conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
                        'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);'
                        'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body);'
-                       'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body);')
+                       'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body,scenario_id TEXT);')
     context = json.dumps({'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
                           'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False})
     noop = {'schema_version': 1, 'action': 'WAIT', 'entries': [], 'take_profits': [],
@@ -138,7 +138,7 @@ def test_snapshot_index_is_bounded_and_does_not_skip_candidates(monkeypatch):
     def worst_case(_conn, slot, *, guard=None):
         return {'slot': slot,
                 'events': [{'rowid': slot * 1000 + seq, 'sequence': seq, 'sha256': 'f' * 64} for seq in range(128)],
-                'recovery': [{'event_id': str(i).zfill(128), 'kind': 'x' * 80, 'sha256': 'e' * 64} for i in range(16)]}
+                'recovery': [{'rowid': i + 1, 'event_id': str(i).zfill(128), 'kind': 'x' * 80, 'sha256': 'e' * 64, 'scenario_is_null': True} for i in range(16)]}
     monkeypatch.setattr(proof_module, 'event_proof', worst_case)
     dense = snapshot_event_index(conn, now)
     assert dense['truncated'] and 0 < len(dense['items']) < 400
@@ -186,7 +186,7 @@ def deletion_fixture():
     source.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
                          'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);'
                          'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body);'
-                         'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body);')
+                         'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body,scenario_id TEXT);')
     context = json.dumps({'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
                           'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False})
     plan = json.dumps({'schema_version': 1, 'action': 'WAIT', 'side': None, 'hard_stop': None, 'chase': None,
@@ -253,7 +253,7 @@ def test_recovery_reference_is_preserved_before_event_deletion():
     recovery = canonical({'kind': 'MODEL_REQUEST', 'prompt': 'x' * 3000, 'calculated_review_version': 1,
                           'input_id': 'fixture'})
     source.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=1', (review,))
-    source.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?)',
+    source.execute('INSERT INTO llm_scenario_recovery_events(event_id,slot,kind,body) VALUES(?,?,?,?)',
                    ('e', 1, 'MODEL_REQUEST', pack(compact(review, recovery, 1, 0))))
     source.commit()
     archived['proof'] = event_proof(source, 1)
@@ -401,7 +401,7 @@ def test_recovery_source_retention_rolls_back_when_lease_is_lost():
                           'input_id': 'fixture'})
     encoded = pack(compact(review, recovery, 1, 0))
     source.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=1', (review,))
-    source.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?)', ('e', 1, 'MODEL_REQUEST', encoded))
+    source.execute('INSERT INTO llm_scenario_recovery_events(event_id,slot,kind,body) VALUES(?,?,?,?)', ('e', 1, 'MODEL_REQUEST', encoded))
     source.commit()
     archived['proof'] = event_proof(source, 1)
     events[0]['body_sha256'] = archived['proof']['events'][0]['sha256']
@@ -431,7 +431,7 @@ def test_recovery_sources_are_retained_without_duplicating_them():
     event_blob = MAGIC + gzip.compress(review.encode(), compresslevel=1, mtime=0)
     ref = pack(compact(review, recovery, 1, 0))
     source.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=1', (event_blob,))
-    source.executemany('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?)',
+    source.executemany('INSERT INTO llm_scenario_recovery_events(event_id,slot,kind,body) VALUES(?,?,?,?)',
                        [('e1', 1, 'MODEL_REQUEST', ref), ('e2', 1, 'MODEL_REQUEST', ref)])
     source.commit()
     archived['proof'] = event_proof(source, 1)
@@ -467,7 +467,7 @@ def test_recovery_keeps_transitive_event_source_and_deletes_unreferenced_event()
     source.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=1 AND sequence=0', (request_text,))
     source.execute('INSERT INTO llm_scenario_review_events(rowid,slot,sequence,body) VALUES(?,?,?,?)', (3, 1, 1, raw_ref))
     source.execute('INSERT INTO llm_scenario_review_events(rowid,slot,sequence,body) VALUES(?,?,?,?)', (4, 1, 2, '{"kind":"RESEARCH_RESULT"}'))
-    source.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?)', ('e', 1, 'MODEL_RAW', recovery_ref))
+    source.execute('INSERT INTO llm_scenario_recovery_events(event_id,slot,kind,body) VALUES(?,?,?,?)', ('e', 1, 'MODEL_RAW', recovery_ref))
     source.commit()
     exporter.execute('UPDATE cursors SET seq=5 WHERE stream=?', ('llm_scenario_review_events',))
     anchor = _anchor_hash('llm_scenario_recovery_events', {'slot': 1, 'kind': 'MODEL_RAW', 'body': recovery_ref}, source)
@@ -504,7 +504,7 @@ def test_noncontiguous_recovery_source_survives_future_archive_scan(tmp_path):
     source.execute('INSERT INTO llm_scenario_review_events(rowid,slot,sequence,body) VALUES(?,?,?,?)',
                    (3, 1, 1, '{"kind":"RESEARCH_RESULT"}'))
     source.execute('INSERT INTO llm_scenario_review_events(rowid,slot,sequence,body) VALUES(?,?,?,?)', (4, 1, 2, review))
-    source.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?)', ('e', 1, 'MODEL_REQUEST', ref))
+    source.execute('INSERT INTO llm_scenario_recovery_events(event_id,slot,kind,body) VALUES(?,?,?,?)', ('e', 1, 'MODEL_REQUEST', ref))
     source.commit()
     exporter.execute('UPDATE cursors SET seq=5 WHERE stream=?', ('llm_scenario_review_events',))
     anchor = _anchor_hash('llm_scenario_recovery_events', {'slot': 1, 'kind': 'MODEL_REQUEST', 'body': ref}, source)
@@ -697,7 +697,7 @@ def test_daily_capacity_uses_real_transactions_without_skipping_anchor(tmp_path,
         conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
                            'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);'
                            'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT,PRIMARY KEY(slot,sequence));'
-                           'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body);'
+                           'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body,scenario_id TEXT);'
                            'CREATE INDEX llm_scenario_recovery_slot_kind ON llm_scenario_recovery_events(slot,kind);')
         conn.executemany('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', [(slot, '{}') for slot in range(1, 290)])
         conn.executemany('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)',
@@ -764,3 +764,35 @@ def test_empty_scanned_page_is_not_reported_as_complete_when_more_remains(tmp_pa
     result = proof_module.cleanup_events(tmp_path, now=700000)
     assert result['status'] == 'MORE_TO_SCAN' and result['more_to_scan'] is True
     assert saved == [index]
+
+
+def test_scenario_free_recovery_delivery_requires_exact_receipt():
+    from utils.btc_review_event_proof import delivered_recovery_proof
+    proof = event_proof(fixture(), 1)
+    row = proof['recovery'][0]
+    identity = 'a' * 64
+    event_id = hashlib.sha256(f'{identity}:llm_scenario_recovery_events:{row["rowid"]}'.encode()).hexdigest()[:32]
+    receipt = {'event_id': event_id, 'event_type': 'btc.research.source', 'source_stream': 'llm_scenario_recovery_events',
+               'source_identity': identity, 'source_kind': row['kind'], 'body_sha256': row['sha256'],
+               'source_rowid': row['rowid'], 'decision_slot': 1}
+    assert delivered_recovery_proof([row], [receipt], identity, 1)
+    assert not delivered_recovery_proof([row], [], identity, 1)
+    assert not delivered_recovery_proof([row], [dict(receipt, body_sha256='0' * 64)], identity, 1)
+    assert not delivered_recovery_proof([dict(row, scenario_is_null=False)], [receipt], identity, 1)
+    assert not delivered_recovery_proof([row], [dict(receipt, decision_slot=True)], identity, 1)
+
+
+def test_recovery_delivery_query_is_bounded_and_read_only(monkeypatch):
+    from types import SimpleNamespace
+    from utils import btc_offsite_archive, btc_review_event_proof as proof_module
+    row = event_proof(fixture(), 1)['recovery'][0]
+    identity = 'a' * 64
+    event_id = hashlib.sha256(f'{identity}:llm_scenario_recovery_events:{row["rowid"]}'.encode()).hexdigest()[:32]
+    monkeypatch.setattr(btc_offsite_archive, 'backend_host', lambda _: 'fixture.local')
+    def execute(command, **kwargs):
+        assert command[0] == '/usr/bin/ssh' and event_id in kwargs['input'] and 'readonly' in kwargs['input']
+        return SimpleNamespace(stdout=json.dumps({'event_id': event_id}) + '\n')
+    monkeypatch.setattr(proof_module.subprocess, 'run', execute)
+    assert proof_module.fetch_recovery_deliveries([row], identity) == [{'event_id': event_id}]
+    with pytest.raises(ValueError, match='recovery_delivery_query_invalid'):
+        proof_module.fetch_recovery_deliveries([{'rowid': '1 OR 1=1'}], identity)

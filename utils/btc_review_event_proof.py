@@ -61,15 +61,16 @@ def event_proof(conn, slot, *, guard=None):
         if size > MAX_BYTES:
             raise ValueError('proof_size_exceeded')
         events.append({'rowid': rowid, 'sequence': sequence, 'sha256': digest})
-    rows = conn.execute('SELECT event_id,kind,body FROM llm_scenario_recovery_events '
+    rows = conn.execute('SELECT rowid,event_id,kind,scenario_id,body FROM llm_scenario_recovery_events '
                         'WHERE slot=? ORDER BY event_id LIMIT ?', (slot, MAX_RECOVERY + 1)).fetchall()
     if len(rows) > MAX_RECOVERY:
         raise ValueError('proof_recovery_count_invalid')
     recovery, seen = [], set()
-    for event_id, kind, stored in rows:
+    for rowid, event_id, kind, scenario_id, stored in rows:
         if guard is not None:
             guard()
-        if (not isinstance(event_id, str) or not 1 <= len(event_id) <= 128 or event_id in seen
+        if (type(rowid) is not int or rowid <= 0 or not isinstance(event_id, str)
+                or not 1 <= len(event_id) <= 128 or event_id in seen
                 or not isinstance(kind, str) or not 1 <= len(kind) <= 80):
             raise ValueError('proof_recovery_identity_invalid')
         seen.add(event_id)
@@ -78,7 +79,8 @@ def event_proof(conn, slot, *, guard=None):
         size += n
         if size > MAX_BYTES:
             raise ValueError('proof_size_exceeded')
-        recovery.append({'event_id': event_id, 'kind': kind, 'sha256': digest})
+        recovery.append({'rowid': rowid, 'event_id': event_id, 'kind': kind, 'sha256': digest,
+                         'scenario_is_null': scenario_id is None})
     return {'slot': slot, 'events': events, 'recovery': recovery}
 
 
@@ -158,7 +160,8 @@ def delivered_event_proof(current, archived, deliveries, source_identity):
         return False
     recovery_ids = []
     for item in recovery:
-        if (not isinstance(item, dict) or set(item) != {'event_id', 'kind', 'sha256'}
+        if (not isinstance(item, dict) or set(item) != {'rowid', 'event_id', 'kind', 'sha256', 'scenario_is_null'}
+                or type(item['rowid']) is not int or item['rowid'] <= 0 or type(item['scenario_is_null']) is not bool
                 or not isinstance(item['event_id'], str) or not 1 <= len(item['event_id']) <= 128
                 or not isinstance(item['kind'], str) or not 1 <= len(item['kind']) <= 80
                 or not isinstance(item['sha256'], str) or not re.fullmatch('[a-f0-9]{64}', item['sha256'])):
@@ -267,6 +270,74 @@ def fetch_event_deliveries(proof, source_identity):
     if len(rows) > 1024 or any(not isinstance(row, dict) or row.get('event_id') not in ids for row in rows):
         raise ValueError('event_delivery_query_invalid')
     return rows
+
+
+def delivered_recovery_proof(rows, deliveries, source_identity, slot):
+    """Require matching delivery receipts for only scenario-free model records."""
+    if (not isinstance(source_identity, str) or not re.fullmatch('[a-f0-9]{64}', source_identity)
+            or type(slot) is not int or slot < 0 or not isinstance(rows, list) or not rows
+            or not isinstance(deliveries, list) or len(rows) != len(deliveries)):
+        return False
+    by_id = {}
+    for receipt in deliveries:
+        if not isinstance(receipt, dict) or not isinstance(receipt.get('event_id'), str) or receipt['event_id'] in by_id:
+            return False
+        by_id[receipt['event_id']] = receipt
+    seen = set()
+    for row in rows:
+        if (not isinstance(row, dict) or type(row.get('rowid')) is not int or row['rowid'] <= 0
+                or row['rowid'] in seen or row.get('kind') not in ('MODEL_REQUEST', 'MODEL_RAW')
+                or row.get('scenario_is_null') is not True or not isinstance(row.get('sha256'), str)
+                or not re.fullmatch('[a-f0-9]{64}', row['sha256'])):
+            return False
+        seen.add(row['rowid'])
+        key = f'{source_identity}:llm_scenario_recovery_events:{row["rowid"]}'
+        event_id = hashlib.sha256(key.encode()).hexdigest()[:32]
+        receipt = by_id.get(event_id)
+        if (not receipt or receipt.get('event_type') != 'btc.research.source'
+                or receipt.get('source_stream') != 'llm_scenario_recovery_events'
+                or receipt.get('source_identity') != source_identity or receipt.get('source_kind') != row['kind']
+                or receipt.get('body_sha256') != row['sha256'] or type(receipt.get('source_rowid')) is not int
+                or receipt['source_rowid'] != row['rowid'] or type(receipt.get('decision_slot')) is not int
+                or receipt['decision_slot'] != slot):
+            return False
+    return True
+
+
+def fetch_recovery_deliveries(rows, source_identity):
+    """Read bounded receipt metadata for recovery model records only."""
+    if (not isinstance(source_identity, str) or not re.fullmatch('[a-f0-9]{64}', source_identity)
+            or not isinstance(rows, list) or not 1 <= len(rows) <= MAX_QUERY_EVENTS):
+        raise ValueError('recovery_delivery_query_invalid')
+    rowids = [row.get('rowid') if isinstance(row, dict) else None for row in rows]
+    if any(type(rowid) is not int or rowid <= 0 for rowid in rowids) or len(set(rowids)) != len(rowids):
+        raise ValueError('recovery_delivery_query_invalid')
+    ids = [hashlib.sha256(f'{source_identity}:llm_scenario_recovery_events:{rowid}'.encode()).hexdigest()[:32]
+           for rowid in rowids]
+    sql = ("SELECT JSONExtractString(Body,'event_id') AS event_id, "
+           "JSONExtractString(Body,'event_type') AS event_type, "
+           "JSONExtractString(Body,'attributes','source_stream') AS source_stream, "
+           "JSONExtractString(Body,'attributes','source_identity') AS source_identity, "
+           "JSONExtractString(Body,'attributes','source_kind') AS source_kind, "
+           "JSONExtractString(Body,'attributes','body_sha256') AS body_sha256, "
+           "JSONExtractInt(Body,'attributes','source_rowid') AS source_rowid, "
+           "JSONExtractInt(Body,'attributes','decision_slot') AS decision_slot "
+           "FROM otel_logs WHERE LogAttributes['event.name']='btc.research.source' "
+           "AND JSONExtractString(Body,'event_id') IN {ids:Array(String)} LIMIT 1025")
+    from pathlib import Path
+    from tools.clickstack_query import build_program
+    from utils.btc_offsite_archive import backend_host
+    host = backend_host(Path('/etc/prism-observability/tunnel.env'))
+    if host is None:
+        raise ValueError('recovery_delivery_backend_missing')
+    result = subprocess.run(['/usr/bin/ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', 'root@' + host,
+                             'set -a; . /etc/prism-observability/reader.env; set +a; python3 -'],
+                            input=build_program(sql, {'ids': ids}), text=True, capture_output=True,
+                            check=True, timeout=45)  # nosec B603  # nosemgrep
+    received = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    if len(received) > 1024 or any(not isinstance(row, dict) or row.get('event_id') not in ids for row in received):
+        raise ValueError('recovery_delivery_query_invalid')
+    return received
 
 
 def _required_event_sequences(conn, slot, recovery_rows):
@@ -432,13 +503,14 @@ def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliv
         if conn.execute('DELETE FROM llm_scenario_review_tapes WHERE rowid=? AND slot=?',
                         (candidate['rowid'], slot)).rowcount != 1:
             raise ValueError('event_delete_source_changed')
-        remaining = conn.execute('SELECT event_id,kind,body FROM llm_scenario_recovery_events '
+        remaining = conn.execute('SELECT rowid,event_id,kind,scenario_id,body FROM llm_scenario_recovery_events '
                                  'WHERE slot=? ORDER BY event_id LIMIT ?', (slot, MAX_RECOVERY + 1)).fetchall()
         recovered = []
-        for event_id, kind, stored in remaining:
+        for rowid, event_id, kind, scenario_id, stored in remaining:
             raw = read_recovery(stored, conn, slot, decode_legacy=review_text, expected_kind=kind)
             digest, _ = _digest(raw)
-            recovered.append({'event_id': event_id, 'kind': kind, 'sha256': digest})
+            recovered.append({'rowid': rowid, 'event_id': event_id, 'kind': kind, 'sha256': digest,
+                              'scenario_is_null': scenario_id is None})
         if recovered != current_proof['recovery']:
             raise ValueError('event_delete_recovery_changed')
         if recovery_anchor is not None:
