@@ -129,3 +129,113 @@ def test_event_index_requires_bound_receipt_and_same_wait_candidate():
     data, ack = encode(altered)
     with pytest.raises(ValueError, match='event_proof_archive_unverified'):
         verified_event_index(data, ack, identity)
+
+
+def deletion_fixture():
+    from observability.btc_scenario_export import _anchor_hash
+    from utils.btc_review_retention import candidates
+    source, exporter = sqlite3.connect(':memory:'), sqlite3.connect(':memory:')
+    source.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
+                         'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);'
+                         'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body);'
+                         'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body);')
+    context = json.dumps({'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
+                          'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False})
+    for slot in (1, 2):
+        source.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (slot, '{}'))
+        source.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)', (slot, '{}', context, '{"action":"WAIT"}', '{"status":"wait"}'))
+        source.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (slot, 0, '{"kind":"MODEL_RAW"}'))
+    source.commit()
+    exporter.executescript('CREATE TABLE meta(key PRIMARY KEY,value);CREATE TABLE cursors(stream PRIMARY KEY,seq);'
+                           'CREATE TABLE anchors(stream PRIMARY KEY,ref);CREATE TABLE outbox(id PRIMARY KEY,body);')
+    identity = 'a' * 64
+    exporter.execute('INSERT INTO meta VALUES(?,?)', ('source_identity', identity))
+    for stream, anchor in (('llm_scenario_review_tapes', {'slot': 2, 'body': '{}'}),
+                           ('llm_scenario_review_events', {'slot': 2, 'sequence': 0, 'body': '{"kind":"MODEL_RAW"}'})):
+        exporter.execute('INSERT INTO cursors VALUES(?,?)', (stream, 2))
+        exporter.execute('INSERT INTO anchors VALUES(?,?)', (stream, _anchor_hash(stream, anchor, source)))
+    exporter.commit()
+    now = 7 * 86400 + 100 * 300
+    candidate = candidates(source, now)['candidates'][0]
+    proof = event_proof(source, 1)
+    tape_id = hashlib.sha256(f'{identity}:llm_scenario_review_tapes:{candidate["rowid"]}'.encode()).hexdigest()[:32]
+    tape = {'event_id': tape_id, 'event_type': 'btc.research.review_tape', 'source_identity': identity,
+            'body_sha256': candidate['tape_sha256'], 'tape_hash_status': 'MATCH'}
+    event = proof['events'][0]
+    event_id = hashlib.sha256(f'{identity}:llm_scenario_review_events:{event["rowid"]}'.encode()).hexdigest()[:32]
+    delivery = {'event_id': event_id, 'event_type': 'btc.research.review', 'source_identity': identity,
+                'body_sha256': event['sha256'], 'source_rowid': event['rowid'],
+                'source_sequence': event['sequence'], 'decision_slot': 1}
+    return source, exporter, {'candidate': candidate, 'proof': proof}, [tape], [delivery], identity, now
+
+
+def test_delete_verified_wait_and_events_preserves_anchor_and_decision():
+    from utils.btc_review_event_proof import delete_confirmed_slot
+    source, exporter, archived, tape, events, identity, now = deletion_fixture()
+    result = delete_confirmed_slot(source, exporter, archived, tape, events, identity, now,
+                                   guard=lambda: True, lease_alive=lambda: True)
+    assert result == {'status': 'REMOVED', 'events': 1}
+    assert source.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(2,)]
+    assert source.execute('SELECT slot FROM llm_scenario_review_events').fetchall() == [(2,)]
+    assert source.execute('SELECT slot FROM llm_scenario_decisions ORDER BY slot').fetchall() == [(1,), (2,)]
+
+
+def test_missing_delivery_or_lost_lease_never_deletes():
+    from utils.btc_review_event_proof import delete_confirmed_slot
+    source, exporter, archived, tape, events, identity, now = deletion_fixture()
+    assert delete_confirmed_slot(source, exporter, archived, tape, [], identity, now,
+                                 guard=lambda: True, lease_alive=lambda: True)['status'] == 'DEFERRED_EVENT_EVIDENCE'
+    checks = iter((True, True, False))
+    with pytest.raises(ValueError, match='event_delete_guard_failed'):
+        delete_confirmed_slot(source, exporter, archived, tape, events, identity, now,
+                              guard=lambda: True, lease_alive=lambda: next(checks))
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone() == (2,)
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_events').fetchone() == (2,)
+
+
+def test_recovery_reference_defers_event_deletion():
+    from utils.btc_review_event_proof import delete_confirmed_slot
+    source, exporter, archived, tape, events, identity, now = deletion_fixture()
+    review = canonical({'kind': 'MODEL_REQUEST', 'prompt': 'x' * 3000})
+    recovery = canonical({'kind': 'MODEL_REQUEST', 'prompt': 'x' * 3000, 'calculated_review_version': 1,
+                          'input_id': 'fixture'})
+    source.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=1', (review,))
+    source.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?)',
+                   ('e', 1, 'MODEL_REQUEST', pack(compact(review, recovery, 1, 0))))
+    source.commit()
+    archived['proof'] = event_proof(source, 1)
+    events[0]['body_sha256'] = archived['proof']['events'][0]['sha256']
+    result = delete_confirmed_slot(source, exporter, archived, tape, events, identity, now,
+                                   guard=lambda: True, lease_alive=lambda: True)
+    assert result == {'status': 'DEFERRED_RECOVERY_REFERENCE'}
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_events').fetchone() == (2,)
+
+
+def test_changed_export_anchor_never_deletes():
+    from utils.btc_review_event_proof import delete_confirmed_slot
+    source, exporter, archived, tape, events, identity, now = deletion_fixture()
+    source.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=2', ('{"kind":"CHANGED"}',))
+    source.commit()
+    with pytest.raises(ValueError, match='event_delete_export_anchor_changed'):
+        delete_confirmed_slot(source, exporter, archived, tape, events, identity, now,
+                              guard=lambda: True, lease_alive=lambda: True)
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone() == (2,)
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_events').fetchone() == (2,)
+
+
+@pytest.mark.parametrize('damage', ['foreign_key', 'missing_anchor'])
+def test_unknown_dependency_or_missing_anchor_never_deletes(damage):
+    from utils.btc_review_event_proof import delete_confirmed_slot
+    source, exporter, archived, tape, events, identity, now = deletion_fixture()
+    if damage == 'foreign_key':
+        source.execute('CREATE TABLE other_evidence(ref INTEGER REFERENCES llm_scenario_review_tapes(slot))')
+    else:
+        source.execute('DELETE FROM llm_scenario_review_events WHERE slot=2')
+        exporter.execute("UPDATE anchors SET ref=NULL WHERE stream='llm_scenario_review_events'")
+    source.commit()
+    exporter.commit()
+    with pytest.raises(ValueError, match='event_delete_schema_unsupported|event_delete_export_anchor_changed'):
+        delete_confirmed_slot(source, exporter, archived, tape, events, identity, now,
+                              guard=lambda: True, lease_alive=lambda: True)
+    assert source.execute('SELECT slot FROM llm_scenario_review_tapes ORDER BY slot').fetchall() == [(1,), (2,)]
+    assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_events WHERE slot=1').fetchone() == (1,)

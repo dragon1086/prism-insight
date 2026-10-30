@@ -185,3 +185,91 @@ def verified_event_index(manifest_bytes, ack, source_identity):
     if seen != sorted(set(seen)):
         raise ValueError('event_proof_archive_unverified')
     return index
+
+
+def delete_confirmed_slot(conn, exporter, archived, tape_deliveries, event_deliveries,
+                          source_identity, now, *, guard, lease_alive):
+    """Atomically delete one verified flat WAIT and its events under a held archive lease.
+
+    This is not a standalone authority: the caller must validate archived using
+    verified_event_index while holding the matching verified remote archive lease.
+    Recovery references remain untouched, so slots containing one are deferred.
+    """
+    from observability.btc_scenario_export import _anchor_hash
+    from utils.btc_recovery_references import MAGIC as RECOVERY_MAGIC
+    from utils.btc_review_retention import candidates, matching_evidence
+
+    if (conn.in_transaction or exporter.in_transaction or not callable(guard) or not callable(lease_alive)
+            or not isinstance(archived, dict) or set(archived) != {'candidate', 'proof'}
+            or not isinstance(archived['candidate'], dict) or not isinstance(archived['proof'], dict)):
+        raise ValueError('event_delete_context_invalid')
+    if guard() is not True or lease_alive() is not True:
+        raise ValueError('event_delete_guard_failed')
+    candidate, proof = archived['candidate'], archived['proof']
+    slot = candidate.get('slot')
+    if type(slot) is not int or slot < 0 or proof.get('slot') != slot:
+        raise ValueError('event_delete_context_invalid')
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        exporter.execute('BEGIN IMMEDIATE')
+        triggers = conn.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' "
+                                "AND tbl_name IN ('llm_scenario_review_tapes','llm_scenario_review_events') LIMIT 1").fetchone()
+        if triggers or conn.execute('PRAGMA foreign_keys').fetchone() != (0,):
+            raise ValueError('event_delete_schema_unsupported')
+        tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
+        for (table,) in tables:
+            if any(row[0] in ('llm_scenario_review_tapes', 'llm_scenario_review_events') for row in
+                   conn.execute('SELECT "table" FROM pragma_foreign_key_list(?)', (table,))):
+                raise ValueError('event_delete_schema_unsupported')
+        identity = exporter.execute("SELECT value FROM meta WHERE key='source_identity'").fetchone()
+        pending = exporter.execute('SELECT COUNT(*) FROM outbox').fetchone()[0]
+        if not identity or identity[0] != source_identity or pending:
+            raise ValueError('event_delete_export_state_invalid')
+        cursors = {}
+        for stream in ('llm_scenario_review_tapes', 'llm_scenario_review_events'):
+            cursor = exporter.execute('SELECT seq FROM cursors WHERE stream=?', (stream,)).fetchone()
+            saved = exporter.execute('SELECT ref FROM anchors WHERE stream=?', (stream,)).fetchone()
+            if not cursor or type(cursor[0]) is not int or cursor[0] <= 0 or not saved:
+                raise ValueError('event_delete_export_state_invalid')
+            if stream == 'llm_scenario_review_tapes':
+                row = conn.execute('SELECT slot,body FROM llm_scenario_review_tapes WHERE rowid=?', (cursor[0],)).fetchone()
+                anchor = {'slot': row[0], 'body': row[1]} if row else None
+            else:
+                row = conn.execute('SELECT slot,sequence,body FROM llm_scenario_review_events WHERE rowid=?', (cursor[0],)).fetchone()
+                anchor = {'slot': row[0], 'sequence': row[1], 'body': row[2]} if row else None
+            if anchor is None or not isinstance(saved[0], str) or _anchor_hash(stream, anchor, conn) != saved[0]:
+                raise ValueError('event_delete_export_anchor_changed')
+            cursors[stream] = cursor[0]
+        current = candidates(conn, now, after_slot=slot - 1, limit=1)['candidates']
+        if (not current or current[0] != candidate or
+                matching_evidence({'candidates': current}, {'candidates': [candidate]},
+                                  tape_deliveries, source_identity) != [candidate] or
+                candidate['rowid'] >= cursors['llm_scenario_review_tapes']):
+            return {'status': 'DEFERRED_TAPE_EVIDENCE'}
+        current_proof = event_proof(conn, slot)
+        if (not delivered_event_proof(current_proof, proof, event_deliveries, source_identity)
+                or any(event['rowid'] >= cursors['llm_scenario_review_events'] for event in current_proof['events'])):
+            return {'status': 'DEFERRED_EVENT_EVIDENCE'}
+        recovery_rows = conn.execute('SELECT body FROM llm_scenario_recovery_events WHERE slot=? LIMIT ?',
+                                     (slot, MAX_RECOVERY + 1)).fetchall()
+        if any(isinstance(row[0], bytes) and row[0].startswith(RECOVERY_MAGIC) for row in recovery_rows):
+            return {'status': 'DEFERRED_RECOVERY_REFERENCE'}
+        if guard() is not True or lease_alive() is not True:
+            raise ValueError('event_delete_guard_failed')
+        for event in current_proof['events']:
+            changed = conn.execute('DELETE FROM llm_scenario_review_events WHERE rowid=? AND slot=? AND sequence=?',
+                                   (event['rowid'], slot, event['sequence'])).rowcount
+            if changed != 1:
+                raise ValueError('event_delete_source_changed')
+        if conn.execute('DELETE FROM llm_scenario_review_tapes WHERE rowid=? AND slot=?',
+                        (candidate['rowid'], slot)).rowcount != 1:
+            raise ValueError('event_delete_source_changed')
+        if guard() is not True or lease_alive() is not True:
+            raise ValueError('event_delete_guard_failed')
+        conn.commit()
+        return {'status': 'REMOVED', 'events': len(current_proof['events'])}
+    finally:
+        if conn.in_transaction:
+            conn.rollback()
+        if exporter.in_transaction:
+            exporter.rollback()
