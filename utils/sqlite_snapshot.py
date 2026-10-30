@@ -218,10 +218,17 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
                         event_proof_index = snapshot_event_index(index_conn, int(started), after_slot=after_slot,
                                                                  guard=proof_guard)
                         event_proof_status = 'CAPTURED'
-                    except (ValueError, sqlite3.Error, TimeoutError):
+                    except Exception as exc:
+                        # This optional index must not prevent the verified database backup.
+                        logging.getLogger(__name__).warning('snapshot_stage=event_proof_unavailable type=%s',
+                                                           type(exc).__name__)
                         event_proof_status = 'UNAVAILABLE'
                     finally:
-                        index_conn.rollback()
+                        try:
+                            index_conn.rollback()
+                        except sqlite3.Error:
+                            event_proof_index = None
+                            event_proof_status = 'UNAVAILABLE'
             progress(None, None, None)
             reference_scan = {'commits': commits, 'coverage': coverage}
         logging.getLogger(__name__).info('snapshot_stage=compress')

@@ -10,7 +10,7 @@ import pytest
 from utils.sqlite_snapshot import backup_database
 
 
-def test_optional_event_proof_failure_preserves_verified_backup(tmp_path, monkeypatch):
+def test_optional_event_proof_failure_preserves_verified_backup(tmp_path, monkeypatch, caplog):
     source, destination = tmp_path / 'source.sqlite', tmp_path / 'snapshot.gz'
     context = {'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
                'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False}
@@ -38,6 +38,13 @@ def test_optional_event_proof_failure_preserves_verified_backup(tmp_path, monkey
                             capture_review_event_proof=True)
     assert timed['decompression_verified'] is True and timed['btc_review_event_proof_status'] == 'UNAVAILABLE'
     assert 'btc_review_event_proof_index' not in timed
+    def unexpected(*_args, **_kwargs):
+        raise RuntimeError('private fixture content')
+    monkeypatch.setattr(btc_review_event_proof, 'snapshot_event_index', unexpected)
+    fallback = backup_database(source, tmp_path / 'unexpected.gz', reserve_bytes=0, capture_references=True,
+                               capture_review_event_proof=True)
+    assert fallback['decompression_verified'] is True and fallback['btc_review_event_proof_status'] == 'UNAVAILABLE'
+    assert 'btc_review_event_proof_index' not in fallback and 'private fixture content' not in caplog.text
 
 
 def test_sparse_scan_only_punches_complete_zero_blocks(tmp_path, monkeypatch):
