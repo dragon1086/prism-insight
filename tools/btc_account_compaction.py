@@ -178,3 +178,53 @@ def plan_attested_accounts(proof_path, cutoff, *, after_rowid=0, limit=1000):
     def planner(conn, identity, *, after_rowid):
         return plan_old_accounts(conn, identity, cutoff, after_rowid=after_rowid, limit=limit)
     return plan_pairs_from_attestation(proof_path, after_rowid=after_rowid, planner=planner)
+
+
+def run_bounded_batches(proof_path, cutoff, planner, apply, *, after_rowid=0, max_batches=10):
+    """No retries or waits: stop on a changed backup, deferred guard or batch cap."""
+    if (not callable(planner) or not callable(apply) or type(after_rowid) is not int or after_rowid < 0
+            or type(max_batches) is not int or not 1 <= max_batches <= 10):
+        raise ValueError('invalid_batch_run')
+    import time
+    previous = receipt = None
+    totals = {'updated': 0, 'unchanged': 0, 'saved_bytes': 0, 'batches': 0}
+    deadline = time.monotonic() + 20
+    for _ in range(max_batches):
+        if time.monotonic() >= deadline:
+            return {'status': 'DEADLINE_REACHED', 'after_rowid': after_rowid, **totals}
+        try:
+            manifest = planner(proof_path, cutoff, after_rowid=after_rowid)
+            if (not isinstance(manifest, dict)
+                    or set(manifest) != {'source_identity', 'cutoff', 'after_rowid', 'rows', 'backup_proof_sha256'}
+                    or manifest['cutoff'] != cutoff or manifest['after_rowid'] != after_rowid
+                    or not isinstance(manifest['rows'], list)
+                    or not isinstance(manifest['source_identity'], str)
+                    or not re.fullmatch('[a-f0-9]{64}', manifest['source_identity'])
+                    or not isinstance(manifest['backup_proof_sha256'], str)
+                    or not re.fullmatch('[a-f0-9]{64}', manifest['backup_proof_sha256'])):
+                raise ValueError('planner_result_invalid')
+            if previous is not None:
+                verify_next_batch(previous, receipt, manifest)
+            if not manifest.get('rows'):
+                return {'status': 'COMPLETE', 'after_rowid': after_rowid, **totals}
+            seal = manifest_sha256(manifest)
+            receipt = apply(manifest, seal, manifest['backup_proof_sha256'])
+            if not isinstance(receipt, dict) or receipt.get('manifest_sha256') != seal:
+                raise ValueError('batch_receipt_invalid')
+            if receipt.get('status') == 'DEFERRED':
+                if receipt.get('updated', 0) != 0 or receipt.get('saved_bytes', 0) != 0:
+                    raise ValueError('batch_receipt_invalid')
+                return {'status': 'DEFERRED', 'after_rowid': after_rowid, **totals}
+            if (receipt.get('status') != 'COMMITTED' or type(receipt.get('updated')) is not int
+                    or type(receipt.get('unchanged')) is not int or type(receipt.get('saved_bytes')) is not int
+                    or min(receipt['updated'], receipt['unchanged'], receipt['saved_bytes']) < 0
+                    or receipt['updated'] + receipt['unchanged'] != len(manifest['rows'])):
+                raise ValueError('batch_receipt_invalid')
+            for name in ('updated', 'unchanged', 'saved_bytes'):
+                totals[name] += receipt[name]
+            totals['batches'] += 1
+            after_rowid = manifest['rows'][-1]['rowid']
+            previous = manifest
+        except Exception as exc:
+            return {'status': 'ERROR', 'error_type': type(exc).__name__, 'after_rowid': after_rowid, **totals}
+    return {'status': 'LIMIT_REACHED', 'after_rowid': after_rowid, **totals}

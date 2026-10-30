@@ -313,3 +313,55 @@ def test_interruption_after_commit_retries_without_changing_source(tmp_path):
         result = compact_file_batch(recovered, manifest, 604803, lambda:True)
         assert result['updated'] == 0 and result['unchanged'] == 1
         assert review_text(recovered.execute('SELECT body FROM llm_scenario_broker_evidence').fetchone()[0]) == raw
+
+
+def test_bounded_batch_runner_stops_on_defer_and_preserves_completed_cursor():
+    from tools.btc_account_compaction import run_bounded_batches
+    calls = []
+    def planner(proof, cutoff, *, after_rowid):
+        return {'source_identity':'a'*64, 'backup_proof_sha256':'b'*64, 'cutoff':cutoff,
+                'after_rowid':after_rowid, 'rows':[{'rowid':after_rowid+1}]}
+    def apply(manifest, seal, proof_sha):
+        calls.append(manifest['after_rowid'])
+        if len(calls) == 2:
+            return {'status':'DEFERRED','manifest_sha256':seal}
+        return {'status':'COMMITTED','manifest_sha256':seal,'updated':1,'unchanged':0,'saved_bytes':10}
+    result = run_bounded_batches('proof', 3, planner, apply)
+    assert result == {'status':'DEFERRED','after_rowid':1,'updated':1,'unchanged':0,'saved_bytes':10,'batches':1}
+    assert calls == [0,1]
+
+
+def test_bounded_batch_runner_rejects_changed_proof_and_unbound_receipt():
+    from tools.btc_account_compaction import run_bounded_batches
+    def planner(proof, cutoff, *, after_rowid):
+        return {'source_identity':'a'*64, 'backup_proof_sha256':('b' if not after_rowid else 'c')*64,
+                'cutoff':cutoff,'after_rowid':after_rowid,'rows':[{'rowid':after_rowid+1}]}
+    def apply(manifest, seal, proof_sha):
+        return {'status':'COMMITTED','manifest_sha256':seal,'updated':1,'unchanged':0,'saved_bytes':10}
+    result = run_bounded_batches('proof', 3, planner, apply)
+    assert result['status'] == 'ERROR' and result['after_rowid'] == 1 and result['updated'] == 1
+    def bad_apply(manifest, seal, proof_sha):
+        return {'status':'COMMITTED','manifest_sha256':'0'*64,'updated':1,'unchanged':0,'saved_bytes':10}
+    result = run_bounded_batches('proof', 3, planner, bad_apply)
+    assert result['status'] == 'ERROR' and result['after_rowid'] == 0
+
+
+def test_bounded_batch_runner_does_not_treat_unverified_empty_plan_as_complete():
+    from tools.btc_account_compaction import run_bounded_batches
+    def bad_planner(proof, cutoff, *, after_rowid):
+        return {'cutoff':cutoff, 'after_rowid':after_rowid, 'rows':[]}
+    result = run_bounded_batches('proof', 3, bad_planner, lambda *args: None)
+    assert result['status'] == 'ERROR' and result['after_rowid'] == 0
+
+
+def test_bounded_batch_runner_respects_batch_cap_without_waiting():
+    from tools.btc_account_compaction import run_bounded_batches
+    calls = []
+    def planner(proof, cutoff, *, after_rowid):
+        return {'source_identity':'a'*64, 'backup_proof_sha256':'b'*64, 'cutoff':cutoff,
+                'after_rowid':after_rowid, 'rows':[{'rowid':after_rowid+1}]}
+    def apply(manifest, seal, proof_sha):
+        calls.append(1)
+        return {'status':'COMMITTED','manifest_sha256':seal,'updated':1,'unchanged':0,'saved_bytes':10}
+    result = run_bounded_batches('proof', 3, planner, apply, max_batches=1)
+    assert result['status'] == 'LIMIT_REACHED' and result['after_rowid'] == 1 and calls == [1]
