@@ -97,13 +97,10 @@ def test_sell_has_one_composite_interpretation_and_no_clock_finality(prompts):
     ):
         assert obsolete not in sell
     assert ("모두 충족" if language == "ko" else "ALL three required") in sell
-    if market == "KR":
-        assert "BAR_FINALITY_UNKNOWN" in sell
-        assert ("장 마감 전에 수집한 값은 마감 후 읽어도 미완성" if language == "ko"
-                else "A pre-close capture remains unfinished even if read after close") in sell
-    else:
-        assert ("마감 전 수집 캐시는 시간이 지났다고 확정되지" if language == "ko"
-                else "Current quotes may describe holdings but cannot satisfy") in sell
+    # 2026-10-30 user decision: the afternoon review's price stands in for today's close (as the afternoon
+    # screening assumes), but a pre-close capture read with tools is still never called a confirmed close.
+    assert ("오늘 종가로 간주" if language == "ko" else "counts as today's close") in sell
+    assert ("확정 종가라고 부르지는 마십시오" if language == "ko" else "read with tools a confirmed close") in sell
 
 
 INITIALIZED_PROMPTS = INITIALIZATION_SCRIPT.split("async def main():", 1)[0] + r'''

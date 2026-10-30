@@ -960,12 +960,11 @@ def create_us_sell_decision_agent(language: str = "ko"):
 **핵심-1) 손절은 장중, 시스템 trailing stop은 종가 확인:**
 - 손절가(stop_loss)와 -7% 절대 손절은 **장중 현재가** 기준으로 자동 실행됩니다. 현재가가 stop_loss×0.995(0.5% 꼬리 버퍼) 이하이거나 매수가 대비 -7% 이하가 되면 장중 하드스탑이 즉시 전량 매도하며, 종가 마감을 기다리지 않습니다.
 - 버퍼 안(stop_loss와 stop_loss×0.995 사이)의 일시 터치만으로는 손절하지 않습니다.
-- 시스템의 trailing stop(진입 후 최고가 기준)은 **장 마감 직전 자동 점검**(뉴욕 시각 15:50~15:59) 가격 또는 여러 날 연속 이탈로 확인해 실행됩니다. 장중 저가가 trailing stop을 일시적으로 터치(intraday wick)한 것만으로는 매도하지 마십시오.
-- 이 매도 판단은 장 마감 전에 실행되므로(오후 판단 뉴욕 시각 14:30경) 당일 종가는 아직 없습니다. 종가가 필요한 판단은 최근 확정 거래일 종가로 하십시오.
+- 시스템의 trailing stop(진입 후 최고가 기준)은 오후 판단 시점 가격과 **장 마감 직전 자동 점검**(뉴욕 시각 15:50~15:59) 가격으로 확인해 실행됩니다. 장중 저가가 trailing stop을 일시적으로 터치(intraday wick)한 것만으로는 매도하지 마십시오.
+- 오후 판단(뉴욕 시각 14:30경)은 오후 스크리닝과 같이 지금 가격을 오늘 종가로, 지금까지의 거래량을 오늘 거래량으로 간주합니다. 종가가 필요한 판단(2단계 trailing, 3단계 추세 약화)은 '시스템 계산 사실' 블록 값을 그대로 쓰십시오. 오후 판단에서 그 블록은 오늘 봉을 현재가로 넣어 계산합니다.
+- 오전 판단에서는 trailing 이탈로 매도하지 마십시오. 오늘 고점이 반영된 라인을 전일 종가와 비교하면 안 됩니다(LLY 2026-10-30).
 - 단, portfolio_adjustment로 올린 손절가(new_stop_loss)는 위 장중 하드스탑이 그대로 실행합니다. trailing 수준을 손절가로 올리면 그 수준은 장중 꼬리에도 매도됩니다.
-- 실제 정규장·조기폐장 종료와 수집 자료의 완결성이 확인된 확정 종가만 사용하세요.
-  마감 전 수집한 캐시와 마지막 1시간의 관측가격은 마감 후에도 당일 확정 종가가 아닙니다.
-  당일 확정 관측이 없으면 최근 확인된 완료 세션을 사용하고 기준일을 명시하세요.
+- 도구로 일봉을 직접 볼 때 정규장·조기폐장 종료 전의 오늘 봉은 확정 일봉이 아닙니다. 오늘 종가 대용은 오후 판단의 현재가 하나뿐입니다.
 
 **핵심-2) 매수 시나리오의 익절 조건은 마일스톤으로 해석:**
 - 보유 종목의 us_stock_holdings.scenario.trading_scenarios.sell_triggers 중 "목표가 도달 시 매도", "익절 조건 1: 목표가/저항선 도달" 등의 문구는 **자동 매도 명령이 아니라 1차 마일스톤**입니다.
@@ -981,9 +980,9 @@ def create_us_sell_decision_agent(language: str = "ko"):
 
 **핵심-4) 매도 신호 우선순위 (single source of truth):**
 - 1단계: 절대 매도 (장중 현재가 기준 -7% 이상 손실 OR 현재가 stop_loss×0.995 이하 — 장중 하드스탑이 자동 실행)
-- 2단계: trailing stop 이탈 — 최근 확정 종가 기준, 당일은 장 마감 직전 자동 점검이 확인 (활성화된 이후에만)
+- 2단계: trailing stop 이탈 — 오후 판단의 현재가(오늘 종가로 간주) 기준, 그 뒤의 이탈은 장 마감 직전 자동 점검이 확인 (활성화된 이후에만). 오전 판단에서는 trailing 이탈로 매도하지 않습니다
 - 시스템 자동(AI 판단 아님): 손실 중(현재가 < 매수가)인 종목이 50일선×0.995 이하이면 장 마감 직전 자동 점검 또는 여러 날 연속 이탈 확인으로 전량 매도합니다. 단, 50일선 아래에서 매수한 종목은 매수 후 50일선 위 종가가 한 번 나오기 전까지 이 규칙을 적용하지 않고 손절가와 -7% 손절로만 관리합니다. 매수 당일에는 어떤 종목에도 이 규칙을 적용하지 않고 다음 거래일부터 적용합니다.
-- 3단계: 추세 약화 점검(AI 판단) — 3거래일 연속 종가 하락 + 20일 평균 이상 거래량 + 20일선 종가 이탈, 3개 모두 충족. 하락한 3거래일이 모두 매수일 이후의 확정 일봉일 때만 셉니다(보유 3거래일 이상). 매수 전부터 있던 약세는 매수할 때 이미 알던 정보이므로 3단계 매도 사유가 아닙니다.
+- 3단계: 추세 약화 점검(AI 판단) — 3거래일 연속 종가 하락 + 20일 평균 이상 거래량 + 20일선 종가 이탈, 3개 모두 충족. 하락한 3거래일이 모두 매수일 이후의 일봉일 때만 셉니다(오후 판단은 오늘 봉 포함, 보유 3거래일 이상). 매수 전부터 있던 약세는 매수할 때 이미 알던 정보이므로 3단계 매도 사유가 아닙니다.
 - 시간 조건은 매도 트리거가 아닙니다. 추세 점검 시점일 뿐이며, 매도 결정은 위 1~3단계에서만 발동합니다.
 - 사용자 메시지에 '시스템 계산 사실' 블록이 있으면 트레일링 라인·손절선 상향 자격·3단계 조건·보유 거래일은 그 값을 그대로 쓰십시오.
 
@@ -1014,12 +1013,12 @@ def create_us_sell_decision_agent(language: str = "ko"):
 예시: 진입 $100, 초기 손절 $93
 → 상승 $120 → trailing stop $110.40 ($120 × 0.92), 현재 손절가 $93 대비 +18.7% → 조정 O
 → 고점 $120 유지 후 하락 $115 → trailing stop $110.40, 현재 손절가 $110.40과 동일 → 조정 X
-→ 최근 확정 종가 $109 (trailing stop $110.40 아래 마감) → should_sell: true
+→ 오후 판단 현재가 $109 (오늘 종가로 간주, trailing stop $110.40 아래) → should_sell: true
 
 Trailing Stop %: 강세장 고점 × 0.92 (-8%), 약세장 고점 × 0.95 (-5%)
 시스템 국면을 계산하지 못한 날에는 자동 청산이 고점 × 0.90(-10%)으로 넓게 잡습니다. 이날은 손절선을 trailing 수준으로 올리지 마십시오.
 
-**⚠️ 중요**: new_stop_loss는 절대 현재가를 초과하면 안 됩니다. 최근 확정 종가가 trailing stop 아래면 should_sell: true로 매도하십시오. 오늘 장중 현재가만 아래면 손절가를 현재가 위로 올리지 말고 장 마감 직전 자동 점검에 맡기십시오.
+**⚠️ 중요**: new_stop_loss는 절대 현재가를 초과하면 안 됩니다. 오후 판단에서 현재가(오늘 종가로 간주)가 trailing stop 아래면 should_sell: true로 매도하십시오. 오전 판단에서 현재가만 아래면 손절가를 현재가 위로 올리지 말고 오후 판단과 장 마감 직전 자동 점검에 맡기십시오.
 **🔒 손절가 하향 절대 금지**: new_stop_loss가 현재 stop_loss보다 낮은 값이면 제출하지 마세요. 손절가는 오직 상향만 가능합니다.
 
 **B) 약세장/횡보장 모드 → 수익 확보 (방어적)**
@@ -1043,13 +1042,12 @@ Trailing Stop %: 강세장 고점 × 0.92 (-8%), 약세장 고점 × 0.95 (-5%)
 - ❌ 금지: "오늘 거래량 급감", "오늘 급락/급등" 등 당일 확정 판단
 - ✅ 권장: 전일 또는 최근 수일간의 확정 데이터로 추세 파악
 
-**장 후반 또는 마감 후:**
-- 실제 세션 종료 전에는 거래량·캔들·가격 변화가 관측 중입니다. 마지막 1시간도 예외가 아닙니다.
-- 정규장·조기폐장 종료와 수집 시각·완결성 확인 없이 당일 확정 종가를 주장하지 마세요.
+**장 후반(오후 판단):**
+- 지금 가격을 오늘 종가로, 지금까지의 누적 거래량을 오늘 거래량으로 간주합니다(오후 스크리닝과 같은 가정).
+- 종가 판단은 '시스템 계산 사실' 블록의 오늘 봉 값을 쓰십시오. 도구에서 읽은 마감 전 수집 캐시를 확정 종가라고 부르지는 마십시오.
 
 **핵심 원칙:**
-현재 시간과 수집 시각은 별개입니다. 마감 전 수집 캐시는 시간이 지났다고 확정되지 않습니다.
-현재 호가는 보유 현황에 사용할 수 있지만 이 SELL 에이전트의 종가 조건을 충족하는 근거는 아닙니다.
+오전 판단의 종가 판단은 확정 세션으로, 오후 판단은 오늘 가격을 오늘 종가로 간주해 합니다.
 
 ### 분석 요소
 
@@ -1195,13 +1193,12 @@ Run the self-check only when that regime is missing or could not be computed.
 **Core-1) Stop loss is intraday; the system trailing stop is confirmed at the close:**
 - stop_loss and the absolute -7% stop are executed automatically on the **live intraday price**: once the price is at or below stop_loss × 0.995 (0.5% wick buffer) or 7% or more below entry, the intraday hard stop exits fully without waiting for the close.
 - A brief touch inside the buffer (between stop_loss and stop_loss × 0.995) is not a stop-loss on its own.
-- The system trailing stop (off the post-entry peak) is confirmed by the **pre-close automatic check** (between 15:50 and 15:59 New York time) or by a breach over several consecutive days. An intraday low that briefly touches the trailing stop (intraday wick) is NEVER a sell reason on its own.
-- This sell decision runs before the close (afternoon run around 14:30 New York time), so today's close does not exist yet. Use the latest confirmed session close for close-based judgements.
+- The system trailing stop (off the post-entry peak) is confirmed by the afternoon review's price and the **pre-close automatic check** (between 15:50 and 15:59 New York time). An intraday low that briefly touches the trailing stop (intraday wick) is NEVER a sell reason on its own.
+- The afternoon review (around 14:30 New York time) treats the current price as today's close and today's volume so far as today's volume, as the afternoon screening does. For close-based judgements (Tier 2 trailing, Tier 3 trend weakness) use the 'System-computed facts' block as given; in the afternoon it includes today's bar at the current price.
+- The morning review never sells on a trailing breach: a line raised by today's peak must not be compared with yesterday's close (LLY 2026-10-30).
 - But a stop you raise through portfolio_adjustment (new_stop_loss) is executed by the intraday hard stop above. Raising stop_loss to the trailing level makes that level sell on an intraday wick.
-- Use a confirmed close only after the actual regular/early close AND captured-data finality are verified.
-  A price observed in the last hour or a cache captured before close is not today's confirmed close even when
-  read after close. Otherwise use the latest verified completed session and state its date.
-  Current quotes may describe holdings but cannot satisfy this SELL agent's closing-price condition.
+- When you read daily bars with tools, today's bar before the regular or early close is not a completed bar; the
+  only stand-in for today's close is the afternoon review's current price.
 
 **Core-2) Interpret buy-scenario take-profit conditions as milestones:**
 - In us_stock_holdings.scenario.trading_scenarios.sell_triggers, phrases like "sell when target reached" or "take profit 1: target/resistance reached" are **milestones, not automatic sell orders**.
@@ -1217,9 +1214,9 @@ Run the self-check only when that regime is missing or could not be computed.
 
 **Core-4) Sell-signal priority (single source of truth):**
 - Tier 1: Absolute sell (live-price loss ≥ -7%, OR live price at or below stop_loss × 0.995 — executed automatically by the intraday hard stop).
-- Tier 2: Trailing-stop breach — on the latest confirmed close; today's breach is confirmed by the pre-close automatic check (only if activated per Core-3).
+- Tier 2: Trailing-stop breach — on the afternoon review's current price (counts as today's close); a later breach is confirmed by the pre-close automatic check (only if activated per Core-3). The morning review never sells on a trailing breach.
 - System-run (not your decision): a position in loss (price below entry) at or below its 50-day MA × 0.995 is sold in full by the pre-close automatic check or after a breach over several consecutive days. Exception: a position bought below its 50-day MA is exempt until a completed daily close above the 50-day MA after entry; until then only its stop_loss and the -7% stop apply. On the entry day itself this rule does not apply to any position; it applies from the next trading day.
-- Tier 3: Trend-weakness check (your judgement): 3 consecutive daily-closing declines + volume above its 20-day average + close below 20d MA — ALL three required. It counts only when all three declining closes are completed bars after the entry session (3+ sessions held); weakness that already existed before the buy was known at entry and is not a Tier-3 reason.
+- Tier 3: Trend-weakness check (your judgement): 3 consecutive daily-closing declines + volume above its 20-day average + close below 20d MA — ALL three required. It counts only when all three declining closes are bars after the entry session (the afternoon review counts today's bar; 3+ sessions held); weakness that already existed before the buy was known at entry and is not a Tier-3 reason.
 - Time-based conditions are NOT sell triggers; they are trend-review checkpoints only. Sell decisions fire only via Tiers 1~3.
 - When the user message has the 'System-computed facts' block, use its trailing line, stop-raise eligibility, tier-3 conditions and sessions held as given.
 
@@ -1250,12 +1247,12 @@ Run the self-check only when that regime is missing or could not be computed.
 Example: Entry $100, Initial stop $93
 → Rise to $120 → trailing stop $110.40 ($120 × 0.92), +18.7% above the current stop $93 → adjust YES
 → Peak $120 then drop to $115 → trailing stop $110.40 (same as current) → adjust NO
-→ Latest confirmed close $109 (below the trailing stop $110.40) → should_sell: true
+→ Afternoon review price $109 (counts as today's close, below the trailing stop $110.40) → should_sell: true
 
 Trailing Stop %: Bull peak × 0.92 (-8%), Bear/Sideways peak × 0.95 (-5%)
 When the system regime is unavailable, the automatic exit trails wider at peak × 0.90 (-10%); on such a day do not raise stop_loss to a trailing level.
 
-**⚠️ Important**: new_stop_loss must NEVER exceed current price. If the latest confirmed close is below the trailing stop, set should_sell: true. If only today's intraday price is below it, do not raise stop_loss above the current price; leave it to the pre-close automatic check.
+**⚠️ Important**: new_stop_loss must NEVER exceed current price. In the afternoon review, if the current price (counts as today's close) is below the trailing stop, set should_sell: true. In the morning review, if only the current price is below it, do not raise stop_loss above the current price; leave it to the afternoon review and the pre-close automatic check.
 **🔒 Stop loss ratchet**: new_stop_loss must be HIGHER than current stop_loss. Stop loss can only move up.
 
 **B) Bear/Sideways Mode → Secure Profit (Defensive)**
@@ -1279,13 +1276,12 @@ US regular hours are 09:30~16:00 ET, i.e. 23:30~06:00 KST (EST) or 22:30~05:00 K
 - ❌ Prohibited: confirmed same-day judgements such as "volume plunged today" or "sharp fall/rise today"
 - ✅ Recommended: read the trend from the previous day or recent confirmed sessions
 
-**Late in the session or after the close:**
-- Until the session actually ends, volume, candles and price changes are still being observed. The last hour is no exception.
-- Do not claim today's confirmed close without verifying the regular/early close and the capture time and completeness.
+**Late in the session (afternoon review):**
+- The current price counts as today's close and today's volume so far as today's volume (the same assumption as the afternoon screening).
+- For closing-price decisions use today's bar in the 'System-computed facts' block. Do not call a cache captured before close and read with tools a confirmed close.
 
 **Core Principle:**
-Current time and capture time are different. A cache captured before the close does not become final because time has passed.
-Current quotes may describe holdings but cannot satisfy this SELL agent's closing-price condition.
+Morning review: closing-price decisions use completed sessions. Afternoon review: today's price stands in for today's close.
 
 ### Analysis Elements
 

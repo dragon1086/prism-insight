@@ -39,8 +39,11 @@ def test_trailing_close_confirmed_but_raised_stop_runs_intraday(prompts):
     # must not tell the AI to sell on an intraday-only trailing breach.
     for key, text in prompts.items():
         assert ("장 마감 직전 자동 점검" in text) or ("pre-close automatic check" in text), key
-        # the AI sell run is before the close (KR 14:46, US 14:30 ET): it never has today's close
-        assert ("당일 종가는 아직 없습니다" in text) or ("today's close does not exist yet" in text), key
+        # 2026-10-30 user decision: the afternoon review's price counts as today's close; the morning review
+        # never sells on a trailing breach (LLY: a line from today's peak was compared with yesterday's close)
+        assert ("지금 가격을 오늘 종가로" in text) or ("treats the current price as today's close" in text), key
+        assert ("오전 판단에서는 trailing 이탈로 매도하지 마십시오" in text) or (
+            "The morning review never sells on a trailing breach" in text), key
         assert ("장중 하드스탑이 그대로 실행" in text) or ("executed by the intraday hard stop above" in text), key
         assert "trailing stop > 현재가이면 should_sell" not in text, key
         assert "If trailing stop > current price, set should_sell" not in text, key
