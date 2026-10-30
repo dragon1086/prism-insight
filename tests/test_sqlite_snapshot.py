@@ -308,7 +308,8 @@ def test_missing_main_db_stops_retention_of_older_backups(tmp_path):
 
 
 @pytest.mark.parametrize('archive_success', [True, False])
-def test_backup_records_archive_ack_and_preserves_old_on_failure(tmp_path, archive_success):
+@pytest.mark.parametrize('event_retention', ['0', '1'])
+def test_backup_records_archive_ack_and_preserves_old_on_failure(tmp_path, archive_success, event_retention):
     import subprocess
     home = tmp_path / 'home'
     project = home / 'prism-insight'
@@ -324,6 +325,7 @@ def test_backup_records_archive_ack_and_preserves_old_on_failure(tmp_path, archi
     fake.write_text('''#!/bin/sh
 case "$1" in
   */sqlite_snapshot.py)
+    printf '%s\n' "$@" > "$SNAPSHOT_LOG"
     while [ "$#" -gt 0 ]; do
       if [ "$1" = "--destination" ]; then shift; target="$1"; fi
       shift
@@ -353,7 +355,8 @@ esac
     script = Path(__file__).resolve().parents[1] / 'utils/backup_configs.sh'
     env = {**os.environ, 'HOME': str(home), 'PATH': str(tools) + ':' + os.environ['PATH'],
            'ARCHIVE_SUCCESS': '1' if archive_success else '0', 'SCHEDULE_LOG': str(tmp_path / 'scheduled'),
-           'REMOVE_LOG': str(tmp_path / 'removed')}
+           'REMOVE_LOG': str(tmp_path / 'removed'), 'SNAPSHOT_LOG': str(tmp_path / 'snapshot_args'),
+           'PRISM_BTC_EVENT_RETENTION': event_retention}
     run = subprocess.run(['bash', str(script)], env=env, capture_output=True, text=True, timeout=30)
     assert (run.returncode == 0) is archive_success
     ack, = (home / 'prism_backups').glob('*/offsite_ack.json')
@@ -362,11 +365,14 @@ esac
     schedule = tmp_path / 'scheduled'
     assert schedule.exists() is archive_success
     assert (tmp_path / 'removed').exists() is archive_success
+    assert ('--capture-review-event-proof' in (tmp_path / 'snapshot_args').read_text().splitlines()) == (event_retention == '1')
     if archive_success:
         assert 'run_btc_review_retention.py' in schedule.read_text()
         arguments = schedule.read_text().splitlines()
         assert '--timer-property=AccuracySec=1s' in arguments
-        assert arguments[-7:-3] == ['/usr/bin/bash', '-c', 'exec "$1" "$2" "$3"', '--']
+        if event_retention == '1':
+            assert arguments.pop() == '--event-proof-only'
+        assert arguments[-7:-3] == ['/usr/bin/bash', '-c', 'exec "$1" "$2" "$3" "${@:4}"', '--']
         assert arguments[-3] == str(fake)
     if not archive_success:
         assert (old / 'evidence').read_bytes() == b'keep'

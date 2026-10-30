@@ -335,7 +335,7 @@ def cleanup_events(backup_dir, *, now=None):
         raise ValueError('event_delete_cursor_changed')
     if not index['items']:
         save_cursor()
-        return {'status': 'NO_CANDIDATES', 'removed_slots': 0, 'removed_events': 0}
+        return {'status': 'NO_CANDIDATES', 'removed': 0, 'removed_slots': 0, 'removed_events': 0}
     if retention.EXPORT_STATE.is_symlink() or not retention.EXPORT_STATE.is_file():
         raise ValueError('event_delete_export_state_invalid')
     at = time.time() if now is None else now
@@ -361,8 +361,8 @@ def cleanup_events(backup_dir, *, now=None):
         save_cursor()
     except Exception as exc:
         if removed_slots:
-            return {'status': 'PARTIAL', 'removed_slots': removed_slots, 'removed_events': removed_events,
+            return {'status': 'PARTIAL', 'removed': removed_slots, 'removed_slots': removed_slots, 'removed_events': removed_events,
                     'error_type': type(exc).__name__}
         raise
     return {'status': 'DEFERRED' if any(k != 'REMOVED' for k in statuses) else 'COMPLETE',
-            'removed_slots': removed_slots, 'removed_events': removed_events, 'outcomes': dict(statuses)}
+            'removed': removed_slots, 'removed_slots': removed_slots, 'removed_events': removed_events, 'outcomes': dict(statuses)}

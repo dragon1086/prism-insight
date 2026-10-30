@@ -654,3 +654,8 @@ def test_event_proof_runner_is_explicit_opt_in(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)['status'] == 'NO_CANDIDATES'
     assert runner.main(['/fixture', '--event-proof-only']) == 0
     assert json.loads(capsys.readouterr().out)['removed_slots'] == 1
+    def no_proof(_):
+        raise ValueError('event_proof_archive_unverified')
+    monkeypatch.setattr(btc_review_event_proof, 'cleanup_events', no_proof)
+    assert runner.main(['/fixture', '--event-proof-only']) == 1
+    assert json.loads(capsys.readouterr().out)['status'] == 'ERROR'

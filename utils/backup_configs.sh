@@ -16,6 +16,17 @@ BACKUP_BASE_DIR=~/prism_backups
 BACKUP_DIR=$BACKUP_BASE_DIR/$DATE
 PROJECT_DIR=$HOME/prism-insight
 LOG_FILE=$BACKUP_BASE_DIR/backup.log
+EVENT_RETENTION=${PRISM_BTC_EVENT_RETENTION:-0}
+case "$EVENT_RETENTION" in
+    0|1) ;;
+    *) echo "Invalid BTC event retention setting" >&2; exit 1 ;;
+esac
+SNAPSHOT_EXTRA=()
+RETENTION_EXTRA=()
+if [ "$EVENT_RETENTION" = 1 ]; then
+    SNAPSHOT_EXTRA=(--capture-review-event-proof)
+    RETENTION_EXTRA=(--event-proof-only)
+fi
 
 # 로그 함수
 log() {
@@ -51,7 +62,7 @@ if [ -f stock_tracking_db.sqlite ]; then
     python3 "$PROJECT_DIR/utils/sqlite_snapshot.py" \
         --source "$PROJECT_DIR/stock_tracking_db.sqlite" \
         --destination "$BACKUP_DIR/stock_tracking_db.sqlite.gz" --timeout 1200 --capture-references \
-        --retention-cursor "$BACKUP_BASE_DIR/.btc-retention-cursor.json"
+        --retention-cursor "$BACKUP_BASE_DIR/.btc-retention-cursor.json" ${SNAPSHOT_EXTRA[@]+"${SNAPSHOT_EXTRA[@]}"}
     log "✓ SQLite 온라인 스냅샷·압축·복원 해시 검증 완료"
 else
     log "오류: stock_tracking_db.sqlite 없음; 기존 DB 백업을 보존하고 종료"
@@ -117,8 +128,8 @@ if systemd-run --quiet --collect --on-active="${RETENTION_DELAY}s" --timer-prope
     --unit="prism-btc-retention-${DATE}" --setenv="PATH=$PATH" \
     --setenv="PRISM_DISABLE_SIGNAL_PUBLISH=1" \
     --setenv="PYTHONPATH=$PROJECT_DIR/prism-btc:$PROJECT_DIR" \
-    /usr/bin/bash -c 'exec "$1" "$2" "$3"' -- \
-    "$PYTHON_BIN" "$PROJECT_DIR/tools/run_btc_review_retention.py" "$BACKUP_DIR"; then
+    /usr/bin/bash -c 'exec "$1" "$2" "$3" "${@:4}"' -- \
+    "$PYTHON_BIN" "$PROJECT_DIR/tools/run_btc_review_retention.py" "$BACKUP_DIR" ${RETENTION_EXTRA[@]+"${RETENTION_EXTRA[@]}"}; then
     log "7일 정리 1회 등록; 실행 결과는 별도 확인"
 else
     log "⚠ 7일 정리 등록 실패; 다음 백업에서 재시도"
