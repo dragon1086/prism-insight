@@ -362,6 +362,7 @@ def test_pair_planner_requires_read_only_and_matches_backed_rows(tmp_path):
     plan = subject.plan_backed_pairs(conn, 'a'*64)
     assert plan['manifest']['pairs'] == [{'raw':raw_proof,'source':source_proof}]
     assert plan['scanned'] == 2 and plan['unreadable'] == 0 and plan['last_scanned_rowid'] == 2
+    assert plan['unreadable_rowids'] == [] and plan['unreferenced_raw_rowids'] == []
     assert not subject.plan_backed_pairs(conn, 'a'*64, after_rowid=2)['manifest']['pairs']
     for invalid in (-1, True, '2', 9223372036854775808):
         with pytest.raises(ValueError, match='invalid_manifest'):
@@ -390,3 +391,17 @@ def test_pair_planner_limits_batches_and_reports_unreadable_rows(tmp_path):
         assert len(first['manifest']['pairs']) == 20 and first['scanned'] == 40 and first['last_scanned_rowid'] == 40
         second = subject.plan_backed_pairs(conn,'b'*64,after_rowid=first['last_scanned_rowid'])
         assert len(second['manifest']['pairs']) == 1 and second['scanned'] == 3 and second['unreadable'] == 1
+        assert second['unreadable_rowids'] == [43]
+
+
+def test_pair_planner_reports_raw_without_unique_matching_request(tmp_path):
+    path = tmp_path/'unmatched.sqlite'
+    with sqlite3.connect(path) as conn:
+        conn.execute('CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body BLOB,PRIMARY KEY(slot,sequence))')
+        raw = {'kind':'MODEL_RAW','phase':'single','actual_request':{'timeout':1},'raw':'x'}
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)',(1,0,json.dumps(raw,sort_keys=True)))
+    with sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True) as conn:
+        conn.execute('PRAGMA query_only=ON')
+        result = subject.plan_backed_pairs(conn,'c'*64)
+        assert result['manifest']['pairs'] == [] and result['unreadable'] == 0
+        assert result['unreferenced_raw_rowids'] == [1]

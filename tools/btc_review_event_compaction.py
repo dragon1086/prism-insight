@@ -265,13 +265,14 @@ def plan_backed_pairs(conn, identity, *, after_rowid=0):
             or conn.execute('PRAGMA query_only').fetchone()[0] != 1):
         raise ValueError('invalid_manifest')
     from utils.btc_review_event_references import MAX_BYTES, MAGIC as REF_MAGIC, _unpack, compact, read_event
-    pairs, scanned, unreadable, last = [], 0, 0, after_rowid
+    pairs, unreadable_rows, unreferenced_rows = [], [], []
+    scanned, last = 0, after_rowid
     rows = conn.execute('SELECT rowid,slot,sequence,body FROM llm_scenario_review_events '
                         'WHERE rowid>? ORDER BY rowid LIMIT 200', (after_rowid,))
     for rowid, slot, sequence, body in rows:
         last, scanned = rowid, scanned + 1
         if type(slot) is not int or slot < 0 or type(sequence) is not int or not 0 <= sequence < 128:
-            unreadable += 1
+            unreadable_rows.append(rowid)
             continue
         try:
             if len(_bytes(body)) > 2 * MAX_BYTES:
@@ -297,6 +298,7 @@ def plan_backed_pairs(conn, identity, *, after_rowid=0):
                 sources.append((source_id, number, value, original))
             encoded = compact(text, [(n, original) for _, n, _, original in sources], slot, sequence)
             if not isinstance(encoded, bytes) or not encoded.startswith(REF_MAGIC) or len(encoded) >= len(_bytes(body)):
+                unreferenced_rows.append(rowid)
                 continue
             source_sequence = _unpack(encoded)['source_sequence']
             found = [item for item in sources if item[1] == source_sequence]
@@ -311,9 +313,10 @@ def plan_backed_pairs(conn, identity, *, after_rowid=0):
             if len(pairs) == 20:
                 break
         except (ValueError, TypeError, KeyError, UnicodeError):
-            unreadable += 1
+            unreadable_rows.append(rowid)
     return {'manifest':{'source_identity':identity,'pairs':pairs},'scanned':scanned,
-            'unreadable':unreadable,'last_scanned_rowid':last}
+            'unreadable':len(unreadable_rows),'unreadable_rowids':unreadable_rows,
+            'unreferenced_raw_rowids':unreferenced_rows,'last_scanned_rowid':last}
 
 
 def main():
