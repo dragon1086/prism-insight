@@ -400,7 +400,61 @@ def test_cleanup_uses_backup_ack_delivery_lease_and_transaction(tmp_path, monkey
     with sqlite3.connect(source_path) as db:
         assert db.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 2
     monkeypatch.setattr(retention, 'fetch_deliveries', delivery)
+    with sqlite3.connect(source_path) as db:
+        db.executescript('CREATE TABLE guard_state(blocked INTEGER); INSERT INTO guard_state VALUES(0);'
+                         'CREATE TRIGGER change_guard AFTER DELETE ON llm_scenario_review_tapes '
+                         'BEGIN UPDATE guard_state SET blocked=1; END;')
+    monkeypatch.setattr(retention, '_runtime_safe', lambda conn: conn.execute(
+        'SELECT blocked FROM guard_state').fetchone()[0] == 0)
+    with pytest.raises(ValueError, match='retention_guard_failed'):
+        retention.cleanup(directory, now=now)
+    with sqlite3.connect(source_path) as db:
+        assert db.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 2
+        assert db.execute('SELECT blocked FROM guard_state').fetchone()[0] == 0
+        db.executescript('DROP TRIGGER change_guard; DROP TABLE guard_state;')
+    real_connect = sqlite3.connect
+    def foreign_keys_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        if str(args[0]).startswith(source_path.as_uri()):
+            conn.execute('PRAGMA foreign_keys=ON')
+        return conn
+    monkeypatch.setattr(retention.sqlite3, 'connect', foreign_keys_connect)
+    foreign_checks = []
+    def changing_runtime(conn):
+        foreign_checks.append(conn.in_transaction)
+        return len(foreign_checks) < 3
+    monkeypatch.setattr(retention, '_runtime_safe', changing_runtime)
+    with pytest.raises(ValueError, match='retention_guard_failed'):
+        retention.cleanup(directory, now=now)
+    assert foreign_checks == [False, True, True]
+    monkeypatch.setattr(retention.sqlite3, 'connect', real_connect)
+    with sqlite3.connect(source_path) as db:
+        assert db.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 2
+    with sqlite3.connect(source_path) as db:
+        db.execute('UPDATE llm_scenario_decisions SET snapshot=? WHERE slot=1', ('{"changed":1}',))
+    runtime_checks = []
+    def runtime_safe(conn):
+        runtime_checks.append(conn.in_transaction)
+        if conn.in_transaction:
+            with sqlite3.connect(source_path, timeout=0) as other:
+                with pytest.raises(sqlite3.OperationalError, match='locked'):
+                    other.execute('UPDATE llm_scenario_decisions SET outcome=outcome WHERE slot=1')
+        return True
+    monkeypatch.setattr(retention, '_runtime_safe', runtime_safe)
+    assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': 0}
+    with sqlite3.connect(source_path) as db:
+        assert db.execute('SELECT COUNT(*) FROM llm_scenario_review_tapes').fetchone()[0] == 2
+        db.execute('UPDATE llm_scenario_decisions SET snapshot=? WHERE slot=1', ('{}',))
+    checked = []
+    original_candidates = retention.candidates
+    def count_candidates(*args, **kwargs):
+        checked.append(kwargs.get('after_slot'))
+        return original_candidates(*args, **kwargs)
+    monkeypatch.setattr(retention, 'candidates', count_candidates)
+    runtime_checks.clear()
     assert retention.cleanup(directory, now=now) == {'status': 'COMPLETE', 'removed': 1}
+    assert checked.count(0) == 1  # The deleted row is fully rechecked only under the write lock.
+    assert runtime_checks == [False, True]
     with sqlite3.connect(source_path) as db:
         assert db.execute('SELECT slot FROM llm_scenario_review_tapes').fetchall() == [(2,)]
         assert db.execute('SELECT COUNT(*) FROM llm_scenario_decisions').fetchone()[0] == 2
