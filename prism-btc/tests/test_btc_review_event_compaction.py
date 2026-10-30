@@ -291,6 +291,33 @@ def test_backed_pair_batch_validates_every_pair_before_any_write(tmp_path):
     conn.close()
 
 
+def test_backed_pair_preserves_export_cursor_and_following_events(tmp_path):
+    from observability.btc_scenario_export import export_once
+    conn, raw_proof, source_proof, _, _ = backed_model_pair(tmp_path)
+    conn.execute('DROP TABLE llm_scenario_recovery_events')
+    conn.commit()
+    source, state, spool = tmp_path/'pair.sqlite', tmp_path/'exporter.sqlite', tmp_path/'events.jsonl'
+    assert export_once(source,state,spool)['status'] == 'OK'
+    assert export_once(source,state,spool)['captured'] == 2
+    with sqlite3.connect(state) as saved:
+        before = saved.execute("SELECT seq,ref FROM cursors JOIN anchors USING(stream) "
+                               "WHERE stream='llm_scenario_review_events'").fetchone()
+    assert subject.compact_backed_model_pair(conn,raw_proof,source_proof,guard=lambda:True) == 'UPDATED'
+    assert export_once(source,state,spool)['status'] == 'OK'
+    with sqlite3.connect(state) as saved:
+        assert saved.execute("SELECT seq,ref FROM cursors JOIN anchors USING(stream) "
+                             "WHERE stream='llm_scenario_review_events'").fetchone() == before
+    conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)',
+                 (7,2,json.dumps({'kind':'MODEL_ERROR','reason':'fixture'})))
+    conn.commit()
+    result = export_once(source,state,spool)
+    assert result['status'] == 'OK' and result['captured'] == 1
+    rows = [json.loads(line) for line in spool.read_text().splitlines() if line]
+    events = [row for row in rows if row['event_type'] == 'btc.research.review']
+    assert len(events) == 3 and len({row['event_id'] for row in events}) == 3
+    conn.close()
+
+
 def test_backed_pair_cli_uses_identity_and_bounded_manifest(tmp_path, monkeypatch, capsys):
     import io
     from utils import btc_review_retention
