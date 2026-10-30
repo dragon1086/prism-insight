@@ -574,7 +574,7 @@ def _resource_guard(source, identity):
     return resource_guard(source, identity) and _backup_idle(source)
 
 
-def _backup_idle(source, proc_root=Path('/proc')):
+def _backup_idle(source, proc_root=Path('/proc'), *, allow_reader=None):
     """Do not write while a snapshot or a streamed DB reader is active."""
     try:
         source_stat = source.stat()
@@ -595,7 +595,8 @@ def _backup_idle(source, proc_root=Path('/proc')):
                     except FileNotFoundError:
                         continue
                     if (seen.st_dev, seen.st_ino) == (source_stat.st_dev, source_stat.st_ino):
-                        return False
+                        if allow_reader is None or allow_reader(process, fd) is not True:
+                            return False
             except FileNotFoundError:
                 continue
         return True

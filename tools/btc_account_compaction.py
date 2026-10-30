@@ -161,6 +161,30 @@ def compact_file_batch(conn, manifest, now, guard):
     return compact_attested_batch(conn, manifest, identity, now, guard)
 
 
+_B3_LAUNCHER = '/root/.pyenv/versions/3.11.11/bin/python3'
+_B3_INTERPRETER = '/root/.pyenv/versions/3.11.11/bin/python3.11'
+_B3_SCRIPT = '/root/prism-insight/tools/run_b3_ae_shadow.py'
+
+
+def _trusted_b3_readonly_fd(process, fd):
+    """Accept only the known US B3 observer's read-only database descriptor."""
+    import os
+    from pathlib import Path
+    try:
+        args = (process / 'cmdline').read_bytes().split(b'\0')
+        if args[-1:] == [b'']:
+            args.pop()
+        expected = [os.fsencode(_B3_LAUNCHER), os.fsencode(_B3_SCRIPT), b'--market', b'us']
+        if (args != expected or process.stat().st_uid != os.geteuid()
+                or (process / 'exe').resolve(strict=True) != Path(_B3_INTERPRETER).resolve(strict=True)):
+            return False
+        info = (process / 'fdinfo' / fd.name).read_text().splitlines()
+        flags = [line.split()[1] for line in info if line.startswith('flags:')]
+        return len(flags) == 1 and int(flags[0], 8) & os.O_ACCMODE == os.O_RDONLY
+    except (OSError, ValueError, IndexError):
+        return False
+
+
 def guarded_operational_batch(conn, manifest, expected_manifest_sha, expected_backup_sha):
     """Apply only a manifest sealed by a separately verified backup planner."""
     if (not isinstance(expected_manifest_sha, str) or not re.fullmatch('[a-f0-9]{64}', expected_manifest_sha)
@@ -180,9 +204,11 @@ def guarded_operational_batch(conn, manifest, expected_manifest_sha, expected_ba
     identity = source_identity(source)
     if manifest.get('source_identity') != identity:
         raise ValueError('source_identity_changed')
+    wal = conn.execute('PRAGMA journal_mode').fetchone()[0].lower() == 'wal'
     def guard():
         return (300 - time.time() % 300 >= 120 and resource_guard(source, identity)
-                and _backup_idle(source) and _runtime_safe(conn))
+                and _backup_idle(source, allow_reader=lambda process, fd: wal and _trusted_b3_readonly_fd(process, fd))
+                and _runtime_safe(conn))
     with mutation_lock(conn):
         return compact_file_batch(conn, manifest, time.time(), guard)
 
