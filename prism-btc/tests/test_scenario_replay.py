@@ -125,7 +125,16 @@ def test_offline_network_boundary_denies_exchange_socket():
     assert blocked==['blocked_network']
 
 
-def test_real_runtime_simulated_open_exit_and_exact_tape_replay(tmp_path):
+def test_real_runtime_simulated_open_exit_and_exact_tape_replay(tmp_path, monkeypatch):
+    from observability import events
+    spool=tmp_path/'shared-events.jsonl'
+    monkeypatch.setenv('PRISM_OBSERVABILITY_SPOOL', str(spool))
+    calls=[]
+    original=events.emit_event
+    def capture(*args, **kwargs):
+        calls.append(args[0])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(events, 'emit_event', capture)
     b,m=inputs();tape=tmp_path/'trade-tape'
     def policy(s,c):
         base=dict(wait_policy(s,c),scenario_id=c['scenario_id'] or 'fixture-trade',
@@ -139,6 +148,8 @@ def test_real_runtime_simulated_open_exit_and_exact_tape_replay(tmp_path):
         first=run_replay(b,m,tmp_path/'open',mode='fixture',tape_path=tape,policy=policy)
         second=run_replay(b,m,tmp_path/'copy',mode='frozen',tape_path=tape)
     assert not blocked
+    assert calls
+    assert not spool.exists()
     assert first['economic']['completed_scenarios']==1
     assert first['economic']['fees']>0 and first['economic']['open_quantity']==0
     assert first['result_hash']==second['result_hash']
