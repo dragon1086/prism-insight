@@ -4,12 +4,15 @@ The AI used to recompute these from tool OHLCV on every review: the trailing lin
 stop raise qualifies (the result runs as an intraday stop), the tier-3 trend-weakness conditions,
 the return against the micro-split average entry and the trading sessions held. The values here
 come from the same rules and constants the exit code runs (cores/oneil_fallback.py) on completed
-daily bars only. A value that cannot be computed is shown as unknown, never guessed.
+daily bars, plus today's bar at the current price in the afternoon review (user decision 2026-10-30: the
+afternoon run's price stands in for today's close, as in the afternoon screening). A value that cannot be
+computed is shown as unknown, never guessed.
 """
 
 from __future__ import annotations
 
 import os
+from datetime import datetime, time
 
 from cores.oneil_fallback import (BULL_REGIMES, STOP_WICK_BUFFER, TRAIL_ACTIVATION_PCT, TRAIL_DROP_BULL,
                                   TRAIL_DROP_UNKNOWN, TRAIL_DROP_WEAK, _normalize_regime)
@@ -18,6 +21,7 @@ from prism_core import runner_hold as R
 TREND_DOWN_CLOSES = 3      # tier 3: three consecutive lower daily closes
 VOLUME_WINDOW = 20         # tier 3: volume against the prior 20-session average
 MA_WINDOW = 20             # tier 3: close below the 20-day MA
+AFTERNOON_FROM = time(14, 0)  # exchange-local; the afternoon AI sell review runs after it (KR ~14:46, US ~14:50 ET)
 
 
 def enabled():
@@ -85,6 +89,25 @@ def tier3_counts(trend, held):
     return None if held is None else held >= TREND_DOWN_CLOSES
 
 
+def afternoon_bar(raw_bars, *, market, now, price):
+    """Today's bar at the current price during the afternoon review, else None.
+
+    The afternoon price counts as today's close (user decision 2026-10-30); the volume is today's cumulative
+    volume so far. LLY 2026-10-30: a line from today's new peak was compared with yesterday's close and sold.
+    """
+    from prism_core.add_plan import SESSIONS, is_session
+    price = R._num(price)
+    tz, _, close_at, _ = SESSIONS[str(market).upper()]
+    local = now.astimezone(tz)
+    if price is None or not is_session(market, local.date()):
+        return None
+    if not AFTERNOON_FROM <= local.time() or local >= datetime.combine(local.date(), close_at, tz) + R.CLOSE_BUFFER:
+        return None
+    today = local.date().isoformat()
+    volume = next((R._num(b.get("volume")) for b in raw_bars or [] if str(b.get("date"))[:10] == today), None)
+    return {"date": today, "close": price, "volume": volume, "provisional": True}
+
+
 def sessions_held(bars, market, buy_date):
     """Completed sessions after the entry session, or None."""
     try:
@@ -123,8 +146,13 @@ def _yes(value, ko, yes=None, no=None):
     return no or ("아니오" if ko else "no")
 
 
-def prompt_block(*, market, language, stock_data, highest_price, threshold_pct, regime, bars):
-    """The facts block for the sell user message. ``bars`` are completed daily bars (oldest first)."""
+def prompt_block(*, market, language, stock_data, highest_price, threshold_pct, regime, bars, today=None):
+    """The facts block for the sell user message.
+
+    ``bars`` are completed daily bars (oldest first), ending with today's provisional bar in the afternoon.
+    ``today`` is the exchange-local date: a trailing breach is judged only on today's close (or its afternoon
+    stand-in), so the morning review never compares yesterday's close with a peak made later.
+    """
     ko = language == "ko"
     m = lambda v: _money(v, market, ko)  # noqa: E731
     trend = trend_weakness(bars)
@@ -136,7 +164,14 @@ def prompt_block(*, market, language, stock_data, highest_price, threshold_pct, 
     runner = bool(block and block.get("status") == R.RUNNER and R.enabled(market)) or bool(
         core_hold_live.view(stock_data, market))
     lines = []
-    if trend:
+    provisional = bool(bars and bars[-1].get("provisional"))
+    if trend and provisional:
+        lines.append((f"- 기준 일봉: 오늘 {trend['date']} 오후 가격 {m(trend['close'])}(오늘 종가로 간주, 거래량은 지금까지 누적)"
+                      if ko else f"- Reference bar: today {trend['date']} at the afternoon price {m(trend['close'])} "
+                      "(counts as today's close; volume is today's so far)")
+                     + ((f", 매수 후 {held}거래일째" if ko else f", {held} sessions since the entry")
+                        if held is not None else ""))
+    elif trend:
         lines.append((f"- 기준 일봉: {trend['date']} 확정 종가 {m(trend['close'])}" if ko else
                       f"- Reference bar: {trend['date']} confirmed close {m(trend['close'])}")
                      + ((f", 매수 후 {held}거래일째" if ko else f", {held} sessions since the entry")
@@ -154,11 +189,19 @@ def prompt_block(*, market, language, stock_data, highest_price, threshold_pct, 
                          f"- Trailing stop: not active yet (peak {m(t['peak'])} is under entry +5%). Keep the initial stop.")
         else:
             band = f"× {t['drop']:.2f}" + ("" if t["regime_live"] else (" (국면 미확인)" if ko else " (regime unavailable)"))
+            if trend and today and trend["date"] == today:
+                what = ("오늘 오후 가격(종가 간주)" if provisional else "오늘 확정 종가") if ko else (
+                    "Today's afternoon price (counts as the close)" if provisional else "Today's confirmed close")
+                verdict = (f"{what}은 라인 {_yes(t['close_below'], ko, '아래 → 매도', '위')}." if ko else
+                           f"{what} is {_yes(t['close_below'], ko, 'below it → sell', 'above it')}.")
+            else:
+                verdict = ("이탈은 오후 점검(오늘 가격을 종가로 간주)과 장 마감 직전 자동 점검이 판정합니다. 지금은 매도 근거가 아닙니다."
+                           if ko else "A breach is judged by the afternoon review (today's price as the close) and the "
+                           "pre-close automatic check; it is not a sell reason now.")
             lines.append(
-                (f"- 트레일링 라인: 고점 {m(t['peak'])} {band} = {m(t['line'])} (자동 청산은 {m(t['trigger'])} 이하). "
-                 f"최근 확정 종가는 라인 {_yes(t['close_below'], ko, '아래 → 매도', '위')}." if ko else
+                (f"- 트레일링 라인: 고점 {m(t['peak'])} {band} = {m(t['line'])} (자동 청산은 {m(t['trigger'])} 이하). " if ko else
                  f"- Trailing line: peak {m(t['peak'])} {band} = {m(t['line'])} (automatic exit at or below "
-                 f"{m(t['trigger'])}). Latest confirmed close is {_yes(t['close_below'], ko, 'below it → sell', 'above it')}."))
+                 f"{m(t['trigger'])}). ") + verdict)
             gap = _yes(None, ko) if t["gap_pct"] is None else f"{t['gap_pct']:+.1f}%"
             lines.append(
                 (f"- 손절선 상향 자격: {_yes(t['raise_ok'], ko, '있음', '없음')} (라인이 현재 손절가 {m(R._num(stock_data.get('stop_loss')))} 대비 "
@@ -173,7 +216,7 @@ def prompt_block(*, market, language, stock_data, highest_price, threshold_pct, 
         after = ""
         if trend["met"]:
             after_entry = None if held is None else held >= TREND_DOWN_CLOSES
-            after = (f". 하락 3거래일이 모두 매수 후 확정 일봉: {_yes(after_entry, ko)} → 3단계 매도 근거 {_yes(counts, ko)}"
+            after = (f". 하락 3거래일이 모두 매수 후 일봉: {_yes(after_entry, ko)} → 3단계 매도 근거 {_yes(counts, ko)}"
                      + ("(매수 전부터 있던 약세는 세지 않음)" if counts is False else "") if ko else
                      f". All three lower closes after the entry session: {_yes(after_entry, ko)} → Tier-3 sell reason "
                      f"{_yes(counts, ko)}" + (" (weakness from before the buy does not count)" if counts is False else ""))
@@ -194,8 +237,9 @@ def prompt_block(*, market, language, stock_data, highest_price, threshold_pct, 
              "(위 '수익률'·손절가·-7%는 최초 매수가 기준)" if ko else
              f"- Micro-split average entry {m(avg[0])} ({avg[1]} buys), return vs the average "
              f"{(price / avg[0] - 1) * 100:+.2f}% (the 'Return' above, the stop and -7% use the first buy)"))
-    head = ("\n### 시스템 계산 사실 (확정 일봉 기준, 자동 청산과 같은 계산)\n" if ko else
-            "\n### System-computed facts (completed daily bars, same math as the automatic exit)\n")
+    head = ("\n### 시스템 계산 사실 (확정 일봉 + 오후 점검은 오늘 가격을 오늘 종가로 간주, 자동 청산과 같은 계산)\n" if ko else
+            "\n### System-computed facts (completed daily bars + today's price as today's close in the afternoon "
+            "review, same math as the automatic exit)\n")
     tail = ("이 값을 다시 계산하지 말고 그대로 쓰십시오. '확인 불가'인 값만 도구로 확인하고, 추정으로 채우지 마십시오.\n" if ko else
             "Use these values as given; do not recompute them. Check only 'unknown' values with tools, and never "
             "fill them with estimates.\n")
@@ -210,13 +254,18 @@ def prompt_block_safe(*, market, language, stock_data, highest_price, threshold_
         from prism_core import runner_hold_live as L
         when = now or L._now()
         try:
-            bars = R.completed_bars(L.fetch_daily_bars(market, stock_data.get("ticker"), when), market=market, now=when)
+            raw = L.fetch_daily_bars(market, stock_data.get("ticker"), when)
+            bars = R.completed_bars(raw, market=market, now=when)
         except Exception as err:  # noqa: BLE001 — bars unknown, the block says so
             if logger:
                 logger.warning(f"[sell_facts] {stock_data.get('ticker')} bars unavailable: {err}")
-            bars = []
+            raw, bars = [], []
+        today_bar = afternoon_bar(raw, market=market, now=when, price=stock_data.get("current_price")) if bars else None
+        from prism_core.add_plan import SESSIONS
+        today = when.astimezone(SESSIONS[str(market).upper()][0]).date().isoformat()
         return prompt_block(market=market, language=language, stock_data=stock_data, highest_price=highest_price,
-                            threshold_pct=threshold_pct, regime=regime, bars=bars)
+                            threshold_pct=threshold_pct, regime=regime, bars=bars + ([today_bar] if today_bar else []),
+                            today=today)
     except Exception as err:  # noqa: BLE001
         if logger:
             logger.warning(f"[sell_facts] {stock_data.get('ticker')} facts block skipped: {err}")
