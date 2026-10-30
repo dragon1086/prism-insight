@@ -488,3 +488,33 @@ def test_bounded_runner_stops_before_next_batch_when_deadline_expires(monkeypatc
         return {'status':'COMMITTED','manifest_sha256':seal,'updated':1,'unchanged':0,'saved_bytes':10}
     result = run_bounded_batches('proof', 3, planner, apply)
     assert result['status'] == 'DEADLINE_REACHED' and result['after_rowid'] == 1
+
+
+def test_merged_pr_guard_requires_exact_head_and_all_checks(monkeypatch):
+    from types import SimpleNamespace
+    from tools import btc_account_compaction_transport as transport
+    names = ['Third-party license compliance','CLA','report-data','Dashboard production build',
+             'Test (Python 3.10)','Test (Python 3.11)','Test (Python 3.12)','Codacy Static Code Analysis']
+    pr = {'state':'MERGED','headRefOid':'a'*40,'mergeCommit':{'oid':'b'*40},
+          'statusCheckRollup':[{'name':name,'status':'COMPLETED','conclusion':'SUCCESS'} for name in names]}
+    monkeypatch.setattr(transport.subprocess, 'run', lambda *a, **k: SimpleNamespace(stdout=json.dumps(pr)))
+    monkeypatch.setattr(transport.subprocess, 'check_output', lambda args, **k: 'a'*40+'\n' if args[1]=='rev-parse' else '')
+    assert transport.verified_merge(1) == 'b'*40
+    pr['statusCheckRollup'][0]['conclusion'] = 'FAILURE'
+    with pytest.raises(ValueError, match='pr_verification_failed'):
+        transport.verified_merge(1)
+    pr['statusCheckRollup'][0]['conclusion'] = 'SUCCESS'
+    pr['headRefOid'] = 'c'*40
+    with pytest.raises(ValueError, match='pr_verification_failed'):
+        transport.verified_merge(1)
+
+
+def test_resuming_a_range_cannot_claim_full_history_completed(monkeypatch):
+    from tools import btc_account_compaction as compaction
+    from tools import btc_account_compaction_transport as transport
+    monkeypatch.setattr(transport, 'verified_merge', lambda _: 'a'*40)
+    def empty_plan(proof, cutoff, *, after_rowid):
+        return {'source_identity':'a'*64,'backup_proof_sha256':'b'*64,'cutoff':cutoff,
+                'after_rowid':after_rowid,'rows':[]}
+    monkeypatch.setattr(compaction, 'plan_attested_accounts', empty_plan)
+    assert transport.run_verified_remote_batches('proof', 3, 1, after_rowid=100)['status'] == 'RANGE_COMPLETE'

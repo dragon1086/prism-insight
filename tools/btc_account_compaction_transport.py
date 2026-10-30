@@ -54,3 +54,37 @@ def apply_remote(manifest, seal, proof_sha, *, commit):
     if not isinstance(answer, dict) or answer.get('manifest_sha256') != seal:
         raise ValueError('transport_response_invalid')
     return answer
+
+
+def verified_merge(pr_number):
+    """Require the exact clean local PR head and every required CI success."""
+    if type(pr_number) is not int or pr_number <= 0:
+        raise ValueError('invalid_pr_number')
+    fields = 'state,headRefOid,mergeCommit,statusCheckRollup'
+    proc = subprocess.run(['gh', 'pr', 'view', str(pr_number), '--repo', 'dragon1086/prism-insight',
+                           '--json', fields], capture_output=True, text=True, timeout=15, check=True)  # nosec B603
+    pr = json.loads(proc.stdout)
+    head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True, timeout=10).strip()
+    dirty = subprocess.check_output(['git', 'status', '--porcelain'], text=True, timeout=10)
+    checks = pr.get('statusCheckRollup') or []
+    required = {'Third-party license compliance', 'CLA', 'report-data', 'Dashboard production build',
+                'Test (Python 3.10)', 'Test (Python 3.11)', 'Test (Python 3.12)', 'Codacy Static Code Analysis'}
+    merge = (pr.get('mergeCommit') or {}).get('oid')
+    if (pr.get('state') != 'MERGED' or pr.get('headRefOid') != head or dirty.strip()
+            or not isinstance(merge, str) or not re.fullmatch('[a-f0-9]{40}', merge)
+            or not required.issubset({item.get('name') for item in checks})
+            or any(item.get('status') != 'COMPLETED' or item.get('conclusion') != 'SUCCESS' for item in checks)):
+        raise ValueError('pr_verification_failed')
+    return merge
+
+
+def run_verified_remote_batches(proof_path, cutoff, pr_number, *, after_rowid=0, max_batches=10):
+    from tools.btc_account_compaction import plan_attested_accounts, run_bounded_batches
+    commit = verified_merge(pr_number)
+    def apply(manifest, seal, proof_sha):
+        return apply_remote(manifest, seal, proof_sha, commit=commit)
+    result = run_bounded_batches(proof_path, cutoff, plan_attested_accounts, apply,
+                                 after_rowid=after_rowid, max_batches=max_batches)
+    if after_rowid > 0 and result['status'] == 'COMPLETE':
+        result['status'] = 'RANGE_COMPLETE'
+    return result
