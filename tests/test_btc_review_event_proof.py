@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 
 from utils.btc_recovery_references import canonical, compact, pack
-from utils.btc_review_event_proof import delivered_event_proof, event_proof, snapshot_event_index
+from utils.btc_review_event_proof import delivered_event_proof, event_proof, snapshot_event_index, verified_event_index
 
 
 def fixture():
@@ -102,3 +102,30 @@ def test_snapshot_index_is_bounded_and_does_not_skip_candidates():
     assert [item['candidate']['slot'] for item in second['items']] == [21, 22, 23]
     assert not second['truncated']
     conn.rollback()
+
+
+def test_event_index_requires_bound_receipt_and_same_wait_candidate():
+    identity, started = 'a' * 64, 700000.5
+    row = {'slot': 1, 'rowid': 1, 'tape_sha256': 'e' * 64, 'decision_sha256': 'f' * 64}
+    base = {'version': 1, 'as_of': int(started), 'cutoff_slot': int((started - 7 * 86400) // 300),
+            'after_slot': -1, 'last_scanned_slot': 1, 'scanned': 1, 'truncated': False, 'candidates': [row]}
+    index = {'version': 2, 'cutoff_slot': base['cutoff_slot'], 'after_slot': -1, 'last_scanned_slot': 1,
+             'truncated': False, 'items': [{'candidate': deepcopy(row), 'proof': event_proof(fixture(), 1)}]}
+    manifest = {'source_identity_sha256': identity, 'started_at': started, 'completed_at': started + 1,
+                'raw_sha256': 'b' * 64, 'compressed_sha256': 'c' * 64, 'btc_retention_index': base,
+                'btc_review_event_proof_status': 'CAPTURED', 'btc_review_event_proof_index': index}
+    def encode(value):
+        data = json.dumps(value).encode()
+        ack = {'status': 'VERIFIED', 'retention_index_verified': True, 'review_event_proof_index_verified': True,
+               'archive': 'archive-' + 'd' * 32, 'raw_sha256': 'b' * 64, 'compressed_sha256': 'c' * 64,
+               'manifest_sha256': hashlib.sha256(data).hexdigest()}
+        return data, ack
+    data, ack = encode(manifest)
+    assert verified_event_index(data, ack, identity) == index
+    with pytest.raises(ValueError, match='event_proof_archive_unverified'):
+        verified_event_index(data, dict(ack, review_event_proof_index_verified=False), identity)
+    altered = deepcopy(manifest)
+    altered['btc_review_event_proof_index']['items'][0]['candidate']['tape_sha256'] = '0' * 64
+    data, ack = encode(altered)
+    with pytest.raises(ValueError, match='event_proof_archive_unverified'):
+        verified_event_index(data, ack, identity)

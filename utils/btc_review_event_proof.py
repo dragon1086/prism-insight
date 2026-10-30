@@ -146,3 +146,42 @@ def delivered_event_proof(current, archived, deliveries, source_identity):
                 or type(receipt.get('decision_slot')) is not int or receipt['decision_slot'] != slot):
             return False
     return True
+
+
+def verified_event_index(manifest_bytes, ack, source_identity):
+    """Bind event evidence to an archive receipt; callers must hold its lease."""
+    from utils.btc_review_retention import verified_archive_index
+    base = verified_archive_index(manifest_bytes, ack, source_identity)
+    manifest = json.loads(manifest_bytes)
+    index = manifest.get('btc_review_event_proof_index')
+    if (manifest.get('btc_review_event_proof_status') != 'CAPTURED'
+            or ack.get('review_event_proof_index_verified') is not True or not isinstance(index, dict)
+            or set(index) != {'version', 'cutoff_slot', 'after_slot', 'last_scanned_slot', 'truncated', 'items'}
+            or type(index.get('version')) is not int or index['version'] != 2
+            or type(index.get('cutoff_slot')) is not int or index['cutoff_slot'] != base['cutoff_slot']
+            or type(index.get('after_slot')) is not int or index['after_slot'] != base['after_slot']
+            or type(index.get('last_scanned_slot')) is not int
+            or not index['after_slot'] <= index['last_scanned_slot'] <= base['last_scanned_slot']
+            or type(index.get('truncated')) is not bool or not isinstance(index.get('items'), list)
+            or len(index['items']) > MAX_SLOTS):
+        raise ValueError('event_proof_archive_unverified')
+    base_rows = base['candidates']
+    if any(not isinstance(row, dict) or type(row.get('slot')) is not int for row in base_rows):
+        raise ValueError('event_proof_archive_unverified')
+    by_slot = {row['slot']: row for row in base_rows}
+    if len(by_slot) != len(base_rows):
+        raise ValueError('event_proof_archive_unverified')
+    seen = []
+    for item in index['items']:
+        if (not isinstance(item, dict) or set(item) != {'candidate', 'proof'}
+                or not isinstance(item['candidate'], dict) or type(item['candidate'].get('slot')) is not int
+                or not isinstance(item['proof'], dict)):
+            raise ValueError('event_proof_archive_unverified')
+        slot = item['candidate']['slot']
+        if (not index['after_slot'] < slot <= index['last_scanned_slot']
+                or by_slot.get(slot) != item['candidate'] or item['proof'].get('slot') != slot):
+            raise ValueError('event_proof_archive_unverified')
+        seen.append(slot)
+    if seen != sorted(set(seen)):
+        raise ValueError('event_proof_archive_unverified')
+    return index
