@@ -571,6 +571,31 @@ def test_observing_post_record_stop_crossing_never_consumes_permit(tmp_path,monk
         assert outcome["failure_detail"]=="stop_crossed_market"
 
 
+def test_changed_context_records_only_allowed_field_without_order(tmp_path, monkeypatch):
+    from live import scenario_review_guard
+    bundle, market = inputs()
+    wall = [0.]
+    def generate(**request):
+        wall[0] += 1
+        payload = json.loads(request['user_prompt'])
+        if 'selection_token' in request['response_schema']['properties']:
+            choice = payload['calculated_candidates']['wait']
+            result = dict(selection_token=f"{choice['id']}:{choice['receipt_sha256']}", rationale='fixture')
+        else:
+            result = dict(wait_proposal=wire(payload['contract_context'], 'WAIT'), candidates=[], no_candidate_reason='fixture')
+        return SimpleNamespace(text=json.dumps(result))
+    def reject(*args, **kwargs):
+        raise ValueError('review_guard_context_changed:account_version')
+    monkeypatch.setattr(scenario_review_guard, 'guard_review', reject)
+    run_replay(bundle, market, tmp_path/'one', mode='fixture', tape_path=tmp_path/'tape',
+        policy_profile='calculated-economic-v4', model_generator=generate, clock_monotonic=lambda:wall[0])
+    with sqlite3.connect(tmp_path/'one'/'replay.sqlite') as conn:
+        assert conn.execute('SELECT count(*) FROM llm_scenario_intents').fetchone()[0] == 0
+        outcomes = [json.loads(row[0]) for row in conn.execute('SELECT outcome FROM llm_scenario_decisions')]
+        rejected = [o for o in outcomes if o.get('failure_code') == 'fresh_safety_rejection']
+        assert rejected and all(o.get('failure_detail') == 'context_changed' and o.get('failure_field') == 'account_version' for o in rejected)
+
+
 def test_profiles_preserve_legacy_contract_schema():
     bundle, _ = inputs()
     assert contract_for(bundle,"OHLC",1.,10000.)["schema"] == 2
