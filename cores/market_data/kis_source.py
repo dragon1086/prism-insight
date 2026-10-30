@@ -35,6 +35,7 @@ from time import monotonic, sleep
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import requests
 
 from cores.market_data.schema import has_ohlcv, normalize
 from cores.market_data.source import Unavailable, Unsupported
@@ -170,7 +171,13 @@ class KisSource:
             except Unavailable:
                 raise
             except Exception as exc:  # transport, auth — all "not now"
-                raise Unavailable(f"KIS {tr_id} failed: {exc}") from exc
+                # KIS sometimes drops a pooled connection (RemoteDisconnected, KOSPI index 2026-10-30);
+                # these are read-only quotes, so the same short retry as a rate limit is safe.
+                if wait is None or not isinstance(exc, requests.exceptions.ConnectionError):
+                    raise Unavailable(f"KIS {tr_id} failed: {exc}") from exc
+                logger.info("KIS %s connection dropped; retrying in %.1fs", tr_id, wait)
+                sleep(wait)
+                continue
 
             if response and response.isOK():
                 return response.getBody()
