@@ -571,7 +571,19 @@ def _runtime_safe(conn):
 
 def _resource_guard(source, identity):
     from tools.btc_review_event_compaction import resource_guard
-    return resource_guard(source, identity) and _backup_idle(source)
+    if not resource_guard(source, identity):
+        return False
+    if _backup_idle(source):
+        return True
+    try:
+        with closing(sqlite3.connect(source.resolve().as_uri()+'?mode=ro', uri=True, timeout=0)) as conn:
+            conn.execute('PRAGMA query_only=ON')
+            if conn.execute('PRAGMA journal_mode').fetchone() != ('wal',):
+                return False
+        from tools.btc_account_compaction import _trusted_b3_readonly_fd
+        return _backup_idle(source, allow_reader=_trusted_b3_readonly_fd)
+    except (OSError, ValueError, TypeError, ImportError, sqlite3.Error):
+        return False
 
 
 def _backup_idle(source, proc_root=Path('/proc'), *, allow_reader=None):
@@ -678,7 +690,7 @@ def cleanup(backup_dir, *, now=None):
                     break
         if not selected:
             _save_cursor(index, identity)
-            return {'status': 'NO_CANDIDATES', 'removed': 0}
+            return {'status': 'MORE_TO_SCAN' if index['truncated'] else 'NO_CANDIDATES', 'removed': 0}
         delivered = []
         for start in range(0, len(selected), 100):
             delivered.extend(fetch_deliveries(selected[start:start + 100], identity))
@@ -692,7 +704,7 @@ def cleanup(backup_dir, *, now=None):
             remaining = [item['slot'] for item in selected if unchanged(item)]
             _save_cursor({'truncated': True, 'last_scanned_slot': min(remaining) - 1} if remaining else progress,
                          identity)
-            return {'status': 'DEFERRED' if remaining else 'NO_CANDIDATES', 'removed': 0}
+            return {'status': 'DEFERRED' if remaining else 'MORE_TO_SCAN' if progress['truncated'] else 'NO_CANDIDATES', 'removed': 0}
         removed = []
         try:
             with locked_remote_archive(ack, align=True) as lease, closing(sqlite3.connect(
@@ -722,4 +734,4 @@ def cleanup(backup_dir, *, now=None):
         if remaining:
             progress = {'truncated': True, 'last_scanned_slot': min(remaining) - 1}
         _save_cursor(progress, identity)
-        return {'status': 'COMPLETE', 'removed': len(removed)}
+        return {'status': 'MORE_TO_SCAN' if progress['truncated'] else 'COMPLETE', 'removed': len(removed)}

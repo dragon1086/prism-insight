@@ -365,6 +365,42 @@ def test_failed_snapshot_logs_failure_and_preserves_old_backup(tmp_path):
     assert not list((home/'prism_backups').glob('*/offsite_ack.json'))
 
 
+def test_inactive_retention_timer_preserves_successful_backup(tmp_path):
+    import subprocess
+    home=tmp_path/'home';project=home/'prism-insight';project.mkdir(parents=True)
+    (project/'stock_tracking_db.sqlite').write_bytes(b'fixture')
+    tools=tmp_path/'bin';tools.mkdir();fake=tools/'python3'
+    fake.write_text('''#!/bin/sh
+case "$1" in
+  */sqlite_snapshot.py)
+    while [ "$#" -gt 0 ]; do if [ "$1" = "--destination" ]; then shift; target="$1"; fi; shift; done
+    printf fixture > "$target"; printf '{}' > "$target.manifest.json" ;;
+  */btc_offsite_archive.py) printf '{"status":"VERIFIED"}\\n' ;;
+  */remove_uploaded_btc_backup.py) printf '{"status":"REMOVED"}\\n' ;;
+  *) exit 1 ;;
+esac
+''')
+    fake.chmod(0o755);systemctl=tools/'systemctl'
+    systemctl.write_text('#!/bin/sh\nexit 1\n');systemctl.chmod(0o755)
+    marker=tmp_path/'scheduled';env={**os.environ,'HOME':str(home),'PATH':str(tools)+':'+os.environ['PATH'],
+                                  'SCHEDULE_LOG':str(marker),'PRISM_BTC_EVENT_RETENTION':'1'}
+    script=Path(__file__).resolve().parents[1]/'utils/backup_configs.sh'
+    result=subprocess.run(['bash',str(script)],env=env,capture_output=True,text=True,timeout=10)
+    assert result.returncode==0 and not marker.exists()
+    assert 'BTC 정리 타이머 비활성' in (home/'prism_backups'/'backup.log').read_text()
+    ack,=(home/'prism_backups').glob('*/offsite_ack.json')
+    assert json.loads(ack.read_text())['status']=='VERIFIED'
+    assert (ack.parent/'.btc-retention-mode').read_text().strip()=='1'
+
+
+def test_backup_script_is_tracked_as_executable():
+    import subprocess
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.check_output(['git', 'ls-files', '--stage', '--', 'utils/backup_configs.sh'],
+                                     cwd=root, text=True, timeout=10)
+    assert result.startswith('100755 ')
+
+
 @pytest.mark.parametrize('archive_success', [True, False])
 @pytest.mark.parametrize('event_retention', ['unset', '0', '1', 'invalid'])
 def test_backup_records_archive_ack_and_preserves_old_on_failure(tmp_path, archive_success, event_retention):
@@ -410,6 +446,9 @@ esac
     scheduler = tools / 'systemd-run'
     scheduler.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$SCHEDULE_LOG"\n')
     scheduler.chmod(0o755)
+    systemctl = tools/'systemctl'
+    systemctl.write_text('#!/bin/sh\nexit 0\n')
+    systemctl.chmod(0o755)
     script = Path(__file__).resolve().parents[1] / 'utils/backup_configs.sh'
     env = {**os.environ, 'HOME': str(home), 'PATH': str(tools) + ':' + os.environ['PATH'],
            'ARCHIVE_SUCCESS': '1' if archive_success else '0', 'SCHEDULE_LOG': str(tmp_path / 'scheduled'),
@@ -424,16 +463,14 @@ esac
     assert json.loads(ack.read_text())['status'] == ('VERIFIED' if archive_success else 'ERROR')
     assert ack.stat().st_mode & 0o077 == 0
     schedule = tmp_path / 'scheduled'
-    assert schedule.exists() is (archive_success and event_retention != 'invalid')
+    assert not schedule.exists()
     assert (tmp_path / 'removed').exists() is archive_success
     assert ('--capture-review-event-proof' in (tmp_path / 'snapshot_args').read_text().splitlines()) == (event_retention in ('unset', '1'))
     if archive_success and event_retention != 'invalid':
-        assert 'run_btc_review_retention.py' in schedule.read_text()
-        arguments = schedule.read_text().splitlines()
-        assert '--timer-property=AccuracySec=1s' in arguments
-        if event_retention in ('unset', '1'):
-            assert arguments.pop() == '--event-proof-only'
-        assert arguments[-7:-3] == ['/usr/bin/bash', '-c', 'exec "$1" "$2" "$3" "${@:4}"', '--']
-        assert arguments[-3] == str(fake)
+        marker=ack.parent/'.btc-retention-mode'
+        assert marker.read_text().strip()==('0' if event_retention=='0' else '1')
+        assert marker.stat().st_mode & 0o077 == 0
+    else:
+        assert not (ack.parent/'.btc-retention-mode').exists()
     if not archive_success:
         assert (old / 'evidence').read_bytes() == b'keep'
