@@ -279,3 +279,37 @@ def test_guarded_batch_rejects_unsealed_manifest(tmp_path, monkeypatch):
     conn = sqlite3.connect(path, timeout=0)
     with pytest.raises(ValueError, match='backup_binding_invalid'):
         guarded_operational_batch(conn, {'backup_proof_sha256':'a'*64}, 'b'*64, 'a'*64)
+
+
+def test_interruption_after_commit_retries_without_changing_source(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    from tools.btc_account_compaction import compact_file_batch
+    path = tmp_path / 'crash-fixture.sqlite'
+    conn = sqlite3.connect(path, timeout=0)
+    conn.execute('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body)')
+    raw = json.dumps({'detail': 'x'*4000})
+    conn.execute("INSERT INTO llm_scenario_broker_evidence VALUES('account',1,?)", (raw,))
+    conn.commit()
+    stat = path.stat()
+    identity = hashlib.sha256(f'{path.resolve()}:{stat.st_dev}:{stat.st_ino}'.encode()).hexdigest()
+    manifest = {'source_identity':identity, 'cutoff':3, 'after_rowid':0, 'backup_proof_sha256':'b'*64,
+                'rows':[{'rowid':1, 'captured_at':1, 'sha256':hashlib.sha256(raw.encode()).hexdigest()}]}
+    conn.close()
+    root = Path(__file__).resolve().parents[2]
+    script = ("import json,os,sqlite3,sys; "
+              "sys.path[:0]=[sys.argv[1],sys.argv[1]+'/prism-btc']; "
+              "from tools.btc_account_compaction import compact_file_batch; "
+              "c=sqlite3.connect(sys.argv[2],timeout=0); "
+              "r=compact_file_batch(c,json.loads(sys.argv[3]),604803,lambda:True); "
+              "assert r['updated']==1; os._exit(23)")
+    env = dict(os.environ, PRISM_DISABLE_SIGNAL_PUBLISH='1')
+    child = subprocess.run([sys.executable, '-c', script, str(root), str(path), json.dumps(manifest)],
+                           env=env, capture_output=True, timeout=10)
+    assert child.returncode == 23, child.stderr.decode(errors='replace')[-400:]
+    with sqlite3.connect(path, timeout=0) as recovered:
+        result = compact_file_batch(recovered, manifest, 604803, lambda:True)
+        assert result['updated'] == 0 and result['unchanged'] == 1
+        assert review_text(recovered.execute('SELECT body FROM llm_scenario_broker_evidence').fetchone()[0]) == raw
