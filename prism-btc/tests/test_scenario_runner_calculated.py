@@ -1,4 +1,5 @@
 from utils.btc_review_references import read_tape
+from utils.btc_review_event_references import read_event
 from live.scenario_review_storage import review_text
 """Operational opt-in stays demo-only, durable, no-retry and default-off."""
 from copy import deepcopy
@@ -264,7 +265,9 @@ def test_runner_first_observation_then_host_sized_decision_with_row_factory(tmp_
             submitted = broker.executed[0]
             assert submitted["entries"][0]["quantity"] > 0
             assert "allocation_fraction" not in submitted["entries"][0]
-            events = [json.loads(review_text(row[0])) for row in conn.execute("SELECT body FROM llm_scenario_review_events")]
+            events = [json.loads(read_event(body, conn, slot, sequence, decode_legacy=review_text))
+                      for slot, sequence, body in conn.execute(
+                          "SELECT slot,sequence,body FROM llm_scenario_review_events")]
             assert any(row["kind"] == "FINAL_FRESH_REVIEW_RECEIPT" for row in events)
             final = next(row for row in events if row["kind"] == "FINAL_FRESH_REVIEW_RECEIPT")
             assert final["stability_scope"] == "COHERENT_FINAL_OBSERVATION_EXECUTOR_FRESH_PREFLIGHT_REQUIRED"

@@ -835,6 +835,9 @@ class ScenarioRuntime:
             ctx.update(now=self.clock(), input_id=input_id, input_captured_at=captured,
                        max_input_age_seconds=120)
             stage = "snapshot_persist"
+            # Historical audit reads can be slow; do not hold the execution mutex.
+            from live.scenario_position_flow import build_closed_continuity
+            closed_history = build_closed_continuity(self.conn, state, self.clock())
             with _snapshot_mutation_lock(self.conn, snapshot_lock):
                 current = self.state()
                 now = self.clock()
@@ -842,14 +845,16 @@ class ScenarioRuntime:
                 reason = None
                 if not _finite(now):
                     reason = "snapshot_stale"
-                elif current["version"] != version:
+                elif (current["version"] != version or
+                      current.get("breaker", {}).get("completed_ids", []) !=
+                      state.get("breaker", {}).get("completed_ids", [])):
                     reason = "snapshot_state_changed"
                 elif int(now//300) != slot:
                     reason = "snapshot_slot_changed"
                 elif not 0 <= now-captured <= 120:
                     reason = "snapshot_stale"
-                elif (snapshot_lock["contended"]
-                        and (not _finite(account_at) or not 0 <= now-account_at <= 120)):
+                elif ((snapshot_lock["contended"] and not _finite(account_at)) or
+                      (_finite(account_at) and not 0 <= now-account_at <= 120)):
                     reason = "snapshot_account_stale"
                 if reason:
                     outcome = {"status": "stale_proposal", "reason": reason,
@@ -870,9 +875,9 @@ class ScenarioRuntime:
                     ctx['entry_goal_decision_slot'] = slot
                 from live.scenario_entry_goal import prepare_goal_source
                 prepare_goal_source(snap, ctx)
-                from live.scenario_position_flow import build_position_flow, build_closed_continuity
+                from live.scenario_position_flow import build_position_flow
                 ctx["position_flow"] = build_position_flow(self.conn, current["active"], ctx, now)
-                ctx['last_closed_trade'] = build_closed_continuity(self.conn, current, now)
+                ctx['last_closed_trade'] = closed_history
                 if ctx.get("recovery_observing"):
                     recovery_input_event = recovery.prepare_input(self.conn, current, ctx, snap, slot, self.clock())
                     # Baseline, mandatory INPUT and the full decision input must
