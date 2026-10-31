@@ -43,6 +43,7 @@ def _accounting_audit_fixture(tmp_path):
 @pytest.mark.parametrize('failure', [None, 'source_changed', 'codec_error'])
 def test_accounting_audit_writer_preserves_original_and_falls_back(tmp_path, monkeypatch, failure):
     from live import scenario_ledger
+    from observability.review_storage import review_text
     from utils import btc_accounting_audit_references as refs
     path, raw, capture = _accounting_audit_fixture(tmp_path)
     forwarded = []
@@ -55,11 +56,11 @@ def test_accounting_audit_writer_preserves_original_and_falls_back(tmp_path, mon
     audit._flush(capture)
     with sqlite3.connect(path) as conn:
         stored = conn.execute('SELECT body FROM llm_scenario_audit_events').fetchone()[0]
+        assert refs.read_accounting(stored, conn) == raw
         if failure:
-            assert stored == raw
+            assert json.loads(review_text(stored)) == json.loads(raw)
         else:
-            assert json.loads(stored)[refs.TAG] == 1 and len(stored) < len(raw)
-            assert refs.read_accounting(stored, conn) == raw
+            assert json.loads(review_text(stored))[refs.TAG] == 1 and len(stored) < len(raw)
     assert len(forwarded) == 1 and forwarded[0][8] == raw
 
 

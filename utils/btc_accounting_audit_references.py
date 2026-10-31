@@ -88,7 +88,10 @@ def compact_children(raw, conn):
         rows = conn.execute("SELECT event_id,body FROM llm_scenario_audit_events "
                             "WHERE kind='accounting_observation' ORDER BY rowid DESC LIMIT ?", (SOURCE_LIMIT,))
         for event_id, body in rows:
-            if not isinstance(event_id, str) or not event_id or not isinstance(body, str) or len(body.encode()) > MAX_BYTES:
+            if not isinstance(event_id, str) or not event_id or not isinstance(body, (str, bytes)):
+                continue
+            body = _account_text(body)
+            if len(body.encode()) > MAX_BYTES:
                 continue
             source = json.loads(body)
             if not isinstance(source, dict):
@@ -111,8 +114,9 @@ def compact_children(raw, conn):
 
 
 def read_accounting(raw, conn):
-    if not isinstance(raw, str):
+    if not isinstance(raw, (str, bytes)):
         raise ValueError('accounting_audit_invalid')
+    raw = _account_text(raw)
     if TAG not in raw and CHILDREN_REF not in raw:
         return raw
     if len(raw.encode()) > MAX_BYTES:
@@ -134,11 +138,12 @@ def read_accounting(raw, conn):
             raise ValueError('accounting_children_reference_invalid')
         row = conn.execute('SELECT kind,body FROM llm_scenario_audit_events WHERE event_id=?',
                            (marker['event_id'],)).fetchone()
-        if not row or row[0] != 'accounting_observation' or not isinstance(row[1], str):
+        if not row or row[0] != 'accounting_observation' or not isinstance(row[1], (str, bytes)):
             raise ValueError('accounting_children_source_missing')
-        if len(row[1].encode()) > MAX_BYTES:
+        source_text = _account_text(row[1])
+        if len(source_text.encode()) > MAX_BYTES:
             raise ValueError('accounting_children_source_invalid')
-        source = json.loads(row[1])
+        source = json.loads(source_text)
         if (not isinstance(source, dict) or CHILDREN_REF in source
                 or not isinstance(source.get('children'), list)
                 or sha(canonical(source['children'])) != marker['sha256']):
