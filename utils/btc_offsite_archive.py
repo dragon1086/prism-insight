@@ -435,8 +435,9 @@ def referenced_commits(raw, *, deadline=None):
                                     and value.startswith(b'PRISM_REVIEW_REFS_V1\x00'))
                     is_audit_reference = (kind == 'decision_input' and isinstance(value, str)
                                           and '$btc_audit_input_refs_v1' in value)
-                    is_accounting_reference = (kind == 'accounting_observation' and isinstance(value, str)
-                                               and '$btc_accounting_refs_v1' in value)
+                    is_accounting_reference = (kind == 'accounting_observation'
+                                               and (isinstance(value, bytes) or (isinstance(value, str)
+                                                    and '$btc_accounting_refs_v1' in value)))
                     is_recovery_reference = (table == 'llm_scenario_recovery_events' and isinstance(value, bytes)
                                              and value.startswith(b'PRISM_RECOVERY_REFS_V1\x00'))
                     is_event_reference = (table == 'llm_scenario_review_events' and isinstance(value, bytes)
