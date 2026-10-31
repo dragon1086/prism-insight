@@ -797,3 +797,91 @@ def test_next_judgment_receives_previous_plan_and_verified_action_history(setup)
         return wait_proposal(s,c,action_id='wait-2')
     r.propose=model
     assert r.tick()['status']=='wait'
+
+
+def test_closed_history_read_does_not_hold_execution_lock(setup, monkeypatch):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    from live import scenario_position_flow
+
+    runtime, broker, _, path = setup
+    assert runtime.conn.execute('PRAGMA journal_mode=WAL').fetchone()[0] == 'wal'
+    runtime.conn.execute('CREATE TABLE protection_probe (value INTEGER)')
+    runtime.conn.commit()
+    probes = []
+    script = ("import sqlite3,sys\n"
+              "from live.shared_entry_coordinator import mutation_lock\n"
+              "conn=sqlite3.connect(sys.argv[1], timeout=1)\n"
+              "with mutation_lock(conn):\n"
+              " conn.execute('INSERT INTO protection_probe VALUES (1)')\n"
+              " conn.commit()\n print('acquired')\n")
+
+    def slow_history(conn, _state, _now):
+        conn.execute('BEGIN')
+        conn.execute('SELECT body FROM llm_scenario_state WHERE id=1').fetchone()
+        try:
+            root = Path(__file__).resolve().parents[2]
+            env = dict(os.environ, PYTHONPATH=str(root) + os.pathsep + str(root / 'prism-btc'),
+                       PRISM_DISABLE_SIGNAL_PUBLISH='1')
+            child = subprocess.run([sys.executable, '-c', script, str(path)],
+                                   env=env, capture_output=True, text=True, timeout=5)
+            probes.append((child.returncode, child.stdout.strip(), child.stderr[-500:]))
+        finally:
+            conn.rollback()
+        return {'version': 1, 'status': 'MISSING'}
+
+    monkeypatch.setattr(scenario_position_flow, 'build_closed_continuity', slow_history)
+    result = runtime.tick()
+    assert probes == [(0, 'acquired', '')]
+    assert runtime.conn.execute('SELECT COUNT(*) FROM protection_probe').fetchone()[0] == 1
+    assert result.get('reason') == 'awaiting_exact_evidence'
+    assert broker.executed == ['action-1']
+
+
+@pytest.mark.parametrize("bump_version", [True, False])
+def test_state_change_during_closed_history_rejects_stale_snapshot(setup, monkeypatch, bump_version):
+    import json
+    from live import scenario_position_flow
+
+    runtime, broker, _, path = setup
+    calls = []
+
+    def change_history(_conn, _state, _now):
+        other = sqlite3.connect(path)
+        state = json.loads(other.execute('SELECT body FROM llm_scenario_state WHERE id=1').fetchone()[0])
+        if bump_version:
+            state['version'] += 1
+        else:
+            state.setdefault('breaker', {})['completed_ids'] = ['new-completion']
+        other.execute('UPDATE llm_scenario_state SET body=? WHERE id=1', (json.dumps(state),))
+        other.commit()
+        other.close()
+        return {'version': 1, 'status': 'MISSING'}
+
+    monkeypatch.setattr(scenario_position_flow, 'build_closed_continuity', change_history)
+    runtime.propose = lambda *args: calls.append(True)
+    result = runtime.tick()
+    assert result['status'] == 'stale_proposal'
+    assert result['reason'] == 'snapshot_state_changed'
+    assert calls == [] and broker.executed == []
+
+
+def test_account_snapshot_expiring_during_closed_history_skips_model(setup, monkeypatch):
+    from live import scenario_position_flow
+
+    runtime, broker, now, _ = setup
+    broker.ctx['account_captured_at'] = now[0] - 119
+    calls = []
+
+    def slow_history(_conn, _state, _now):
+        now[0] += 3
+        return {'version': 1, 'status': 'MISSING'}
+
+    monkeypatch.setattr(scenario_position_flow, 'build_closed_continuity', slow_history)
+    runtime.propose = lambda *args: calls.append(True)
+    result = runtime.tick()
+    assert result['status'] == 'stale_proposal'
+    assert result['reason'] == 'snapshot_account_stale'
+    assert calls == [] and broker.executed == []
