@@ -116,6 +116,7 @@ def test_children_writer_uses_one_anchor_across_many_events_and_preserves_origin
 
 def test_audit_flush_writes_direct_reference_and_preserves_both_originals(tmp_path, monkeypatch):
     from live import scenario_ledger, scenario_provenance
+    from observability.review_storage import review_text
     monkeypatch.setattr(scenario_ledger, 'forward_audits', lambda events: None)
     path = tmp_path / 'audit.sqlite'
     with sqlite3.connect(path) as conn:
@@ -128,9 +129,29 @@ def test_audit_flush_writes_direct_reference_and_preserves_both_originals(tmp_pa
     with sqlite3.connect(path) as conn:
         rows = conn.execute('SELECT event_id,body FROM llm_scenario_audit_events ORDER BY rowid').fetchall()
         assert len(rows) == 2
-        assert CHILDREN_REF not in json.loads(rows[0][1])
-        assert json.loads(rows[1][1])[CHILDREN_REF]['event_id'] == rows[0][0]
+        assert all(isinstance(body, bytes) for _, body in rows)
+        assert CHILDREN_REF not in json.loads(review_text(rows[0][1]))
+        assert json.loads(review_text(rows[1][1]))[CHILDREN_REF]['event_id'] == rows[0][0]
         assert all(read_accounting(body, conn) == raw for _, body in rows)
+
+
+@pytest.mark.parametrize('failure', ['raise', 'corrupt'])
+def test_audit_compression_failure_keeps_restorable_evidence(tmp_path, monkeypatch, failure):
+    from live import scenario_ledger, scenario_provenance, scenario_review_storage
+    monkeypatch.setattr(scenario_ledger, 'forward_audits', lambda events: None)
+    def fail(_):
+        if failure == 'raise':
+            raise ValueError('compression_failed')
+        return b'PRISM_REVIEW_GZIP_V1\x00broken'
+    monkeypatch.setattr(scenario_review_storage, 'review_storage', fail)
+    path = tmp_path / 'audit.sqlite'
+    with sqlite3.connect(path) as conn:
+        raw, _ = fixture(conn)
+    event = ('one', 'run', 'accounting_observation', 2, None, None, 1, 'manifest', raw)
+    scenario_provenance._flush({'path': path, 'manifest_id': 'manifest', 'manifest': '{}', 'events': [event]})
+    with sqlite3.connect(path) as conn:
+        stored = conn.execute("SELECT body FROM llm_scenario_audit_events WHERE event_id='one'").fetchone()[0]
+        assert isinstance(stored, str) and read_accounting(stored, conn) == raw
 
 
 @pytest.mark.parametrize('damage', ['missing', 'wrong_kind', 'changed', 'chain', 'digest', 'marker', 'duplicate_children', 'missing_tag'])
