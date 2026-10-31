@@ -18,7 +18,7 @@ from tests.test_scenario_ma_context import NOW, point
 def gap_snapshot(side, provisional=True, *, stationary=False, include_4h=True):
     direction = 1 if side == 'LONG' else -1
     frames = {}
-    for frame in ('1h', '4h') if include_4h else ('1h',):
+    for frame in ('1h', '30m', '4h') if include_4h else ('1h', '30m'):
         offset = 2 if provisional else 3
         before = point(frame, offset, close=83410 - direction * 120,
                        fast=83410 - direction * 110, slow=83410 + direction * 490)
@@ -42,8 +42,8 @@ def test_gap_policy_keeps_bounded_thesis_and_existing_host_authority():
         'prior MA35 touch/rejection, another closed bar or an additional retest',
         'Width or WIDENING alone is insufficient',
         'moving MA passing stationary price',
-        'prefer 1h and available 4h over 30m',
-        'does not replace the global directional priority',
+        "prioritize 1h and 30m chronological price action",
+        '4h as contextual structure and obstacles',
         "market_snapshot.timeframes['4h'].ma_path own-time points",
         'host-calculated costs and structural invalidation',
         'size within the existing risk cap',
@@ -83,8 +83,10 @@ def test_widening_price_crossing_survives_both_actual_review_requests(side, prov
         assert MA_STRUCTURE_PROMPT in request['system_prompt']
         assert len(request['user_prompt'].encode()) <= 100000
         payload = restore_model_input(json.loads(request['user_prompt']))
+        assert payload['market_snapshot']['timeframes']['30m']['ma_path'] == snap['timeframes']['30m']['ma_path']
         assert payload['market_snapshot']['timeframes']['4h']['ma_path'] == snap['timeframes']['4h']['ma_path']
         facts = payload['contract_context']['ma_structure']
+        assert facts['primary']['30m']['transitions'][-1]['gap_state'] == 'WIDENING'
         step = facts['primary']['1h']['transitions'][-1]
         assert step['gap_state'] == 'WIDENING'
         assert step['gap_change_price'] == 40

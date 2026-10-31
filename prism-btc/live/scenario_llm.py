@@ -692,10 +692,10 @@ reversal, prior MA35 touch/rejection, another closed bar or an additional retest
 Width or WIDENING alone is insufficient: verify chronological own-time price
 movement across MA10, not merely a moving MA passing stationary price. Distinguish
 confirmed from provisional evidence; do not infer intrabar order from OHLC.
-For this setup's structural evidence prefer 1h and available 4h over 30m; 30m is
-secondary, not independent confirmation votes. This
-setup-specific reliability preference does not replace the global directional
-priority or require agreement of both 1h and 4h. For 4h chronology use supplied
+For this setup's structural evidence prioritize 1h and 30m chronological price action.
+Use 4h as contextual structure and obstacles, not as a replacement for the primary
+frames or an automatic veto. Correlated frames are not independent confirmation votes.
+Do not require 1h and 4h to agree. For 4h chronology use supplied
 market_snapshot.timeframes['4h'].ma_path own-time points; higher_frames latest
 levels alone cannot establish a crossing or widening sequence. Missing, stale or
 future path evidence is unknown, not fabricated confirmation or an automatic veto.
