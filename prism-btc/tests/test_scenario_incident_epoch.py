@@ -1160,3 +1160,17 @@ def test_monitor_phase_timing_identifies_slow_cursor_without_sensitive_data(flat
     assert timing['phase_ms']['cursor_validate'] == 0
     assert 'accountId' not in message and 'orderId' not in message
     assert not policy.halted(broker.conn) and i['exchange'].writes == []
+
+
+def test_existing_incident_receipt_remains_valid_after_code_digest_change(flat_incident, monkeypatch):
+    i = flat_incident
+    transition(i)
+    before = copy.deepcopy(policy.receipt(i['broker'].conn))
+    original_epoch = before['epoch_id']
+    monkeypatch.setattr(policy, 'code_digest', lambda: 'f' * 64)
+    broker = restarted(i)
+    assert policy.epoch(broker.conn) == original_epoch
+    assert policy.receipt(broker.conn) == before
+    assert policy.monitor(broker, refresh=True) is not None
+    assert not policy.halted(broker.conn) and not policy.new_risk_blocked(broker)
+    assert i['exchange'].writes == []
