@@ -231,3 +231,41 @@ def test_outcome_tracker_keeps_unmatured_horizons_pending(tmp_path):
     )
 
     assert result == {"evaluations": 1, "emitted": 3, "pending": 9, "errors": 0}
+
+
+def test_shadow_dedup_respects_cross_type_collisions():
+    from observability import third_slot_shadow as shadow
+    evaluation, outcome = shadow.EVALUATION_EVENT, shadow.OUTCOME_EVENT
+    rows = [
+        {'event_id': 'a', 'event_type': evaluation, 'timestamp': '01'},
+        {'event_id': 'a', 'event_type': 'other', 'timestamp': '02'},
+        {'event_id': 'b', 'event_type': 'other', 'timestamp': '01'},
+        {'event_id': 'b', 'event_type': evaluation, 'timestamp': '02'},
+        {'event_id': 'c', 'event_type': outcome, 'timestamp': '03'},
+        {'event_id': 'c', 'event_type': evaluation, 'timestamp': '02'},
+        {'event_id': 'd', 'event_type': evaluation, 'timestamp': '01'},
+        {'event_id': 'd', 'event_type': 'other', 'timestamp': '01'},
+        {'event_id': 'e', 'event_type': 'other', 'timestamp': '01'},
+        {'event_id': 'e', 'event_type': evaluation, 'timestamp': '01'},
+        {'event_id': 'f', 'event_type': evaluation, 'timestamp': '01'},
+        {'event_id': 'f', 'event_type': ['invalid'], 'timestamp': '02'},
+        {'event_type': evaluation, 'timestamp': '10'},
+    ]
+    assert [(row['event_id'], row['event_type']) for row in shadow._deduplicated(iter(rows))] == [
+        ('b', evaluation), ('c', outcome), ('e', evaluation)]
+
+
+def test_shadow_event_loader_reads_lazily(tmp_path, monkeypatch):
+    from observability import third_slot_shadow as shadow
+    path = tmp_path / 'fixture.jsonl'
+    path.write_text('{"event_id":"one"}\n{"event_id":"two"}\n')
+    calls = []
+    loads = json.loads
+    def track(text):
+        calls.append(text)
+        return loads(text)
+    monkeypatch.setattr(shadow.json, 'loads', track)
+    iterator = iter(shadow._load_events(path))
+    assert calls == []
+    assert next(iterator)['event_id'] == 'one'
+    assert len(calls) == 1
