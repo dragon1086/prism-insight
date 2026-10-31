@@ -1044,8 +1044,10 @@ def test_monitor_deadline_blocks_only_this_cycle(flat_incident, monkeypatch, cap
     assert len(messages) == 1
     assert f"started_ms={int((i['now'][0] - 11) * 1000)}" in messages[0]
     timing = json.loads(messages[0].split(' calls=', 1)[1])
-    assert set(timing) == {'calls', 'dropped', 'measurement_failures'}
+    assert set(timing) == {'calls', 'dropped', 'measurement_failures', 'phase_ms'}
     assert timing['dropped'] == timing['measurement_failures'] == 0
+    assert {'cursor_load', 'receipt_load', 'cursor_validate', 'children_lookup', 'child_query'} <= set(timing['phase_ms'])
+    assert all(isinstance(v, (int, float)) and v >= 0 for v in timing['phase_ms'].values())
     assert timing['calls'] and len(timing['calls']) <= 64
     for call in timing['calls']:
         assert set(call) == {'method', 'elapsed_ms', 'ok'}
@@ -1102,3 +1104,59 @@ def test_successful_monitor_restores_outer_trace_without_warning(flat_incident, 
         assert i['exchange'].writes == []
     finally:
         _MONITOR_CALL_TIMING.reset(token)
+
+
+@pytest.mark.parametrize('deadline', [False, True])
+def test_monitor_phase_clock_failure_never_changes_safety_or_leaks(flat_incident, monkeypatch, caplog, deadline):
+    i = flat_incident
+    transition(i)
+    broker = restarted(i)
+    original = broker._query_child
+
+    def broken_clock():
+        raise RuntimeError('private clock detail')
+
+    monkeypatch.setattr(policy, '_phase_clock_ns', broken_clock)
+    if deadline:
+        def delayed(*args, **kwargs):
+            result = original(*args, **kwargs)
+            i['now'][0] += 11
+            return result
+        monkeypatch.setattr(broker, '_query_child', delayed)
+    caplog.set_level(logging.WARNING, logger=policy.__name__)
+    result = policy.monitor(broker, refresh=True)
+    assert (result is None) is deadline
+    assert not policy.halted(broker.conn) and i['exchange'].writes == []
+    assert 'private clock detail' not in caplog.text
+    if deadline:
+        record = next(r.getMessage() for r in caplog.records
+                      if r.getMessage().startswith('incident_monitor_call_timing '))
+        timing = json.loads(record.split(' calls=', 1)[1])
+        assert timing['measurement_failures'] > 0 and timing['phase_ms'] == {}
+
+
+def test_monitor_phase_timing_identifies_slow_cursor_without_sensitive_data(flat_incident, monkeypatch, caplog):
+    i = flat_incident
+    transition(i)
+    broker = restarted(i)
+    original = policy._events
+    ticks = [1_000_000_000]
+
+    def events(conn, kind):
+        result = original(conn, kind)
+        if kind == policy.FINANCE_CURSOR:
+            ticks[0] += 11_000_000_000
+            i['now'][0] += 11
+        return result
+
+    monkeypatch.setattr(policy, '_events', events)
+    monkeypatch.setattr(policy, '_phase_clock_ns', lambda: ticks[0])
+    caplog.set_level(logging.WARNING, logger=policy.__name__)
+    assert policy.monitor(broker, refresh=True) is None
+    message = next(r.getMessage() for r in caplog.records
+                   if r.getMessage().startswith('incident_monitor_call_timing '))
+    timing = json.loads(message.split(' calls=', 1)[1])
+    assert timing['phase_ms']['cursor_load'] == 11000
+    assert timing['phase_ms']['cursor_validate'] == 0
+    assert 'accountId' not in message and 'orderId' not in message
+    assert not policy.halted(broker.conn) and i['exchange'].writes == []
