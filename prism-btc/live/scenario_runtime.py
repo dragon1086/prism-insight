@@ -837,7 +837,8 @@ class ScenarioRuntime:
             stage = "snapshot_persist"
             # Historical audit reads can be slow; do not hold the execution mutex.
             from live.scenario_position_flow import build_closed_continuity
-            closed_history = build_closed_continuity(self.conn, state, self.clock())
+            history_started_at = self.clock()
+            closed_history = build_closed_continuity(self.conn, state, history_started_at)
             with _snapshot_mutation_lock(self.conn, snapshot_lock):
                 current = self.state()
                 now = self.clock()
@@ -853,8 +854,11 @@ class ScenarioRuntime:
                     reason = "snapshot_slot_changed"
                 elif not 0 <= now-captured <= 120:
                     reason = "snapshot_stale"
-                elif ((snapshot_lock["contended"] and not _finite(account_at)) or
-                      (_finite(account_at) and not 0 <= now-account_at <= 120)):
+                elif ((snapshot_lock["contended"] and
+                       (not _finite(account_at) or not 0 <= now-account_at <= 120)) or
+                      (_finite(account_at) and _finite(history_started_at) and
+                       0 <= history_started_at-account_at <= 120 and
+                       not 0 <= now-account_at <= 120)):
                     reason = "snapshot_account_stale"
                 if reason:
                     outcome = {"status": "stale_proposal", "reason": reason,
