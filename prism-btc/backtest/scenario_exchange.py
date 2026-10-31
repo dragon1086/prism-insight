@@ -64,6 +64,7 @@ class ScenarioExchange:
             raise ValueError("invalid start timestamp")
         self.ts_ms = start_ms
         self.price = self.mark_price = _d(price)
+        self._observed_quote = None
         self.cash = self.initial_equity = _d(initial_equity)
         self.step, self.tick = _d(quantity_step), _d(price_tick)
         if min(self.cash, self.price, self.step, self.tick) <= 0:
@@ -247,7 +248,7 @@ class ScenarioExchange:
             self.stop = _d(order["stopLoss"])
         self._sync_native(order["orderLinkId"] if not order["reduceOnly"] else None)
 
-    def advance(self, ts_ms, price, mark_price=None, capacity_lots=0, *, _match=True):
+    def advance(self, ts_ms, price, mark_price=None, capacity_lots=0, *, bid_price=None, ask_price=None, _match=True):
         """Process one forward point event; return lots consumed from shared capacity.
 
         Funding precedes mutations and fills. Missed funding timestamps use only
@@ -261,6 +262,14 @@ class ScenarioExchange:
         price, mark = _d(price), _d(price if mark_price is None else mark_price)
         if min(price, mark) <= 0:
             raise ValueError("positive prices required")
+        if (bid_price is None) != (ask_price is None):
+            raise ValueError("both observed quote sides required")
+        observed_quote = None
+        if bid_price is not None:
+            bid, ask = _d(bid_price), _d(ask_price)
+            if not bid.is_finite() or not ask.is_finite() or bid <= 0 or ask < bid:
+                raise ValueError("invalid observed quote")
+            observed_quote = (bid, ask)
         for when, rate in self.funding_schedule:
             if self.ts_ms < when <= ts_ms and self.position:
                 funding_mark = mark if when == ts_ms else self.mark_price
@@ -271,6 +280,7 @@ class ScenarioExchange:
                     currency="USDT", funding=_s(amount), fee="0", cashFlow="0", change=_s(amount), qty=_s(abs(self.position)),
                     transactionTime=str(when)))
         self.ts_ms, self.price, self.mark_price = ts_ms, price, mark
+        self._observed_quote = observed_quote
         self.mark_proxy_used |= mark_price is None
         while self._queue and self._queue[0][0] <= ts_ms:
             _, _, kind, payload = heapq.heappop(self._queue)
@@ -320,8 +330,11 @@ class ScenarioExchange:
                 order.update(orderStatus="Cancelled", leavesQty="0")
                 continue
             market = order["orderType"] == "Market"
-            quote = price * (1 + sign * self.spread / 2)
-            executable = price * (1 + sign * (self.slippage + self.spread / 2)) if market else _d(order["price"])
+            quote = ((observed_quote[1] if sign > 0 else observed_quote[0]) if observed_quote
+                     else price * (1 + sign * self.spread / 2))
+            slipped_quote = (quote * (1 + sign * self.slippage) if observed_quote
+                             else price * (1 + sign * (self.slippage + self.spread / 2)))
+            executable = slipped_quote if market else _d(order["price"])
             if market:
                 executable = (executable / self.tick).to_integral_value(rounding=ROUND_CEILING if sign > 0 else ROUND_FLOOR) * self.tick
             maker = not market and bool(order.get("_rested"))
@@ -329,7 +342,7 @@ class ScenarioExchange:
             reference = price if maker else quote
             crossed = market or (reference <= executable if sign > 0 else reference >= executable)
             if crossed and not market and not maker:
-                slipped = price * (1 + sign * (self.slippage + self.spread / 2))
+                slipped = slipped_quote
                 slipped = (slipped / self.tick).to_integral_value(rounding=ROUND_CEILING if sign > 0 else ROUND_FLOOR) * self.tick
                 executable = min(executable, slipped) if sign > 0 else max(executable, slipped)
             order["_rested"] = True
@@ -356,7 +369,9 @@ class ScenarioExchange:
                     if not order["reduceOnly"] and native and native.get("_triggered") and remaining:
                         stop_lots = min(remaining, int(abs(self.position) / self.step))
                         stop_sign = -1 if self.position > 0 else 1
-                        stop_price = price * (1 + stop_sign * (self.slippage + self.spread / 2))
+                        stop_quote = ((observed_quote[1] if stop_sign > 0 else observed_quote[0]) if observed_quote else price)
+                        stop_price = (stop_quote * (1 + stop_sign * self.slippage) if observed_quote
+                                      else price * (1 + stop_sign * (self.slippage + self.spread / 2)))
                         stop_price = (stop_price / self.tick).to_integral_value(
                             rounding=ROUND_CEILING if stop_sign > 0 else ROUND_FLOOR) * self.tick
                         if stop_lots:
@@ -402,8 +417,10 @@ class ScenarioExchange:
 
     def get_tickers(self, **params):
         next_funding = (self.ts_ms // self.funding_interval_ms + 1) * self.funding_interval_ms
+        bid, ask = (self._observed_quote if self._observed_quote is not None else
+                    (self.price * (1-self.spread/2), self.price * (1+self.spread/2)))
         return _reply([dict(symbol="BTCUSDT", lastPrice=_s(self.price), markPrice=_s(self.mark_price),
-            bid1Price=_s(self.price * (1-self.spread/2)), ask1Price=_s(self.price * (1+self.spread/2)), nextFundingTime=str(next_funding))])
+            bid1Price=_s(bid), ask1Price=_s(ask), nextFundingTime=str(next_funding))])
 
     def _rows(self, rows, params, time_key=None):
         return [self._public(row) for row in rows if
@@ -431,11 +448,14 @@ class ScenarioExchange:
             for t, r in self.funding_schedule if params.get("startTime", 0) <= t <= min(self.ts_ms, params.get("endTime", self.ts_ms))])
 
     def snapshot(self):
-        return dict(simulation=True, timestamp_ms=self.ts_ms, equity=_s(self.equity), cash=_s(self.cash),
+        result = dict(simulation=True, timestamp_ms=self.ts_ms, equity=_s(self.equity), cash=_s(self.cash),
             position=_s(self.position), average_price=_s(self.average),
             orders=[self._public(o) for o in self.orders.values()], executions=copy.deepcopy(self.executions),
             transactions=copy.deepcopy(self.transactions), mark_proxy_used=self.mark_proxy_used,
             funding_price_proxy_used=self.funding_price_proxy_used, capacity_used_lots=self.capacity_used_lots)
+        if self._observed_quote is not None:
+            result['observed_quote'] = {'bid': _s(self._observed_quote[0]), 'ask': _s(self._observed_quote[1])}
+        return result
 
     def digest(self):
         return hashlib.sha256(json.dumps(self.snapshot(), sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()

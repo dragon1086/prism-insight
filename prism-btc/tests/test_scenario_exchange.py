@@ -20,6 +20,112 @@ def order(s, side="Buy", qty="1", price="100", **kw):
     return s.place_order(**args)["result"]["orderId"]
 
 
+@pytest.mark.parametrize(('side','limit','later','execution'), [
+    ('Buy', '100.002', '100.001', '100.001'),
+    ('Sell', '99.998', '99.999', '99.999'),
+])
+def test_observed_quote_preserves_marketable_limit_taker_classification(side, limit, later, execution):
+    explicit = OfflineBybitSession(slippage_bps=0, spread=.0001, latency_ms=1, price_tick=.001)
+    order(explicit, side=side, qty='.001', price=limit)
+    explicit.advance(1, 100, 100, 1, bid_price='99.999', ask_price='100.001')
+    assert len(explicit.executions) == 1
+    assert explicit.executions[0]['isMaker'] is False
+    assert Decimal(explicit.executions[0]['execPrice']) == Decimal(execution)
+
+    synthetic = OfflineBybitSession(slippage_bps=0, spread=.0001, latency_ms=1, price_tick=.001)
+    order(synthetic, side=side, qty='.001', price=limit)
+    synthetic.advance(1, 100, 100, 1)
+    assert not synthetic.executions
+    synthetic.advance(2, later, 100, 1)
+    assert synthetic.executions[0]['isMaker'] is True
+
+
+@pytest.mark.parametrize(('bid','ask'), [(None,'100'), ('99',None), ('101','100'), ('NaN','100'), ('0','100')])
+def test_invalid_observed_quote_is_rejected_before_advancing(bid, ask):
+    s = OfflineBybitSession()
+    with pytest.raises(ValueError):
+        s.advance(1, 100, 100, 1, bid_price=bid, ask_price=ask)
+    assert s.ts_ms == 0 and not s.executions
+
+
+def test_observed_quote_drives_market_order_price_with_existing_slippage():
+    s = OfflineBybitSession(slippage_bps=5, spread=.0001, latency_ms=1, price_tick=.001)
+    s.place_order(symbol='BTCUSDT',side='Buy',qty='.001',orderType='Market',timeInForce='IOC')
+    s.advance(1, 100, 100, 1, bid_price='99.999', ask_price='100.001')
+    assert s.executions[0]['isMaker'] is False
+    assert Decimal(s.executions[0]['execPrice']) == Decimal('100.052')
+
+
+def test_observed_quote_is_not_reused_on_a_later_event():
+    s = OfflineBybitSession(slippage_bps=0, spread=.0001, latency_ms=1, price_tick=.001)
+    s.advance(1, 100, 100, 0, bid_price='99.999', ask_price='100.001')
+    order(s, qty='.001', price='100.002')
+    s.advance(2, 100, 100, 1)
+    assert not s.executions  # The later event has only the fixed-spread proxy.
+
+
+def test_ticker_uses_observed_quote_only_for_its_event():
+    s = OfflineBybitSession(slippage_bps=0, spread=.0001, latency_ms=1, price_tick=.001)
+    s.advance(1, 100, 100, 0, bid_price='99.999', ask_price='100.001')
+    ticker = s.get_tickers()['result']['list'][0]
+    assert Decimal(ticker['bid1Price']) == Decimal('99.999')
+    assert Decimal(ticker['ask1Price']) == Decimal('100.001')
+    with pytest.raises(ValueError):
+        s.advance(2, 100, 100, 0, bid_price='100.002', ask_price='100.001')
+    assert s.ts_ms == 1 and Decimal(s.get_tickers()['result']['list'][0]['bid1Price']) == Decimal('99.999')
+    s.advance(2, 100, 100, 0)
+    ticker = s.get_tickers()['result']['list'][0]
+    assert Decimal(ticker['bid1Price']) == Decimal('99.995')
+    assert Decimal(ticker['ask1Price']) == Decimal('100.005')
+
+
+def test_snapshot_hash_distinguishes_observed_quotes_without_changing_legacy_shape():
+    a = OfflineBybitSession()
+    b = OfflineBybitSession()
+    legacy = OfflineBybitSession()
+    a.advance(1, 100, 100, 0, bid_price='99.9', ask_price='100.1')
+    b.advance(1, 100, 100, 0, bid_price='99.8', ask_price='100.2')
+    legacy.advance(1, 100, 100, 0)
+    assert a.digest() != b.digest()
+    assert a.snapshot()['observed_quote'] == {'bid': '99.9', 'ask': '100.1'}
+    assert 'observed_quote' not in legacy.snapshot()
+    a.advance(2, 100, 100, 0)
+    legacy.advance(2, 100, 100, 0)
+    assert a.digest() == legacy.digest()
+
+
+def test_broker_account_sees_the_same_observed_quote(tmp_path):
+    s = OfflineBybitSession(start_ms=1_800_000_005_000, slippage_bps=0, spread=.0001)
+    conn = sqlite3.connect(tmp_path/'quote-fixture.db')
+    broker = ScenarioDemoBroker(conn, session=s, expected_main_uid=s.uid, clock=s.now)
+    s.advance(s.ts_ms+1, 100, 100, 0, bid_price='99.999', ask_price='100.001')
+    ticker = broker.capture_account()['ticker']
+    assert Decimal(ticker['bid1Price']) == Decimal('99.999')
+    assert Decimal(ticker['ask1Price']) == Decimal('100.001')
+    s.advance(s.ts_ms+1, 100, 100, 0)
+    ticker = broker.capture_account()['ticker']
+    assert Decimal(ticker['bid1Price']) == Decimal('99.995')
+    assert Decimal(ticker['ask1Price']) == Decimal('100.005')
+    conn.close()
+
+
+@pytest.mark.parametrize(('side','limit','mark','stop','expected_entry','expected_stop'), [
+    ('Buy', '101', '90', '98', '90.1', '89.9'),
+    ('Sell', '89', '100', '99', '99.9', '100.1'),
+])
+def test_observed_quote_drives_immediate_attached_stop(side, limit, mark, stop, expected_entry, expected_stop):
+    s = OfflineBybitSession(slippage_bps=0, spread=.0001, latency_ms=1, price_tick=.1)
+    order(s, side=side, price=limit, stopLoss=stop, slTriggerBy='MarkPrice', tpslMode='Full')
+    mid = '90' if side == 'Buy' else '100'
+    bid = '89.9' if side == 'Buy' else '99.9'
+    ask = '90.1' if side == 'Buy' else '100.1'
+    s.advance(1, mid, mark, 2000, bid_price=bid, ask_price=ask)
+    assert len(s.executions) == 2 and s.position == 0
+    assert Decimal(s.executions[0]['execPrice']) == Decimal(expected_entry)
+    assert Decimal(s.executions[1]['execPrice']) == Decimal(expected_stop)
+    assert all(fill['isMaker'] is False for fill in s.executions)
+
+
 @pytest.mark.parametrize("side,exit_price", [("Buy", 110), ("Sell", 90)])
 def test_long_short_realized_fees_and_marked_equity(side, exit_price):
     s = OfflineBybitSession(slippage_bps=0, spread=0, maker_fee=.001, taker_fee=.002)
