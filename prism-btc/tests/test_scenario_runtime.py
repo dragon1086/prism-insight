@@ -807,24 +807,35 @@ def test_closed_history_read_does_not_hold_execution_lock(setup, monkeypatch):
     from live import scenario_position_flow
 
     runtime, broker, _, path = setup
+    assert runtime.conn.execute('PRAGMA journal_mode=WAL').fetchone()[0] == 'wal'
+    runtime.conn.execute('CREATE TABLE protection_probe (value INTEGER)')
+    runtime.conn.commit()
     probes = []
     script = ("import sqlite3,sys\n"
               "from live.shared_entry_coordinator import mutation_lock\n"
-              "conn=sqlite3.connect(sys.argv[1])\n"
-              "with mutation_lock(conn):\n print('acquired')\n")
+              "conn=sqlite3.connect(sys.argv[1], timeout=1)\n"
+              "with mutation_lock(conn):\n"
+              " conn.execute('INSERT INTO protection_probe VALUES (1)')\n"
+              " conn.commit()\n print('acquired')\n")
 
-    def slow_history(_conn, _state, _now):
-        root = Path(__file__).resolve().parents[2]
-        env = dict(os.environ, PYTHONPATH=str(root) + os.pathsep + str(root / 'prism-btc'),
-                   PRISM_DISABLE_SIGNAL_PUBLISH='1')
-        child = subprocess.run([sys.executable, '-c', script, str(path)],
-                               env=env, capture_output=True, text=True, timeout=5)
-        probes.append((child.returncode, child.stdout.strip(), child.stderr[-500:]))
+    def slow_history(conn, _state, _now):
+        conn.execute('BEGIN')
+        conn.execute('SELECT body FROM llm_scenario_state WHERE id=1').fetchone()
+        try:
+            root = Path(__file__).resolve().parents[2]
+            env = dict(os.environ, PYTHONPATH=str(root) + os.pathsep + str(root / 'prism-btc'),
+                       PRISM_DISABLE_SIGNAL_PUBLISH='1')
+            child = subprocess.run([sys.executable, '-c', script, str(path)],
+                                   env=env, capture_output=True, text=True, timeout=5)
+            probes.append((child.returncode, child.stdout.strip(), child.stderr[-500:]))
+        finally:
+            conn.rollback()
         return {'version': 1, 'status': 'MISSING'}
 
     monkeypatch.setattr(scenario_position_flow, 'build_closed_continuity', slow_history)
     result = runtime.tick()
     assert probes == [(0, 'acquired', '')]
+    assert runtime.conn.execute('SELECT COUNT(*) FROM protection_probe').fetchone()[0] == 1
     assert result.get('reason') == 'awaiting_exact_evidence'
     assert broker.executed == ['action-1']
 
