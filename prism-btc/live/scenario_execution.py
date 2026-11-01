@@ -1158,15 +1158,71 @@ class ScenarioExecution:
         if allocation<0:
             self._fail("exit_allocation_basis_conflict")
         generation=hashlib.sha256(encoded([intent_id,str(entered)]).encode()).hexdigest()[:16]
+        context=targets=None
+        if payload["action"] == "ADJUST":
+            decision_table=self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_scenario_decisions'").fetchone()
+            decisions=self.conn.execute("SELECT context FROM llm_scenario_decisions WHERE json_extract(proposal,'$.action_id')=?",(intent_id,)).fetchall() if decision_table else []
+            if len(decisions)>1:
+                self._fail("exit_decision_ambiguous")
+            context=json.loads(decisions[0][0]) if decisions and decisions[0][0] else None
+            targets=context.get("target_status") if isinstance(context,dict) else None
+            if targets is not None and not isinstance(targets,list):
+                self._fail("exit_decision_targets_invalid")
+            for field,kind in (("take_profits","tp"),("partial_stops","partial_sl")):
+                rows=payload.get(field,[])
+                for child in (c for c in children if c["intent_id"]!=intent_id and c["kind"]==kind):
+                    old_id=child["local_id"].partition(":")[2]
+                    price=decimal(child["request"].get("price",child["request"].get("triggerPrice")))
+                    has_fills=bool(child["evidence"] and child["evidence"]["executions"])
+                    if (child["status"]!="TERMINAL" or has_fills) and any(row["id"]==old_id or decimal(row["price"])==price for row in rows):
+                        if not any(t.get("intent_id")==child["intent_id"] and t.get("target_id")==child["local_id"] and t.get("kind")==kind for t in targets or []):
+                            self._fail("exit_decision_targets_missing")
         for child in self.children(payload["scenario_id"]):
             if child["kind"] in ("tp","partial_sl") and child["status"]!="TERMINAL" and not child["local_id"].startswith(generation+":"):
                 self._cancel(child)
         observed=self._ensure_protection(self.capture_account(),payload["hard_stop"],payload["side"])
         size=decimal(observed["position"]["size"])
         children=self.children(payload["scenario_id"])
+        prior_fills={}
+        if payload["action"] == "ADJUST":
+            for field,kind in (("take_profits","tp"),("partial_stops","partial_sl")):
+                rows=payload.get(field,[])
+                for child in (c for c in children if c["intent_id"]!=intent_id and c["kind"]==kind):
+                    price=decimal(child["request"].get("price",child["request"].get("triggerPrice")))
+                    old_id=child["local_id"].partition(":")[2]
+                    matches=[i for i,row in enumerate(rows) if row["id"]==old_id]
+                    if not matches:
+                        matches=[i for i,row in enumerate(rows) if decimal(row["price"])==price]
+                    if not matches:
+                        continue
+                    actual=sum((decimal(e["execQty"]) for e in child["evidence"]["executions"]),Decimal(0)) if child["evidence"] else Decimal(0)
+                    snapshot=[t for t in targets or [] if t.get("intent_id")==child["intent_id"]
+                        and t.get("target_id")==child["local_id"] and t.get("kind")==kind]
+                    if not snapshot:
+                        if actual:
+                            self._fail("exit_decision_targets_missing")
+                        continue
+                    if len(snapshot)>1:
+                        self._fail("exit_decision_target_ambiguous")
+                    if snapshot[0].get("status")=="LIVE":
+                        previous=decimal(snapshot[0].get("filled_quantity"))
+                        if actual<previous:
+                            self._fail("exit_decision_fill_conflict")
+                        key=(kind,matches[0])
+                        prior_fills[key]=prior_fills.get(key,Decimal(0))+actual-previous
+            if any(prior_fills.values()):
+                positions=context.get("positions")
+                if not isinstance(positions,list):
+                    self._fail("exit_decision_position_missing")
+                decision_size=sum((decimal(p.get("quantity")) for p in positions),Decimal(0))
+                if decision_size<=0:
+                    self._fail("exit_decision_position_missing")
+                allocation+=min(sum(prior_fills.values(),Decimal(0)),max(Decimal(0),decision_size-decimal(basis[0])))
         for field,kind in (("take_profits","tp"),("partial_stops","partial_sl")):
             allocated=Decimal(0)
-            for row in payload.get(field,[]):
+            for index,row in enumerate(payload.get(field,[])):
+                key=(kind,index)
+                retained=prior_fills.get(key,Decimal(0))
                 current_id=generation+":"+row["id"]
                 existing=next((c for c in children if c["intent_id"]==intent_id and c["kind"]==kind and c["local_id"]==current_id),None)
                 if existing:
@@ -1176,7 +1232,7 @@ class ScenarioExecution:
                     continue
                 consumed=sum((decimal(e["execQty"]) for c in children if c["kind"]==kind and
                     c["intent_id"]==intent_id and c["local_id"].partition(":")[2]==row["id"] and c["evidence"]
-                    for e in c["evidence"]["executions"]),Decimal(0))
+                    for e in c["evidence"]["executions"]),Decimal(0))+retained
                 quantity=(max(Decimal(0),min(size-allocated,allocation*decimal(row["fraction"])-consumed))/instrument["step"]).to_integral_value(rounding=ROUND_DOWN)*instrument["step"]
                 allocated+=quantity
                 if quantity<instrument["minimum"]:

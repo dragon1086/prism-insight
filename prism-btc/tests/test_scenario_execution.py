@@ -387,6 +387,13 @@ def persist(b, **updates):
     return p
 
 
+def record_exit_decision(b, payload):
+    b.conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_decisions(slot INTEGER PRIMARY KEY, snapshot TEXT, context TEXT, proposal TEXT, outcome TEXT)")
+    b.conn.execute("INSERT INTO llm_scenario_decisions(context,proposal) VALUES(?,?)",
+                   (json.dumps(b.context()),json.dumps(payload)))
+    b.conn.commit()
+
+
 def probe_permit(b, payload):
     from live.scenario_recovery import ensure_schema
     ensure_schema(b.conn)
@@ -952,6 +959,144 @@ def test_adjust_tp_allocates_remaining_not_original_position(live):
     b.execute(persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=[dict(id="tp2",price=106,fraction=.5)]),"a2")
     new_tp=next(c for c in b.children() if c["kind"]=="tp" and c["intent_id"]=="a2")
     assert float(new_tp["request"]["qty"])==.025
+
+
+@pytest.mark.parametrize("filled,expected", [(.05,{"far":.05}),(.02,{"near":.03,"far":.05})])
+def test_adjust_does_not_repeat_target_filled_during_cancel(live,filled,expected):
+    b,e=live
+    targets=[dict(id="near",price=105,fraction=.5),dict(id="far",price=110,fraction=.5)]
+    b.execute(persist(b,take_profits=targets),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    near=next(c for c in b.children() if c["kind"]=="tp" and c["local_id"].endswith(":near"))
+    cancel=e.cancel_order
+    def fill_before_cancel(**kw):
+        if kw["orderLinkId"]==near["link_id"]:
+            e.fill(near["link_id"],filled)
+            if filled < .05:
+                return cancel(**kw)
+            return dict(retCode=0,result={})
+        return cancel(**kw)
+    e.cancel_order=fill_before_cancel
+    p=persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=targets)
+    record_exit_decision(b,p)
+    b.execute(p,"a2")
+    new_targets={c["local_id"].partition(":")[2]:float(c["request"]["qty"])
+                 for c in b.children() if c["intent_id"]=="a2" and c["kind"]=="tp"}
+    assert new_targets==expected
+    assert float(e.size)==round(.1-filled,3) and e.orders["native"]["orderStatus"]=="Untriggered"
+    writes=list(e.writes)
+    b.reconcile()
+    assert e.writes==writes
+
+
+def test_adjust_does_not_repeat_target_filled_during_pending_cancel_after_restart(live):
+    b,e=live
+    targets=[dict(id="near",price=105,fraction=.5),dict(id="far",price=110,fraction=.5)]
+    b.execute(persist(b,take_profits=targets),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    near=next(c for c in b.children() if c["kind"]=="tp" and c["local_id"].endswith(":near"))
+    cancel=e.cancel_order
+    e.cancel_order=lambda **kw: dict(retCode=0,result=dict(orderId=kw["orderId"],orderLinkId=kw["orderLinkId"]))
+    p=persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=targets)
+    record_exit_decision(b,p)
+    with pytest.raises(BrokerNotReady,match="cancel_not_confirmed"):
+        b.execute(p,"a2")
+    e.fill(near["link_id"],.05)
+    e.cancel_order=cancel
+    b=ScenarioDemoBroker(b.conn,session=e,expected_main_uid="123",clock=b.clock,execution_enabled=True)
+    b.reconcile()
+    new_targets={c["local_id"].partition(":")[2]:float(c["request"]["qty"])
+                 for c in b.children() if c["intent_id"]=="a2" and c["kind"]=="tp"}
+    assert new_targets=={"far":.05}
+    assert e.orders["native"]["orderStatus"]=="Untriggered"
+
+
+@pytest.mark.parametrize("before_decision", [True,False])
+def test_adjust_handles_fill_on_either_side_of_decision(live,before_decision):
+    b,e=live
+    targets=[dict(id="near",price=105,fraction=.5),dict(id="far",price=110,fraction=.5)]
+    b.execute(persist(b,take_profits=targets),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    near=next(c for c in b.children() if c["kind"]=="tp" and c["local_id"].endswith(":near"))
+    if before_decision:
+        e.fill(near["link_id"],.02)
+        b.reconcile()
+    p=persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=targets)
+    record_exit_decision(b,p)
+    if not before_decision:
+        e.fill(near["link_id"],.02)
+    b.execute(p,"a2")
+    new_targets={c["local_id"].partition(":")[2]:float(c["request"]["qty"])
+                 for c in b.children() if c["intent_id"]=="a2" and c["kind"]=="tp"}
+    assert new_targets==({"near":.04,"far":.04} if before_decision else {"near":.03,"far":.05})
+
+
+def test_adjust_missing_decision_never_recreates_a_filled_old_target(live):
+    b,e=live
+    target=[dict(id="near",price=105,fraction=.5)]
+    b.execute(persist(b,take_profits=target),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    near=next(c for c in b.children() if c["kind"]=="tp")
+    e.fill(near["link_id"],.02)
+    with pytest.raises(BrokerNotReady,match="exit_decision_targets_missing"):
+        b.execute(persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=target),"a2")
+    assert not [c for c in b.children() if c["intent_id"]=="a2" and c["kind"]=="tp"]
+    assert e.orders[near["link_id"]]["orderStatus"]=="PartiallyFilled"
+    assert e.orders["native"]["orderStatus"]=="Untriggered"
+
+
+def test_missing_decision_keeps_other_old_targets_when_one_already_filled(live):
+    b,e=live
+    targets=[dict(id="near",price=105,fraction=.5),dict(id="far",price=110,fraction=.5)]
+    b.execute(persist(b,take_profits=targets),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    near=next(c for c in b.children() if c["kind"]=="tp" and c["local_id"].endswith(":near"))
+    far=next(c for c in b.children() if c["kind"]=="tp" and c["local_id"].endswith(":far"))
+    e.fill(near["link_id"],.05)
+    with pytest.raises(BrokerNotReady,match="exit_decision_targets_missing"):
+        b.execute(persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=targets),"a2")
+    assert e.orders[far["link_id"]]["orderStatus"]=="New"
+    assert e.orders["native"]["orderStatus"]=="Untriggered"
+
+
+@pytest.mark.parametrize("new_id,new_price", [("renamed",105),("near",106)])
+def test_adjust_retains_fill_when_target_is_renamed_or_repriced(live,new_id,new_price):
+    b,e=live
+    old=[dict(id="near",price=105,fraction=.5),dict(id="far",price=110,fraction=.5)]
+    b.execute(persist(b,take_profits=old),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    near=next(c for c in b.children() if c["kind"]=="tp" and c["local_id"].endswith(":near"))
+    new=[dict(id=new_id,price=new_price,fraction=.5),dict(id="far",price=110,fraction=.5)]
+    p=persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=new)
+    record_exit_decision(b,p)
+    e.fill(near["link_id"],.02)
+    b.execute(p,"a2")
+    new_targets={c["local_id"].partition(":")[2]:float(c["request"]["qty"])
+                 for c in b.children() if c["intent_id"]=="a2" and c["kind"]=="tp"}
+    assert new_targets=={new_id:.03,"far":.05}
+
+
+def test_adjust_retains_partial_stop_fill_from_previous_plan(live):
+    b,e=live
+    targets=[dict(id="near",price=99,fraction=.5),dict(id="far",price=98.5,fraction=.5)]
+    b.execute(persist(b,partial_stops=targets),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    near=next(c for c in b.children() if c["kind"]=="partial_sl" and c["local_id"].endswith(":near"))
+    p=persist(b,action_id="a2",action="ADJUST",entries=[],partial_stops=targets)
+    record_exit_decision(b,p)
+    e.fill(near["link_id"],.02)
+    b.execute(p,"a2")
+    new_targets={c["local_id"].partition(":")[2]:float(c["request"]["qty"])
+                 for c in b.children() if c["intent_id"]=="a2" and c["kind"]=="partial_sl"}
+    assert new_targets=={"near":.03,"far":.05}
+    assert e.orders["native"]["orderStatus"]=="Untriggered"
 
 
 def test_automatic_chase_cancels_exactly_and_preserves_bound(live):
