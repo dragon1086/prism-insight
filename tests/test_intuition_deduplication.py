@@ -662,3 +662,14 @@ def test_us_manager_saves_and_reads_only_us_memory():
     assert us._save_intuition(rule(), [1, 2])
     assert conn.execute('SELECT market FROM trading_intuitions').fetchall() == [('US',)]
     assert kr._active_intuitions() == [] and len(us._active_intuitions()) == 1
+
+
+def test_rebuild_validation_drops_rule_exceptions_and_theme_reasons():
+    from tracking.buy_intuitions import validate
+    cases = [_case('B1'), _case('B2'), _case('B3'), _case('L1')]
+    kept = validate([
+        _lesson(condition='금융계열 후보에서 F1~F4 전부 통과가 아니더라도 배당 근거가 명시된 경우입니다.'),
+        _lesson(insight='큰 상승 종목은 반도체 주도 테마 수혜 연결이 있었습니다.'),
+        _lesson(insight='업종/테마 설명에 그치지 않고 개별 실적 리더십이 확인된 경우 확신을 올립니다.'),
+    ], cases, ['전기·전자'])
+    assert [k['insight'] for k in kept] == ['업종/테마 설명에 그치지 않고 개별 실적 리더십이 확인된 경우 확신을 올립니다.']
