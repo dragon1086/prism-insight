@@ -710,3 +710,21 @@ def test_tomorrows_review_plan_does_not_replace_todays_plan():
         plan, _ = _plan(valid_for=day, source="REVIEW")
         P.store(block, plan, [], raw={"d": day}, source="REVIEW", created_at=day)
     assert sorted(block["add_plans"]) == ["2026-10-07", "2026-10-08", "2026-10-09"]
+
+
+def test_add_planned_event_keeps_trigger_levels_and_chase_limits(monkeypatch):
+    """The ledger keeps each scenario's numbers so a blocked add can be replayed after the row's plan rolls off."""
+    from prism_core import micro_split_live as live
+    import observability.events as events
+    sent = []
+    monkeypatch.setattr(events, "emit_event", lambda name, **kw: sent.append((name, kw)) or {"ok": 1})
+    plan, issues = _plan(dict(_scenario(), max_chase_pct=1.0), _scenario("accel_1", "acceleration", 0.65, gap_up_min_pct=3))
+    assert plan["status"] == "ACTIVE"
+    live._emit_planned(market="KR", ticker="000001", position_id=None, block={"allocation": "0.45"}, plan=plan,
+                       issues=issues, decision_id="d-1")
+    (name, kw), = sent
+    scenario, = [s for s in kw["attributes"]["scenarios"] if s["id"] == "breakout_1"]
+    assert name == "micro_split.add_planned"
+    assert scenario["trigger"]["price_above"] == 10400 and scenario["max_chase_pct"] == 1.0
+    assert scenario["type"] == "breakout" and scenario["target_allocation"] == "0.60"
+    assert json.loads(json.dumps(events._sanitize(kw["attributes"])))["scenarios"][0]["trigger"]["price_above"] == 10400
