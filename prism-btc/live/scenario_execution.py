@@ -1168,6 +1168,10 @@ class ScenarioExecution:
             targets=context.get("target_status") if isinstance(context,dict) else None
             if targets is not None and not isinstance(targets,list):
                 self._fail("exit_decision_targets_invalid")
+            if payload.get("take_profits") or payload.get("partial_stops"):
+                if any(not isinstance(t,dict) or t.get("status") not in {"LIVE","TERMINAL"}
+                       or t.get("filled_quantity") is None for t in targets or []):
+                    self._fail("exit_decision_target_unknown")
             for field,kind in (("take_profits","tp"),("partial_stops","partial_sl")):
                 rows=payload.get(field,[])
                 for child in (c for c in children if c["intent_id"]!=intent_id and c["kind"]==kind):
@@ -1175,8 +1179,16 @@ class ScenarioExecution:
                     price=decimal(child["request"].get("price",child["request"].get("triggerPrice")))
                     has_fills=bool(child["evidence"] and child["evidence"]["executions"])
                     if (child["status"]!="TERMINAL" or has_fills) and any(row["id"]==old_id or decimal(row["price"])==price for row in rows):
-                        if not any(t.get("intent_id")==child["intent_id"] and t.get("target_id")==child["local_id"] and t.get("kind")==kind for t in targets or []):
+                        snapshots=[t for t in targets or [] if t.get("intent_id")==child["intent_id"] and t.get("target_id")==child["local_id"] and t.get("kind")==kind]
+                        if not snapshots:
                             self._fail("exit_decision_targets_missing")
+                        if len(snapshots)!=1 or not child["evidence"]:
+                            self._fail("exit_decision_target_unknown")
+                        previous=decimal(snapshots[0]["filled_quantity"])
+                        actual=sum((decimal(e["execQty"]) for e in child["evidence"]["executions"]),Decimal(0))
+                        if actual<previous or (snapshots[0]["status"]=="TERMINAL" and
+                                (child["status"]!="TERMINAL" or actual!=previous)):
+                            self._fail("exit_decision_fill_conflict")
         for child in self.children(payload["scenario_id"]):
             if child["kind"] in ("tp","partial_sl") and child["status"]!="TERMINAL" and not child["local_id"].startswith(generation+":"):
                 self._cancel(child)
@@ -1210,6 +1222,8 @@ class ScenarioExecution:
                             self._fail("exit_decision_fill_conflict")
                         key=(kind,matches[0])
                         prior_fills[key]=prior_fills.get(key,Decimal(0))+actual-previous
+                    elif actual!=decimal(snapshot[0].get("filled_quantity")):
+                        self._fail("exit_decision_fill_conflict")
             if any(prior_fills.values()):
                 positions=context.get("positions")
                 pending=context.get("pending_entries")

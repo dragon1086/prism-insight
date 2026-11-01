@@ -1181,6 +1181,48 @@ def test_adjust_accounts_for_removed_target_filled_after_decision(live):
     assert new_targets=={"near":.03,"far":.04}
 
 
+@pytest.mark.parametrize("status,filled", [("UNKNOWN","0"),("LIVE",None),("TERMINAL",None)])
+def test_adjust_refuses_unknown_prior_target_evidence(live,status,filled):
+    b,e=live
+    targets=[dict(id="near",price=105,fraction=.5),dict(id="far",price=110,fraction=.5)]
+    b.execute(persist(b,take_profits=targets),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    near=next(c for c in b.children() if c["kind"]=="tp" and c["local_id"].endswith(":near"))
+    far=next(c for c in b.children() if c["kind"]=="tp" and c["local_id"].endswith(":far"))
+    p=persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=targets)
+    record_exit_decision(b,p)
+    context=json.loads(b.conn.execute("SELECT context FROM llm_scenario_decisions").fetchone()[0])
+    next(t for t in context["target_status"] if t["target_id"]==near["local_id"]).update(status=status,filled_quantity=filled)
+    b.conn.execute("UPDATE llm_scenario_decisions SET context=?",(json.dumps(context),))
+    b.conn.commit()
+    e.fill(near["link_id"],.02)
+    with pytest.raises(BrokerNotReady,match="exit_decision_target_unknown"):
+        b.execute(p,"a2")
+    assert e.orders[far["link_id"]]["orderStatus"]=="New"
+    assert e.orders["native"]["orderStatus"]=="Untriggered"
+
+
+def test_adjust_refuses_regressed_terminal_target_evidence(live):
+    b,e=live
+    targets=[dict(id="near",price=105,fraction=.5),dict(id="far",price=110,fraction=.5)]
+    b.execute(persist(b,take_profits=targets),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    near=next(c for c in b.children() if c["kind"]=="tp" and c["local_id"].endswith(":near"))
+    far=next(c for c in b.children() if c["kind"]=="tp" and c["local_id"].endswith(":far"))
+    p=persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=targets)
+    record_exit_decision(b,p)
+    context=json.loads(b.conn.execute("SELECT context FROM llm_scenario_decisions").fetchone()[0])
+    next(t for t in context["target_status"] if t["target_id"]==near["local_id"]).update(status="TERMINAL",filled_quantity="0")
+    b.conn.execute("UPDATE llm_scenario_decisions SET context=?",(json.dumps(context),))
+    b.conn.commit()
+    e.fill(near["link_id"],.02)
+    with pytest.raises(BrokerNotReady,match="exit_decision_fill_conflict"):
+        b.execute(p,"a2")
+    assert e.orders[far["link_id"]]["orderStatus"]=="New"
+
+
 def test_automatic_chase_cancels_exactly_and_preserves_bound(live):
     b,e=live
     b.clock=lambda:e.now
