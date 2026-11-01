@@ -584,7 +584,7 @@ In calculated review, use host-calculated candidate economics; do not discard
 a structurally justified candidate solely on an estimated-cost impression before
 that calculation. The host still enforces economic and safety limits. Keep SL at structural
 invalidation with noise room, not artificially tight to manufacture reward/risk.
-Contraction alone is not a veto. Fresh directional price progress or a supported
+A single narrowing timeframe alone is not a veto; host entry restrictions always apply. Fresh directional price progress or a supported
 breakout/retest can justify entry while the old MA gap still narrows, before a
 lagging crossover. Do not require another MA10 cross, a candle close or unanimous
 30m/1h alignment. Compare confirmed and forming evidence separately: forming

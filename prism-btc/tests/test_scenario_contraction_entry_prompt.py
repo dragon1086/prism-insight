@@ -40,7 +40,7 @@ def test_mirrored_structural_inputs_keep_both_phases_and_host_contract(side, pat
             "SL at structural invalidation with noise room",
             "When either 1h or 30m gap narrows, treat it as a caution for new entry or add",
             "including 1h narrowing with 30m expansion when price progress supports it",
-            "Contraction alone is not a veto",
+            "A single narrowing timeframe alone is not a veto; host entry restrictions always apply",
             "while the old MA gap still narrows, before a lagging crossover",
             "Do not require another MA10 cross, a candle close or unanimous 30m/1h alignment",
             "forming progress is provisional",
