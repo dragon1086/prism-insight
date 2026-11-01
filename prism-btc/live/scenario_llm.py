@@ -646,6 +646,17 @@ fabricated reward/risk or probabilities; summarize the choice in existing ration
 MA_STRUCTURE_PROMPT = """
 MA structure review applies to flat, pending and holding contexts; all earlier
 host safety, accounting, lifecycle and protection restrictions retain priority.
+When either 1h or 30m gap narrows, treat it as a caution for new entry or add.
+Compare each frame's absolute gap and compression history, not just its latest
+gap change: one widening bar can still leave MAs tightly compressed. Price above
+the MAs alone does not confirm upward momentum, nor does price below confirm
+downward momentum. For a narrow band, assess whether remaining directional room
+and evidence justify entry after costs; otherwise prefer WAIT.
+Distinguish confirmed from provisional narrowing and compare the actual directional
+progress, nearby obstacles and invalidation with WAIT or a justified conditional
+entry. Subject to host restrictions, narrowing alone is not an automatic veto,
+including 1h narrowing with 30m expansion when price progress supports it.
+Existing position protection and exits are unchanged.
 Use ma_structure.primary own-time close/MA points and numeric transitions, not current
 MAs projected onto older candles. Read close_vs_ma10/close_vs_ma35 as that point's
 own-time CLOSE relative to each MA, not the LEVEL relative to current Mark.
