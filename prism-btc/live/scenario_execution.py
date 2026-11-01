@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import uuid
-from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 
 from live.scenario_pending_renewal import initialize as initialize_pending_leases
 from live.scenario_entry_goal import GoalConsistencyRejection, stored_goal, validate_goal_plan
@@ -1212,12 +1212,45 @@ class ScenarioExecution:
                         prior_fills[key]=prior_fills.get(key,Decimal(0))+actual-previous
             if any(prior_fills.values()):
                 positions=context.get("positions")
-                if not isinstance(positions,list):
+                pending=context.get("pending_entries")
+                if not isinstance(positions,list) or not isinstance(pending,list):
                     self._fail("exit_decision_position_missing")
-                decision_size=sum((decimal(p.get("quantity")) for p in positions),Decimal(0))
+                raw_size=sum((decimal(p.get("quantity")) for p in positions),Decimal(0))
+                decision_size=(raw_size/instrument["step"]).to_integral_value(rounding=ROUND_HALF_UP)*instrument["step"]
+                if abs(raw_size-decision_size)>instrument["step"]*Decimal("0.000001"):
+                    self._fail("exit_decision_position_conflict")
                 if decision_size<=0:
                     self._fail("exit_decision_position_missing")
-                allocation+=min(sum(prior_fills.values(),Decimal(0)),max(Decimal(0),decision_size-decimal(basis[0])))
+                entry_delta=Decimal(0)
+                for entry in pending:
+                    matches=[c for c in children if c["kind"]=="entry" and c["intent_id"]!=intent_id
+                        and c["local_id"]==entry.get("id") and decimal(c["request"].get("price"))==decimal(entry.get("price"))]
+                    if len(matches)!=1 or not matches[0]["evidence"]:
+                        self._fail("exit_decision_entry_ambiguous")
+                    child=matches[0]
+                    previous=decimal(child["request"]["qty"])-decimal(entry.get("quantity"))
+                    actual=sum((decimal(e["execQty"]) for e in child["evidence"]["executions"]),Decimal(0))
+                    if previous<0 or actual<previous:
+                        self._fail("exit_decision_fill_conflict")
+                    entry_delta+=actual-previous
+                entry_delta+=sum((decimal(e["execQty"]) for c in children if c["kind"]=="entry"
+                    and c["intent_id"]==intent_id and c["evidence"] for e in c["evidence"]["executions"]),Decimal(0))
+                exit_delta=Decimal(0)
+                for target in targets:
+                    matches=[c for c in children if c["intent_id"]==target.get("intent_id")
+                        and c["local_id"]==target.get("target_id") and c["kind"]==target.get("kind")]
+                    if len(matches)!=1 or not matches[0]["evidence"]:
+                        self._fail("exit_decision_targets_missing")
+                    previous=decimal(target.get("filled_quantity"))
+                    actual=sum((decimal(e["execQty"]) for e in matches[0]["evidence"]["executions"]),Decimal(0))
+                    if actual<previous or (target.get("status")!="LIVE" and actual!=previous):
+                        self._fail("exit_decision_fill_conflict")
+                    exit_delta+=actual-previous
+                current_exits=sum((decimal(e["execQty"]) for c in children if c["kind"] in ("tp","partial_sl")
+                    and c["intent_id"]==intent_id and c["evidence"] for e in c["evidence"]["executions"]),Decimal(0))
+                if decision_size+entry_delta-exit_delta-current_exits!=size:
+                    self._fail("exit_decision_position_conflict")
+                allocation=decision_size+entry_delta-exit_delta+sum(prior_fills.values(),Decimal(0))
         for field,kind in (("take_profits","tp"),("partial_stops","partial_sl")):
             allocated=Decimal(0)
             for index,row in enumerate(payload.get(field,[])):

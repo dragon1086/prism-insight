@@ -1099,6 +1099,88 @@ def test_adjust_retains_partial_stop_fill_from_previous_plan(live):
     assert e.orders["native"]["orderStatus"]=="Untriggered"
 
 
+def test_adjust_handles_entry_and_old_target_fill_between_decision_and_execution(live):
+    b,e=live
+    targets=[dict(id="near",price=105,fraction=.5),dict(id="far",price=110,fraction=.5)]
+    entries=[dict(id="e1",price=100,quantity=.1),dict(id="e2",price=99,quantity=.1)]
+    b.execute(persist(b,entries=entries,take_profits=targets),"a1")
+    e.fill(next(c for c in b.children() if c["kind"]=="entry" and c["local_id"]=="e1")["link_id"],.1)
+    b.reconcile()
+    near=next(c for c in b.children() if c["kind"]=="tp" and c["local_id"].endswith(":near"))
+    extra=next(c for c in b.children() if c["kind"]=="entry" and c["local_id"]=="e2")
+    p=persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=targets)
+    record_exit_decision(b,p)
+    e.fill(near["link_id"],.02)
+    e.fill(extra["link_id"],.03)
+    b.execute(p,"a2")
+    new_targets={c["local_id"].partition(":")[2]:float(c["request"]["qty"])
+                 for c in b.children() if c["intent_id"]=="a2" and c["kind"]=="tp"}
+    assert new_targets=={"near":.045,"far":.065}
+
+
+def test_adjust_refuses_unexplained_entry_fill(live):
+    b,e=live
+    targets=[dict(id="near",price=105,fraction=.5),dict(id="far",price=110,fraction=.5)]
+    entries=[dict(id="e1",price=100,quantity=.1),dict(id="e2",price=99,quantity=.1)]
+    b.execute(persist(b,entries=entries,take_profits=targets),"a1")
+    e.fill(next(c for c in b.children() if c["kind"]=="entry" and c["local_id"]=="e1")["link_id"],.1)
+    b.reconcile()
+    near=next(c for c in b.children() if c["kind"]=="tp" and c["local_id"].endswith(":near"))
+    extra=next(c for c in b.children() if c["kind"]=="entry" and c["local_id"]=="e2")
+    p=persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=targets)
+    record_exit_decision(b,p)
+    context=json.loads(b.conn.execute("SELECT context FROM llm_scenario_decisions").fetchone()[0])
+    context["pending_entries"]=[]
+    b.conn.execute("UPDATE llm_scenario_decisions SET context=?",(json.dumps(context),))
+    b.conn.commit()
+    e.fill(near["link_id"],.02)
+    e.fill(extra["link_id"],.03)
+    with pytest.raises(BrokerNotReady,match="exit_decision_position_conflict"):
+        b.execute(p,"a2")
+    assert not [c for c in b.children() if c["intent_id"]=="a2" and c["kind"]=="tp"]
+    assert e.orders["native"]["orderStatus"]=="Untriggered"
+
+
+def test_adjust_accepts_float_rounding_in_decision_lots(live):
+    b,e=live
+    targets=[dict(id="near",price=105,fraction=.5),dict(id="far",price=110,fraction=.5)]
+    b.execute(persist(b,take_profits=targets),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    near=next(c for c in b.children() if c["kind"]=="tp" and c["local_id"].endswith(":near"))
+    p=persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=targets)
+    record_exit_decision(b,p)
+    context=json.loads(b.conn.execute("SELECT context FROM llm_scenario_decisions").fetchone()[0])
+    context["positions"]=[dict(quantity=.06666666666666667),dict(quantity=.03333333333333332)]
+    b.conn.execute("UPDATE llm_scenario_decisions SET context=?",(json.dumps(context),))
+    b.conn.commit()
+    e.fill(near["link_id"],.02)
+    b.execute(p,"a2")
+    new_targets={c["local_id"].partition(":")[2]:float(c["request"]["qty"])
+                 for c in b.children() if c["intent_id"]=="a2" and c["kind"]=="tp"}
+    assert new_targets=={"near":.03,"far":.05}
+
+
+def test_adjust_accounts_for_removed_target_filled_after_decision(live):
+    b,e=live
+    old=[dict(id="near",price=105,fraction=.3),dict(id="removed",price=107,fraction=.3),
+         dict(id="far",price=110,fraction=.4)]
+    b.execute(persist(b,take_profits=old),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    near=next(c for c in b.children() if c["kind"]=="tp" and c["local_id"].endswith(":near"))
+    removed=next(c for c in b.children() if c["kind"]=="tp" and c["local_id"].endswith(":removed"))
+    new=[dict(id="near",price=105,fraction=.5),dict(id="far",price=110,fraction=.5)]
+    p=persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=new)
+    record_exit_decision(b,p)
+    e.fill(near["link_id"],.01)
+    e.fill(removed["link_id"],.02)
+    b.execute(p,"a2")
+    new_targets={c["local_id"].partition(":")[2]:float(c["request"]["qty"])
+                 for c in b.children() if c["intent_id"]=="a2" and c["kind"]=="tp"}
+    assert new_targets=={"near":.03,"far":.04}
+
+
 def test_automatic_chase_cancels_exactly_and_preserves_bound(live):
     b,e=live
     b.clock=lambda:e.now
