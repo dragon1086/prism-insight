@@ -10,7 +10,7 @@ import json
 import math
 import os
 import re
-import subprocess
+import subprocess  # nosec B404 - fixed SSH argv and validated hashes
 import time
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
@@ -105,8 +105,10 @@ def _required_window_seconds(phase, timeout):
     return minimum
 
 
-def _runtime_readiness(phase, timeout, *, _clock=time.time, _run=subprocess.run, _environ=os.environ):
+def _runtime_readiness(phase, timeout, *, _clock=time.time, _run=subprocess.run, _environ=None):
     """Check real clock and the pinned server; injected dependencies are for unit tests only."""
+    if _environ is None:
+        _environ = os.environ
     head = _environ.get('PRISM_BTC_RESEARCH_EXPECTED_HEAD', '')
     cron = _environ.get('PRISM_BTC_RESEARCH_EXPECTED_CRONTAB_SHA256', '')
     if not isinstance(head, str) or not re.fullmatch(r'[0-9a-f]{40}', head):
