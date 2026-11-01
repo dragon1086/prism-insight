@@ -1241,7 +1241,16 @@ class ScenarioRuntime:
                         if (len(children) == 1 and children[0][0] == 'LIVE'
                                 and isinstance(children[0][1], str) and children[0][1]):
                             reason = 'awaiting_reduce_evidence'
+                    diagnostic_codes = {
+                        'submission_unknown', 'submission_unconfirmed', 'order_ack_identity_missing',
+                        'exact_order_query_unknown', 'exact_order_not_found_or_ambiguous',
+                        'exact_order_identity_conflict', 'execution_identity_conflict',
+                        'execution_quantity_unreconciled', 'order_state_unknown',
+                        'order_remaining_quantity_unreconciled', 'native_protection_not_confirmed',
+                    }
+                    diagnostic = str(exc) if type(exc) is BrokerNotReady and str(exc) in diagnostic_codes else 'other'
                     return {"status": "intent_pending", "reason": reason,
+                            "execution_diagnostic": diagnostic,
                             "review_update_receipt": receipt}
                 return {"status": "intent_pending", "reason": "awaiting_exact_evidence",
                         "review_update_receipt": receipt,
