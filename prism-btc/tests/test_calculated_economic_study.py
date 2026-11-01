@@ -7,6 +7,15 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+import tools.btc_research_model_call as research_model_call
+
+
+@pytest.fixture(autouse=True)
+def offline_runtime_readiness(monkeypatch):
+    monkeypatch.setattr(research_model_call, '_runtime_readiness', lambda phase, timeout: {'status': 'PASSED', 'phase': phase})
+    monkeypatch.setattr(research_model_call, '_readiness_still_safe', lambda proof, phase, timeout: None)
+
 from tools import btc_calculated_economic_study as study  # noqa: E402
 from tests.test_scenario_replay import inputs  # noqa: E402
 from tests.test_calculated_observed_data import replay_packet  # noqa: E402
@@ -569,3 +578,15 @@ def test_stage_two_self_consistent_wrong_offset_rejected_before_dispatch(tmp_pat
     assert result["status"] == "STOPPED" and result["call_guard"]["stopped"]
     assert result["coordinator_error"]["reason"] == "fixed_stage_window_mismatch"
     assert not opened
+
+
+def test_predecessor_rejects_runtime_readiness_tampering(tmp_path):
+    _, _, _, previous, pin = stage_two_fixture(tmp_path)
+    path = previous / 'model_events.jsonl'
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    request = next(event for event in events if event['kind'] == 'HTTP_REQUEST')
+    assert request['runtime_readiness']['status'] == 'PASSED'
+    request['runtime_readiness']['phase'] = 'TAMPERED'
+    path.write_text(''.join(json.dumps(row) + '\n' for row in events))
+    with pytest.raises(ValueError, match='predecessor_runtime_readiness_mismatch'):
+        study.predecessor_manifest(previous, pin)

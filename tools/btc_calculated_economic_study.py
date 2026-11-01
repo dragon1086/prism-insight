@@ -84,6 +84,12 @@ def predecessor_manifest(root, registry_sha256):
                 and event["arm"] == saved["arm"] and event["phase"] == saved["phase"]
                 and event["generate_kwargs"]["retry_transport"] is False and "headers" not in event,
                 "predecessor_wire_request_mismatch")
+        if 'runtime_readiness_sha256' in saved:
+            readiness = event.get('runtime_readiness')
+            require(isinstance(readiness, dict) and readiness.get('status') == 'PASSED'
+                    and hashlib.sha256(json.dumps(readiness, sort_keys=True, separators=(',', ':'),
+                                                  ensure_ascii=True, allow_nan=False).encode()).hexdigest()
+                        == saved['runtime_readiness_sha256'], "predecessor_runtime_readiness_mismatch")
     for kind in ("HTTP_RESPONSE", "MODEL_RESULT"):
         rows = [event for event in events if event["kind"] == kind]
         require(len(rows) == len(reservations)

@@ -11,6 +11,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import tools.btc_research_model_call as research_model_call
+
+
+@pytest.fixture(autouse=True)
+def offline_runtime_readiness(monkeypatch):
+    monkeypatch.setattr(research_model_call, '_runtime_readiness', lambda phase, timeout: {'status': 'PASSED', 'phase': phase})
+    monkeypatch.setattr(research_model_call, '_readiness_still_safe', lambda proof, phase, timeout: None)
+
 from live import scenario_oauth
 from tools.btc_research_call_guard import CallGuard, CallGuardError
 from tools.btc_research_model_call import GuardedModelCall, MAX_BYTES
