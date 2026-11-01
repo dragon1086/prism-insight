@@ -38,6 +38,8 @@ def test_mirrored_structural_inputs_keep_both_phases_and_host_contract(side, pat
             "a structurally justified candidate solely on an estimated-cost impression before that calculation",
             "The host still enforces economic and safety limits",
             "SL at structural invalidation with noise room",
+            "When either 1h or 30m gap narrows, treat it as a caution for new entry or add",
+            "including 1h narrowing with 30m expansion when price progress supports it",
             "Contraction alone is not a veto",
             "while the old MA gap still narrows, before a lagging crossover",
             "Do not require another MA10 cross, a candle close or unanimous 30m/1h alignment",
@@ -81,6 +83,9 @@ def test_active_and_pending_prompts_do_not_receive_flat_entry_change(side, phase
     for call in calls:
         assert MARKER not in " ".join(call["system_prompt"].split())
         assert FLAT_ENTRY_PROMPT not in call["system_prompt"]
+        policy = " ".join(call["system_prompt"].split())
+        assert "When either 1h or 30m gap narrows, treat it as a caution for new entry or add" in policy
+        assert "Existing position protection and exits are unchanged" in policy
 
 
 def test_host_allocation_both_phases_include_priority_without_new_fields():
