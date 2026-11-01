@@ -567,6 +567,23 @@ def test_actual_model_payload_gets_same_primary_facts_as_request_record(monkeypa
     assert json.dumps([ctx, snapshot], sort_keys=True) == original
 
 
+def test_rejected_adjustment_is_exposed_as_not_applied_to_model(monkeypatch):
+    from live import scenario_recovery
+    from live.scenario_model_input import restore_model_input
+    ctx=context(True)
+    ctx['recent_actions']=[dict(action='ADJUST',revision=2,status='TERMINAL',
+                                verified_executed_quantity=0,action_applied=False,
+                                rejection_reason='target_evidence_unavailable')]
+    calls=[]
+    monkeypatch.setattr(scenario_recovery,'record_model_request',lambda **kw:None)
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(exposure_proposal(ctx,'WAIT')))
+    propose({'valid':True,'as_of_ms':1000000},ctx,response_contract(ctx),generate=generate,clock=lambda:1000)
+    payload=restore_model_input(json.loads(calls[0]['user_prompt']))
+    assert payload['contract_context']['recent_actions']==ctx['recent_actions']
+
+
 @pytest.mark.parametrize('mode', ['flat', 'pending', 'holding'])
 def test_ma_structure_actual_request_all_contexts_bounded_and_audited(mode, monkeypatch):
     from tests.test_scenario_snapshot import snapshot as real_snapshot

@@ -552,7 +552,9 @@ class ScenarioRuntime:
                 if json.loads(p[0])["action"] in {"OPEN","ADJUST"}),None)
             ctx["recent_actions"]=[{
                 "action":json.loads(payload)["action"],"revision":json.loads(payload)["revision"],
-                "status":status,"verified_executed_quantity":json.loads(evidence).get("filled_quantity") if evidence else None
+                "status":status,"verified_executed_quantity":json.loads(evidence).get("filled_quantity") if evidence else None,
+                **({"action_applied":False,"rejection_reason":json.loads(evidence).get("rejection_reason")}
+                   if evidence and json.loads(evidence).get("action_applied") is False else {})
             } for payload,status,evidence in reversed(plans)]
         else:
             ctx.update(current_plan=None,recent_actions=[])
@@ -1220,7 +1222,17 @@ class ScenarioRuntime:
                 try:
                     self.broker.execute(validated, ident)
                 except Exception as exc:
-                    from live.scenario_broker import BrokerCancellationPending, BrokerNotReady, BrokerProtectionPending
+                    from live.scenario_broker import BrokerCancellationPending, BrokerNotReady, BrokerProtectionPending, BrokerTargetPreflightRejected
+                    from live.scenario_execution import target_rejection_status
+                    batch = None
+                    if isinstance(exc, BrokerTargetPreflightRejected):
+                        try:
+                            batch = self.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id=?", (ident,)).fetchone()
+                        except sqlite3.Error:
+                            pass
+                    if batch and batch[0] == target_rejection_status(validated):
+                        return {"status": "intent_pending", "reason": "target_revision_rejected",
+                                "review_update_receipt": receipt}
                     self._notice("unknown:"+ident,dict(kind="PENDING",timestamp=self.clock()))
                     self.conn.commit()
                     cancellation_only_wait = (validated["action"] == "WAIT"

@@ -1050,6 +1050,163 @@ def test_adjust_missing_decision_never_recreates_a_filled_old_target(live):
     assert e.orders["native"]["orderStatus"]=="Untriggered"
 
 
+@pytest.mark.parametrize("restart", [False,True])
+def test_unapplied_adjustment_is_not_reported_as_success_when_evidence_missing(live,restart):
+    b,e=live
+    target=[dict(id="near",price=105,fraction=.5)]
+    b.execute(persist(b,take_profits=target),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    near=next(c for c in b.children() if c["kind"]=="tp")
+    e.fill(near["link_id"],.02)
+    with pytest.raises(BrokerNotReady,match="exit_decision_targets_missing"):
+        b.execute(persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=target),"a2")
+    if restart:
+        b=ScenarioDemoBroker(b.conn,session=e,expected_main_uid="123",clock=b.clock,execution_enabled=True)
+    writes=list(e.writes)
+    item=next(item for item in b.reconcile()["intents"] if item["intent_id"]=="a2")
+    assert item["terminal"] is True and item["action_applied"] is False
+    assert item["rejection_reason"]=="target_evidence_unavailable" and e.writes==writes
+    with pytest.raises(BrokerNotReady,match="target_revision_already_rejected"):
+        b.execute(json.loads(b.conn.execute("SELECT payload FROM llm_scenario_intents WHERE id='a2'").fetchone()[0]),"a2")
+    assert e.writes==writes
+
+
+def test_successful_adjustment_without_new_children_is_terminal(live):
+    b,e=live
+    b.execute(persist(b,take_profits=[dict(id="near",price=105,fraction=.5)]),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    b.execute(persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=[]),"a2")
+    item=next(item for item in b.reconcile()["intents"] if item["intent_id"]=="a2")
+    assert item["terminal"] is True and item["orders_reconciled"] is True
+
+
+def test_rejected_unapplied_adjustment_allows_next_market_decision(live):
+    from live.scenario_runtime import ScenarioRuntime
+    from tests.test_scenario_runtime import wait_proposal
+    b,e=live
+    target=[dict(id="near",price=105,fraction=.5)]
+    b.execute(persist(b,revision=1,take_profits=target),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    near=next(c for c in b.children() if c["kind"]=="tp")
+    e.fill(near["link_id"],.02)
+    with pytest.raises(BrokerNotReady,match="exit_decision_targets_missing"):
+        b.execute(persist(b,action_id="a2",action="ADJUST",revision=2,entries=[],take_profits=target),"a2")
+    state=json.loads(b.conn.execute("SELECT body FROM llm_scenario_state WHERE id=1").fetchone()[0])
+    state.update(version=1,breaker={})
+    state["active"]["revision"]=1
+    b.conn.execute("UPDATE llm_scenario_state SET body=? WHERE id=1",(json.dumps(state),))
+    b.conn.commit()
+    calls=[]
+    def model(snapshot,context):
+        rejected=next(row for row in context["recent_actions"] if row["revision"]==2)
+        assert rejected["action_applied"] is False and rejected["rejection_reason"]=="target_evidence_unavailable"
+        calls.append(True)
+        return wait_proposal(snapshot,context,action_id="next-wait")
+    runtime=ScenarioRuntime(b.conn,b,model,lambda:dict(valid=True,as_of_ms=1800000000000),clock=b.clock)
+    result=runtime.tick()
+    assert result["status"]=="wait" and calls==[True]
+    status,evidence=b.conn.execute("SELECT status,evidence FROM llm_scenario_intents WHERE id='a2'").fetchone()
+    assert status=="TERMINAL" and json.loads(evidence)["action_applied"] is False
+    assert e.orders[near["link_id"]]["orderStatus"]=="PartiallyFilled"
+
+
+def test_target_rejection_with_stop_change_is_not_auto_resolved(live):
+    b,e=live
+    target=[dict(id="near",price=105,fraction=.5)]
+    b.execute(persist(b,take_profits=target),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    with pytest.raises(BrokerNotReady,match="exit_decision_targets_missing"):
+        b.execute(persist(b,action_id="a2",action="ADJUST",hard_stop=99,entries=[],take_profits=target),"a2")
+    assert b.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id='a2'").fetchone()==("ABORTED",)
+    assert not any(item["intent_id"]=="a2" and item.get("terminal") is True for item in b.reconcile()["intents"])
+
+
+def test_target_rejection_after_entry_submit_is_not_auto_resolved(live):
+    b,e=live
+    target=[dict(id="near",price=105,fraction=.5)]
+    b.execute(persist(b,take_profits=target),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    with pytest.raises(BrokerNotReady,match="exit_decision_targets_missing"):
+        b.execute(persist(b,action_id="a2",action="ADJUST",entries=[dict(id="extra",price=99,quantity=.1)],take_profits=target),"a2")
+    assert any(c["intent_id"]=="a2" and c["kind"]=="entry" for c in b.children())
+    assert b.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id='a2'").fetchone()==("ABORTED",)
+
+
+def test_target_rejection_proof_failure_stays_unresolved(live,monkeypatch):
+    b,e=live
+    target=[dict(id="near",price=105,fraction=.5)]
+    b.execute(persist(b,take_profits=target),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    reject=b._target_preflight_fail
+    def reject_with_unreadable_state(reason):
+        def unavailable():
+            raise OSError("unavailable")
+        monkeypatch.setattr(b,"_active",unavailable)
+        reject(reason)
+    monkeypatch.setattr(b,"_target_preflight_fail",reject_with_unreadable_state)
+    with pytest.raises(BrokerNotReady,match="exit_decision_targets_missing"):
+        b.execute(persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=target),"a2")
+    assert b.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id='a2'").fetchone()==("ABORTED",)
+
+
+@pytest.mark.parametrize("previous_batch", ["EXECUTING","ABORTED","COMPLETE"])
+def test_target_rejection_with_prior_batch_cannot_claim_no_writes(live,previous_batch):
+    b,e=live
+    target=[dict(id="near",price=105,fraction=.5)]
+    b.execute(persist(b,take_profits=target),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    p=persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=target)
+    b.conn.execute("INSERT INTO llm_scenario_execution_batches VALUES('a2',?)",(previous_batch,))
+    b.conn.commit()
+    with pytest.raises(BrokerNotReady,match="exit_decision_targets_missing"):
+        b.execute(p,"a2")
+    assert b.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id='a2'").fetchone()==("ABORTED",)
+
+
+def test_rejected_target_receipt_is_not_reused_after_plan_change(live):
+    b,e=live
+    target=[dict(id="near",price=105,fraction=.5)]
+    b.execute(persist(b,take_profits=target),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    with pytest.raises(BrokerNotReady,match="exit_decision_targets_missing"):
+        b.execute(persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=target),"a2")
+    raw=b.conn.execute("SELECT payload FROM llm_scenario_intents WHERE id='a2'").fetchone()[0]
+    changed=json.loads(raw)
+    changed["take_profits"][0]["price"]=106
+    b.conn.execute("UPDATE llm_scenario_intents SET payload=? WHERE id='a2'",(json.dumps(changed),))
+    b.conn.commit()
+    writes=list(e.writes)
+    assert not any(item["intent_id"]=="a2" and item.get("terminal") is True for item in b.reconcile()["intents"])
+    assert e.writes==writes
+
+
+def test_rejected_target_does_not_block_later_tighter_stop(live):
+    b,e=live
+    target=[dict(id="near",price=105,fraction=.5)]
+    b.execute(persist(b,take_profits=target),"a1")
+    e.fill(next(iter(e.orders)),.1)
+    b.reconcile()
+    with pytest.raises(BrokerNotReady,match="exit_decision_targets_missing"):
+        b.execute(persist(b,action_id="a2",action="ADJUST",entries=[],take_profits=target),"a2")
+    state=json.loads(b.conn.execute("SELECT body FROM llm_scenario_state WHERE id=1").fetchone()[0])
+    state["active"]["hard_stop"]=99
+    b.conn.execute("UPDATE llm_scenario_state SET body=? WHERE id=1",(json.dumps(state),))
+    b.conn.commit()
+    e.stop="99"
+    e.orders["native"]["triggerPrice"]="99"
+    item=next(item for item in b.reconcile()["intents"] if item["intent_id"]=="a2")
+    assert item["terminal"] is True and item["action_applied"] is False
+    assert e.orders["native"]["triggerPrice"]=="99"
+
+
 def test_missing_decision_keeps_other_old_targets_when_one_already_filled(live):
     b,e=live
     targets=[dict(id="near",price=105,fraction=.5),dict(id="far",price=110,fraction=.5)]
@@ -1140,6 +1297,8 @@ def test_adjust_refuses_unexplained_entry_fill(live):
         b.execute(p,"a2")
     assert not [c for c in b.children() if c["intent_id"]=="a2" and c["kind"]=="tp"]
     assert e.orders["native"]["orderStatus"]=="Untriggered"
+    assert b.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id='a2'").fetchone()==("ABORTED",)
+    assert not any(item["intent_id"]=="a2" and item.get("terminal") is True for item in b.reconcile()["intents"])
 
 
 def test_adjust_accepts_float_rounding_in_decision_lots(live):
