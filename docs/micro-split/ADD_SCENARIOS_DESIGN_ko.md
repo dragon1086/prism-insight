@@ -170,7 +170,7 @@ LLM 지시문에서 각 시나리오에 근거 관점을 하나 이상 붙이게
 - **재검토 시점**: KR은 12:00 이전 점검(오전 배치)이 당일 계획을, 이후 점검(오후 14:46 배치)이 다음 세션 계획을 씁니다. US는 10:15 ET·14:30 ET 장중 점검 모두 다음 뉴욕 세션 계획을 씁니다(2026-10-02 정정: 배치는 뉴욕 시간 cron). 키가 없으면 저장된 계획을 유지하고, 매도 판단이 나오면 계획을 취소합니다. 휴장일은 평일 기준으로 계산하므로 휴장일로 지정된 계획은 쓰이지 않고 다음 점검이 새 계획을 씁니다.
 - **추가 안전장치**: 집행 직전 보유 행의 계획 해시가 평가 때와 같아야 주문합니다(`PLAN_CHANGED`면 주문 없음). 손절(loop A)·추세 이탈(loop B) 주문이나 추세 이탈 감지가 있는 날은 증액하지 않습니다.
 - **JSON 파싱 보강**: 계획이 4단 중첩이라 기존 정규식(3단)으로는 응답 전체를 못 읽어 매도 판단까지 잃을 수 있었습니다. `cores/utils.parse_llm_json`과 US 매도 파서가 첫 `{`부터 완전한 JSON을 먼저 읽도록 보강했습니다(기존 입력의 결과는 같음).
-- **이벤트(ClickStack)**: `micro_split.add_planned`, `micro_split.add_plan_qualified`, `micro_split.add_plan_invalidated`, `micro_split.add_executed`. 속성에 `slot_allocation`, `scenario_id`, `lens`, `plan_hash`가 들어갑니다.
+- **이벤트(ClickStack)**: `micro_split.add_planned`, `micro_split.add_plan_qualified`, `micro_split.add_plan_invalidated`, `micro_split.add_executed`. 속성에 `slot_allocation`, `scenario_id`, `lens`, `plan_hash`가 들어갑니다. `add_planned`에는 2026-11-01부터 시나리오별 `trigger`(돌파·회복 가격 등), `target_allocation`, `max_chase_pct`도 남깁니다(보유 행의 계획은 최근 몇 세션만 남아, 막힌 증액을 나중에 재생하려면 원장에 숫자가 필요).
 - **켜는 방법**: `.env`에 `MICRO_SPLIT_LIVE_ENABLED=true`(이미 켜져 있으면 그대로)이고 `MICRO_SPLIT_LIVE_ADDS_ENABLED`가 `false`가 아니면 다음 BUY·보유 점검부터 계획이 생기고, B3 워커(`tools/run_b3_ae_shadow.py`)가 집행합니다.
 - **되돌리기**: 증액만 멈추려면 `MICRO_SPLIT_LIVE_ADDS_ENABLED=false`, 초분할 전체를 끄려면 `MICRO_SPLIT_LIVE_ENABLED=false`로 두고 워커를 재시작합니다.
 
