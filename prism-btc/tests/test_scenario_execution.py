@@ -389,8 +389,9 @@ def persist(b, **updates):
 
 def record_exit_decision(b, payload):
     b.conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_decisions(slot INTEGER PRIMARY KEY, snapshot TEXT, context TEXT, proposal TEXT, outcome TEXT)")
-    b.conn.execute("INSERT INTO llm_scenario_decisions(context,proposal) VALUES(?,?)",
-                   (json.dumps(b.context()),json.dumps(payload)))
+    slot=min(0,b.conn.execute("SELECT COALESCE(MIN(slot),0) FROM llm_scenario_decisions").fetchone()[0])-1
+    b.conn.execute("INSERT INTO llm_scenario_decisions(slot,context,proposal) VALUES(?,?,?)",
+                   (slot,json.dumps(b.context()),json.dumps(payload)))
     b.conn.commit()
 
 

@@ -6,7 +6,7 @@ import pytest
 
 from core.llm_scenario import ScenarioValidationError, validate_scenario
 from tests.test_llm_scenario import sample
-from tests.test_scenario_execution import live, persist  # noqa: F401
+from tests.test_scenario_execution import live, persist, record_exit_decision  # noqa: F401
 
 
 @pytest.fixture(params=["LONG", "SHORT"])
@@ -127,6 +127,7 @@ def test_adjust_reallocates_only_remnant_without_restoring_old_quota(ladder):
     payload = persist(broker, action="ADJUST", action_id="a2", entries=[],
                       side=ladder[2], hard_stop=ladder[3],
                       take_profits=targets(ladder[2], (.2, .3, .5)))
+    record_exit_decision(broker, payload)
     broker.execute(payload, "a2")
     broker.reconcile()
     rows = live_targets(broker, "a2")
