@@ -387,8 +387,9 @@ class USCompressionManager:
             # Count/deactivate stale principles for US
             self.cursor.execute("""
                 SELECT COUNT(*) FROM trading_principles
-                WHERE is_active = 1 AND (last_validated_at IS NULL OR last_validated_at < ?) AND market = ?
-            """, (stale_cutoff, self.MARKET))
+                WHERE is_active = 1 AND (last_validated_at IS NULL OR last_validated_at < ?)
+                  AND created_at < ? AND market = ?
+            """, (stale_cutoff, stale_cutoff, self.MARKET))
             results["stale_principles"] = self.cursor.fetchone()[0]
 
             # Count/deactivate low-confidence intuitions for US
@@ -425,8 +426,9 @@ class USCompressionManager:
                 self.cursor.execute("""
                     UPDATE trading_principles
                     SET is_active = 0
-                    WHERE is_active = 1 AND (last_validated_at IS NULL OR last_validated_at < ?) AND market = ?
-                """, (stale_cutoff, self.MARKET))
+                    WHERE is_active = 1 AND (last_validated_at IS NULL OR last_validated_at < ?)
+                      AND created_at < ? AND market = ?
+                """, (stale_cutoff, stale_cutoff, self.MARKET))
                 results["principles_deactivated"] += self.cursor.rowcount
 
                 # Deactivate low-confidence intuitions
