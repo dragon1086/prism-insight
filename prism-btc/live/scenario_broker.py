@@ -23,7 +23,7 @@ from core.scenario_limit_prices import POLICY_VERSION, observed_quotes
 from live.exchange_snapshot import read_complete
 from live.liquidation_guard import capture as capture_liquidation
 from live.shared_entry_coordinator import database_path, mutation_lock
-from live.scenario_execution import ScenarioExecution, decimal
+from live.scenario_execution import ScenarioExecution, decimal, target_rejection_status
 
 
 _MONITOR_CALL_TIMING = ContextVar('btc_incident_monitor_call_timing', default=None)
@@ -37,6 +37,10 @@ _MONITOR_METHODS = frozenset({
 
 class BrokerNotReady(ValueError):
     """Sanitized fail-closed reason, without transport payload or credentials."""
+
+
+class BrokerTargetPreflightRejected(BrokerNotReady):
+    """Target revision rejected before any target cancellation or submission."""
 
 
 class BrokerProtectionPending(BrokerNotReady):
@@ -698,6 +702,15 @@ class ScenarioDemoBroker(ScenarioExecution):
                     self._cancel(child, before_cancel=verify_flat)
             return self.capture_account()
 
+    def _rejected_target_safe(self, active, intent_id, plan, batch, children):
+        if (not batch or batch[0]!=target_rejection_status(plan) or plan.get("action_id")!=intent_id or plan.get("action")!="ADJUST"
+                or plan.get("entries") or plan.get("cancel_entry_ids") or plan.get("stop_revision")
+                or plan.get("pending_renewal") or plan.get("scenario_id")!=active.get("scenario_id")
+                or plan.get("side")!=active.get("side") or any(c["intent_id"]==intent_id for c in children)):
+            return False
+        old,current=decimal(plan.get("hard_stop")),decimal(active.get("hard_stop"))
+        return (active["side"]=="LONG" and current>=old) or (active["side"]=="SHORT" and current<=old)
+
     def reconcile(self):
         observed=self.capture_account()
         active=self._active()
@@ -872,6 +885,12 @@ class ScenarioDemoBroker(ScenarioExecution):
             plans=self.conn.execute("SELECT id,payload FROM llm_scenario_intents WHERE scenario_id=? ORDER BY rowid DESC",(active["scenario_id"],)).fetchall()
             for ident,body in plans:
                 plan=json.loads(body)
+                batch=self.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id=?",(ident,)).fetchone()
+                if batch and batch[0].startswith("REJECTED_TARGET_PREWRITE:"):
+                    if self._rejected_target_safe(active,ident,plan,batch,self.children(active["scenario_id"])):
+                        continue
+                    unknown=True
+                    break
                 if plan["action"]=="EXIT":
                     break
                 if plan["action"] == "REDUCE":
@@ -940,11 +959,12 @@ class ScenarioDemoBroker(ScenarioExecution):
                     if not proof or proof.get('status') not in {'APPLIED', 'REJECTED'}:
                         continue
                 cancelled=all(any(c["kind"]=="entry" and (c["local_id"]==entry or c["order_id"]==entry) and c["status"]=="TERMINAL" for c in children) for entry in payload.get("cancel_entry_ids",[]))
-                adjusted=(payload["action"]=="ADJUST" and not payload.get("entries")
+                batch=self.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id=?",(ident,)).fetchone()
+                adjusted=(payload["action"]=="ADJUST" and not payload.get("entries") and not unknown
+                    and batch is not None and batch[0]=="COMPLETE"
                     and (not payload.get("stop_revision") or self._stop_revision_evidence("stop_revision_confirmed", ident))
                     and self._verify_protection(observed,payload["hard_stop"],active["side"]))
                 no_submit=payload["action"]=="OPEN" and observed["exchange_flat"] and not observed["open_orders"]
-                batch=self.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id=?",(ident,)).fetchone()
                 # Children are durable BEFORE any submit. An explicitly aborted
                 # replacement with none cannot have placed its replacement; only
                 # release it after exact old-order evidence proves flat/terminal.
@@ -953,16 +973,19 @@ class ScenarioDemoBroker(ScenarioExecution):
                     and not unknown and observed["exchange_flat"] and not observed["open_orders"]
                     and not observed["legacy_fenced"] and protection
                     and all(c["status"]=="TERMINAL" and c["evidence"] for c in children))
+                rejected_adjust=(not unknown and not observed["legacy_fenced"] and protection
+                    and self._rejected_target_safe(active,ident,payload,batch,children))
                 reduced = False
                 reduction_result = None
                 if payload["action"] == "REDUCE":
                     from live.scenario_immediate_reduce import RESOLVED, result
                     reduction_result = result(self, ident)
                     reduced = reduction_result["status"] in RESOLVED
-                terminal=cancelled and (reduced or payload["action"]=="WAIT" or adjusted or no_submit or aborted_adjust or (payload["action"]=="EXIT" and observed["exchange_flat"]))
+                terminal=cancelled and (reduced or payload["action"]=="WAIT" or adjusted or no_submit or aborted_adjust or rejected_adjust or (payload["action"]=="EXIT" and observed["exchange_flat"]))
                 if terminal:
                     items.append(dict(intent_id=ident,terminal=True,protection_ok=protection,orders_reconciled=True,
                         executions_complete=True,execution_ids=[],filled_quantity=0.,exchange_order_ids=[],open_entries=[],
+                        **({'action_applied':False,'rejection_reason':'target_evidence_unavailable'} if rejected_adjust else {}),
                         **({'reduction_result': reduction_result} if reduction_result else {}),
                         **({'pending_renewal_receipt': proof} if payload.get('pending_renewal') else {})))
                 continue

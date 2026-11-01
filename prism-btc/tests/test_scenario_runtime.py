@@ -140,6 +140,36 @@ def test_adjust_with_new_entry_does_not_reclassify_cancellation(setup):
     assert r.conn.execute("SELECT status FROM llm_scenario_intents WHERE id='action-2'").fetchone() == ("PENDING",)
 
 
+@pytest.mark.parametrize("batch_status,expected", [
+    ("REJECTED_TARGET_PREWRITE", "target_revision_rejected"),
+    ("ABORTED", "submission_unknown"),
+    (None, "submission_unknown"),
+])
+def test_target_preflight_reports_rejection_only_with_durable_no_write_proof(setup,batch_status,expected):
+    from live.scenario_broker import BrokerTargetPreflightRejected
+    r,b,now,_=setup
+    notices=[]
+    r._notice=lambda ident,event: notices.append(event) or True
+    assert r.tick()["status"]=="intent_pending"
+    b.ctx["positions"]=[dict(price=100,quantity=1)]
+    b.evidence=dict(intents=[terminal()])
+    now[0]+=300
+    r.propose=lambda s,c:dict(proposal(s,c),action="ADJUST",action_id="action-2",entries=[])
+    def execute(payload,ident):
+        if batch_status is not None:
+            from live.scenario_execution import target_rejection_status
+            r.conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_execution_batches(intent_id TEXT PRIMARY KEY,status TEXT)")
+            stored=target_rejection_status(payload) if batch_status=="REJECTED_TARGET_PREWRITE" else batch_status
+            r.conn.execute("INSERT INTO llm_scenario_execution_batches VALUES(?,?)",(ident,stored))
+            r.conn.commit()
+        raise BrokerTargetPreflightRejected("exit_decision_targets_missing")
+    b.execute=execute
+    notices.clear()
+    result=r.tick()
+    assert result["reason"]==expected
+    assert any(event["kind"]=="PENDING" for event in notices)==(batch_status!="REJECTED_TARGET_PREWRITE")
+
+
 def test_intent_is_committed_before_submit(setup):
     r, b, _, path = setup
     def execute(payload, ident):

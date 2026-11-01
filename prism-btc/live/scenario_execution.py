@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import uuid
-from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 
 from live.scenario_pending_renewal import initialize as initialize_pending_leases
 from live.scenario_entry_goal import GoalConsistencyRejection, stored_goal, validate_goal_plan
@@ -71,6 +71,10 @@ def stable_link(intent, kind, local_id):
     return "sc_" + hashlib.sha256(encoded([intent, kind, local_id]).encode()).hexdigest()[:32]
 
 
+def target_rejection_status(payload):
+    return "REJECTED_TARGET_PREWRITE:" + hashlib.sha256(encoded(payload).encode()).hexdigest()
+
+
 class ScenarioExecution:
     """Mixin; transport, identity and evidence persistence belong to broker."""
 
@@ -105,6 +109,10 @@ class ScenarioExecution:
     def _fail(self, reason):
         from live.scenario_broker import BrokerNotReady
         raise BrokerNotReady(reason)
+
+    def _target_preflight_fail(self, reason):
+        from live.scenario_broker import BrokerTargetPreflightRejected
+        raise BrokerTargetPreflightRejected(reason)
 
     def _active(self):
         try:
@@ -968,6 +976,7 @@ class ScenarioExecution:
     def execute(self,payload,intent_id):
         from live.shared_entry_coordinator import mutation_lock
         from live.scenario_provenance import bind
+        from live.scenario_broker import BrokerTargetPreflightRejected
         bind(payload.get("scenario_id"), intent_id)
         with mutation_lock(self.conn):
             batch=self.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id=?",(intent_id,)).fetchone()
@@ -975,12 +984,27 @@ class ScenarioExecution:
                 self._fail("interrupted_execution_requires_reconciliation")
             if batch and batch[0]=="ABORTED_RESTORED":
                 self._fail("stop_revision_aborted_restored")
+            if batch and batch[0].startswith("REJECTED_TARGET_PREWRITE:"):
+                self._fail("target_revision_already_rejected")
             self.conn.execute("INSERT OR IGNORE INTO llm_scenario_execution_batches VALUES(?,'EXECUTING')",(intent_id,))
             self.conn.commit()
             try:
                 result=self._execute(payload,intent_id)
-            except Exception:
-                self.conn.execute("UPDATE llm_scenario_execution_batches SET status='ABORTED' WHERE intent_id=? AND status!='INTERRUPTED'",(intent_id,))
+            except Exception as exc:
+                safe_rejection=False
+                if isinstance(exc,BrokerTargetPreflightRejected):
+                    try:
+                        active=self._active()
+                        safe_rejection=(batch is None and payload.get("action_id")==intent_id and payload.get("action")=="ADJUST" and not payload.get("entries")
+                            and not payload.get("cancel_entry_ids") and not payload.get("stop_revision") and not payload.get("pending_renewal")
+                            and active and active.get("scenario_id")==payload.get("scenario_id")
+                            and active.get("side")==payload.get("side")
+                            and decimal(active.get("hard_stop"))==decimal(payload.get("hard_stop"))
+                            and not any(c["intent_id"]==intent_id for c in self.children(payload["scenario_id"])))
+                    except Exception:
+                        safe_rejection=False
+                self.conn.execute("UPDATE llm_scenario_execution_batches SET status=? WHERE intent_id=? AND status!='INTERRUPTED'",
+                    (target_rejection_status(payload) if safe_rejection else "ABORTED",intent_id))
                 self.conn.commit()
                 raise
             self.conn.execute("UPDATE llm_scenario_execution_batches SET status='COMPLETE' WHERE intent_id=? AND status NOT IN ('ABORTED','INTERRUPTED')",(intent_id,))
@@ -1158,15 +1182,118 @@ class ScenarioExecution:
         if allocation<0:
             self._fail("exit_allocation_basis_conflict")
         generation=hashlib.sha256(encoded([intent_id,str(entered)]).encode()).hexdigest()[:16]
+        context=targets=None
+        if payload["action"] == "ADJUST":
+            decision_table=self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_scenario_decisions'").fetchone()
+            decisions=self.conn.execute("SELECT context FROM llm_scenario_decisions WHERE json_extract(proposal,'$.action_id')=?",(intent_id,)).fetchall() if decision_table else []
+            if len(decisions)>1:
+                self._target_preflight_fail("exit_decision_ambiguous")
+            context=json.loads(decisions[0][0]) if decisions and decisions[0][0] else None
+            targets=context.get("target_status") if isinstance(context,dict) else None
+            if targets is not None and not isinstance(targets,list):
+                self._target_preflight_fail("exit_decision_targets_invalid")
+            if payload.get("take_profits") or payload.get("partial_stops"):
+                if any(not isinstance(t,dict) or t.get("status") not in {"LIVE","TERMINAL"}
+                       or t.get("filled_quantity") is None for t in targets or []):
+                    self._target_preflight_fail("exit_decision_target_unknown")
+            for field,kind in (("take_profits","tp"),("partial_stops","partial_sl")):
+                rows=payload.get(field,[])
+                for child in (c for c in children if c["intent_id"]!=intent_id and c["kind"]==kind):
+                    old_id=child["local_id"].partition(":")[2]
+                    price=decimal(child["request"].get("price",child["request"].get("triggerPrice")))
+                    has_fills=bool(child["evidence"] and child["evidence"]["executions"])
+                    if (child["status"]!="TERMINAL" or has_fills) and any(row["id"]==old_id or decimal(row["price"])==price for row in rows):
+                        snapshots=[t for t in targets or [] if t.get("intent_id")==child["intent_id"] and t.get("target_id")==child["local_id"] and t.get("kind")==kind]
+                        if not snapshots:
+                            self._target_preflight_fail("exit_decision_targets_missing")
+                        if len(snapshots)!=1 or not child["evidence"]:
+                            self._target_preflight_fail("exit_decision_target_unknown")
+                        previous=decimal(snapshots[0]["filled_quantity"])
+                        actual=sum((decimal(e["execQty"]) for e in child["evidence"]["executions"]),Decimal(0))
+                        if actual<previous or (snapshots[0]["status"]=="TERMINAL" and
+                                (child["status"]!="TERMINAL" or actual!=previous)):
+                            self._target_preflight_fail("exit_decision_fill_conflict")
         for child in self.children(payload["scenario_id"]):
             if child["kind"] in ("tp","partial_sl") and child["status"]!="TERMINAL" and not child["local_id"].startswith(generation+":"):
                 self._cancel(child)
         observed=self._ensure_protection(self.capture_account(),payload["hard_stop"],payload["side"])
         size=decimal(observed["position"]["size"])
         children=self.children(payload["scenario_id"])
+        prior_fills={}
+        if payload["action"] == "ADJUST":
+            for field,kind in (("take_profits","tp"),("partial_stops","partial_sl")):
+                rows=payload.get(field,[])
+                for child in (c for c in children if c["intent_id"]!=intent_id and c["kind"]==kind):
+                    price=decimal(child["request"].get("price",child["request"].get("triggerPrice")))
+                    old_id=child["local_id"].partition(":")[2]
+                    matches=[i for i,row in enumerate(rows) if row["id"]==old_id]
+                    if not matches:
+                        matches=[i for i,row in enumerate(rows) if decimal(row["price"])==price]
+                    if not matches:
+                        continue
+                    actual=sum((decimal(e["execQty"]) for e in child["evidence"]["executions"]),Decimal(0)) if child["evidence"] else Decimal(0)
+                    snapshot=[t for t in targets or [] if t.get("intent_id")==child["intent_id"]
+                        and t.get("target_id")==child["local_id"] and t.get("kind")==kind]
+                    if not snapshot:
+                        if actual:
+                            self._fail("exit_decision_targets_missing")
+                        continue
+                    if len(snapshot)>1:
+                        self._fail("exit_decision_target_ambiguous")
+                    if snapshot[0].get("status")=="LIVE":
+                        previous=decimal(snapshot[0].get("filled_quantity"))
+                        if actual<previous:
+                            self._fail("exit_decision_fill_conflict")
+                        key=(kind,matches[0])
+                        prior_fills[key]=prior_fills.get(key,Decimal(0))+actual-previous
+                    elif actual!=decimal(snapshot[0].get("filled_quantity")):
+                        self._fail("exit_decision_fill_conflict")
+            if any(prior_fills.values()):
+                positions=context.get("positions")
+                pending=context.get("pending_entries")
+                if not isinstance(positions,list) or not isinstance(pending,list):
+                    self._fail("exit_decision_position_missing")
+                raw_size=sum((decimal(p.get("quantity")) for p in positions),Decimal(0))
+                decision_size=(raw_size/instrument["step"]).to_integral_value(rounding=ROUND_HALF_UP)*instrument["step"]
+                if abs(raw_size-decision_size)>instrument["step"]*Decimal("0.000001"):
+                    self._fail("exit_decision_position_conflict")
+                if decision_size<=0:
+                    self._fail("exit_decision_position_missing")
+                entry_delta=Decimal(0)
+                for entry in pending:
+                    matches=[c for c in children if c["kind"]=="entry" and c["intent_id"]!=intent_id
+                        and c["local_id"]==entry.get("id") and decimal(c["request"].get("price"))==decimal(entry.get("price"))]
+                    if len(matches)!=1 or not matches[0]["evidence"]:
+                        self._fail("exit_decision_entry_ambiguous")
+                    child=matches[0]
+                    previous=decimal(child["request"]["qty"])-decimal(entry.get("quantity"))
+                    actual=sum((decimal(e["execQty"]) for e in child["evidence"]["executions"]),Decimal(0))
+                    if previous<0 or actual<previous:
+                        self._fail("exit_decision_fill_conflict")
+                    entry_delta+=actual-previous
+                entry_delta+=sum((decimal(e["execQty"]) for c in children if c["kind"]=="entry"
+                    and c["intent_id"]==intent_id and c["evidence"] for e in c["evidence"]["executions"]),Decimal(0))
+                exit_delta=Decimal(0)
+                for target in targets:
+                    matches=[c for c in children if c["intent_id"]==target.get("intent_id")
+                        and c["local_id"]==target.get("target_id") and c["kind"]==target.get("kind")]
+                    if len(matches)!=1 or not matches[0]["evidence"]:
+                        self._fail("exit_decision_targets_missing")
+                    previous=decimal(target.get("filled_quantity"))
+                    actual=sum((decimal(e["execQty"]) for e in matches[0]["evidence"]["executions"]),Decimal(0))
+                    if actual<previous or (target.get("status")!="LIVE" and actual!=previous):
+                        self._fail("exit_decision_fill_conflict")
+                    exit_delta+=actual-previous
+                current_exits=sum((decimal(e["execQty"]) for c in children if c["kind"] in ("tp","partial_sl")
+                    and c["intent_id"]==intent_id and c["evidence"] for e in c["evidence"]["executions"]),Decimal(0))
+                if decision_size+entry_delta-exit_delta-current_exits!=size:
+                    self._fail("exit_decision_position_conflict")
+                allocation=decision_size+entry_delta-exit_delta+sum(prior_fills.values(),Decimal(0))
         for field,kind in (("take_profits","tp"),("partial_stops","partial_sl")):
             allocated=Decimal(0)
-            for row in payload.get(field,[]):
+            for index,row in enumerate(payload.get(field,[])):
+                key=(kind,index)
+                retained=prior_fills.get(key,Decimal(0))
                 current_id=generation+":"+row["id"]
                 existing=next((c for c in children if c["intent_id"]==intent_id and c["kind"]==kind and c["local_id"]==current_id),None)
                 if existing:
@@ -1176,7 +1303,7 @@ class ScenarioExecution:
                     continue
                 consumed=sum((decimal(e["execQty"]) for c in children if c["kind"]==kind and
                     c["intent_id"]==intent_id and c["local_id"].partition(":")[2]==row["id"] and c["evidence"]
-                    for e in c["evidence"]["executions"]),Decimal(0))
+                    for e in c["evidence"]["executions"]),Decimal(0))+retained
                 quantity=(max(Decimal(0),min(size-allocated,allocation*decimal(row["fraction"])-consumed))/instrument["step"]).to_integral_value(rounding=ROUND_DOWN)*instrument["step"]
                 allocated+=quantity
                 if quantity<instrument["minimum"]:
