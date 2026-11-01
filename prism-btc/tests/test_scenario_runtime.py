@@ -1,3 +1,4 @@
+import json
 import sqlite3
 
 import pytest
@@ -81,6 +82,26 @@ def test_unknown_submission_survives_restart_without_resubmit(setup):
     restarted = ScenarioRuntime(sqlite3.connect(path), b, proposal, lambda: {}, clock=lambda: now[0])
     assert restarted.tick()["status"] == "intent_pending"
     assert b.executed == ["action-1"]
+
+
+@pytest.mark.parametrize('message,expected', [
+    ('exact_order_not_found_or_ambiguous', 'exact_order_not_found_or_ambiguous'),
+    ('secret from exchange', 'other'),
+])
+def test_pending_execution_diagnostic_is_allowlisted(setup, message, expected):
+    from live.scenario_broker import BrokerNotReady
+    r, b, _, _ = setup
+    def execute(payload, ident):
+        b.executed.append(ident)
+        raise BrokerNotReady(message)
+    b.execute = execute
+    result = r.tick()
+    assert result['reason'] == 'submission_unknown'
+    assert result['execution_diagnostic'] == expected
+    saved = r.conn.execute('SELECT outcome FROM llm_scenario_decisions ORDER BY slot DESC LIMIT 1').fetchone()
+    assert json.loads(saved[0])['execution_diagnostic'] == expected
+    assert r.conn.execute("SELECT status FROM llm_scenario_intents WHERE id='action-1'").fetchone() == ('PENDING',)
+    assert b.executed == ['action-1']
 
 
 @pytest.mark.parametrize("action", ["EXIT", "ADJUST"])
