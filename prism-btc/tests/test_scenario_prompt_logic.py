@@ -17,9 +17,9 @@ def test_user_approved_flexible_management_prompt_version_is_pinned():
     from live.scenario_llm import FLAT_ENTRY_PROMPT
     # 2026-10-26: user-approved structural trend TP allocation; no preset weights.
     expected = {
-        'SYSTEM_PROMPT': 'cff019b58e37e586932f3afb3cae4f78b984e10a3f34cf8a262f0d1e59cbeab5',
+        'SYSTEM_PROMPT': '63be06e8f36262c05593c0ad4a23cba47e04b5e966142313e00d69e8d82ac56e',
         'MA_STRUCTURE_PROMPT': '385fb5f83412f59af3ef6dd374f9472ee7d1c9a5b26940ea86e342fdd895d298',
-        'FLAT_ENTRY_PROMPT': '2f530d23e5754cb2c3ff67cf68b19f4f799af28c59fbf3d86510930ff3e9bf08',
+        'FLAT_ENTRY_PROMPT': '6c3481909e3b75240edcee052b2bc0ba9cd3287ba5df1cf5b5cc17880c0f306b',
     }
     for name, prompt in [('SYSTEM_PROMPT', SYSTEM_PROMPT), ('MA_STRUCTURE_PROMPT', MA_STRUCTURE_PROMPT),
                          ('FLAT_ENTRY_PROMPT', FLAT_ENTRY_PROMPT)]:

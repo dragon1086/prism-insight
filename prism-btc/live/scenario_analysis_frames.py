@@ -1,5 +1,6 @@
 """Explicit judgment-only timeframe view; raw evidence and historical codecs stay intact."""
 from copy import deepcopy
+import math
 import re
 
 ANALYSIS_FRAMES = ('30m', '1h', '4h', '12h', '1d', '1w')
@@ -67,6 +68,29 @@ def analysis_model_view(payload):
                 if isinstance(projection, dict):
                     projection.pop('same_progress_profile', None)
     ctx = result.get('contract_context', {})
+    if (ctx.get('scenario_id') is None and not ctx.get('positions')
+            and market.get('valid') is True and isinstance(frames, dict)):
+        for tf in PRIMARY_FRAMES:
+            frame = market['timeframes'].get(tf)
+            if not isinstance(frame, dict) or frame.get('status') != 'ok':
+                continue
+            confirmed, forming = frame.get('confirmed'), frame.get('forming')
+            if (not isinstance(confirmed, dict) or not isinstance(forming, dict)
+                    or forming.get('observation_kind') == 'synthetic_boundary'):
+                continue
+            ohlcv = forming.get('ohlcv')
+            if not isinstance(ohlcv, dict) or confirmed.get('is_confirmed') is not True:
+                continue
+            close, ma, atr = ohlcv.get('close'), confirmed.get('ma10'), confirmed.get('atr14_risk_only')
+            if not all(type(v) in (int, float) and math.isfinite(v) and v > 0 for v in (close, ma, atr)):
+                continue
+            ratio = (close - ma) / atr
+            if math.isfinite(ratio):
+                frame['forming_last_vs_confirmed_ma10_atr'] = round(ratio, 3)
+    if (ctx.get('scenario_id') is not None or ctx.get('positions')) and isinstance(frames, dict):
+        primary = market['timeframes'].get('30m')
+        if isinstance(primary, dict):
+            primary.pop('volume_4d_30m', None)
     structure = ctx.get('ma_structure')
     if isinstance(structure, dict):
         structure['primary'] = {k:v for k,v in structure.get('primary', {}).items() if k in PRIMARY_FRAMES}

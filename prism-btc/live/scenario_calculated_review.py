@@ -560,10 +560,19 @@ def calculate_candidate(wire, context, *, candidate_id, original_input_now=None,
 
 
 def _model_payload(snapshot, context, response_contract, *, calculated_candidates=None):
-    baseline = _base_model_payload(snapshot, context, response_contract, calculated_candidates=calculated_candidates)
-    if not explanation_enabled(context):
-        baseline = project_holding_price_order_input(baseline)[0]
-    return project_explanation_input(baseline, context, snapshot=snapshot)
+    def project(source):
+        baseline = _base_model_payload(source, context, response_contract, calculated_candidates=calculated_candidates)
+        if not explanation_enabled(context):
+            baseline = project_holding_price_order_input(baseline)[0]
+        return project_explanation_input(baseline, context, snapshot=source)
+    result = project(snapshot)
+    frame = snapshot.get('timeframes', {}).get('30m', {})
+    if (context.get('scenario_id') is None and not context.get('positions')
+            and 'volume_4d_30m' in frame and len(_encoded(result).encode()) > 100_000):
+        fallback = deepcopy(snapshot)
+        fallback['timeframes']['30m'].pop('volume_4d_30m')
+        return project(fallback)
+    return result
 
 
 def _base_model_payload(snapshot, context, response_contract, *, calculated_candidates=None):
