@@ -156,7 +156,8 @@ class HistoricalScenarioData:
             elif first <= current_start:
                 forming[tf] = aggregate.loc[ast == current_start]
             # A partial source prefix is never represented as a complete forming bar.
-        result = build_scenario_snapshot(history, now_ms, provisional_tf_data=forming, observed_at_ms=now_ms)
+        result = build_scenario_snapshot(history, now_ms, provisional_tf_data=forming, observed_at_ms=now_ms,
+                                         volume_history_30m=history.get("30m"))
         for tf, fact in result["timeframes"].items():
             if fact["forming"] is not None:
                 fact["forming"]["observation_kind"] = (

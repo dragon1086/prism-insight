@@ -106,7 +106,7 @@ def collect_snapshot(*, fetch=None, clock=time.time):
         from engine.config import TF_INTERVAL_MAP
         intervals = {**TF_INTERVAL_MAP, "15m": "15"}
         def fetch(tf):
-            return _get_klines(intervals[tf], limit=1000 if tf=="15m" else 100,
+            return _get_klines(intervals[tf], limit=1000 if tf=="15m" else 193 if tf=="30m" else 100,
                                retries=3, retry_rate_limit_only=True)
     started = clock()
     frames = {}
@@ -136,8 +136,11 @@ def collect_snapshot(*, fetch=None, clock=time.time):
             raise ValueError("future_public_candle")
         history[tf] = frame[opens + TIMEFRAME_MS[tf] <= now_ms]
         forming[tf] = frame[(opens <= now_ms) & (opens + TIMEFRAME_MS[tf] > now_ms)]
+    volume_history_30m = history["30m"]
+    history["30m"] = history["30m"].tail(99)
     return build_scenario_snapshot(history, now_ms, provisional_tf_data=forming,
-                                   observed_at_by_tf_ms={tf:int(at*1000) for tf,at in received.items()})
+                                   observed_at_by_tf_ms={tf:int(at*1000) for tf,at in received.items()},
+                                   volume_history_30m=volume_history_30m)
 
 
 def preview(equity, *, snapshot=None, generate=None, clock=time.time):

@@ -214,7 +214,16 @@ with calibrated probabilities. Never pretend confidence is a measured win rate.
 When supplied, use compression_bars separately from convergence_bars: a constant
 narrow MA gap is still compression. Use only each allowed frame's own OHLCV and
 available volume projection; retired-frame intrabar profiles are not judgment evidence.
-Volume pace is context, not an extra entry hard gate or calibrated prediction.
+For each flat-entry judgment, assess 30m and 1h volume in context of price and MA;
+when volume_4d_30m is available, compare the latest closed volume and recent
+activity against its four chronological 24-hour medians and 90th percentiles;
+latest_closed_over_median and latest_closed_over_p90 give the ratios for each day
+in the same order; overall_median_btc and latest_closed_over_overall_median use
+all 192 closed bars. Do not infer the overall median from daily medians; null means unknown.
+these percentiles describe volume distribution, not a buy/sell threshold. If unavailable, the
+four-day comparison is unknown. In an OPEN rationale, mention the relevant volume
+evidence or say it is unavailable. Volume pace is context, not an extra entry hard
+gate, directional order flow or calibrated prediction.
 A just-opened candle with zero progress/volume contains no new observation;
 it is not bearish evidence or a reason to demand confirmation. A primary candle
 with observation_kind=synthetic_boundary is a historical previous-close
@@ -589,6 +598,10 @@ breakout/retest can justify entry while the old MA gap still narrows, before a
 lagging crossover. Do not require another MA10 cross, a candle close or unanimous
 30m/1h alignment. Compare confirmed and forming evidence separately: forming
 progress is provisional, and a tiny WIDENING sign alone is not strong expansion.
+When forming_last_vs_confirmed_ma10_atr is available, it is signed forming Last
+close minus confirmed MA10 divided by confirmed ATR. Use it as optional distance
+context alongside nearby objectives, compression and follow-through; it is not a
+probability, entry veto or proof that a move is exhausted. Last is not Mark.
 For a decisive gap claim, name the timeframe and confirmed/forming phase and use
 the supplied ma_structure.primary[frame].confirmed_gap.state or forming_gap.state,
 or that frame's matching timestamped transitions.gap_state/gap_change_price.

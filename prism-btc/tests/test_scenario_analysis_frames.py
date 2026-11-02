@@ -7,6 +7,25 @@ import pytest
 from live.scenario_analysis_frames import analysis_model_view, allowed_evidence_path
 
 
+def test_entry_extension_is_optional_signed_and_not_stored():
+    frame = {'status': 'ok', 'confirmed': {'is_confirmed': True, 'ma10': 100., 'atr14_risk_only': 10.},
+             'forming': {'ohlcv': {'close': 130.}}}
+    raw = {'market_snapshot': {'valid': True, 'timeframes': {'30m': frame}}, 'contract_context': {}}
+    before = deepcopy(raw)
+    assert analysis_model_view(raw)['market_snapshot']['timeframes']['30m']['forming_last_vs_confirmed_ma10_atr'] == 3.
+    assert raw == before
+    raw['market_snapshot']['timeframes']['30m']['forming']['observation_kind'] = 'synthetic_boundary'
+    assert 'forming_last_vs_confirmed_ma10_atr' not in analysis_model_view(raw)['market_snapshot']['timeframes']['30m']
+    del raw['market_snapshot']['timeframes']['30m']['forming']['observation_kind']
+    raw['market_snapshot']['timeframes']['30m']['forming']['ohlcv']['close'] = 80.
+    assert analysis_model_view(raw)['market_snapshot']['timeframes']['30m']['forming_last_vs_confirmed_ma10_atr'] == -2.
+    raw['contract_context']['positions'] = [{'size': 1}]
+    assert 'forming_last_vs_confirmed_ma10_atr' not in analysis_model_view(raw)['market_snapshot']['timeframes']['30m']
+    raw['contract_context']['positions'] = []
+    raw['market_snapshot']['timeframes']['30m']['confirmed']['atr14_risk_only'] = 0.
+    assert 'forming_last_vs_confirmed_ma10_atr' not in analysis_model_view(raw)['market_snapshot']['timeframes']['30m']
+
+
 def source():
     return dict(market_snapshot={'timeframes': {
         frame: {'forming': {'ohlcv': {'close': 100}, 'volume_acceleration': {'recent_15m_volume': 99},

@@ -99,7 +99,7 @@ def test_real_seven_timeframe_collection_preserves_freshness_gates(monkeypatch, 
         duration = TIMEFRAME_MS[tf]
         opened = candle_start(int(now[0]*1000), duration)
         rows = [[str(opened-i*duration), "100", "101", "99", "100", "10", "1000"]
-                for i in range(401 if tf == "15m" else 100)]
+                for i in range(401 if tf == "15m" else 193 if tf == "30m" else 100)]
         return response(rows=rows)
     def sleep(seconds):
         sleeps.append(seconds)
@@ -117,7 +117,7 @@ def test_real_seven_timeframe_collection_preserves_freshness_gates(monkeypatch, 
         assert snapshot["timeframes"]["30m"]["forming"]["observed_at_ms"] == snapshot["as_of_ms"]
     assert sleeps == [1] and len(calls) == 8 and not model_calls
     assert [call["interval"] for call in calls[1:]] == [intervals[tf] for tf in TIMEFRAME_MS]
-    assert all(call["limit"] == (1000 if call["interval"] == intervals["15m"] else 100) for call in calls)
+    assert all(call["limit"] == (1000 if call["interval"] == intervals["15m"] else 193 if call["interval"] == intervals["30m"] else 100) for call in calls)
 
 
 def test_persistent_limit_aborts_collection_before_other_timeframes_or_model(transport, monkeypatch):
