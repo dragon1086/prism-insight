@@ -60,7 +60,7 @@ _INDEX_TZ = {"^VIX": "America/Chicago"}  # yfinance stamps CBOE VIX bars in Chic
 _PRICE_EXCD = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
 _MAX_WINDOWS = 40
 _RATE_LIMIT_CODE = "EGW00201"
-_TOKEN_EXPIRED_CODE = "EGW00123"
+_KIS_EXPIRED_AUTH_CODE = "EGW00123"
 _RATE_LIMIT_WAITS = (0.5, 1.0)
 
 _client = None
@@ -133,7 +133,7 @@ def _fetch(url: str, tr_id: str, params: dict):
     try:
         return _fetch_once(url, tr_id, params)
     except UsMarketDataUnavailable as exc:
-        if _TOKEN_EXPIRED_CODE not in str(exc):
+        if _KIS_EXPIRED_AUTH_CODE not in str(exc):
             raise
     # The shared client keeps the token it was built with; rebuild it once so ka.auth() gets a live token.
     with _client_lock:
