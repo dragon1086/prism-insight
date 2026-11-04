@@ -311,6 +311,30 @@ def test_rate_limit_gives_up_after_retries(monkeypatch):
     assert len(client.calls) == 3
 
 
+_EXPIRED = '{"rt_cd":"1","msg1":"기간이 만료된 token 입니다.","msg_cd":"EGW00123"}'
+
+
+def test_expired_token_rebuilds_client_once(monkeypatch):
+    """2026-11-04 10:15 B3 KR worker: the cached client kept an expired token until restart."""
+    monkeypatch.setattr("cores.market_data.kis_source.sleep", lambda _s: pytest.fail("slept"))
+    stale, fresh = _RateLimitedThenOk(99, error=_EXPIRED), _FakeClient([[_price_row("20260803")]])
+    source = _source(stale)
+    monkeypatch.setattr(source, "_trading", lambda: source._client or (setattr(source, "_client", fresh) or fresh))
+    frame = source.price_history("005930", "20260803", "20260803")
+    assert frame.loc["2026-08-03", "Close"] == 1000
+    assert len(stale.calls) == 1 and source._client is fresh
+
+
+def test_expired_token_twice_raises(monkeypatch):
+    monkeypatch.setattr("cores.market_data.kis_source.sleep", lambda _s: pytest.fail("slept"))
+    stale, again = _RateLimitedThenOk(99, error=_EXPIRED), _RateLimitedThenOk(99, error=_EXPIRED)
+    source = _source(stale)
+    monkeypatch.setattr(source, "_trading", lambda: source._client or (setattr(source, "_client", again) or again))
+    with pytest.raises(Unavailable, match="EGW00123"):
+        source.price_history("005930", "20260803", "20260803")
+    assert len(stale.calls) == 1 and len(again.calls) == 1
+
+
 def test_other_refusal_is_not_retried(monkeypatch):
     monkeypatch.setattr("cores.market_data.kis_source.sleep", lambda _s: pytest.fail("slept"))
     client = _RateLimitedThenOk(99, error="조회할 자료가 없습니다")
