@@ -180,6 +180,72 @@ def _encoded(value):
                       separators=(",", ":"))
 
 
+def _flat_selection_prompt(system, context):
+    if ('scenario_id' not in context or context['scenario_id'] is not None
+            or context.get('positions') != [] or context.get('pending_entries') != []
+            or context.get('target_status') not in ([], {}) or context.get('unknown_intents') is not False
+            or context.get('legacy_fenced') is not False or context.get('protection_ok') is not True
+            or context.get('new_risk_blocked') is not False or context.get('accounting_status') != 'confirmed'):
+        return system
+    spans = (
+        ('When stop_policy.version=1 and widening_eligible=true, an ADJUST may request a\n',
+         'Partial SL remains conditional reduceOnly protection'),
+        ('Read current_plan, recent_actions and target_status before revising a scenario.\n',
+         'Distinguish order mechanics from evidence:'),
+        ('When an active scenario has confirmed filled exposure, re-evaluate whether its\n',
+         'On every OPEN, holding review and ADJUST,'),
+        ('On every holding review distinguish current holding advantage from merely NOT FAILED:\n',
+         'Use verified positions, pending entries and current accounting inputs,'),
+        ('ADJUST confirmed_remaining joint paths version3 are supplied separately as\n',
+         'Unknown actual future fees alone are not a new automatic WAIT gate;'),
+    )
+    intervals = []
+    for start, end in spans:
+        if system.count(start) != 1 or system.count(end) != 1:
+            return system
+        first, last = system.index(start), system.index(end)
+        if first >= last:
+            return system
+        intervals.append((first, last))
+    if any(a[1] > b[0] for a, b in zip(intervals, intervals[1:])):
+        return system
+    for first, last in reversed(intervals):
+        system = system[:first] + system[last:]
+    if type(context.get('recovery_contract_version')) is int and context['recovery_contract_version'] == 2:
+        start = 'When recovery_contract_version=1 and recovery.phase=OBSERVING, the three-loss\n'
+        end = 'A hard stop such as daily loss, unknown execution, bad data,'
+        legacy_intro = ('When recovery_contract_version=2, automatic staged normalization replaces the\n'
+                        'version-1 one-shot restrictions above. Closing')
+        if system.count(start) == system.count(end) == system.count(legacy_intro) == 1:
+            first, last = system.index(start), system.index(end)
+            if first < last:
+                system = system[:first] + system[last:]
+                system = system.replace(legacy_intro, 'When recovery_contract_version=2, closing', 1)
+    if (type(context.get('pending_wait_policy_version')) is int and context['pending_wait_policy_version'] == 1
+            and context.get('pending_renewal_version') is None
+            and context.get('pending_renewal_offer') is None):
+        spans = (
+            ('When pending_renewal_offer is supplied and the original registered entry thesis is\n',
+             'normal fill protection and original failure/EXIT rules always retain priority.\n'),
+            ('Judge current structure and costs, not mere desire to wait longer. Do not relabel\n',
+             'The host alone computes the offered deadline and refuses late or repeated renewal.\n'),
+        )
+        pending = []
+        for start, end in spans:
+            if system.count(start) != 1 or system.count(end) != 1:
+                return system
+            first, last = system.index(start), system.index(end)
+            if first >= last:
+                return system
+            if end.startswith('The host alone'):
+                last += len(end)
+            pending.append((first, last))
+        if pending[0][1] <= pending[1][0]:
+            for first, last in reversed(pending):
+                system = system[:first] + system[last:]
+    return system
+
+
 def receipt_hash(value):
     return hashlib.sha256(_encoded(value).encode()).hexdigest()
 
@@ -946,6 +1012,8 @@ def research_review(snapshot, context, response_contract, *, generate, record,
         system = scenario_llm.immediate_reduce_instructions(base + appendix, frozen_context)
         if explanation_enabled(frozen_context):
             system += EXPLANATION_PROMPT
+        if phase == 'selection':
+            system = _flat_selection_prompt(system, frozen_context)
         request = dict(system_prompt=system, user_prompt=prompt,
             model=scenario_llm.MODEL, reasoning_effort=scenario_llm.EFFORT,
             fast_tier=True, timeout=scenario_llm.TIMEOUT_SECONDS - (now - started),
