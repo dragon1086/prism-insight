@@ -134,15 +134,28 @@ def test_snapshot_index_is_bounded_and_does_not_skip_candidates(monkeypatch):
     conn.execute('BEGIN')
     first = snapshot_event_index(conn, now)
     assert len(first['items']) == 400 and first['truncated'] and first['last_scanned_slot'] == 400
+    from utils.btc_review_retention import snapshot_index
+    inventory = snapshot_index(conn, now)
+    assert snapshot_event_index(conn, now, candidate_index=inventory) == first
+    with monkeypatch.context() as patched:
+        patched.setattr('utils.btc_review_retention.candidates', lambda *_a, **_k: (_ for _ in ()).throw(AssertionError('unexpected second scan')))
+        assert snapshot_event_index(conn, now, candidate_index=inventory) == first
+    corrupt = deepcopy(inventory)
+    corrupt['after_slot'] += 1
+    with pytest.raises(ValueError, match='proof_candidate_index_invalid'):
+        snapshot_event_index(conn, now, candidate_index=corrupt)
     assert first['items'][1]['proof'] == {'slot': 2, 'unavailable': True}
     assert first['items'][2]['proof'] == {'slot': 3, 'unavailable': True}
     assert first['items'][3]['proof']['events']
     second = snapshot_event_index(conn, now, after_slot=first['last_scanned_slot'])
     assert [item['candidate']['slot'] for item in second['items']] == [401]
     assert not second['truncated']
+    next_inventory = snapshot_index(conn, now, after_slot=first['last_scanned_slot'])
+    assert snapshot_event_index(conn, now, after_slot=first['last_scanned_slot'], candidate_index=next_inventory) == second
     from utils import btc_review_event_proof as proof_module
     monkeypatch.setattr(proof_module, 'MAX_INDEX_BYTES', 2500)
     bounded = snapshot_event_index(conn, now)
+    assert snapshot_event_index(conn, now, candidate_index=inventory) == bounded
     assert bounded['truncated'] and 0 < len(bounded['items']) < 400
     assert sum(len(json.dumps(item, sort_keys=True, separators=(',', ':')).encode()) for item in bounded['items']) <= 2500
     next_page = snapshot_event_index(conn, now, after_slot=bounded['last_scanned_slot'])
@@ -887,3 +900,43 @@ def test_recovery_model_pruning_requires_all_independent_guards(monkeypatch, mod
         assert result == {'status': 'REMOVED', 'events': 0}
         assert source.execute('SELECT body FROM llm_scenario_recovery_events WHERE slot=1').fetchone() == (ref,)
         assert source.execute('SELECT COUNT(*) FROM llm_scenario_review_events WHERE slot=1').fetchone() == (1,)
+
+
+def test_reused_inventory_preserves_empty_full_page_cursor_without_rescan(monkeypatch):
+    from utils.btc_review_retention import snapshot_index
+    conn = sqlite3.connect(':memory:')
+    conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
+                       'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);'
+                       'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body);'
+                       'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body,scenario_id TEXT);'
+                       'CREATE INDEX llm_scenario_recovery_slot_kind ON llm_scenario_recovery_events(slot,kind);')
+    conn.executemany('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', ((slot, '{}') for slot in range(1, 2002)))
+    conn.commit();conn.execute('BEGIN');now = 7 * 86400 + 300 * 3000
+    inventory = snapshot_index(conn, now)
+    expected = snapshot_event_index(conn, now)
+    assert inventory['scanned'] == 2000 and inventory['candidates'] == []
+    assert expected['truncated'] is True and expected['last_scanned_slot'] == 2000
+    monkeypatch.setattr('utils.btc_review_retention.candidates', lambda *_a, **_k: (_ for _ in ()).throw(AssertionError('unexpected second scan')))
+    assert snapshot_event_index(conn, now, candidate_index=inventory) == expected
+    conn.rollback();conn.close()
+
+
+@pytest.mark.parametrize('fault', ['missing_key', 'wrong_time', 'wrong_cutoff', 'wrong_cursor',
+                                   'bad_scanned', 'bad_truncated', 'bad_last', 'bad_slot', 'duplicate_slot'])
+def test_reused_inventory_rejects_invalid_metadata(fault):
+    from utils.btc_review_event_proof import _validated_candidate_index
+    now = 7 * 86400 + 3000
+    item = {'version': 1, 'as_of': now, 'cutoff_slot': 10, 'after_slot': -1,
+            'last_scanned_slot': 2, 'scanned': 2, 'truncated': False,
+            'candidates': [{'slot': 1}, {'slot': 2}]}
+    if fault == 'missing_key':item.pop('as_of')
+    elif fault == 'wrong_time':item['as_of'] -= 1
+    elif fault == 'wrong_cutoff':item['cutoff_slot'] += 1
+    elif fault == 'wrong_cursor':item['after_slot'] = 0
+    elif fault == 'bad_scanned':item['scanned'] = True
+    elif fault == 'bad_truncated':item['truncated'] = True
+    elif fault == 'bad_last':item['last_scanned_slot'] = item['cutoff_slot']
+    elif fault == 'bad_slot':item['candidates'][1]['slot'] = 11
+    elif fault == 'duplicate_slot':item['candidates'][1]['slot'] = 1
+    with pytest.raises(ValueError, match='proof_candidate_index_invalid'):
+        _validated_candidate_index(item, now, -1)

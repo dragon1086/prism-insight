@@ -5,6 +5,7 @@ these fingerprints to an independently verified backup and delivery receipts.
 """
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import subprocess  # nosec B404 - fixed host-verified SSH and bounded query
@@ -85,11 +86,38 @@ def event_proof(conn, slot, *, guard=None):
     return {'slot': slot, 'events': events, 'recovery': recovery}
 
 
-def snapshot_event_index(conn, now, *, after_slot=-1, guard=None):
+def _validated_candidate_index(index, now, after_slot):
+    keys = {'version', 'as_of', 'cutoff_slot', 'after_slot', 'last_scanned_slot',
+            'scanned', 'truncated', 'candidates'}
+    try:
+        valid_now = type(now) in (int, float) and math.isfinite(now) and now > 7 * 86400
+    except (TypeError, ValueError, OverflowError):
+        valid_now = False
+    if (not isinstance(index, dict) or set(index) != keys or type(index['version']) is not int
+            or index['version'] != 1 or not valid_now or type(after_slot) is not int or after_slot < -1
+            or type(index['as_of']) is not int or index['as_of'] != int(now)
+            or type(index['cutoff_slot']) is not int or index['cutoff_slot'] != int((now - 7 * 86400) // 300)
+            or type(index['after_slot']) is not int or index['after_slot'] != after_slot
+            or type(index['last_scanned_slot']) is not int or index['last_scanned_slot'] < after_slot
+            or type(index['scanned']) is not int or not 0 <= index['scanned'] <= MAX_SCANNED
+            or type(index['truncated']) is not bool or index['truncated'] != (index['scanned'] == MAX_SCANNED)
+            or not isinstance(index['candidates'], list) or len(index['candidates']) > index['scanned']):
+        raise ValueError('proof_candidate_index_invalid')
+    slots = [row.get('slot') if isinstance(row, dict) else None for row in index['candidates']]
+    if (any(type(slot) is not int or not after_slot < slot <= index['last_scanned_slot']
+            or slot >= index['cutoff_slot'] for slot in slots) or slots != sorted(set(slots))
+            or (index['scanned'] == 0 and index['last_scanned_slot'] != after_slot)
+            or (index['scanned'] > 0 and not after_slot < index['last_scanned_slot'] < index['cutoff_slot'])):
+        raise ValueError('proof_candidate_index_invalid')
+    return index
+
+
+def snapshot_event_index(conn, now, *, after_slot=-1, guard=None, candidate_index=None):
     """Index a bounded page of eligible WAITs within an existing read snapshot.
 
     The caller must bind and verify the result against its backup. This index
-    alone is not authority to delete any data.
+    alone is not authority to delete any data. A same-snapshot candidate index
+    avoids rescanning; the archive receiver still recomputes independently.
     """
     if not conn.in_transaction:
         raise ValueError('proof_snapshot_transaction_required')
@@ -106,8 +134,15 @@ def snapshot_event_index(conn, now, *, after_slot=-1, guard=None):
         from utils.btc_review_retention import candidates
     items, scanned, size, last = [], 0, 0, after_slot
     cutoff = None
+    if candidate_index is not None:
+        candidate_index = _validated_candidate_index(candidate_index, now, after_slot)
     while scanned < MAX_SCANNED:
-        page = candidates(conn, now, after_slot=last, limit=min(100, MAX_SCANNED - scanned), guard=guard)
+        if candidate_index is None:
+            page = candidates(conn, now, after_slot=last, limit=min(100, MAX_SCANNED - scanned), guard=guard)
+        else:
+            if guard is not None:
+                guard()
+            page = candidate_index
         cutoff = page['cutoff_slot']
         for row in page['candidates']:
             if guard is not None:
@@ -135,6 +170,9 @@ def snapshot_event_index(conn, now, *, after_slot=-1, guard=None):
             size += item_bytes
         scanned += page['scanned']
         last = page['last_scanned_slot']
+        if candidate_index is not None:
+            return {'version': 2, 'cutoff_slot': cutoff, 'after_slot': after_slot,
+                    'last_scanned_slot': last, 'truncated': candidate_index['truncated'], 'items': items}
         if page['scanned'] < 100:
             return {'version': 2, 'cutoff_slot': cutoff, 'after_slot': after_slot,
                     'last_scanned_slot': last, 'truncated': False, 'items': items}

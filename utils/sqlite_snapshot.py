@@ -216,7 +216,7 @@ def backup_database(source, destination, *, timeout=180, reserve_bytes=4 * 1024*
                         index_conn.execute('PRAGMA query_only=ON')
                         index_conn.execute('BEGIN')
                         event_proof_index = snapshot_event_index(index_conn, int(started), after_slot=after_slot,
-                                                                 guard=proof_guard)
+                                                                 guard=proof_guard, candidate_index=retention_index)
                         event_proof_status = 'CAPTURED'
                     except Exception as exc:
                         # This optional index must not prevent the verified database backup.
