@@ -4,6 +4,7 @@ from collections import Counter
 from decimal import Decimal
 import json
 import re
+import sqlite3
 import time
 import unicodedata
 from zoneinfo import ZoneInfo
@@ -157,6 +158,42 @@ def _safe_reason(value):
     return prefix.rstrip() + '…'
 
 
+def _final_wait_reason(conn, slot, proposal):
+    """Read a sealed selector explanation without changing the selected proposal."""
+    try:
+        row = conn.execute('SELECT body FROM llm_scenario_review_tapes WHERE slot=?', (slot,)).fetchone()
+        if not row:
+            return None
+        from backtest.scenario_tape import digest
+        from live.scenario_calculated_review import receipt_hash
+        from live.scenario_review_storage import review_text
+        from utils.btc_review_references import read_tape
+        raw = read_tape(row[0], conn, slot, decode_legacy=review_text)
+        tape = json.loads(raw) if isinstance(raw, str) else raw
+        if (not isinstance(tape, dict) or tape.get('kind') != 'EXACT_ORDER_FREE_REVIEW'
+                or tape.get('version') != 1 or tape.get('executable') is not False
+                or tape.get('sha256') != digest({k: v for k, v in tape.items() if k != 'sha256'})
+                or tape.get('inputs_sha256') != digest(tape.get('inputs'))):
+            return None
+        outcome = tape.get('outcome') or {}
+        result = outcome.get('result') or {}
+        selected = result.get('selected') or {}
+        selection = result.get('selection') or {}
+        raw_proposal = selected.get('raw_proposal') or {}
+        if (outcome.get('status') != 'COMPLETE' or selected.get('id') != 'WAIT'
+                or selection.get('selection') != 'WAIT' or raw_proposal.get('action') != 'WAIT'
+                or not all(isinstance(proposal.get(k), str) and proposal[k] for k in ('input_id', 'action_id'))
+                or any(proposal.get(k) != raw_proposal.get(k)
+                       for k in ('action', 'input_id', 'action_id', 'scenario_id', 'revision'))
+                or selection.get('receipt_sha256') != selected.get('receipt_sha256')
+                or selected.get('receipt_sha256') != receipt_hash({k: v for k, v in selected.items() if k != 'receipt_sha256'})):
+            return None
+        reason = selection.get('rationale')
+        return reason if isinstance(reason, str) and reason.strip() else None
+    except (sqlite3.Error, OSError, AttributeError, KeyError, TypeError, ValueError, OverflowError, RecursionError):
+        return None
+
+
 def _decision(conn, now):
     row = conn.execute('SELECT slot,proposal,outcome FROM llm_scenario_decisions ORDER BY slot DESC LIMIT 1').fetchone()
     if not row:
@@ -171,12 +208,15 @@ def _decision(conn, now):
                  stale_proposal='판단 보류 · 입력 변경',lock_busy='판단 보류 · 보호 점검 중',
                  fenced='판단 보류 · 계좌 확인 필요',execution_disabled='신규 실행 비활성')
     lines = [f'🧠 {label} ({stamp(when)})', names.get(status,'판단 결과 미확인')]
-    proposal = json.loads(row[1]) if row[1] else {}
+    from live.scenario_review_storage import review_text
+    proposal = json.loads(review_text(row[1])) if row[1] else {}
     if ((status == 'wait' and proposal.get('action') == 'WAIT') or
             (status == 'intent_pending' and proposal.get('action') in {'OPEN','ADJUST','EXIT','WAIT'})):
-        reason = _safe_reason(proposal.get('rationale'))
+        final = _final_wait_reason(conn, row[0], proposal) if status == 'wait' else None
+        reason = _safe_reason(final if final is not None else proposal.get('rationale'))
         if reason:
-            lines.append(reason)
+            prefix = ('최종 비교: ' if final is not None else '초안 근거: ') if status == 'wait' else ''
+            lines.append(prefix + reason)
     return lines
 
 
