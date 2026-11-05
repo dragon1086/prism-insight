@@ -6,7 +6,46 @@ from live.scenario_analysis_frames import PRIMARY_FRAMES
 
 
 def _price(value):
-    return type(value) in (int, float) and math.isfinite(value) and value > 0
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value) and value > 0
+    except OverflowError:
+        return False
+
+
+def confirmed_three_bar_progress(snapshot):
+    result = {frame: None for frame in PRIMARY_FRAMES}
+    if not isinstance(snapshot, dict) or snapshot.get('valid') is not True:
+        return result
+    as_of = snapshot.get('as_of_ms')
+    if type(as_of) is not int or as_of < 0:
+        return result
+    frames = snapshot.get('timeframes')
+    if not isinstance(frames, dict):
+        return result
+    for frame, duration in (('30m', 1800000), ('1h', 3600000)):
+        item = frames.get(frame)
+        if not isinstance(item, dict) or item.get('status') != 'ok':
+            continue
+        confirmed, bars = item.get('confirmed'), item.get('recent_confirmed_bars')
+        if not isinstance(confirmed, dict) or confirmed.get('is_confirmed') is not True or not isinstance(bars, list) or len(bars) < 4:
+            continue
+        tail = bars[-4:]
+        if not all(isinstance(row, dict) and type(row.get('open_time_ms')) is int and _price(row.get('close')) for row in tail):
+            continue
+        times = [row['open_time_ms'] for row in tail]
+        atr = confirmed.get('atr14_risk_only')
+        if (not _price(atr) or any(t < 0 or t % duration for t in times)
+                or any(b - a != duration for a, b in zip(times, times[1:]))
+                or times[-1] != (as_of // duration) * duration - duration
+                or confirmed.get('open_time_ms') != times[-1]):
+            continue
+        value = (tail[-1]['close'] - tail[0]['close']) / atr
+        if math.isfinite(value):
+            result[frame] = {'signed_up_positive': value, 'first_close_ms': times[0]+duration,
+                             'last_close_ms': times[-1]+duration}
+    return result
 
 
 def project_entry_display_input(payload):
@@ -19,13 +58,18 @@ def project_entry_display_input(payload):
     logical = restore_model_input(projected)
     context = logical['contract_context']
     context['entry_display'] = flat_entry_display(context['ma_structure'], logical.get('calculated_candidates'))
-    augmented, augmented_audit = project_model_input(logical, allow_gap_rescue=True)
-    if _size(augmented) > _MODEL_INPUT_LIMIT and _size(projected) <= _MODEL_INPUT_LIMIT:
+    baseline, baseline_audit = project_model_input(logical, allow_gap_rescue=True)
+    if _size(baseline) > _MODEL_INPUT_LIMIT and _size(projected) <= _MODEL_INPUT_LIMIT:
         return projected, audit
+    context['entry_display'] = flat_entry_display(context['ma_structure'], logical.get('calculated_candidates'),
+                                                   snapshot=logical.get('market_snapshot'))
+    augmented, augmented_audit = project_model_input(logical, allow_gap_rescue=True)
+    if _size(augmented) > _MODEL_INPUT_LIMIT and _size(baseline) <= _MODEL_INPUT_LIMIT:
+        return baseline, baseline_audit
     return augmented, augmented_audit
 
 
-def flat_entry_display(structure, bundle=None):
+def flat_entry_display(structure, bundle=None, *, snapshot=None):
     """Caller supplies its freshly built ma_structure; never mutate a receipt."""
     tails = {}
     primary = structure.get('primary', {})
@@ -35,6 +79,8 @@ def flat_entry_display(structure, bundle=None):
                         if p.get('phase') == 'CONFIRMED' and p.get('is_confirmed') is True][-3:] or None
     result = dict(confirmed_close_tail=tails,
         meaning='tail=[CONFIRMED bar_end_ms,close], null=unavailable; price order is numeric, not time/fill order or support strength. E#/T#=effective_plan.entries/take_profits[index].price; M:id=ma_structure.levels[id].price.')
+    if snapshot is not None:
+        result['confirmed_3bar_close_change_over_atr'] = confirmed_three_bar_progress(snapshot)
     if bundle is None:
         return result
     candidates = bundle.get('candidates')
