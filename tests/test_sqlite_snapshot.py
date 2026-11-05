@@ -474,3 +474,45 @@ esac
         assert not (ack.parent/'.btc-retention-mode').exists()
     if not archive_success:
         assert (old / 'evidence').read_bytes() == b'keep'
+
+
+def test_event_proof_reuses_snapshot_inventory_and_receiver_recomputes(tmp_path, monkeypatch):
+    from copy import deepcopy
+    from utils import btc_review_event_proof as proof
+    from utils.btc_offsite_archive import verify_event_proof_index
+
+    source, destination = tmp_path / 'source.sqlite', tmp_path / 'snapshot.gz'
+    context = {'scenario_id': None, 'positions': [], 'pending_entries': [], 'unknown_intents': False,
+               'historical_unsettled': [], 'incident_epoch_blocked': False, 'recovery_observing': False}
+    noop = {'schema_version': 1, 'action': 'WAIT', 'entries': [], 'take_profits': [],
+            'partial_stops': [], 'cancel_entry_ids': []}
+    with sqlite3.connect(source) as conn:
+        conn.executescript('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT);'
+                           'CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT);'
+                           'CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT);'
+                           'CREATE TABLE llm_scenario_recovery_events(event_id TEXT,slot INTEGER,kind TEXT,body TEXT,scenario_id TEXT);'
+                           'CREATE INDEX llm_scenario_recovery_slot_kind ON llm_scenario_recovery_events(slot,kind);')
+        conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (1, '{}'))
+        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)',
+                     (1, '{}', json.dumps(context), json.dumps(noop), '{"status":"wait"}'))
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 0, '{"kind":"MODEL_RAW"}'))
+    original = proof.snapshot_event_index
+    observed = []
+    def capture(conn, now, **kwargs):
+        observed.append(kwargs.get('candidate_index'))
+        return original(conn, now, **kwargs)
+    monkeypatch.setattr(proof, 'snapshot_event_index', capture)
+    manifest = backup_database(source, destination, reserve_bytes=0, capture_references=True,
+                               capture_review_event_proof=True)
+    assert manifest['btc_review_event_proof_status'] == 'CAPTURED'
+    assert len(observed) == 1 and observed[0] == manifest['btc_retention_index']
+    assert len(manifest['btc_review_event_proof_index']['items']) == 1
+    monkeypatch.setattr(proof, 'snapshot_event_index', original)
+    restored = tmp_path / 'restored.sqlite'
+    with gzip.open(destination, 'rb') as src, restored.open('wb') as dst:
+        dst.write(src.read())
+    assert verify_event_proof_index(restored, manifest) is True
+    tampered = deepcopy(manifest)
+    tampered['btc_review_event_proof_index']['items'].clear()
+    with pytest.raises(ValueError, match='event_proof_index_mismatch'):
+        verify_event_proof_index(restored, tampered)
