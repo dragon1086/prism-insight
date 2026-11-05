@@ -716,7 +716,7 @@ def cleanup_events(backup_dir, *, now=None):
                          [receipt for event_id in model_ids for receipt in recovery_by_id.get(event_id, [])]))
     statuses, removed_slots, removed_events, removed_recovery = Counter(), 0, 0, 0
     try:
-        with retention.locked_remote_archive(ack, require_event_proof=True) as lease, closing(sqlite3.connect(
+        with retention.locked_remote_archive(ack, align=True, require_event_proof=True) as lease, closing(sqlite3.connect(
                 retention.SOURCE.resolve().as_uri() + '?mode=rw', uri=True, timeout=.1)) as conn, closing(sqlite3.connect(
                 retention.EXPORT_STATE.resolve().as_uri() + '?mode=rw', uri=True, timeout=.1)) as exporter:
             def guard():
