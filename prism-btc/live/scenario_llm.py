@@ -732,13 +732,13 @@ a nearer actual obstacle; do not justify economic edge or a distant runner by
 assuming continuation beyond MA35. This bounded-purpose rule takes precedence
 over generic runner/allocation defaults for this setup only, without imposing an
 exact MA35 TP, fixed allocation or automatic touch exit.
-When opening this evidenced local MA10-boundary breakout with entry_contract_version=1,
-use existing BREAKOUT regime, not a new enum or a claim of full trend reversal.
-In its premise and expected_progress name the bounded gap-traversal purpose and
-relevant timeframe; band position alone does not establish it. Keep that contract's
-explicit_failure as the only authoritative numeric failure rule, with no duplicate
-prose threshold. Without version 1, describe the purpose in existing rationale only;
-never emit unsupported contract fields.
+For evidenced MA10-boundary breakout, use existing BREAKOUT regime when
+entry_contract_version is 1 or 2; band position alone is insufficient. With version 1,
+name the bounded purpose and timeframe in premise and expected_progress. With version 2,
+name them in premise and the required structured goal. Without an enabled contract,
+describe the purpose in rationale only; never emit unsupported fields. For both versions,
+explicit_failure is the only authoritative numeric failure rule; no duplicate threshold
+or claim of full trend reversal.
 For an original gap-traversal holding, do not silently turn MA35 arrival/rejection
 or failed progress into a new full-reversal or trend-resumption thesis. Unlike a
 trend runner, do not assume extension beyond MA35: assess existing TP, verified

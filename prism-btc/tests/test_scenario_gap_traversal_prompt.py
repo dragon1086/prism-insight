@@ -52,8 +52,10 @@ def test_gap_policy_keeps_bounded_thesis_and_existing_host_authority():
         'compare exits at/before MA35 or a nearer actual obstacle',
         'takes precedence over generic runner/allocation defaults for this setup only',
         'use existing BREAKOUT regime',
-        'with entry_contract_version=1',
-        'Without version 1, describe the purpose in existing rationale only',
+        'entry_contract_version is 1 or 2',
+        'With version 1, name the bounded purpose and timeframe in premise and expected_progress',
+        'With version 2, name them in premise and the required structured goal',
+        'Without an enabled contract, describe the purpose in rationale only',
         'only authoritative numeric failure rule',
         'do not assume extension beyond MA35',
         'Arrival/touch alone is not automatic FAILED or EXIT',
@@ -63,18 +65,25 @@ def test_gap_policy_keeps_bounded_thesis_and_existing_host_authority():
     ):
         assert clause in policy
     assert entry_contract_schema()['properties']['regime']['enum'] == ['TREND', 'BREAKOUT', 'RANGE']
+    v1, v2 = entry_contract_schema(1), entry_contract_schema(2)
+    assert 'expected_progress' in v1['required'] and 'goal' not in v1['properties']
+    assert 'goal' in v2['required'] and 'expected_progress' not in v2['properties']
     assert '1h > 30m > 4h > 12h > 1d > 1w' in SYSTEM_PROMPT
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('provisional', [False, True])
-@pytest.mark.parametrize('contract_version', [None, 1])
+@pytest.mark.parametrize('contract_version', [None, 1, 2])
 def test_widening_price_crossing_survives_both_actual_review_requests(side, provisional, contract_version):
     ctx = context()
     ctx.update(now=NOW / 1000, input_captured_at=NOW / 1000, account_captured_at=NOW / 1000)
     if contract_version:
         ctx['entry_contract_version'] = contract_version
     snap = gap_snapshot(side, provisional)
+    if contract_version == 2:
+        from live.scenario_entry_goal import prepare_goal_source
+        ctx['entry_goal_decision_slot'] = NOW // 300000
+        prepare_goal_source(snap, ctx)
     original = deepcopy((snap, ctx))
     calls = []
 
@@ -102,6 +111,11 @@ def test_widening_price_crossing_survives_both_actual_review_requests(side, prov
                 premise = definition(side)
                 premise.update(premise='1h MA10 local breakout into widening gap',
                                expected_progress='Bounded traversal toward MA35, not a full reversal')
+                if contract_version == 2:
+                    premise['version'] = 2
+                    premise.pop('expected_progress')
+                    premise['goal'] = dict(mode='BOUNDED_BEFORE', reference=dict(
+                        frame='1h', phase='forming' if provisional else 'confirmed', ma='ma35'))
                 candidate.update(entry_contract=premise, thesis_assessment=None)
                 wait.update(entry_contract=None, thesis_assessment=None)
             reply = dict(wait_proposal=wait, candidates=[candidate], no_candidate_reason='')
@@ -118,7 +132,7 @@ def test_widening_price_crossing_survives_both_actual_review_requests(side, prov
     assert (snap, ctx) == original
 
 
-@pytest.mark.parametrize('contract_version', [None, 1])
+@pytest.mark.parametrize('contract_version', [None, 1, 2])
 def test_single_request_keeps_gap_policy_and_legacy_wire_compatibility(contract_version):
     from live.scenario_llm import propose
     ctx = context()
