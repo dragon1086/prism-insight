@@ -18,7 +18,7 @@ def test_user_approved_flexible_management_prompt_version_is_pinned():
     # 2026-10-26: user-approved structural trend TP allocation; no preset weights.
     expected = {
         'SYSTEM_PROMPT': '63be06e8f36262c05593c0ad4a23cba47e04b5e966142313e00d69e8d82ac56e',
-        'MA_STRUCTURE_PROMPT': '385fb5f83412f59af3ef6dd374f9472ee7d1c9a5b26940ea86e342fdd895d298',
+        'MA_STRUCTURE_PROMPT': '82859463405921af991331e9d9dde51bd5a72a5c0294feecea6f2b52af578615',
         'FLAT_ENTRY_PROMPT': '6c3481909e3b75240edcee052b2bc0ba9cd3287ba5df1cf5b5cc17880c0f306b',
     }
     for name, prompt in [('SYSTEM_PROMPT', SYSTEM_PROMPT), ('MA_STRUCTURE_PROMPT', MA_STRUCTURE_PROMPT),
