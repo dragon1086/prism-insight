@@ -882,7 +882,7 @@ class ScenarioRuntime:
                 from live.scenario_entry_goal import prepare_goal_source
                 prepare_goal_source(snap, ctx)
                 from live.scenario_position_flow import build_position_flow
-                ctx["position_flow"] = build_position_flow(self.conn, current["active"], ctx, now)
+                ctx["position_flow"] = build_position_flow(self.conn, current["active"], ctx, now, snapshot=snap)
                 ctx['last_closed_trade'] = closed_history
                 if ctx.get("recovery_observing"):
                     recovery_input_event = recovery.prepare_input(self.conn, current, ctx, snap, slot, self.clock())

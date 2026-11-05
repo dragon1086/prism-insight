@@ -10,7 +10,8 @@ def test_runtime_saves_same_flow_passed_to_model_without_fresh_guard_requery(set
     from live import scenario_position_flow
     runtime, broker, now, _ = setup
     calls = []
-    def build(conn, active, ctx, at):
+    def build(conn, active, ctx, at, *, snapshot=None):
+        assert isinstance(snapshot, dict)
         calls.append((active['scenario_id'] if active else None, at))
         return dict(version=1, status='AVAILABLE', sentinel='same-scenario-history')
     monkeypatch.setattr(scenario_position_flow, 'build_position_flow', build)
@@ -47,6 +48,21 @@ def test_flow_helper_is_part_of_policy_provenance():
     from live.scenario_provenance import review_policy_binding, _manifest
     assert 'live/scenario_position_flow.py' in review_policy_binding()['source_sha256']
     assert 'live/scenario_position_flow.py' in json.dumps(_manifest())
+
+
+def test_both_holding_review_phases_receive_mark_pace():
+    ctx = context()
+    pace = dict(status='AVAILABLE', source='MARK_PAIR_LAST_OHLC_NO_PATH',
+                interval_seconds=300, favorable_usdt_per_btc=-67.24,
+                favorable_atr30_per_5m=-0.342, favorable_atr1h_per_5m=-0.168,
+                last30_favorable_atr=-0.357, last30_range_atr=0.726)
+    ctx['position_flow'] = dict(version=1, status='AVAILABLE', coverage={}, mark_pace=pace)
+    args, calls = taped(ctx, status='WEAKENING', choose_wait=True)
+    assert args[3]['outcome']['status'] == 'COMPLETE'
+    assert len(calls) == 2
+    for call in calls:
+        restored = restore_model_input(json.loads(call['user_prompt']))
+        assert restored['contract_context']['position_flow']['mark_pace'] == pace
 
 
 def test_selection_only_history_budget_replays_through_final_guard(monkeypatch):
