@@ -403,9 +403,9 @@ def test_cleanup_links_proof_receipts_and_lease_before_deletion(tmp_path, monkey
     monkeypatch.setattr(retention, 'read_cursor', lambda *_: next(cursor_values))
     monkeypatch.setattr(retention, '_save_cursor', lambda current, source_identity: saved.append((current, source_identity)))
     @contextmanager
-    def locked(actual_ack, *, require_event_proof):
+    def locked(actual_ack, *, require_event_proof, align=False):
         assert not unavailable
-        assert actual_ack == ack and require_event_proof is True
+        assert actual_ack == ack and require_event_proof is True and align is True
         yield lambda: True
     monkeypatch.setattr(retention, 'locked_remote_archive', locked)
     result = proof_module.cleanup_events(tmp_path, now=now)
@@ -592,8 +592,8 @@ def test_cleanup_batches_delivery_queries_without_mixing_slots(tmp_path, monkeyp
         assert {row['event_id'] for row in deliveries} == expected
         return {'status': 'REMOVED', 'events': len(deliveries)}
     @contextmanager
-    def locked(_ack, *, require_event_proof):
-        assert require_event_proof
+    def locked(_ack, *, require_event_proof, align=False):
+        assert require_event_proof and align is True
         yield lambda: True
     monkeypatch.setattr(retention, 'fetch_deliveries', tapes)
     monkeypatch.setattr(proof_module, 'fetch_event_deliveries', events)
@@ -699,8 +699,8 @@ def test_daily_cleanup_capacity_and_query_cap(tmp_path, monkeypatch, slots, even
         assert len(_kwargs['recovery_deliveries']) == len(item['proof']['recovery'])
         return {'status': 'REMOVED', 'events': len(deliveries)}
     @contextmanager
-    def locked(_ack, *, require_event_proof):
-        assert require_event_proof
+    def locked(_ack, *, require_event_proof, align=False):
+        assert require_event_proof and align is True
         yield lambda: True
     monkeypatch.setattr(retention, 'fetch_deliveries', tapes)
     monkeypatch.setattr(proof_module, 'fetch_event_deliveries', events)
@@ -776,8 +776,8 @@ def test_daily_capacity_uses_real_transactions_without_skipping_anchor(tmp_path,
                  'source_rowid': row['rowid'], 'source_sequence': row['sequence'], 'decision_slot': (row['rowid'] - 1) // 5 + 1}
                 for row in proof['events']]
     @contextmanager
-    def locked(_ack, *, require_event_proof):
-        assert require_event_proof
+    def locked(_ack, *, require_event_proof, align=False):
+        assert require_event_proof and align is True
         yield lambda: True
     monkeypatch.setattr(retention, 'fetch_deliveries', tapes)
     monkeypatch.setattr(proof_module, 'fetch_event_deliveries', events)
