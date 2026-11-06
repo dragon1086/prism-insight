@@ -560,6 +560,33 @@ def test_real_broker_probe_never_reconciles_or_submits_orders(tmp_path):
     assert context['new_risk_blocked'] is True and exchange.writes==[]
 
 
+@pytest.mark.parametrize('status,evidence,allowed', [
+    ('TERMINAL', '{"order":{"orderId":"order-id","symbol":"BTCUSDT","orderStatus":"Cancelled"},"executions":[]}', True),
+    ('TERMINAL', '{"order":{"orderId":"wrong","symbol":"BTCUSDT","orderStatus":"Cancelled"},"executions":[]}', False),
+    ('TERMINAL', '{"executions":[]}', False),
+    ('TERMINAL', None, False),
+    ('UNKNOWN', None, False),
+])
+def test_unsettled_entry_scope_ignores_only_evidenced_foreign_terminal(tmp_path, status, evidence, allowed):
+    broker,exchange,_=real_entry_broker(tmp_path)
+    row=broker.conn.execute('SELECT * FROM llm_scenario_children').fetchone()
+    other=list(row)
+    other[0]='older-link'; other[1]='older-intent'; other[2]='older-scenario'
+    other[6]=status; other[8]=evidence
+    broker.conn.execute('INSERT INTO llm_scenario_children VALUES(?,?,?,?,?,?,?,?,?,?)',other)
+    broker.conn.commit()
+    if allowed:
+        preview=prepare_unsettled_entry_authority(broker,approval_id='approval',reason='review',
+                                                  expires_at=1600,maximum_quantity='0.019')
+        authorize_unsettled_entry_management(broker,preview)
+        assert broker.context()['management_quarantine']['scope']=='ENTRY_AGGREGATE_ONLY'
+    else:
+        with pytest.raises(ValueError,match='management_quarantine_'):
+            prepare_unsettled_entry_authority(broker,approval_id='approval',reason='review',
+                                              expires_at=1600,maximum_quantity='0.019')
+    assert exchange.writes==[]
+
+
 def test_failed_account_refresh_invalidates_previous_observation(tmp_path):
     from live import scenario_management_quarantine as quarantine
     from live.scenario_broker import BrokerNotReady
@@ -871,6 +898,11 @@ def test_entry_quarantine_exit_is_reduce_only_and_never_reposts(tmp_path, lose_a
     from live.scenario_broker import BrokerNotReady
 
     broker,exchange,_=real_entry_broker(tmp_path)
+    old=list(broker.conn.execute('SELECT * FROM llm_scenario_children').fetchone())
+    old[0]='older-link'; old[1]='older-intent'; old[2]='older-scenario'; old[6]='TERMINAL'
+    old[8]=json.dumps({'order':{'orderId':old[7],'symbol':'BTCUSDT','orderStatus':'Cancelled'},'executions':[]})
+    broker.conn.execute('INSERT INTO llm_scenario_children VALUES(?,?,?,?,?,?,?,?,?,?)',old)
+    broker.conn.commit()
     preview=prepare_unsettled_entry_authority(broker,approval_id='approval',reason='review',
                                               expires_at=1600,maximum_quantity='0.019')
     receipt=authorize_unsettled_entry_management(broker,preview)

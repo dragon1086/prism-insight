@@ -114,6 +114,25 @@ def _entry_unresolved_rows(conn):
     return result
 
 
+def _entry_relevant_children(broker, active):
+    from live.scenario_execution import TERMINAL
+    scenario = active.get('scenario_id') if isinstance(active, dict) else None
+    result = []
+    for child in broker.children():
+        evidence = child.get('evidence')
+        order = evidence.get('order') if isinstance(evidence, dict) else None
+        old_terminal = (isinstance(scenario, str) and bool(scenario)
+            and isinstance(child.get('scenario_id'), str) and bool(child['scenario_id'])
+            and child['scenario_id'] != scenario and child.get('status') == 'TERMINAL'
+            and isinstance(order, dict) and order.get('orderStatus') in TERMINAL
+            and isinstance(child.get('order_id'), str) and bool(child['order_id'])
+            and order.get('orderId') == child['order_id'] and order.get('symbol') == 'BTCUSDT'
+            and isinstance(evidence.get('executions'), list))
+        if not old_terminal:
+            result.append(child)
+    return result
+
+
 def probe_unsettled_entry(broker, *, maximum_quantity, self_exit=None, _observed=None):
     """Gather exact demo-account evidence; never grant authority or create an order."""
     from live.exchange_snapshot import read_complete
@@ -131,7 +150,8 @@ def probe_unsettled_entry(broker, *, maximum_quantity, self_exit=None, _observed
                  and control and control.get('state') == 'active'
                  and control.get('main_uid') == broker.expected_main_uid, 'identity_untrusted')
         broker._identity()
-        active, children, unresolved = broker._active(), broker.children(), _entry_unresolved_rows(broker.conn)
+        active = broker._active()
+        children, unresolved = _entry_relevant_children(broker, active), _entry_unresolved_rows(broker.conn)
         pending = unresolved
         if self_exit is not None:
             event = _approval(broker)
@@ -158,7 +178,7 @@ def probe_unsettled_entry(broker, *, maximum_quantity, self_exit=None, _observed
             observed = _observed
             _require(getattr(broker, '_last_account_observation_fingerprint', None)
                      == account_observation_fingerprint(observed), 'observation_not_attested')
-        _require(active == broker._active() and children == broker.children()
+        _require(active == broker._active() and children == _entry_relevant_children(broker, active)
                  and unresolved == _entry_unresolved_rows(broker.conn),
                  'state_changed_during_probe')
         check_contract(active)
@@ -188,10 +208,12 @@ def prepare_unsettled_entry_authority(broker, *, approval_id, reason, expires_at
         _require(type(now) in (int, float) and math.isfinite(now) and now > 0
                  and type(expires_at) in (int, float) and math.isfinite(expires_at)
                  and now < expires_at <= now + 86400, 'approval_window')
-        before = dict(active=broker._active(), children=broker.children(),
+        active = broker._active()
+        before = dict(active=active, children=_entry_relevant_children(broker, active),
                       pending=_entry_unresolved_rows(broker.conn), control=read_control(broker.conn))
         proof = probe_unsettled_entry(broker, maximum_quantity=maximum_quantity)
-        after = dict(active=broker._active(), children=broker.children(),
+        active = broker._active()
+        after = dict(active=active, children=_entry_relevant_children(broker, active),
                      pending=_entry_unresolved_rows(broker.conn), control=read_control(broker.conn))
         _require(before == after and proof.get('status') == 'AGGREGATE_MATCH'
                  and proof.get('authorization') is False, 'state_changed_during_preview')
@@ -652,7 +674,8 @@ def execute_exit(broker, payload, ident):
             _require(current == event and current['sha256'] == authority['approval_sha256'], 'exit_authority_changed')
             body = current['body']
             _pending_matches(broker.conn, body, ident)
-            state, children, control = broker._active(), broker.children(), read_control(broker.conn)
+            state = broker._active()
+            children, control = _entry_relevant_children(broker, state), read_control(broker.conn)
             _require(isinstance(state, dict) and digest(_entry_active_anchor(state)) == body['active_sha256']
                      and isinstance(children, list) and len(children) == 1
                      and digest(children[0]) == body['child_sha256'] and broker._legacy_local() is False,
