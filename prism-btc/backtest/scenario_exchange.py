@@ -151,6 +151,8 @@ class ScenarioExchange:
                 (params.get("stopLoss") not in (None, "", "0", 0) and
                  (params.get("tpslMode") != "Full" or params.get("slTriggerBy") != "MarkPrice"))):
             raise ValueError("attached exit not simulated")
+        if params.get("timeInForce") == "PostOnly" and params.get("orderType") != "Limit":
+            raise ValueError("PostOnly requires a limit order")
         quantity = _d(params["qty"])
         if quantity <= 0 or quantity % self.step:
             raise ValueError("invalid quantity")
@@ -346,6 +348,10 @@ class ScenarioExchange:
             # Resting liquidity matches trades at its limit, not a taker's opposite quote.
             reference = price if maker else quote
             crossed = market or (reference <= executable if sign > 0 else reference >= executable)
+            if order.get("timeInForce") == "PostOnly" and not maker and crossed:
+                # This simulated quote is a price proxy, not a historical order book.
+                order.update(orderStatus="Cancelled", leavesQty="0", updatedTime=str(ts_ms))
+                continue
             if crossed and not market and not maker:
                 slipped = price * (1 + sign * (self.slippage + self.spread / 2))
                 slipped = (slipped / self.tick).to_integral_value(rounding=ROUND_CEILING if sign > 0 else ROUND_FLOOR) * self.tick
