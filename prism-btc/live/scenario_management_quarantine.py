@@ -667,7 +667,7 @@ def execute_exit(broker, payload, ident):
     _require(size <= instrument['market_maximum'], 'exit_quantity_requires_split')
     guard = None
     if event and event['body'].get('version') == 2:
-        def guard():
+        def check_before_transport():
             from live.scenario_control import read_control
             from live.scenario_entry_contract import registered_contract
             current = _approval(broker)
@@ -685,6 +685,7 @@ def execute_exit(broker, payload, ident):
                      'exit_identity_changed')
             _require(registered_contract(broker.conn, state), 'exit_contract_changed')
             _require(0 <= broker.clock()-observed['captured_at'] <= 10, 'exit_observation_stale')
+        guard = check_before_transport
     return broker._submit(payload, ident, 'exit', 'full', dict(
         side='Sell' if active['side'] == 'LONG' else 'Buy', orderType='Market',
         qty=text_number(size), reduceOnly=True, closeOnTrigger=True), single_attempt=True,
