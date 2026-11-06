@@ -1019,7 +1019,7 @@ def research_review(snapshot, context, response_contract, *, generate, record,
             system = _flat_selection_prompt(system, frozen_context)
         request = dict(system_prompt=system, user_prompt=prompt,
             model=scenario_llm.MODEL, reasoning_effort=scenario_llm.EFFORT,
-            fast_tier=True, timeout=scenario_llm.TIMEOUT_SECONDS - (now - started),
+            fast_tier=False, timeout=scenario_llm.TIMEOUT_SECONDS - (now - started),
             mcp_profile=None, response_schema=output_schema, retry_transport=False)
         request_hash = receipt_hash(request)
         record(deepcopy(dict(kind="MODEL_REQUEST", phase=phase, request=request,

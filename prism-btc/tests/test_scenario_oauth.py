@@ -73,7 +73,7 @@ def test_default_research_client_never_retries(transport_journal):
         raise http_error()
     with pytest.raises(ValueError, match='scenario_oauth_failed'):
         generate_scenario(system_prompt='test', user_prompt='test', model='gpt-6-luna',
-            reasoning_effort='high', fast_tier=True, timeout=75, open_url=open_url,
+            reasoning_effort='high', fast_tier=False, timeout=75, open_url=open_url,
             response_schema={'type': 'object'})
     assert len(calls) == 1
     assert transport_journal == []
@@ -249,7 +249,7 @@ def test_original_deadline_and_late_success(monkeypatch, elapsed, retry):
 def call(open_url,**kw):
     kw.setdefault('retry_transport', True)
     return generate_scenario(system_prompt='test',user_prompt='test',model='gpt-6-luna',
-        reasoning_effort='high',fast_tier=True,timeout=75,open_url=open_url,
+        reasoning_effort='high',fast_tier=False,timeout=75,open_url=open_url,
         response_schema={'type':'object','properties':{},'required':[], 'additionalProperties':False},**kw)
 
 
@@ -274,7 +274,7 @@ def test_exact_approved_model_effort_pairs_keep_no_tools_and_no_default_retry(mo
         assert timeout <= 75
         return Response(dict(result(), model=model))
     assert generate_scenario(system_prompt='test', user_prompt='test', model=model,
-        reasoning_effort=effort, fast_tier=True, timeout=75, open_url=open_url,
+        reasoning_effort=effort, fast_tier=False, timeout=75, open_url=open_url,
         response_schema={'type':'object'}).text == '{}'
     assert len(calls) == 1
 
@@ -284,7 +284,7 @@ def test_exact_approved_model_effort_pairs_keep_no_tools_and_no_default_retry(mo
 def test_crossed_model_effort_pairs_are_rejected_before_transport(model, effort):
     with pytest.raises(ValueError, match='scenario_model_policy'):
         generate_scenario(system_prompt='test', user_prompt='test', model=model,
-            reasoning_effort=effort, fast_tier=True, timeout=75,
+            reasoning_effort=effort, fast_tier=False, timeout=75,
             open_url=lambda *_args, **_kw: pytest.fail('transport must not run'), response_schema={'type':'object'})
 
 
@@ -296,7 +296,7 @@ def test_sol_response_model_must_match_without_fallback(monkeypatch):
         return Response(result())  # Legacy Luna response cannot satisfy a Sol request.
     with pytest.raises(ValueError, match='scenario_oauth_failed'):
         generate_scenario(system_prompt='test', user_prompt='test', model='gpt-6.1-sol',
-            reasoning_effort='low', fast_tier=True, timeout=75, open_url=open_url, response_schema={'type':'object'})
+            reasoning_effort='low', fast_tier=False, timeout=75, open_url=open_url, response_schema={'type':'object'})
     assert len(calls)==1
 
 
@@ -318,15 +318,15 @@ def test_sol_transport_failure_does_not_retry_or_fallback(monkeypatch):
         raise http_error()
     with pytest.raises(ValueError, match='scenario_oauth_failed'):
         generate_scenario(system_prompt='test', user_prompt='test', model='gpt-6.1-sol',
-            reasoning_effort='low', fast_tier=True, timeout=75, open_url=open_url, response_schema={'type':'object'})
+            reasoning_effort='low', fast_tier=False, timeout=75, open_url=open_url, response_schema={'type':'object'})
     assert calls == ['gpt-6.1-sol']
 
 
 @pytest.mark.parametrize('override,code', [({'timeout':76},'scenario_timeout_policy'),
-    ({'fast_tier':False},'scenario_model_policy'), ({'mcp_profile':'tools'},'scenario_model_policy')])
+    ({'fast_tier':True},'scenario_model_policy'), ({'mcp_profile':'tools'},'scenario_model_policy')])
 def test_sol_does_not_expand_timeout_or_tool_authority(override, code):
     arguments=dict(system_prompt='test',user_prompt='test',model='gpt-6.1-sol',reasoning_effort='low',
-        fast_tier=True,timeout=75,response_schema={'type':'object'},
+        fast_tier=False,timeout=75,response_schema={'type':'object'},
         open_url=lambda *_a, **_kw: pytest.fail('transport must not run'))
     arguments.update(override)
     with pytest.raises(ValueError,match=code):
@@ -342,7 +342,7 @@ def test_request_has_no_tools_no_keys_and_exact_model_tier(monkeypatch):
     def open_url(req,timeout):
         p=json.loads(req.data)
         assert p['tools']==[] and p['tool_choice']=='none'
-        assert p['model']=='gpt-6-luna' and p['service_tier']=='priority'
+        assert p['model']=='gpt-6-luna' and 'service_tier' not in p
         assert p['reasoning']=={'effort':'high'}
         assert p['text']['format']['type']=='json_schema'
         assert p['text']['format']['strict'] is True
@@ -362,21 +362,21 @@ def test_same_model_supports_only_approved_high_and_xhigh_payload(monkeypatch, e
         assert 0 < timeout <= 75
         return Response(result())
     response = generate_scenario(system_prompt='same', user_prompt='same',
-        model='gpt-6-luna', reasoning_effort=effort, fast_tier=True, timeout=75,
+        model='gpt-6-luna', reasoning_effort=effort, fast_tier=False, timeout=75,
         response_schema={'type': 'object'}, open_url=opener, retry_transport=False)
     assert response.text == '{}' and len(calls) == 1
     assert calls[0]['reasoning'] == {'effort': effort}
-    assert calls[0]['model'] == 'gpt-6-luna' and calls[0]['service_tier'] == 'priority'
+    assert calls[0]['model'] == 'gpt-6-luna' and 'service_tier' not in calls[0]
     assert calls[0]['tools'] == [] and calls[0]['tool_choice'] == 'none'
 
 
 @pytest.mark.parametrize('override', [
     {'reasoning_effort': 'medium'}, {'reasoning_effort': 'max'},
-    {'model': 'other'}, {'fast_tier': False}, {'mcp_profile': 'tools'},
+    {'model': 'other'}, {'fast_tier': True}, {'mcp_profile': 'tools'},
 ])
 def test_extra_effort_does_not_widen_other_model_authority(override):
     arguments = dict(system_prompt='same', user_prompt='same', model='gpt-6-luna',
-        reasoning_effort='xhigh', fast_tier=True, timeout=75, mcp_profile=None,
+        reasoning_effort='xhigh', fast_tier=False, timeout=75, mcp_profile=None,
         response_schema={'type': 'object'}, open_url=lambda *_a, **_kw: pytest.fail('network'))
     arguments.update(override)
     with pytest.raises(ValueError, match='scenario_model_policy'):
@@ -406,7 +406,7 @@ def test_timeout_type_is_preserved_without_transport_details(wrapped):
         raise URLError(error) if wrapped else error
     with pytest.raises(ValueError, match='^scenario_oauth_failed$') as exc:
         generate_scenario(system_prompt='test', user_prompt='test', model='gpt-6-luna',
-            reasoning_effort='high', fast_tier=True, timeout=75, open_url=open_url,
+            reasoning_effort='high', fast_tier=False, timeout=75, open_url=open_url,
             response_schema={'type': 'object'})
     assert type(exc.value).__name__ == 'ScenarioOAuthTimeout'
     assert exc.value.__cause__ is None
@@ -418,6 +418,6 @@ def test_other_transport_error_does_not_claim_timeout():
         raise URLError('sensitive connection failure')
     with pytest.raises(ValueError, match='^scenario_oauth_failed$') as exc:
         generate_scenario(system_prompt='test', user_prompt='test', model='gpt-6-luna',
-            reasoning_effort='high', fast_tier=True, timeout=75, open_url=open_url,
+            reasoning_effort='high', fast_tier=False, timeout=75, open_url=open_url,
             response_schema={'type': 'object'})
     assert type(exc.value) is ValueError

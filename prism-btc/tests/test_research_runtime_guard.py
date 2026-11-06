@@ -140,7 +140,7 @@ class Response(BytesIO):
 
 def request(schema):
     return dict(system_prompt='fixture', user_prompt='fixture', model='gpt-6-luna',
-                reasoning_effort='high', fast_tier=True, timeout=10, retry_transport=False,
+                reasoning_effort='high', fast_tier=False, timeout=10, retry_transport=False,
                 response_schema={'type':'object','properties':schema})
 
 

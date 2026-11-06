@@ -159,7 +159,7 @@ def preview(equity, *, snapshot=None, generate=None, clock=time.time):
     ctx["now"] = clock()
     validated = validate_scenario(payload, ctx)
     return {"mode":"ORDER_FREE_PREVIEW", "account_source":"HYPOTHETICAL_NOT_BROKER",
-            "orders_submitted":0, "model":scenario_llm.MODEL, "effort":scenario_llm.EFFORT, "tier":"fast",
+            "orders_submitted":0, "model":scenario_llm.MODEL, "effort":scenario_llm.EFFORT, "tier":"default",
             "as_of_ms":snapshot["as_of_ms"], "proposal":validated}
 
 

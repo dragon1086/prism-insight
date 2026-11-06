@@ -364,7 +364,7 @@ def test_exact_assembled_request_envelope_and_identity_scope_restore(tmp_path):
         assert request['user_prompt']==call['user_prompt']
         assert 'ma_structure' in json.loads(request['user_prompt'])['contract_context']
         assert request['input_projection']
-        assert row['raw_response']['wire_metadata']==dict(model='gpt-6.1-terra',effort='low',fast=True)
+        assert row['raw_response']['wire_metadata']==dict(model='gpt-6.1-terra',effort='low',fast=False)
     journals=[]
     from live.scenario_review_storage import review_text
     from utils.btc_recovery_references import read_recovery

@@ -110,7 +110,7 @@ def generate_scenario(*, system_prompt, user_prompt, model, reasoning_effort,
     if type(retry_transport) is not bool:
         raise ValueError("scenario_retry_policy")
     if ((model, reasoning_effort) not in (("gpt-6.1-terra", "low"), ("gpt-6.1-sol", "low"), ("gpt-6-luna", "high"), ("gpt-6-luna", "xhigh"))
-            or fast_tier is not True or mcp_profile is not None):
+            or fast_tier is not False or mcp_profile is not None):
         raise ValueError("scenario_model_policy")
     if type(timeout) not in (int,float) or not math.isfinite(timeout) or not 0 < timeout <= 75:
         raise ValueError("scenario_timeout_policy")
@@ -120,7 +120,7 @@ def generate_scenario(*, system_prompt, user_prompt, model, reasoning_effort,
             or url.path != "/v1/responses" or url.username or url.password or url.query or url.fragment):
         raise ValueError("local_oauth_proxy_required")
     payload = {"model":model,"reasoning":{"effort":reasoning_effort},
-               "service_tier":"priority", "instructions":system_prompt,
+               "instructions":system_prompt,
                "input":[{"role":"user","content":user_prompt}],
                "tools":[],"tool_choice":"none","store":False,"stream":False}
     if not isinstance(response_schema, dict) or response_schema.get("type") != "object":

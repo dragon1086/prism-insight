@@ -30,7 +30,7 @@ ENDPOINT = "http://127.0.0.1:18741/v1/responses"
 
 def request(**updates):
     return dict(system_prompt="research", user_prompt="frozen input", model="gpt-6-luna",
-                reasoning_effort="high", fast_tier=True, timeout=10,
+                reasoning_effort="high", fast_tier=False, timeout=10,
                 response_schema={"type": "object", "properties": {}}, **updates)
 
 

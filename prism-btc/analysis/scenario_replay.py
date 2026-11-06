@@ -241,7 +241,7 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
                                  "flat":hashlib.sha256((SYSTEM_PROMPT+MA_STRUCTURE_PROMPT+FLAT_ENTRY_PROMPT).encode()).hexdigest()},
         request_audit="EXACT_ASSEMBLED_REQUEST_IN_TAPE_RAW_ENVELOPE;FIXTURE_EXPLICITLY_SYNTHETIC",
         start_ms=bundle["start_ms"],end_ms=bundle["end_ms"],path=path,initial_equity=initial_equity,
-        model=scenario_llm.MODEL,effort=scenario_llm.EFFORT,tier="fast",prompt_hash=hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
+        model=scenario_llm.MODEL,effort=scenario_llm.EFFORT,tier="default",prompt_hash=hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
         source_hashes=sources,runtime_versions={"python":sys.version.split()[0],"pandas":pd.__version__,"numpy":np.__version__},
         costs=dict(maker_fee=.0002*cost_multiplier,taker_fee=.00055*cost_multiplier,
                    slippage=.0005*cost_multiplier,spread=.0001,participation=.01),
