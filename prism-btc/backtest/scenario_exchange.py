@@ -177,6 +177,10 @@ class ScenarioExchange:
         return _reply(orderId=order["orderId"], orderLinkId=order["orderLinkId"])
 
     def amend_order(self, **params):
+        if any(key in params for key in ("takeProfit", "stopLoss", "tpslMode", "tpTriggerBy",
+                                          "slTriggerBy", "tpLimitPrice", "slLimitPrice",
+                                          "tpOrderType", "slOrderType")):
+            raise ValueError("exit amendment not simulated")
         order = self._find(params)
         allowed = {k: params[k] for k in ("price", "qty", "triggerPrice") if k in params}
         for key, value in allowed.items():

@@ -40,6 +40,17 @@ def test_unsupported_trading_stop_take_profit_is_not_silently_ignored():
     assert not s.writes and not s._queue
 
 
+@pytest.mark.parametrize("change", [{"takeProfit": "110"}, {"takeProfit": "0"},
+                                    {"stopLoss": "95"}, {"stopLoss": "0"}])
+def test_unsupported_exit_amendment_is_not_silently_ignored(change):
+    s = session()
+    ident = order(s)
+    before = list(s.writes)
+    with pytest.raises(ValueError, match="exit amendment not simulated"):
+        s.amend_order(orderId=ident, **change)
+    assert s.writes == before and not s._queue
+
+
 @pytest.mark.parametrize("side,exit_price", [("Buy", 110), ("Sell", 90)])
 def test_long_short_realized_fees_and_marked_equity(side, exit_price):
     s = OfflineBybitSession(slippage_bps=0, spread=0, maker_fee=.001, taker_fee=.002)
