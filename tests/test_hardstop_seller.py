@@ -841,3 +841,14 @@ def test_disabled_flag_is_noop(tmp_db, monkeypatch):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+def test_us_hardstop_waits_for_the_regular_session(monkeypatch):
+    # MSFT 2026-11-06 09:28 ET: a pre-market quote stopped the position and queued a next-day sell.
+    from datetime import datetime, timezone
+    assert not la.us_regular_session(datetime(2026, 11, 6, 14, 28, tzinfo=timezone.utc))  # 09:28 ET
+    assert la.us_regular_session(datetime(2026, 11, 6, 14, 34, tzinfo=timezone.utc))  # 09:34 ET
+    assert not la.us_regular_session(datetime(2026, 11, 6, 21, 4, tzinfo=timezone.utc))  # 16:04 ET
+    monkeypatch.setattr(la, "us_regular_session", lambda: False)
+    monkeypatch.setattr(la, "_connect", lambda: (_ for _ in ()).throw(AssertionError("no DB read")))
+    assert asyncio.run(la.run_market("US", "pre"))["skipped_outside_session"] is True

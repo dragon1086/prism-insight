@@ -209,7 +209,8 @@ CREATE TABLE IF NOT EXISTS us_pending_orders (
     failure_reason TEXT,
     created_at TEXT NOT NULL,
     executed_at TEXT,
-    order_result TEXT                  -- JSON result from KIS API
+    order_result TEXT,                 -- JSON result from KIS API
+    quantity INTEGER                   -- partial sell quantity (NULL = full holding)
 )
 """
 

@@ -1855,6 +1855,11 @@ class USStockTrackingAgent:
                 return {"success": False, "error": "analysis_failed",
                         "ticker": ticker, "company_name": company_name}
 
+            from cores.us_data_client import get_us_data_client
+            from prism_core.sector_names import fill_missing_sector
+            scenario = await fill_missing_sector(
+                scenario, lambda: get_us_data_client().get_company_info(ticker).get("sector"))
+
             scenario = apply_buy_scenario_contract(
                 scenario, market="US", entry_price=current_price
             )

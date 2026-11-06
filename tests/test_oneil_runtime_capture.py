@@ -101,6 +101,7 @@ def test_real_mechanical_loop_observes_only_after_protection(monkeypatch, enable
     monkeypatch.setenv("ONEIL_TAPE_CAPTURE_ENABLED", str(enabled))
     events = []
     connection = Mock()
+    monkeypatch.setattr(loop, "us_regular_session", lambda: True)
     monkeypatch.setattr(loop, "_connect", lambda: connection)
     monkeypatch.setattr(loop, "_ensure_schema", lambda _: None)
     monkeypatch.setattr(loop, "load_holdings_by_ticker", lambda *_: {

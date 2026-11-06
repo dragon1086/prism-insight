@@ -1558,6 +1558,10 @@ class StockTrackingAgent:
                 db_lock=db_lock,
                 sector_profile=self._report_sector_profile(ticker),
             )
+            from prism_core.reentry_v3_live import kis_master_sector
+            from prism_core.sector_names import fill_missing_sector, normalize_kr_sector
+            scenario = await fill_missing_sector(
+                scenario, lambda: normalize_kr_sector(kis_master_sector(ticker) or ""))
 
             scenario = apply_buy_scenario_contract(
                 scenario, market="KR", entry_price=current_price

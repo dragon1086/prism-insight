@@ -54,8 +54,13 @@ DB_PATH = Path(__file__).resolve().parent.parent / "stock_tracking_db.sqlite"
 def get_pending_orders(conn: sqlite3.Connection, today_str: str) -> list:
     """Get today's pending orders."""
     cursor = conn.cursor()
+    cols = {r[1] for r in cursor.execute("PRAGMA table_info(us_pending_orders)")}
+    if cols and "quantity" not in cols:
+        cursor.execute("ALTER TABLE us_pending_orders ADD COLUMN quantity INTEGER")
+        conn.commit()
     cursor.execute(
-        """SELECT id, account_key, account_name, product_code, mode, ticker, order_type, limit_price, buy_amount, exchange
+        """SELECT id, account_key, account_name, product_code, mode, ticker, order_type, limit_price, buy_amount, exchange,
+                  quantity
            FROM us_pending_orders
            WHERE status = 'pending' AND date(created_at) = ?
            ORDER BY id ASC""",
@@ -190,6 +195,7 @@ def process_pending_orders(dry_run: bool = False):
                     ticker=ticker,
                     limit_price=limit_price if limit_price > 0 else None,
                     exchange=exchange,
+                    quantity=order.get('quantity'),
                     intent=order_intent,
                 )
             else:

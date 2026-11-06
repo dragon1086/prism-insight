@@ -2,6 +2,7 @@
 
 This is a label/risk-comparison contract, not a source of company classifications.
 """
+import asyncio
 import re
 
 KR_SECTOR_NAMES = (
@@ -43,3 +44,25 @@ def sector_comparison_keys(value: str) -> set[str]:
 
 def sectors_overlap(left: str, right: str) -> bool:
     return bool(sector_comparison_keys(left) & sector_comparison_keys(right))
+
+
+_MISSING_SECTOR = {"", "unknown", "알 수 없음", "업종 미확인", "n/a", "none", "null"}
+
+
+async def fill_missing_sector(scenario, lookup):
+    """Fill scenario["sector"] from a system lookup when the BUY model left it out.
+
+    The model stopped emitting the field (KR from 2026-10-21, US from 10-15), so the buy message
+    showed "업종 미확인" and the same-sector cap saw "Unknown". The model's value still wins."""
+    if not isinstance(scenario, dict) or scenario.get("analysis_failed"):
+        return scenario
+    if str(scenario.get("sector") or "").strip().casefold() not in _MISSING_SECTOR:
+        return scenario
+    try:
+        found = await asyncio.to_thread(lookup)
+    except Exception:  # noqa: BLE001 - lookup outage keeps the sector unknown
+        found = None
+    if isinstance(found, str) and found.strip().casefold() not in _MISSING_SECTOR:
+        scenario["sector"] = found.strip()
+        scenario["_sector_source"] = "system"
+    return scenario
