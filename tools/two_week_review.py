@@ -16,6 +16,11 @@ and the full text is written to logs/reviews/.
 Usage:
     python tools/two_week_review.py --dry-run
     python tools/two_week_review.py --start 2026-10-05 --end 2026-10-18
+    python tools/two_week_review.py --every 14 --anchor 2026-10-18   # cron: every other Sunday
+
+Since 2026-11-07 (user decision) this runs every two weeks and replaces the ops watchdog's daily
+summary and notice-only messages in the maintenance chat; the sources section says when the watchdog
+last ran, since its morning summary no longer proves it is alive.
 """
 from __future__ import annotations
 
@@ -899,6 +904,20 @@ def build_report(*, conn, window: Window, markets, events, logs, runtime: Path, 
     ]
 
 
+def due(end: date, every: int | None, anchor: date) -> bool:
+    """True without --every; else only on end dates a whole number of periods after the anchor."""
+    return not every or ((end - anchor).days >= 0 and (end - anchor).days % every == 0)
+
+
+def watchdog_line(state_path: Path) -> str:
+    """When the ops watchdog (every 5 minutes) last saved its state; a stale time means it stopped."""
+    try:
+        last = datetime.fromtimestamp(state_path.stat().st_mtime, KST)
+    except OSError:
+        return "- 운영 감시: 상태 파일 없음(감시가 돌지 않았거나 경로가 다름)."
+    return f"- 운영 감시: 마지막 실행 {last:%m/%d %H:%M} KST (5분마다 실행, 장애·복구만 유지보수방으로 보냄)."
+
+
 def write_report(out_dir: Path, window: Window, header: str, sections: list[str]) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"two_week_review_{window.start.isoformat()}_{window.end.isoformat()}.txt"
@@ -920,12 +939,18 @@ def main(argv=None) -> int:
     parser.add_argument("--no-prices", action="store_true", help="skip price lookups (DB and events only)")
     parser.add_argument("--no-logs", action="store_true", help="skip the log scan")
     parser.add_argument("--dry-run", action="store_true", help="print only; no Telegram, no file")
+    parser.add_argument("--every", type=int, help="run only when the end date is a multiple of this many days "
+                                                  "after --anchor (cron runs it weekly)")
+    parser.add_argument("--anchor", default="2026-10-18", help="YYYY-MM-DD of a past review (with --every)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.WARNING)
 
     from dotenv import load_dotenv
     load_dotenv(ROOT / ".env")
     end = date.fromisoformat(args.end) if args.end else datetime.now(KST).date()
+    if not due(end, args.every, date.fromisoformat(args.anchor)):
+        print(f"{end.isoformat()}: not a review day (every {args.every} days from {args.anchor}).", file=sys.stderr)
+        return 0
     start = date.fromisoformat(args.start) if args.start else end - timedelta(days=DEFAULT_DAYS - 1)
     window = Window(start, end)
     markets = list(MARKETS) if args.market == "both" else [args.market.upper()]
@@ -937,6 +962,7 @@ def main(argv=None) -> int:
     try:
         sections = build_report(conn=conn, window=window, markets=markets, events=events, logs=logs,
                                 runtime=Path(args.runtime), book=book, max_calls=args.max_price_calls)
+        sections[0] += "\n" + watchdog_line(Path(args.runtime) / "ops_watchdog_state.json")
     finally:
         conn.close()
     header = f"[PRISM 2주 점검] {start.isoformat()}~{end.isoformat()} · {'/'.join(markets)}"

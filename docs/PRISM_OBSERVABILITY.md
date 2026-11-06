@@ -48,6 +48,10 @@ message to the private maintenance chat (`prism_core.ops_alert`):
 - The same signature is held for 6 hours, then re-sent with its count; a stopped job that runs again
   sends `[복구]`; a daily summary at 08:30 KST lists runs and re-entry signals → orders. No morning
   summary means the watchdog itself is down.
+- Since 2026-11-07 (user decision) the chat gets only `[장애]`/`[복구]` and the disk alert: the daily summary
+  and `[주의]`-only messages are off (`OPS_WATCHDOG_SUMMARY_ENABLED`, `OPS_WATCHDOG_NOTICES_ENABLED`, default
+  false) and the biweekly review (`tools/two_week_review.py --every 14`, every other Sunday 19:00 KST)
+  replaces them; its first section shows when the watchdog last ran.
 
 Jobs and their heartbeat lines are listed in `JOBS` (the loops' own summary lines, pinned in
 `tests/test_ops_watchdog.py`). Add a job there when a new scheduled job is added. Jobs under systemd
