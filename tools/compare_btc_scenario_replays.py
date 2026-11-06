@@ -47,7 +47,7 @@ def verify_registry_contract(contract, registry):
     equal(contract["initial_equity"], registry["initial_equity"], "registry_equity_mismatch")
     require(contract["model"] == registry["model"] and contract["effort"] == registry["reasoning"],
             "registry_model_mismatch")
-    require(registry["service_tier"] == "priority" and contract["tier"] == "fast",
+    require((registry["service_tier"], contract["tier"]) in {("priority", "fast"), ("default", "default")},
             "registry_service_tier_mismatch")
     require(registry["source_pin_reference"] == registry["source_reference"], "source_pin_reference_mismatch")
     require(contract["data_hash"] == registry["expected_data_hash"], "registry_data_mismatch")

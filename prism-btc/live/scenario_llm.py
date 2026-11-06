@@ -1112,17 +1112,17 @@ def propose(snapshot: dict, context: dict, response_contract: dict, *,
     system_prompt = immediate_reduce_instructions(system_prompt, context)
     from live.scenario_recovery import record_model_request, record_model_wire, record_model_error
     record_model_request(system_prompt=system_prompt, user_prompt=prompt,
-                         response_schema=schema, model=MODEL, effort=EFFORT, fast=True,
+                         response_schema=schema, model=MODEL, effort=EFFORT, fast=False,
                          input_projection=projection_audit)
     try:
         result = generate(system_prompt=system_prompt, user_prompt=prompt,
-                          model=MODEL, reasoning_effort=EFFORT, fast_tier=True,
+                          model=MODEL, reasoning_effort=EFFORT, fast_tier=False,
                           timeout=TIMEOUT_SECONDS, mcp_profile=None,
                           response_schema=schema)
     except Exception:
         record_model_error("oauth_model_failed")
         raise ScenarioModelError("oauth_model_failed") from None
-    record_model_wire(result.text, model=MODEL, effort=EFFORT, fast=True)
+    record_model_wire(result.text, model=MODEL, effort=EFFORT, fast=False)
     if not 0 <= clock() - started <= TIMEOUT_SECONDS:
         record_model_error("late_response")
         raise ScenarioModelError("late_response")

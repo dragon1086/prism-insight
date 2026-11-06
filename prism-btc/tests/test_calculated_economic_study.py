@@ -93,7 +93,7 @@ def fake_replay(*, fail_arm=None, mismatch_arm=None, over_cap=False):
             if name.startswith("B_"):
                 schema["properties"] = {"wait_proposal" if index % 2 == 0 else "selection_token": {}}
             kwargs["model_generator"](system_prompt="fixture", user_prompt="fixture", model=registry['model'],
-                reasoning_effort=registry['reasoning'], fast_tier=True, timeout=10, retry_transport=False, response_schema=schema)
+                reasoning_effort=registry['reasoning'], fast_tier=False, timeout=10, retry_transport=False, response_schema=schema)
         contract = study.contract_for(bundle, kwargs["path"], 1., kwargs["initial_equity"],
             origin="luna", policy_profile=kwargs["policy_profile"], initial_state=kwargs["initial_state"],
             observed_manifest=study.ObservedScenarioData(kwargs["observed_packet"], kwargs["observed_packet_sha256"]).manifest(),
