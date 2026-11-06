@@ -21,9 +21,14 @@ case "$EVENT_RETENTION" in
     0|1) ;;
     *) EVENT_RETENTION=invalid ;;
 esac
+# 1 = this server holds only a DB copy and has no offsite backend (app-server).
+LOCAL_ONLY=${PRISM_BACKUP_LOCAL_ONLY:-0}
 SNAPSHOT_EXTRA=()
-if [ "$EVENT_RETENTION" = 1 ]; then
-    SNAPSHOT_EXTRA=(--capture-review-event-proof)
+if [ "$LOCAL_ONLY" != 1 ]; then
+    SNAPSHOT_EXTRA=(--capture-references --retention-cursor "$BACKUP_BASE_DIR/.btc-retention-cursor.json")
+    if [ "$EVENT_RETENTION" = 1 ]; then
+        SNAPSHOT_EXTRA+=(--capture-review-event-proof)
+    fi
 fi
 
 # 로그 함수
@@ -34,6 +39,12 @@ log() {
 # 백업 디렉토리 생성
 mkdir -p $BACKUP_DIR
 log "백업 시작: $BACKUP_DIR"
+
+# A snapshot needs free space of DB size + 4GB, so 7 days of DB copies would block it.
+# Prune first: running out of space must not stop this server's retention for good.
+if [ "$LOCAL_ONLY" = 1 ]; then
+    find $BACKUP_BASE_DIR -maxdepth 2 -type f -name 'stock_tracking_db.sqlite.gz*' -mtime +2 -delete
+fi
 
 # 1. 루트 경로 파일들 백업
 log "루트 경로 파일 백업 중..."
@@ -59,8 +70,8 @@ done
 if [ -f stock_tracking_db.sqlite ]; then
     if python3 "$PROJECT_DIR/utils/sqlite_snapshot.py" \
         --source "$PROJECT_DIR/stock_tracking_db.sqlite" \
-        --destination "$BACKUP_DIR/stock_tracking_db.sqlite.gz" --timeout 1200 --capture-references \
-        --retention-cursor "$BACKUP_BASE_DIR/.btc-retention-cursor.json" ${SNAPSHOT_EXTRA[@]+"${SNAPSHOT_EXTRA[@]}"}; then
+        --destination "$BACKUP_DIR/stock_tracking_db.sqlite.gz" --timeout 1200 \
+        ${SNAPSHOT_EXTRA[@]+"${SNAPSHOT_EXTRA[@]}"}; then
         log "✓ SQLite 온라인 스냅샷·압축·복원 해시 검증 완료"
     else
         log "CRITICAL: SQLite 스냅샷 실패; 기존 백업 보존, 원격 전송과 7일 정리 중단"
@@ -101,35 +112,39 @@ find $BACKUP_DIR -type f -exec chmod 600 {} \;
 BACKUP_SIZE=$(du -sh $BACKUP_DIR | cut -f1)
 log "백업 완료: $BACKUP_SIZE"
 
-# Only the verified database, its manifest and Git history go offsite, never settings.
-if python3 "$PROJECT_DIR/utils/btc_offsite_archive.py" \
-    --repo "$PROJECT_DIR" --snapshot "$BACKUP_DIR/stock_tracking_db.sqlite.gz" \
-    | tee "$BACKUP_DIR/offsite_ack.json" | tee -a "$LOG_FILE"; then
-    log "✓ 별도 서버 DB·Git 복원 검증 ACK 완료"
+if [ "$LOCAL_ONLY" = 1 ]; then
+    log "별도 서버 백업 없는 서버; 로컬 사본만 보관합니다"
 else
-    log "CRITICAL: 별도 서버 백업 미확인/비활성; 기존 백업 보존, 보존기간 삭제 중단"
-    exit 1
-fi
-
-# Drop only the exact uploaded local gzip after independently rechecking its archive.
-if PYTHONPATH="$PROJECT_DIR/prism-btc:$PROJECT_DIR" PRISM_DISABLE_SIGNAL_PUBLISH=1 \
-    python3 "$PROJECT_DIR/tools/remove_uploaded_btc_backup.py" "$BACKUP_DIR" | tee -a "$LOG_FILE"; then
-    log "검증된 원격 사본을 확인해 로컬 DB 압축 중복을 정리했습니다"
-else
-    log "⚠ 원격 사본 재확인 실패; 로컬 DB 압축본을 보존합니다"
-fi
-
-# The persistent daily timer consumes only this successfully verified backup.
-if [ "$EVENT_RETENTION" = invalid ]; then
-    log "⚠ 잘못된 BTC 정리 설정; 백업은 보존하고 정리는 건너뜁니다"
-elif (set -C; printf '%s\n' "$EVENT_RETENTION" > "$BACKUP_DIR/.btc-retention-mode"); then
-    if systemctl is-active --quiet prism-btc-daily-retention.timer; then
-        log "7일 정리 백업 증거 준비; 정기 실행 결과는 별도 확인"
+    # Only the verified database, its manifest and Git history go offsite, never settings.
+    if python3 "$PROJECT_DIR/utils/btc_offsite_archive.py" \
+        --repo "$PROJECT_DIR" --snapshot "$BACKUP_DIR/stock_tracking_db.sqlite.gz" \
+        | tee "$BACKUP_DIR/offsite_ack.json" | tee -a "$LOG_FILE"; then
+        log "✓ 별도 서버 DB·Git 복원 검증 ACK 완료"
     else
-        log "CRITICAL: BTC 정리 타이머 비활성; 백업은 보존하고 정리는 진행되지 않습니다"
+        log "CRITICAL: 별도 서버 백업 미확인/비활성; 기존 백업 보존, 보존기간 삭제 중단"
+        exit 1
     fi
-else
-    log "⚠ BTC 정리 표식 기록 실패; 백업은 보존하고 정리는 건너뜁니다"
+
+    # Drop only the exact uploaded local gzip after independently rechecking its archive.
+    if PYTHONPATH="$PROJECT_DIR/prism-btc:$PROJECT_DIR" PRISM_DISABLE_SIGNAL_PUBLISH=1 \
+        python3 "$PROJECT_DIR/tools/remove_uploaded_btc_backup.py" "$BACKUP_DIR" | tee -a "$LOG_FILE"; then
+        log "검증된 원격 사본을 확인해 로컬 DB 압축 중복을 정리했습니다"
+    else
+        log "⚠ 원격 사본 재확인 실패; 로컬 DB 압축본을 보존합니다"
+    fi
+
+    # The persistent daily timer consumes only this successfully verified backup.
+    if [ "$EVENT_RETENTION" = invalid ]; then
+        log "⚠ 잘못된 BTC 정리 설정; 백업은 보존하고 정리는 건너뜁니다"
+    elif (set -C; printf '%s\n' "$EVENT_RETENTION" > "$BACKUP_DIR/.btc-retention-mode"); then
+        if systemctl is-active --quiet prism-btc-daily-retention.timer; then
+            log "7일 정리 백업 증거 준비; 정기 실행 결과는 별도 확인"
+        else
+            log "CRITICAL: BTC 정리 타이머 비활성; 백업은 보존하고 정리는 진행되지 않습니다"
+        fi
+    else
+        log "⚠ BTC 정리 표식 기록 실패; 백업은 보존하고 정리는 건너뜁니다"
+    fi
 fi
 
 # 7일 이상 된 백업 삭제
