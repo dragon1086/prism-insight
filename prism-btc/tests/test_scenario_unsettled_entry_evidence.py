@@ -831,7 +831,8 @@ def test_runtime_entry_quarantine_exit_is_single_reduce_only_request(tmp_path, l
 
 
 @pytest.mark.parametrize('action,disrupt', [('WAIT',None),('EXIT',None),('OPEN',None),
-                                             ('EXIT','revoked'),('EXIT','order_changed')])
+                                             ('EXIT','revoked'),('EXIT','order_changed'),
+                                             ('WAIT','history'),('EXIT','history')])
 def test_entry_quarantine_two_stage_production_profile(tmp_path, action, disrupt):
     from types import SimpleNamespace
     from live import scenario_management_quarantine as quarantine
@@ -840,6 +841,15 @@ def test_entry_quarantine_two_stage_production_profile(tmp_path, action, disrupt
     from tests.test_scenario_review_runtime import wire
 
     broker,exchange,_=real_entry_broker(tmp_path)
+    if disrupt=='history':
+        original=broker.conn.execute('SELECT * FROM llm_scenario_children').fetchone()
+        for i in range(1077):
+            old=list(original)
+            old[0]=f'old-link-{i}'; old[1]=f'old-intent-{i}'; old[2]=f'old-scenario-{i}'; old[6]='TERMINAL'
+            old[7]=f'old-order-{i}'
+            old[8]=json.dumps({'order':{'orderId':old[7],'symbol':'BTCUSDT','orderStatus':'Cancelled'},'executions':[]})
+            broker.conn.execute('INSERT INTO llm_scenario_children VALUES(?,?,?,?,?,?,?,?,?,?)',old)
+        broker.conn.commit()
     preview=prepare_unsettled_entry_authority(broker,approval_id='approval',reason='review',
                                               expires_at=1600,maximum_quantity='0.019')
     authorize_unsettled_entry_management(broker,preview)
@@ -880,14 +890,14 @@ def test_entry_quarantine_two_stage_production_profile(tmp_path, action, disrupt
         failure=json.loads(raw).get('outcome')
     else:
         failure=None
-    if disrupt:
+    if disrupt in {'revoked','order_changed'}:
         assert result['status']!='intent_pending', (result,failure)
         assert broker.conn.execute('SELECT id,status FROM llm_scenario_intents').fetchall()==[('intent-id','PENDING')]
     else:
         assert result['status']==('wait' if action=='WAIT' else 'intent_pending' if action=='EXIT' else 'blocked'), (result,failure)
     assert len(calls)==(1 if action=='OPEN' else 2)
-    assert len(exchange.writes)==(1 if action=='EXIT' and not disrupt else 0)
-    if action=='EXIT' and not disrupt:
+    assert len(exchange.writes)==(1 if action=='EXIT' and disrupt not in {'revoked','order_changed'} else 0)
+    if action=='EXIT' and disrupt not in {'revoked','order_changed'}:
         assert exchange.writes[0][1]['reduceOnly'] is True
     assert next(c for c in broker.children('scenario-id') if c['kind']=='entry')['status']=='UNKNOWN'
 
