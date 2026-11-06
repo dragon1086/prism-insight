@@ -20,6 +20,26 @@ def order(s, side="Buy", qty="1", price="100", **kw):
     return s.place_order(**args)["result"]["orderId"]
 
 
+@pytest.mark.parametrize("attachment", [
+    {"takeProfit": "110", "stopLoss": "95", "tpslMode": "Full"},
+    {"stopLoss": "95", "tpslMode": "Partial"},
+    {"stopLoss": "95", "tpslMode": "Full", "slTriggerBy": "LastPrice"},
+    {"stopLoss": "95", "tpslMode": "Full", "slTriggerBy": "MarkPrice", "slOrderType": "Limit"},
+])
+def test_unsupported_attached_exits_never_create_a_simulated_order(attachment):
+    s = session()
+    with pytest.raises(ValueError, match="attached exit not simulated"):
+        order(s, **attachment)
+    assert not s.orders and not s.writes
+
+
+def test_unsupported_trading_stop_take_profit_is_not_silently_ignored():
+    s = session()
+    with pytest.raises(ValueError, match="attached exit not simulated"):
+        s.set_trading_stop(tpslMode="Full", slTriggerBy="MarkPrice", stopLoss="95", takeProfit="110")
+    assert not s.writes and not s._queue
+
+
 @pytest.mark.parametrize("side,exit_price", [("Buy", 110), ("Sell", 90)])
 def test_long_short_realized_fees_and_marked_equity(side, exit_price):
     s = OfflineBybitSession(slippage_bps=0, spread=0, maker_fee=.001, taker_fee=.002)

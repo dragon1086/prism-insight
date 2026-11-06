@@ -28,6 +28,12 @@ def _s(value):
     return format(_d(value), "f")
 
 
+def _unsupported_attached_exit(params):
+    return (any(params.get(key) not in (None, "", "0", 0) for key in
+                ("takeProfit", "tpTriggerBy", "tpOrderType", "tpLimitPrice", "slLimitPrice")) or
+            params.get("slOrderType") not in (None, "", "Market"))
+
+
 def _money(value):
     # Stable exchange-style USDT precision also survives broker float parsing.
     return value.quantize(Decimal('.00000001'))
@@ -140,6 +146,10 @@ class ScenarioExchange:
             raise ValueError("only one-way BTCUSDT supported")
         if params.get("side") not in {"Buy", "Sell"} or params.get("orderType") not in {"Limit", "Market"}:
             raise ValueError("unsupported order")
+        if (params.get("tpslMode") == "Partial" or _unsupported_attached_exit(params) or
+                (params.get("stopLoss") not in (None, "", "0", 0) and
+                 (params.get("tpslMode") != "Full" or params.get("slTriggerBy") != "MarkPrice"))):
+            raise ValueError("attached exit not simulated")
         quantity = _d(params["qty"])
         if quantity <= 0 or quantity % self.step:
             raise ValueError("invalid quantity")
@@ -178,6 +188,8 @@ class ScenarioExchange:
         return _reply(orderId=order["orderId"])
 
     def set_trading_stop(self, **params):
+        if _unsupported_attached_exit(params):
+            raise ValueError("attached exit not simulated")
         if params.get("tpslMode") != "Full" or params.get("slTriggerBy") != "MarkPrice":
             raise ValueError("Full MarkPrice stop required")
         stop = _d(params["stopLoss"])
