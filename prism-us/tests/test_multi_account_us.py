@@ -788,3 +788,28 @@ def test_sell_reports_unknown_holdings_when_the_portfolio_query_fails(monkeypatc
     result = asyncio.run(run())
     assert result["success"] is False and "holdings unknown" in result["message"]
     assert "not found" not in result["message"] and not result.get("outcome_unknown")
+
+
+def test_queued_partial_sell_keeps_its_quantity(monkeypatch, tmp_path):
+    # A queued sell used to store no quantity, so the batch liquidated the full holding.
+    db = tmp_path / "q.sqlite"
+    conn = sqlite3.connect(str(db))
+    conn.execute("""CREATE TABLE us_pending_orders (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_key TEXT NOT NULL, account_name TEXT, product_code TEXT, mode TEXT, ticker TEXT NOT NULL,
+        order_type TEXT NOT NULL, limit_price REAL NOT NULL, buy_amount REAL, exchange TEXT, trigger_type TEXT,
+        trigger_mode TEXT, status TEXT DEFAULT 'pending', failure_reason TEXT, created_at TEXT NOT NULL,
+        executed_at TEXT, order_result TEXT)""")  # pre-quantity schema
+    conn.commit()
+    conn.close()
+    real_connect = sqlite3.connect
+    monkeypatch.setattr(sqlite3, "connect", lambda *_a, **_k: real_connect(str(db)))
+
+    trader = ust.USStockTrading.__new__(ust.USStockTrading)
+    trader.account_key, trader.account_name, trader.product_code, trader.mode = "k", "a", "01", "real"
+    trader.auto_trading = True
+    monkeypatch.setattr(trader, "is_reserved_order_available", lambda: False, raising=False)
+    assert trader.sell_reserved_order("MSFT", limit_price=500.0, exchange="NASD", quantity=3)["success"]
+
+    rows = pending_batch.get_pending_orders(real_connect(str(db)), ust.datetime.datetime.now(pending_batch.KST)
+                                            .strftime("%Y-%m-%d"))
+    assert [(r["ticker"], r["order_type"], r["quantity"]) for r in rows] == [("MSFT", "sell", 3)]

@@ -49,6 +49,7 @@ import sys
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from datetime import time as dtime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -133,6 +134,16 @@ def _now() -> datetime:
 
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
+
+
+def us_regular_session(now: Optional[datetime] = None) -> bool:
+    """US stops act on regular-session prices only (09:30-16:00 ET).
+
+    The cron also fires at 09:04-09:28 and 16:xx ET; on 2026-11-06 the 09:28 ET run stopped MSFT on a
+    pre-market quote, recorded the exit and queued a reserved sell for the next session."""
+    from zoneinfo import ZoneInfo
+    t = (now or _now()).astimezone(ZoneInfo("America/New_York")).time()
+    return dtime(9, 30) <= t < dtime(16, 0)
 
 
 # ── SQLite state (loop_a_* tables; legacy names kept for state continuity; never touches existing tables) ─────────
@@ -313,6 +324,10 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
         new_split_state,
         pyramid_protectable,
     )
+    if market == "US" and not us_regular_session():
+        summary["skipped_outside_session"] = True
+        logger.info("[US] outside the regular session -> skip (no pre/after-market stops)")
+        return summary
     conn = _connect()
     agent = {"ref": None}  # lazily created on first LIVE sell
     oneil_observations = []

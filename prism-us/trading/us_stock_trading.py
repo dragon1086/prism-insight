@@ -921,7 +921,8 @@ class USStockTrading:
         return resv_start <= current_time <= resv_end
 
     def _queue_pending_order(self, ticker: str, order_type: str, limit_price: float,
-                             buy_amount: float = None, exchange: str = None) -> Dict[str, Any]:
+                             buy_amount: float = None, exchange: str = None,
+                             quantity: int = None) -> Dict[str, Any]:
         """
         Queue a reserved order for later batch execution.
 
@@ -935,6 +936,7 @@ class USStockTrading:
             limit_price: Limit price in USD
             buy_amount: Buy amount in USD (buy only)
             exchange: Exchange code (NASD, NYSE, AMEX)
+            quantity: Partial sell quantity (sell only, None = full holding)
 
         Returns:
             Order result dict with status='queued'
@@ -966,15 +968,20 @@ class USStockTrading:
                     failure_reason TEXT,
                     created_at TEXT NOT NULL,
                     executed_at TEXT,
-                    order_result TEXT
+                    order_result TEXT,
+                    quantity INTEGER
                 )
             """)
+            # Older tables have no quantity: a queued partial sell used to liquidate the full holding.
+            if "quantity" not in {r[1] for r in cursor.execute("PRAGMA table_info(us_pending_orders)")}:
+                cursor.execute("ALTER TABLE us_pending_orders ADD COLUMN quantity INTEGER")
 
             now_kst = datetime.datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
             cursor.execute(
                 """INSERT INTO us_pending_orders
-                   (account_key, account_name, product_code, mode, ticker, order_type, limit_price, buy_amount, exchange, status, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                   (account_key, account_name, product_code, mode, ticker, order_type, limit_price, buy_amount, exchange,
+                    quantity, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
                 (
                     self.account_key,
                     self.account_name,
@@ -985,6 +992,7 @@ class USStockTrading:
                     limit_price,
                     buy_amount,
                     exchange,
+                    quantity,
                     now_kst,
                 )
             )
@@ -1155,9 +1163,7 @@ class USStockTrading:
             use_moo: Use Market On Open order (default: False)
             exchange: Exchange code
             quantity: Partial sell quantity (None = full holding, unchanged).
-                      NOTE: when the order must be queued for the pending-order
-                      batch (outside reserved-order window), the queued order
-                      liquidates the full holding (partial not supported there).
+                      A queued order (outside the reserved-order window) keeps it.
 
         Returns:
             Order result dict
@@ -1189,7 +1195,7 @@ class USStockTrading:
             # Queue the order for later batch execution (us_pending_order_batch.py at 10:05 KST)
             return self._queue_pending_order(
                 ticker=ticker, order_type='sell', limit_price=limit_price or 0,
-                buy_amount=None, exchange=exchange
+                buy_amount=None, exchange=exchange, quantity=quantity
             )
 
         # Check holding quantity
