@@ -187,7 +187,7 @@ export function PerformanceChart({ data, prismPerformance = [], market = "KR" }:
           </div>
         </CardHeader>
         <CardContent className="px-2 pb-3 pt-2">
-          <ResponsiveContainer width="100%" height={320}>
+          <ResponsiveContainer width="100%" height={640}>
             <ComposedChart data={chartRows} margin={{ top: 8, right: 24, bottom: 0, left: 0 }}>
               <defs>
                 <linearGradient id="prismFill" x1="0" y1="0" x2="0" y2="1">
