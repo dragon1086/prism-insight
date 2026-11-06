@@ -636,12 +636,82 @@ def calculate_candidate(wire, context, *, candidate_id, original_input_now=None,
     return receipt
 
 
+_ENTRY_PROGRESS_INPUT_LIMIT = 100_000
+
+
+def _initial_entry_progress_units(context):
+    """Initial entry-to-Mark geometry is neither portfolio PnL nor current risk."""
+    try:
+        evidence = context.get('entry_thesis')
+        positions = context.get('positions')
+        if (not context.get('scenario_id') or context.get('accounting_status') != 'confirmed'
+                or not isinstance(positions, list) or not positions
+                or any(not isinstance(p, dict) or _decimal(p.get('quantity')) <= 0 for p in positions)
+                or not isinstance(evidence, dict) or evidence.get('status') != 'VERIFIED'):
+            return None
+        side = evidence['side']
+        if side not in ('LONG', 'SHORT') or side != context.get('side'):
+            return None
+        average, stop, mark = (_decimal(evidence[k]) for k in ('initial_fill_average', 'initial_hard_stop', 'current_mark'))
+        now, observed, first, captured = (_decimal(v) for v in
+            (context['now'], evidence['observed_at'], evidence['first_fill_at'], context['account_captured_at']))
+        if (min(average, stop, mark, first) <= 0 or not first <= captured <= now
+                or not first <= observed <= now or now - captured > 120 or now - observed > 120
+                or abs(observed - captured) > Decimal('0.001') or mark != _decimal(context['mark_price'])):
+            return None
+        sign = Decimal(1) if side == 'LONG' else Decimal(-1)
+        distance = sign * (average - stop)
+        progress = sign * (mark - average)
+        if distance <= 0 or abs(progress - _decimal(evidence['favorable_price_change_from_initial_average'])) > Decimal('0.000001'):
+            return None
+        value = float(progress / distance)
+        if not math.isfinite(value):
+            return None
+        return dict(value=value, meaning='SIGNED_PRICE_PROGRESS_OVER_INITIAL_STOP_DISTANCE_NOT_PNL_OR_CURRENT_RISK',
+                    positive='FAVORABLE', negative='ADVERSE',
+                    scope='INITIAL_OPEN_ENDPOINT_ONLY_NOT_INTERVENING_PATH_OR_EXIT_RULE')
+    except (AttributeError, KeyError, TypeError, ValueError, ArithmeticError, OverflowError):
+        return None
+
+
+def _project_initial_entry_progress(projected, context):
+    """Add only if the original model input survives unchanged within its cap."""
+    value = _initial_entry_progress_units(context)
+    if value is None:
+        return projected
+    try:
+        from live.scenario_model_input import project_model_input, restore_model_input
+        if len(_encoded(projected).encode()) > _ENTRY_PROGRESS_INPUT_LIMIT:
+            return projected
+        original = restore_model_input(projected)
+        logical = deepcopy(original)
+        target = logical['contract_context']
+        if (target.get('scenario_id') != context.get('scenario_id')
+                or target.get('entry_thesis') != context.get('entry_thesis')
+                or target.get('mark_price') != context.get('mark_price')
+                or target.get('positions') != context.get('positions')
+                or target.get('accounting_status') != context.get('accounting_status')
+                or target.get('account_captured_at') != context.get('account_captured_at')
+                or 'initial_entry_progress_units' in target):
+            return projected
+        target['initial_entry_progress_units'] = value
+        candidate, _ = project_model_input(logical, allow_gap_rescue=True)
+        if len(_encoded(candidate).encode()) > _ENTRY_PROGRESS_INPUT_LIMIT:
+            return projected
+        restored = restore_model_input(candidate)
+        restored['contract_context'].pop('initial_entry_progress_units', None)
+        return candidate if restored == original else projected
+    except (KeyError, TypeError, ValueError, ArithmeticError, OverflowError):
+        return projected
+
+
 def _model_payload(snapshot, context, response_contract, *, calculated_candidates=None):
     def project(source):
         baseline = _base_model_payload(source, context, response_contract, calculated_candidates=calculated_candidates)
         if not explanation_enabled(context):
             baseline = project_holding_price_order_input(baseline)[0]
-        return project_explanation_input(baseline, context, snapshot=source)
+        projected = project_explanation_input(baseline, context, snapshot=source)
+        return _project_initial_entry_progress(projected, context)
     result = project(snapshot)
     frame = snapshot.get('timeframes', {}).get('30m', {})
     if (context.get('scenario_id') is None and not context.get('positions')
