@@ -250,6 +250,7 @@ class ScenarioDemoBroker(ScenarioExecution):
     def capture_account(self):
         """Fresh read-only observation; NOT a validated trading risk context."""
         with mutation_lock(self.conn):
+            self._last_account_observation_fingerprint = None
             self._identity()
             started = self.clock()
             positions = read_complete(self._call, "get_positions", category="linear", symbol="BTCUSDT")
@@ -325,6 +326,11 @@ class ScenarioDemoBroker(ScenarioExecution):
                                for o in observed["open_orders"]],key=lambda o:str(o["orderId"])))
             observed["account_version"] = hashlib.sha256(json.dumps(economic, sort_keys=True).encode()).hexdigest()
             self._save("account", observed)
+            try:
+                from live.scenario_management_quarantine import account_observation_fingerprint
+                self._last_account_observation_fingerprint = account_observation_fingerprint(observed)
+            except (ValueError, TypeError, KeyError):
+                self._last_account_observation_fingerprint = None
             return observed
 
     def capture_financial_evidence(self, start_ms, end_ms):
@@ -807,10 +813,17 @@ class ScenarioDemoBroker(ScenarioExecution):
                 halted = halted or not recovery_pending
         except Exception:
             halted=True
+        from live.scenario_management_quarantine import unsettled_entry_reconciliation_scope
+        try:
+            entry_quarantine = unsettled_entry_reconciliation_scope(self, active)
+        except Exception:
+            entry_quarantine = ''  # A corrupt authority cannot permit entry mutation.
         expired=self.clock()>=active.get("expires_at",0)
         stop_hit=any(c["kind"]=="native_sl" and c["evidence"] and c["evidence"]["executions"] for c in self.children(active["scenario_id"]))
         if self.execution_enabled:
             for child in self.children(active["scenario_id"]):
+                if entry_quarantine and child['link_id'] == entry_quarantine:
+                    continue
                 if child["status"] != "TERMINAL" and self._conditional_invalidated(child, observed, active):
                     try:
                         self._cancel(child)
@@ -818,6 +831,8 @@ class ScenarioDemoBroker(ScenarioExecution):
                         unknown = True
         if self.execution_enabled and (halted or expired or not protection or stop_hit):
             for child in self.children(active["scenario_id"]):
+                if entry_quarantine and child['link_id'] == entry_quarantine:
+                    continue
                 if child["kind"]=="entry" and child["status"]!="TERMINAL":
                     if expired and not (halted or not protection or stop_hit):
                         from live.scenario_pending_renewal import load, matching_child
@@ -851,8 +866,18 @@ class ScenarioDemoBroker(ScenarioExecution):
                 except Exception:
                     unknown=True
         protection=self._verify_protection(observed,active["hard_stop"],active["side"])
-        from live.scenario_management_quarantine import bound_exit
-        quarantine_exit = bool(exiting and bound_exit(self, json.loads(latest[0])['action_id']))
+        from live.scenario_management_quarantine import active_receipt, bound_exit
+        exit_id = json.loads(latest[0])['action_id'] if exiting else None
+        quarantine_exit = bool(exiting and bound_exit(self, exit_id))
+        if (exiting and self.execution_enabled and not stop_hit and quarantine_exit and observed['legacy_fenced']
+                and not any(c['intent_id'] == exit_id for c in self.children(active['scenario_id']))):
+            try:
+                authority = active_receipt(self, self_exit=exit_id)
+                if authority and authority.get('scope') == 'ENTRY_AGGREGATE_ONLY':
+                    if self._continue_unsubmitted_exit(active):
+                        observed = self.capture_account()
+            except Exception:
+                unknown = True
         if exiting and self.execution_enabled and not stop_hit and (not unknown or quarantine_exit) and not observed["legacy_fenced"]:
             try:
                 if self._continue_unsubmitted_exit(active):
@@ -881,7 +906,7 @@ class ScenarioDemoBroker(ScenarioExecution):
                 unknown=True
         # GTC entries commonly fill after execute() returned. Synchronize the
         # most recent committed plan without invoking the LLM or adding risk.
-        if protection and self.execution_enabled and not observed["exchange_flat"] and not stop_hit:
+        if protection and self.execution_enabled and not observed["exchange_flat"] and not stop_hit and entry_quarantine is None:
             plans=self.conn.execute("SELECT id,payload FROM llm_scenario_intents WHERE scenario_id=? ORDER BY rowid DESC",(active["scenario_id"],)).fetchall()
             for ident,body in plans:
                 plan=json.loads(body)
@@ -926,6 +951,8 @@ class ScenarioDemoBroker(ScenarioExecution):
         monitor(self)
         if self.execution_enabled and incident_halted(self.conn):
             for child in self.children(active['scenario_id']):
+                if entry_quarantine and child['link_id'] == entry_quarantine:
+                    continue
                 if child['kind'] == 'entry' and child['status'] != 'TERMINAL':
                     try:
                         self._cancel(child)

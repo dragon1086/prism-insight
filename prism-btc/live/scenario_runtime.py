@@ -705,7 +705,8 @@ class ScenarioRuntime:
                         reason="entry_contract_failed_exit_unresolved", model_called=False)
         if observation.get("status") != "FAILED":
             return None
-        if ctx["legacy_fenced"] or not ctx["protection_ok"]:
+        if ((ctx["legacy_fenced"] and not quarantine.fenced_entry_management_allowed(self.broker, ctx))
+                or not ctx["protection_ok"]):
             return dict(status="fenced")
         if (incident_epoch.pending(self.conn)
                 and not quarantine.pending_allowed(self.broker, ctx)):
@@ -806,7 +807,8 @@ class ScenarioRuntime:
                     return dict(status='blocked', reason={'RELEASE_REQUIRED': 'quarantine_release_required',
                         'FLAT_UNSETTLED': 'flat_quarantined_unsettled'}.get(ctx['management_quarantine_block'],
                         'management_quarantine_authority_invalid'))
-                if ctx["legacy_fenced"] or not ctx["protection_ok"]:
+                if ((ctx["legacy_fenced"] and not quarantine.fenced_entry_management_allowed(self.broker, ctx))
+                        or not ctx["protection_ok"]):
                     return {"status": "fenced"}
                 if ctx["new_risk_blocked"] and state["active"] is None:
                     return {"status":"blocked","reason":"new_risk_halted",
@@ -1003,7 +1005,8 @@ class ScenarioRuntime:
                         if ctx.get("recovery_observing"):
                             raise ValueError("recovery_recheck_log_unavailable") from None
                 if (state["version"] != version or fresh["account_version"] != ctx["account_version"]
-                        or fresh["legacy_fenced"] or not fresh["protection_ok"]):
+                        or (fresh["legacy_fenced"] and not quarantine.fenced_entry_management_allowed(self.broker, fresh))
+                        or not fresh["protection_ok"]):
                     return {"status": "stale_proposal"}
                 fresh.update(now=self.clock(), input_id=input_id, input_captured_at=captured,
                              max_input_age_seconds=120)

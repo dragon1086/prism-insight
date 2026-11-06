@@ -461,9 +461,12 @@ class ScenarioExecution:
                 parent_order_link_id=parent["link_id"],execution_ids=[e["execId"] for e in verified["evidence"]["executions"]]))
             known.add(oid)
 
-    def _submit(self, payload, intent_id, kind, local_id, request, *, single_attempt=False):
+    def _submit(self, payload, intent_id, kind, local_id, request, *, single_attempt=False,
+                pretransport_guard=None):
         from live.scenario_incident_epoch import sealed, require
         require(not sealed(self.conn, payload['scenario_id']), 'sealed_scenario')
+        if pretransport_guard is not None:
+            require(kind == 'exit' and single_attempt and callable(pretransport_guard), 'invalid_pretransport_guard')
         link = stable_link(intent_id,kind,local_id)
         request = dict(request,category="linear",symbol="BTCUSDT",positionIdx=0,orderLinkId=link)
         previous = next((c for c in self.children() if c["link_id"]==link),None)
@@ -508,10 +511,14 @@ class ScenarioExecution:
                         self.conn.rollback()
                         raise
                     raise
-        if kind != "entry":
+        def guarded_send():
+            pretransport_guard()
+            before_send()
+        if kind != "entry" and pretransport_guard is None:
             before_send()
         try:
-            response = self._write("place_order", _before_send=before_send if kind == "entry" else None, _single_attempt=single_attempt, _restore_rejection=(payload.get('action') == 'REDUCE'
+            callback = before_send if kind == 'entry' else guarded_send if pretransport_guard is not None else None
+            response = self._write("place_order", _before_send=callback, _single_attempt=single_attempt, _restore_rejection=(payload.get('action') == 'REDUCE'
                 and kind == 'partial_sl' and local_id.startswith('reduce:')), **request)
         except RestorationNotAccepted as exc:
             exc.created_this_invocation = True

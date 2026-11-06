@@ -131,10 +131,12 @@ def guard_review(snapshot, original_context, response_contract, envelope, fresh_
             continue
         if (key in original) != (key in fresh) or original.get(key) != fresh.get(key):
             raise ValueError("review_guard_context_changed:" + key)
+    from live.scenario_management_quarantine import entry_aggregate_context
+    limited_entry_management = entry_aggregate_context(fresh, selected_plan['action'])
     if ((actionable and fresh["accounting_status"] != "confirmed")
             or fresh["accounting_status"] not in {"confirmed", "pending"}
             or fresh["protection_ok"] is not True
-            or fresh["legacy_fenced"] is not False
+            or (fresh["legacy_fenced"] is not False and not limited_entry_management)
             or type(fresh["new_risk_blocked"]) is not bool
             or ("recovery_hard_blocked" in fresh and type(fresh["recovery_hard_blocked"]) is not bool)):
         raise ValueError("review_guard_unsafe_lifecycle")
