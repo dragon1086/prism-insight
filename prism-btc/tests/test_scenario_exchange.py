@@ -33,10 +33,13 @@ def test_unsupported_attached_exits_never_create_a_simulated_order(attachment):
     assert not s.orders and not s.writes
 
 
-def test_unsupported_trading_stop_take_profit_is_not_silently_ignored():
+@pytest.mark.parametrize("extra", [{"takeProfit": "110"}, {"takeProfit": "0"},
+                                   {"trailingStop": "10"}, {"trailingStop": "0"},
+                                   {"activePrice": "110"}])
+def test_unsupported_trading_stop_exit_is_not_silently_ignored(extra):
     s = session()
     with pytest.raises(ValueError, match="attached exit not simulated"):
-        s.set_trading_stop(tpslMode="Full", slTriggerBy="MarkPrice", stopLoss="95", takeProfit="110")
+        s.set_trading_stop(tpslMode="Full", slTriggerBy="MarkPrice", stopLoss="95", **extra)
     assert not s.writes and not s._queue
 
 

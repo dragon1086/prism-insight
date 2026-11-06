@@ -30,7 +30,8 @@ def _s(value):
 
 def _unsupported_attached_exit(params):
     return (any(params.get(key) not in (None, "", "0", 0) for key in
-                ("takeProfit", "tpTriggerBy", "tpOrderType", "tpLimitPrice", "slLimitPrice")) or
+                ("takeProfit", "tpTriggerBy", "tpOrderType", "tpLimitPrice", "slLimitPrice",
+                 "trailingStop", "activePrice", "tpSize", "slSize")) or
             params.get("slOrderType") not in (None, "", "Market"))
 
 
@@ -179,7 +180,7 @@ class ScenarioExchange:
     def amend_order(self, **params):
         if any(key in params for key in ("takeProfit", "stopLoss", "tpslMode", "tpTriggerBy",
                                           "slTriggerBy", "tpLimitPrice", "slLimitPrice",
-                                          "tpOrderType", "slOrderType")):
+                                          "tpOrderType", "slOrderType", "trailingStop", "activePrice")):
             raise ValueError("exit amendment not simulated")
         order = self._find(params)
         allowed = {k: params[k] for k in ("price", "qty", "triggerPrice") if k in params}
@@ -192,7 +193,8 @@ class ScenarioExchange:
         return _reply(orderId=order["orderId"])
 
     def set_trading_stop(self, **params):
-        if _unsupported_attached_exit(params):
+        if (any(key in params for key in ("takeProfit", "trailingStop", "activePrice", "tpSize", "slSize"))
+                or _unsupported_attached_exit(params)):
             raise ValueError("attached exit not simulated")
         if params.get("tpslMode") != "Full" or params.get("slTriggerBy") != "MarkPrice":
             raise ValueError("Full MarkPrice stop required")
