@@ -275,3 +275,16 @@ def test_skip_classification():
     assert twr.classify_skip({"skip_reason": "결정론적 게이트: x", "scenario": {}})[0] == "결정론 게이트"
     assert twr.classify_skip({"skip_reason": "AI judgment: no_entry / Insufficient score (3/5)",
                               "scenario": {}}) == ("점수 부족", False)
+
+
+def test_every_two_weeks_runs_only_on_review_days(world, monkeypatch, capsys):
+    # 2026-11-07: cron calls it every Sunday; it reports only every 14 days from a past review.
+    assert twr.due(date(2026, 11, 15), 14, date(2026, 10, 18)) and twr.due(date(2026, 11, 1), 14, date(2026, 10, 18))
+    assert not twr.due(date(2026, 11, 8), 14, date(2026, 10, 18)) and not twr.due(date(2026, 10, 4), 14, date(2026, 10, 18))
+    assert twr.due(date(2026, 11, 8), None, date(2026, 10, 18))
+    end = date.fromisoformat(END)
+    off_anchor = (end - timedelta(days=7)).isoformat()
+    code, out = _run(world, monkeypatch, capsys, "--dry-run", "--every", "14", "--anchor", off_anchor)
+    assert code == 0 and "[PRISM 2주 점검]" not in out
+    code, out = _run(world, monkeypatch, capsys, "--dry-run", "--every", "14", "--anchor", (end - timedelta(days=14)).isoformat())
+    assert code == 0 and "[PRISM 2주 점검]" in out and "운영 감시:" in out
