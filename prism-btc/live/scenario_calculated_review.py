@@ -791,9 +791,12 @@ def calculate_economic_candidate(raw, context, *, candidate_id, original_input_n
     )
     if not model_matches(raw, {"anyOf": _action_allocation_branches(context)["anyOf"]}, context):
         raise ValueError("research_allocation_contract")
+    from live.scenario_management_quarantine import entry_aggregate_context
+    limited_entry_management = entry_aggregate_context(context, raw['action'])
     if (context.get("accounting_status") not in {"confirmed", "pending"}
             or (raw["action"] in {"OPEN", "ADJUST"} and context["accounting_status"] != "confirmed")
-            or context.get("protection_ok") is not True or context.get("legacy_fenced") is not False
+            or context.get("protection_ok") is not True
+            or (context.get("legacy_fenced") is not False and not limited_entry_management)
             or type(context.get("new_risk_blocked")) is not bool):
         raise ValueError("research_unsafe_economic_context")
     mark = _number(context.get("mark_price"), "mark_price", positive=True)
