@@ -206,6 +206,31 @@ def test_daily_close_pullback_reclaim_waits_for_the_close():
         "ZONE_UNDERCUT"
 
 
+def test_pullback_zone_counts_only_sessions_after_the_rise_through_it():
+    # 2026-11-07: AI writes the zone at a level the stock just rose through (HALO 10/29: entry 117.97, zone
+    # 126.03-127.21). Closes below the zone on the way up voided every such October scenario (ZONE_UNDERCUT).
+    pullback = _scenario("pullback_1", "pullback_reclaim", 0.55, zone_low=9800, zone_high=9950,
+                         reclaim_above=10100, confirm="daily_close")
+    plan, issues = _plan(pullback, _scenario(price_above=11000))
+    assert issues == []
+    closes = [9500] * 14 + [9600, 9700, 9900, 10050, 10000, 9960]  # rises through the zone, then dips into it
+    lows = [9450] * 14 + [9550, 9650, 9850, 9900, 9980, 9900]
+    rise = _daily(closes=closes, lows=lows)
+    close = dict(_evidence(closes=(10200, 10210), price=10210, daily=rise), phase="CLOSE", price=10150,
+                 today_daily={"date": SESSION, "open": 9990, "high": 10200, "low": 9970, "close": 10150, "volume": 1200})
+    decision = P.evaluate_plan(plan, _state(), close, now=_now(420))
+    assert decision["action"] == "ADD" and decision["scenario_id"] == "pullback_1"
+    # The rise-through bar's own low is not a pullback: no later low at or below zone_high -> not touched.
+    no_dip = _daily(closes=closes[:17] + [10050, 10100, 10120], lows=lows[:17] + [9900, 10010, 10030])
+    no_dip_close = dict(close, daily=no_dip, today_daily=dict(close["today_daily"], low=10040))
+    assert P.evaluate_plan(plan, _state(), no_dip_close, now=_now(420))["reasons"]["pullback_1"] == "ZONE_NOT_TOUCHED"
+    # A close below zone_low after the rise still voids the scenario.
+    broken = [dict(b) for b in rise]
+    broken[-2]["close"] = 9750
+    assert P.evaluate_plan(plan, _state(), dict(close, daily=broken), now=_now(420))["reasons"]["pullback_1"] == \
+        "ZONE_UNDERCUT"
+
+
 def test_chase_limit_profitable_only_and_risk_clip():
     plan, _ = _plan()
     chased = P.evaluate_plan(plan, _state(), _evidence(closes=(10450, 10620), price=10620), now=_now())

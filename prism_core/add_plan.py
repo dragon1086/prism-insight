@@ -486,12 +486,18 @@ def _conditions(trigger, evidence, *, bars, daily, price, phase, now):
         levels.append(Decimal(str(trigger["price_above"])))
     if "reclaim_above" in trigger:
         window = daily[-ZONE_WINDOW:]
+        # A zone the stock rose through: closes below it on the way up are not an undercut and the breakout
+        # bar's own low is not a pullback, so only sessions after the first close above zone_high count.
+        zone_high = Decimal(str(trigger["zone_high"]))
+        first_above = next((i for i, b in enumerate(window) if Decimal(str(b["close"])) > zone_high), None)
+        if first_above is not None:
+            window = window[first_above + 1:]
         lows = [Decimal(str(b["low"])) for b in window]
         if phase == "CLOSE":
             lows.append(Decimal(str(today["low"])))
         elif bars:
             lows.append(min(Decimal(str(b["low"])) for b in bars))
-        if not lows or min(lows) > Decimal(str(trigger["zone_high"])):
+        if not lows or min(lows) > zone_high:
             return None, "ZONE_NOT_TOUCHED"
         if any(Decimal(str(b["close"])) < Decimal(str(trigger["zone_low"])) for b in window):
             return None, "ZONE_UNDERCUT"
