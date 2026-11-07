@@ -21,14 +21,11 @@ case "$EVENT_RETENTION" in
     0|1) ;;
     *) EVENT_RETENTION=invalid ;;
 esac
-# 1 = this server holds only a DB copy and has no offsite backend (app-server).
+# 1 = this server's DB is an unverified scp copy of a live database (app-server): settings only.
 LOCAL_ONLY=${PRISM_BACKUP_LOCAL_ONLY:-0}
-SNAPSHOT_EXTRA=()
-if [ "$LOCAL_ONLY" != 1 ]; then
-    SNAPSHOT_EXTRA=(--capture-references --retention-cursor "$BACKUP_BASE_DIR/.btc-retention-cursor.json")
-    if [ "$EVENT_RETENTION" = 1 ]; then
-        SNAPSHOT_EXTRA+=(--capture-review-event-proof)
-    fi
+SNAPSHOT_EXTRA=(--capture-references --retention-cursor "$BACKUP_BASE_DIR/.btc-retention-cursor.json")
+if [ "$EVENT_RETENTION" = 1 ]; then
+    SNAPSHOT_EXTRA+=(--capture-review-event-proof)
 fi
 
 # 로그 함수
@@ -39,12 +36,6 @@ log() {
 # 백업 디렉토리 생성
 mkdir -p $BACKUP_DIR
 log "백업 시작: $BACKUP_DIR"
-
-# A snapshot needs free space of DB size + 4GB, so 7 days of DB copies would block it.
-# Prune first: running out of space must not stop this server's retention for good.
-if [ "$LOCAL_ONLY" = 1 ]; then
-    find $BACKUP_BASE_DIR -maxdepth 2 -type f -name 'stock_tracking_db.sqlite.gz*' -mtime +2 -delete
-fi
 
 # 1. 루트 경로 파일들 백업
 log "루트 경로 파일 백업 중..."
@@ -67,11 +58,14 @@ for file in mcp_agent.*.yaml; do
 done
 
 # stock_tracking_db.sqlite
-if [ -f stock_tracking_db.sqlite ]; then
+if [ "$LOCAL_ONLY" = 1 ]; then
+    # The copy can be torn mid-write; the verified backup is made from the original on db-server.
+    log "이 서버 DB는 사본이라 백업하지 않습니다; 검증된 DB 백업은 db-server에서 만듭니다"
+elif [ -f stock_tracking_db.sqlite ]; then
     if python3 "$PROJECT_DIR/utils/sqlite_snapshot.py" \
         --source "$PROJECT_DIR/stock_tracking_db.sqlite" \
-        --destination "$BACKUP_DIR/stock_tracking_db.sqlite.gz" --timeout 1200 \
-        ${SNAPSHOT_EXTRA[@]+"${SNAPSHOT_EXTRA[@]}"}; then
+        --destination "$BACKUP_DIR/stock_tracking_db.sqlite.gz" --timeout 2400 \
+        ${SNAPSHOT_EXTRA[@]+"${SNAPSHOT_EXTRA[@]}"} 2>>"$LOG_FILE"; then
         log "✓ SQLite 온라인 스냅샷·압축·복원 해시 검증 완료"
     else
         log "CRITICAL: SQLite 스냅샷 실패; 기존 백업 보존, 원격 전송과 7일 정리 중단"
@@ -112,9 +106,7 @@ find $BACKUP_DIR -type f -exec chmod 600 {} \;
 BACKUP_SIZE=$(du -sh $BACKUP_DIR | cut -f1)
 log "백업 완료: $BACKUP_SIZE"
 
-if [ "$LOCAL_ONLY" = 1 ]; then
-    log "별도 서버 백업 없는 서버; 로컬 사본만 보관합니다"
-else
+if [ "$LOCAL_ONLY" != 1 ]; then
     # Only the verified database, its manifest and Git history go offsite, never settings.
     if python3 "$PROJECT_DIR/utils/btc_offsite_archive.py" \
         --repo "$PROJECT_DIR" --snapshot "$BACKUP_DIR/stock_tracking_db.sqlite.gz" \

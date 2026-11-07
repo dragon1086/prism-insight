@@ -352,7 +352,7 @@ def test_failed_snapshot_logs_failure_and_preserves_old_backup(tmp_path):
     tools = tmp_path/'bin'
     tools.mkdir()
     fake = tools/'python3'
-    fake.write_text('#!/bin/sh\nexit 42\n')
+    fake.write_text('#!/bin/sh\necho snapshot_integrity_failed >&2\nexit 42\n')
     fake.chmod(0o755)
     script = Path(__file__).resolve().parents[1]/'utils/backup_configs.sh'
     env = {**os.environ, 'HOME':str(home), 'PATH':str(tools)+':'+os.environ['PATH']}
@@ -361,6 +361,7 @@ def test_failed_snapshot_logs_failure_and_preserves_old_backup(tmp_path):
     assert valuable.read_bytes() == b'keep older evidence'
     log = (home/'prism_backups'/'backup.log').read_text()
     assert 'CRITICAL: SQLite 스냅샷 실패' in log
+    assert 'snapshot_integrity_failed' in log
     assert '원격 전송과 7일 정리 중단' in log
     assert not list((home/'prism_backups').glob('*/offsite_ack.json'))
 
@@ -393,62 +394,37 @@ esac
     assert (ack.parent/'.btc-retention-mode').read_text().strip()=='1'
 
 
-def test_local_only_backup_prunes_without_offsite(tmp_path):
+def test_local_only_backup_keeps_settings_without_db_snapshot(tmp_path):
     import subprocess
     import time
     home = tmp_path / 'home'
     project = home / 'prism-insight'
-    project.mkdir(parents=True)
-    (project / 'stock_tracking_db.sqlite').write_bytes(b'fixture')
+    (project / 'trading' / 'config').mkdir(parents=True)
+    (project / 'stock_tracking_db.sqlite').write_bytes(b'torn copy')
+    (project / 'trading' / 'config' / 'kis_devlp.yaml').write_bytes(b'settings')
     base = home / 'prism_backups'
     expired_dir = base / 'expired'
     expired_dir.mkdir(parents=True)
-    old_copy = base / 'old_config'
-    old_copy.mkdir()
-    old_db = old_copy / 'stock_tracking_db.sqlite.gz'
-    old_db.write_bytes(b'old')
-    old_config = old_copy / '.env'
-    old_config.write_bytes(b'keep')
-    recent_copy = base / 'recent'
-    recent_copy.mkdir()
-    recent_db = recent_copy / 'stock_tracking_db.sqlite.gz'
-    recent_db.write_bytes(b'recent')
-    four_days = time.time() - 4 * 86400
-    os.utime(old_db, (four_days, four_days))
-    os.utime(old_copy, (four_days, four_days))
     tools = tmp_path / 'bin'
     tools.mkdir()
     fake = tools / 'python3'
-    fake.write_text('''#!/bin/sh
-case "$1" in
-  */sqlite_snapshot.py)
-    printf '%s\\n' "$@" > "$SNAPSHOT_LOG"
-    while [ "$#" -gt 0 ]; do
-      if [ "$1" = "--destination" ]; then shift; target="$1"; fi
-      shift
-    done
-    printf fixture > "$target"
-    ;;
-  *) printf called > "$OFFSITE_LOG"; exit 1 ;;
-esac
-''')
+    fake.write_text('#!/bin/sh\nprintf called > "$PYTHON_LOG"; exit 1\n')
     fake.chmod(0o755)
     env = {**os.environ, 'HOME': str(home), 'PATH': str(tools) + ':' + os.environ['PATH'],
-           'SNAPSHOT_LOG': str(tmp_path / 'snapshot_args'), 'OFFSITE_LOG': str(tmp_path / 'offsite'),
-           'PRISM_BACKUP_LOCAL_ONLY': '1'}
+           'PYTHON_LOG': str(tmp_path / 'python_called'), 'PRISM_BACKUP_LOCAL_ONLY': '1'}
     script = Path(__file__).resolve().parents[1] / 'utils/backup_configs.sh'
     ten_days = time.time() - 10 * 86400
     os.utime(expired_dir, (ten_days, ten_days))
     run = subprocess.run(['bash', str(script)], env=env, capture_output=True, text=True, timeout=30)
     assert run.returncode == 0, run.stderr
-    assert not (tmp_path / 'offsite').exists()
-    assert not expired_dir.exists() and not old_db.exists()
-    assert old_config.read_bytes() == b'keep' and recent_db.read_bytes() == b'recent'
-    args = (tmp_path / 'snapshot_args').read_text().splitlines()
-    assert '--capture-references' not in args and '--retention-cursor' not in args
+    assert not (tmp_path / 'python_called').exists()
+    assert not expired_dir.exists()
+    settings, = base.glob('*/trading/config/kis_devlp.yaml')
+    assert settings.read_bytes() == b'settings'
+    assert not list(base.glob('*/stock_tracking_db.sqlite.gz*'))
     assert not list(base.glob('*/.btc-retention-mode'))
     log = (base / 'backup.log').read_text()
-    assert 'CRITICAL' not in log and '로컬 사본만 보관' in log
+    assert 'CRITICAL' not in log and '사본이라 백업하지 않습니다' in log
 
 
 def test_backup_script_is_tracked_as_executable():

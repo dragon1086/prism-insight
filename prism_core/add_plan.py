@@ -33,6 +33,9 @@ CONFIRMS = ("5m_close", "daily_close")
 GRID = Decimal("0.05")
 MAX_STEP = Decimal("0.25")
 MAX_CHASE_PCT = Decimal("2.0")
+# 2026-11-08 (user): AI-written limits of 0.3-1% blocked strong add days; 1.5% was positive in the
+# 2026 spring replay with no drawdown change (RESEARCH_LESSONS 11-08). Lower values are raised to it.
+MIN_CHASE_PCT = Decimal("1.5")
 MIN_SCENARIOS, MAX_SCENARIOS = 2, 4
 HISTORY_LIMIT = 30
 SESSION_PLANS = 3  # stored plans per holding (today, next session, one spare)
@@ -271,7 +274,8 @@ def _validate_scenario(raw, allocation, last_step):
     rationale = raw.get("rationale")
     scenario = {"id": sid, "type": kind, "lens": list(dict.fromkeys(lens)), "trigger": out,
                 "target_allocation": str(target.quantize(Decimal("0.01"))),
-                "max_chase_pct": float(min(chase, MAX_CHASE_PCT)),
+                "max_chase_pct": float(min(max(chase, MIN_CHASE_PCT), MAX_CHASE_PCT)),
+                "max_chase_pct_written": float(chase),  # the AI's own value, kept for later review
                 "rationale": rationale.strip()[:300] if isinstance(rationale, str) else ""}
     return scenario, ({"id": sid, "reason": "CHASE_CLAMPED"} if chase > MAX_CHASE_PCT else None)
 
