@@ -98,19 +98,42 @@ def conviction_tilt(base, *, market, buy_score, trigger_type):
             "buy_score": float(score), "trigger_type": str(trigger_type).strip()}
 
 
-def entry_record(*, plan, unit_amount, market, entered_at, tilt=None):
+# Re-entry first size (2026-11-08, user decision after H-1106-reentry-shrink): a LIVE re-entry starts
+# at REENTRY_V3_FIRST_SIZE_FACTOR x the B3 initial; adds still come from the add_plan rails.
+REENTRY_SIZE_REASON = "REENTRY_FIRST_SIZE"
+
+
+def reentry_first_size(base, scenario):
+    """{"base", "sized", "factor", "reason"} for a re-entry scenario when the factor is below 1, else None."""
+    meta = (scenario or {}).get("reentry") if isinstance(scenario, dict) else None
+    if not isinstance(meta, dict) or not meta.get("version"):
+        return None
+    try:
+        factor = Decimal(os.getenv("REENTRY_V3_FIRST_SIZE_FACTOR", "1").strip())
+    except ArithmeticError:
+        return None
+    if not factor.is_finite() or not 0 < factor < 1:
+        return None
+    base = _dec(base)
+    sized = (base * factor).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+    return {"base": str(base), "sized": str(_dec(sized)), "factor": str(factor), "reason": REENTRY_SIZE_REASON}
+
+
+def entry_record(*, plan, unit_amount, market, entered_at, tilt=None, reentry_size=None):
     """The micro_split block stored on the new holding's scenario.
 
     With a conviction ``tilt`` the first leg and the allocation are the tilted value and the
     tilt is recorded next to the B3 plan hash (which still describes the base initial).
     """
-    initial = tilt["tilted"] if tilt else plan["initial_nominal"]
+    initial = tilt["tilted"] if tilt else (reentry_size["sized"] if reentry_size else plan["initial_nominal"])
     block = {"contract": CONTRACT, "policy_version": plan["policy_version"], "plan_hash": plan["plan_hash"],
              "market": str(market).upper(), "unit_amount": str(_dec(unit_amount)), "allocation": str(_dec(initial)),
              "legs": [{"kind": "INITIAL", "allocation": str(_dec(initial)),
                        "price": str(_dec(plan["entry_reference"])), "at": entered_at}]}
     if tilt:
         block["conviction_tilt"] = dict(tilt)
+    if reentry_size:
+        block["reentry_size"] = dict(reentry_size)
     # Why the first size is what it is (observation only; the plan hash above freezes the same values).
     setup = plan.get("setup") or {}
     block["sizing"] = {k: (str(v) if v is not None else None) for k, v in (
@@ -193,11 +216,12 @@ def prepare_entry(agent, *, market, ticker, current_price, scenario, decision_re
                           stop_loss=scenario.get("stop_loss"), decision_ref=decision_ref)
         tilt = conviction_tilt(plan["initial_nominal"], market=market, buy_score=scenario.get("buy_score"),
                                trigger_type=trigger_type)
-        initial = tilt["tilted"] if tilt else plan["initial_nominal"]
+        size = None if tilt else reentry_first_size(plan["initial_nominal"], scenario)
+        initial = tilt["tilted"] if tilt else (size["sized"] if size else plan["initial_nominal"])
         cash = scaled_cash(unit, initial, market)
         updated = dict(scenario)
         updated[SCENARIO_KEY] = entry_record(plan=plan, unit_amount=unit, market=market,
-                                             entered_at=plan["created_at"], tilt=tilt)
+                                             entered_at=plan["created_at"], tilt=tilt, reentry_size=size)
         attach_buy_add_plan(updated, market=market, ticker=ticker, raw=updated.pop("add_plan", None), logger=logger)
         if logger:
             logger.warning("[MICRO_SPLIT][%s] %s initial=%s b3_initial=%s tilt=%s cash=%s", market, ticker, initial,
@@ -273,6 +297,8 @@ def entry_message_block(scenario, market):
     tilt = block.get("conviction_tilt") or {}
     base = round(float(tilt["base"]) * 100) if tilt.get("base") else None
     tilted = f" (상위 셋업 가중, 기본 {base}%에서 상향)" if base is not None else ""
+    if block.get("reentry_size"):
+        tilted = f" (재진입 첫 비중 축소, 기본 {round(float(block['reentry_size']['base']) * 100)}%에서 하향)"
     plan = block.get("add_plan") or {}
     labels = [add_plan.scenario_label(s, market, "ko") for s in plan.get("scenarios") or []]
     if not plan_adds_enabled(market):
