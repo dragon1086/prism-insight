@@ -35,6 +35,7 @@ def test_suppression_is_scoped_and_restored_on_error(tmp_path):
 
 def test_build_event_has_correlation_and_provenance(monkeypatch):
     monkeypatch.delenv("SCENARIO_SHADOW_CAPTURE_ENABLED", raising=False)
+    monkeypatch.delenv("RUNNER_HOLD_ENABLED", raising=False)  # 2026-11-08 config key; root conftest sets it
     monkeypatch.setenv("PRISM_ENV", "test")
     monkeypatch.setenv("TRIGGER_PERFORMANCE_FEEDBACK", "shadow")
     event = build_event(

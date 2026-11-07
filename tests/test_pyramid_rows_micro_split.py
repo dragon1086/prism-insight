@@ -422,3 +422,15 @@ def test_batch_paths_size_check_and_record_pyramid_rows(path):
     assert len(prepare) == 1 and any(k.arg == "pyramid_row" for k in prepare[0].keywords)
     assert calls.get("pyramid_row_check") and calls.get("emit_row_opened")
     assert "sizing" in {k.value.value for c in calls["emit_gate"] for k in c.keywords if k.arg == "stage"}
+
+
+def test_every_ledger_event_records_the_sizing_switches(monkeypatch):
+    from observability.events import build_event
+    for key, value in (("PYRAMID_ROWS_MICRO_SPLIT_ENABLED", "true"), ("PYRAMID_RESERVE_SLOTS", "2"),
+                       ("PYRAMID_RESERVE_BELOW_TICKERS", "8"), ("MICRO_SPLIT_LIVE_ENABLED", "true"),
+                       ("MICRO_SPLIT_LIVE_ADDS_ENABLED", "true"), ("REENTRY_V3_FIRST_SIZE_FACTOR", "0.5"),
+                       ("RUNNER_HOLD_ENABLED", "true")):
+        monkeypatch.setenv(key, value)
+    config = build_event("test", service="test")["config"]
+    assert config["PYRAMID_RESERVE_BELOW_TICKERS"] == "8" and config["REENTRY_V3_FIRST_SIZE_FACTOR"] == "0.5"
+    assert {"PYRAMID_ROWS_MICRO_SPLIT_ENABLED", "MICRO_SPLIT_LIVE_ADDS_ENABLED", "RUNNER_HOLD_ENABLED"} <= set(config)
