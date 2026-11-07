@@ -3868,6 +3868,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     # Computed from plan/remaining_rows (always in scope here);
                     # sell_quantity is not defined on the current_price<=0 path.
                     sell_denominator = remaining_rows if plan == "fractional" else 1
+                    row_fraction = None  # micro-split pyramid row: exact share of the position sold
 
                     # Delete from holding_decisions when selling
                     await self._delete_holding_decision(ticker)
@@ -3942,8 +3943,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                         # Equal split for legacy rows; a micro-split pyramid row sells its own
                                         # ledger shares, never another row's (prism_core.loop_row_split).
                                         from prism_core.loop_row_split import batch_row_sell_quantity
-                                        sell_quantity, row_reason, row_denominator = batch_row_sell_quantity(
-                                            self.cursor, "US", stock, available, remaining_rows)
+                                        sell_quantity, row_reason, row_denominator, row_fraction = (
+                                            batch_row_sell_quantity(self.cursor, "US", stock, available, remaining_rows))
                                         pass_sold_qty[ticker] += sell_quantity
                                         if plan == "fractional":
                                             sell_denominator = row_denominator
@@ -4020,7 +4021,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 sell_reason=sell_reason,
                                 trade_result=trade_result,
                                 market="US",
-                                sell_denominator=sell_denominator
+                                sell_denominator=sell_denominator,
+                                sell_fraction=row_fraction,
                             )
                         except Exception as signal_err:
                             logger.warning(f"Sell signal publish failed (non-critical): {signal_err}")
@@ -4039,7 +4041,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 sell_reason=sell_reason,
                                 trade_result=trade_result,
                                 market="US",
-                                sell_denominator=sell_denominator
+                                sell_denominator=sell_denominator,
+                                sell_fraction=row_fraction,
                             )
                         except Exception as signal_err:
                             logger.warning(f"GCP sell signal publish failed (non-critical): {signal_err}")
@@ -4880,6 +4883,21 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             # Micro-split LIVE: B3 first allocation sizes the real order (legacy full slot if OFF/unavailable).
             # A pyramid row (flag on) is its own micro-split position, sized like a first entry without tilt.
             # Conviction tilt only for regular batch entries; re-entry v3 (require_micro_plan) passes none.
+            if pyramid_row:
+                def _pyramid_gate(ok, reason, allocation=None):
+                    pyramid_ledger.emit_gate(
+                        self, market="US", ticker=ticker, stage="sizing", allowed=ok, reason=reason,
+                        existing=get_us_existing_position_for_ticker(self.cursor, ticker,
+                                                                     account_key=self._account_scope()[0]),
+                        current_price=current_price, regime=scenario.get("_deterministic_market_regime"),
+                        planned_allocation=allocation, decision_id=source_decision_id)
+                # Free-row reserve before sizing, so a blocked row never records an add plan.
+                _row_ok, _row_reason = micro_split_live.pyramid_slot_check(
+                    self, market="US", ticker=ticker, logger=logger)
+                if not _row_ok:
+                    _pyramid_gate(False, _row_reason)
+                    state["skip_reason"] = state["skip_reason"] or "pyramid_row_blocked"
+                    return 0
             micro_plan, micro_cash, scenario = micro_split_live.prepare_entry(
                 self, market="US", ticker=ticker, current_price=current_price, scenario=scenario,
                 decision_ref=scenario.get("_decision_id") or source_decision_id,
@@ -4887,17 +4905,11 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 trigger_type=None if (require_micro_plan or pyramid_row) else trigger_type,
                 pyramid_row=pyramid_ledger.lineage(self, "US", ticker) if pyramid_row else None)
             if pyramid_row:
-                _row_ok, _row_reason = micro_split_live.pyramid_row_check(
-                    self, market="US", ticker=ticker, plan=micro_plan, logger=logger)
-                pyramid_ledger.emit_gate(
-                    self, market="US", ticker=ticker, stage="sizing", allowed=_row_ok, reason=_row_reason,
-                    existing=get_us_existing_position_for_ticker(self.cursor, ticker,
-                                                                 account_key=self._account_scope()[0]),
-                    current_price=current_price, regime=scenario.get("_deterministic_market_regime"),
-                    planned_allocation=micro_split_live.allocation(scenario), decision_id=source_decision_id)
-                if not _row_ok:
+                if micro_plan is None:  # never a full-slot pyramid row
+                    _pyramid_gate(False, "PYRAMID_ROW_NO_MICRO_PLAN")
                     state["skip_reason"] = state["skip_reason"] or "pyramid_row_blocked"
                     return 0
+                _pyramid_gate(True, _row_reason, micro_split_live.allocation(scenario))
             if micro_plan is not None:
                 entry_cash_amount = micro_cash
             elif micro_split_live.gate_score_override(scenario) is not None:
@@ -5035,6 +5047,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 quote_validator=self._buy_quote_validator(scenario, score_override=adjusted_score, is_add=is_add, ticker=ticker, account_key=order_intent.account_id),
                                 **({"strict_budget": True} if ((scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" or scenario.get("micro_split")) else {}),
                             )
+                            if scenario.get("micro_split"):  # the broker re-quote sized this order
+                                micro_split_live.record_order_price(self, market="US", row_id=buy_result.legacy_holding_id,
+                                                                    price=broker_price, logger=logger)
 
                     persisted_intent_id = trade_result.get("intent_id")
                     if persisted_intent_id:

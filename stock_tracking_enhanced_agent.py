@@ -951,6 +951,20 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             # Micro-split LIVE: B3 first allocation sizes the real order (legacy full slot if OFF/unavailable).
             # A pyramid row (flag on) is its own micro-split position, sized like a first entry without tilt.
             # Conviction tilt only for regular batch entries; re-entry v3 (require_micro_plan) passes none.
+            if pyramid_row:
+                def _pyramid_gate(ok, reason, allocation=None):
+                    pyramid_ledger.emit_gate(
+                        self, market="KR", ticker=ticker, stage="sizing", allowed=ok, reason=reason,
+                        existing={"avg_buy_price": analysis_result.get("existing_avg_buy_price"),
+                                  "row_count": analysis_result.get("existing_row_count")},
+                        current_price=current_price, regime=scenario.get("_deterministic_market_regime"),
+                        planned_allocation=allocation, decision_id=source_decision_id)
+                # Free-row reserve before sizing, so a blocked row never records an add plan.
+                _row_ok, _row_reason = micro_split_live.pyramid_slot_check(
+                    self, market="KR", ticker=ticker, logger=logger)
+                if not _row_ok:
+                    _pyramid_gate(False, _row_reason)
+                    return 0
             micro_plan, micro_cash, scenario = micro_split_live.prepare_entry(
                 self, market="KR", ticker=ticker, current_price=current_price, scenario=scenario,
                 decision_ref=scenario.get("_decision_id") or source_decision_id,
@@ -959,16 +973,10 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     (getattr(self, "trigger_info_map", None) or {}).get(ticker) or {}).get("trigger_type"),
                 pyramid_row=pyramid_ledger.lineage(self, "KR", ticker) if pyramid_row else None)
             if pyramid_row:
-                _row_ok, _row_reason = micro_split_live.pyramid_row_check(
-                    self, market="KR", ticker=ticker, plan=micro_plan, logger=logger)
-                pyramid_ledger.emit_gate(
-                    self, market="KR", ticker=ticker, stage="sizing", allowed=_row_ok, reason=_row_reason,
-                    existing={"avg_buy_price": analysis_result.get("existing_avg_buy_price"),
-                              "row_count": analysis_result.get("existing_row_count")},
-                    current_price=current_price, regime=scenario.get("_deterministic_market_regime"),
-                    planned_allocation=micro_split_live.allocation(scenario), decision_id=source_decision_id)
-                if not _row_ok:
+                if micro_plan is None:  # never a full-slot pyramid row
+                    _pyramid_gate(False, "PYRAMID_ROW_NO_MICRO_PLAN")
                     return 0
+                _pyramid_gate(True, _row_reason, micro_split_live.allocation(scenario))
             if micro_plan is not None:
                 entry_cash_amount = micro_cash
                 analysis_result["scenario"] = scenario
@@ -1194,6 +1202,9 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                             quote_validator=self._buy_quote_validator(scenario, is_add=is_add, ticker=ticker, account_key=order_intent.account_id),
                             **({"strict_budget": True} if ((scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" or scenario.get("micro_split")) else {}),
                         )
+                        if scenario.get("micro_split"):  # strict budget sizes at int(limit_price)
+                            micro_split_live.record_order_price(self, market="KR", row_id=buy_result.legacy_holding_id,
+                                                                price=int(current_price), logger=logger)
             except OrderOutcomeUnknown as error:
                 self._link_position_entry_intent(
                     legacy_holding_id=buy_result.legacy_holding_id,

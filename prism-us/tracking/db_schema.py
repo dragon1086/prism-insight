@@ -1081,6 +1081,9 @@ def get_us_existing_position_for_ticker(cursor, ticker: str, account_key: Option
         ownership = {_stored_pyramid_ownership(row[1] if len(row) > 1 else None) for row in rows}
         summary = ("MICRO_SPLIT" if "MICRO_SPLIT" in ownership else "SPLIT_PILOT" if "SPLIT_PILOT" in ownership
                    else ("UNKNOWN" if "UNKNOWN" in ownership else "LEGACY_OR_UNOWNED"))
+        if _pyramid_rows_enabled():  # pyramid rows on: a pilot or unknown row still blocks the ticker
+            summary = next(o for o in ("SPLIT_PILOT", "UNKNOWN", "MICRO_SPLIT", "LEGACY_OR_UNOWNED")
+                           if o in ownership or o == "LEGACY_OR_UNOWNED")
         prices = [float(r[0]) for r in rows if r[0] is not None]
         row_count = len(prices)
         avg_buy_price = (sum(prices) / row_count) if row_count else 0.0

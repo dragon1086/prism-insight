@@ -718,6 +718,7 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
             release_lock(conn, ticker, market, run_id, new_state="HOLDING")
             return
         sell_denominator = split["remaining"] if split is not None else 1
+        sell_fraction = None
 
         if market == "US" and stock_data.get("_oneil_owned_exit") is True:
             # The owned execution journal cancels pending BUYs and exits only
@@ -746,6 +747,7 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
                     from prism_core.loop_row_split import split_sell_quantity
                     sold_qty = split_sell_quantity(split, sold_qty, row_id=stock_data.get("id"))
                     sell_denominator = split.pop("last_denominator", sell_denominator)
+                    sell_fraction = split.pop("last_fraction", None)
                     logger.info("[%s] %s pyramided row sell: %d shares (snapshot %s, remaining rows=%d, reason=%s)",
                                 market, ticker, sold_qty, split["snapshot"], split["remaining"],
                                 split.pop("last_reason", "LEGACY_EQUAL_SPLIT"))
@@ -824,6 +826,7 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
                 sell_reason=reason,
                 trade_result={"success": bool(ok or sold_qty == 0), "order_no": order_no},
                 sell_denominator=sell_denominator,
+                sell_fraction=sell_fraction,
             )
         except Exception as e:
             logger.warning("[%s] %s sell signal publish failed (non-critical): %s", market, ticker, e)

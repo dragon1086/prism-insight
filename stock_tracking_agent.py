@@ -4073,7 +4073,7 @@ class StockTrackingAgent:
                             # distribute from (snapshot - already_ordered), so fills
                             # that haven't settled yet cannot cause an over-sell.
                             sell_quantity = None
-                            row_denominator = None
+                            row_denominator = row_fraction = None
                             # Multi-row tickers sell fractionally. The FINAL row of a
                             # ticker already split THIS pass (remaining_rows==1 but
                             # ticker in pass_total_qty) must also sell from the snapshot
@@ -4091,7 +4091,7 @@ class StockTrackingAgent:
                                 # Equal split for legacy rows; a micro-split pyramid row sells its own
                                 # ledger shares, never another row's (prism_core.loop_row_split).
                                 from prism_core.loop_row_split import batch_row_sell_quantity
-                                sell_quantity, row_reason, row_denominator = batch_row_sell_quantity(
+                                sell_quantity, row_reason, row_denominator, row_fraction = batch_row_sell_quantity(
                                     self.cursor, "KR", stock, available, remaining_rows)
                                 pass_sold_qty[ticker] += sell_quantity
                                 logger.info(
@@ -4149,7 +4149,9 @@ class StockTrackingAgent:
                         # exit instead of full-liquidating. sell_quantity is only
                         # set for fractional multi-row sells; a genuine full sell
                         # leaves it None → denominator 1 (unchanged behavior).
-                        sell_denominator = (row_denominator or remaining_rows) if sell_quantity is not None else 1
+                        # A micro-split pyramid row sends its own denominator (0 = nothing sold: not published).
+                        sell_denominator = ((remaining_rows if row_denominator is None else row_denominator)
+                                            if sell_quantity is not None else 1)
 
                         # [Optional] Publish sell signal via Redis Streams
                         # Auto-skipped if Redis not configured (requires UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN)
@@ -4163,7 +4165,8 @@ class StockTrackingAgent:
                                 profit_rate=((current_price - stock.get('buy_price', 0)) / stock.get('buy_price', 0) * 100),
                                 sell_reason=sell_reason,
                                 trade_result=trade_result,
-                                sell_denominator=sell_denominator
+                                sell_denominator=sell_denominator,
+                                sell_fraction=row_fraction,
                             )
                         except Exception as signal_err:
                             logger.warning(f"Sell signal publish failed (non-critical): {signal_err}")
@@ -4180,7 +4183,8 @@ class StockTrackingAgent:
                                 profit_rate=((current_price - stock.get('buy_price', 0)) / stock.get('buy_price', 0) * 100),
                                 sell_reason=sell_reason,
                                 trade_result=trade_result,
-                                sell_denominator=sell_denominator
+                                sell_denominator=sell_denominator,
+                                sell_fraction=row_fraction,
                             )
                         except Exception as signal_err:
                             logger.warning(f"GCP sell signal publish failed (non-critical): {signal_err}")

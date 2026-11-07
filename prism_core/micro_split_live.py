@@ -76,21 +76,27 @@ def pyramid_reserve_check(row_tickers, max_slots):
     return True, f"PYRAMID_RESERVE_SLOTS_OK:free_after={free_after}>={required} (tickers={names})"
 
 
-def pyramid_row_check(agent, *, market, ticker, plan, logger=None):
-    """Flag-on pyramid row admission after sizing: (ok, reason). The row must be micro-split
-    (a B3 plan was built) and pass the reserve rule for the active account."""
-    if plan is None:
-        ok, reason = False, "PYRAMID_ROW_NO_MICRO_PLAN"
-    else:
-        try:
-            rows = _own_cursor(agent).execute(_ACCOUNT_TICKERS_SQL[str(market).upper()],
-                                        (agent._account_scope()[0],)).fetchall()
-            ok, reason = pyramid_reserve_check([row[0] for row in rows], agent.max_slots)
-        except Exception:  # noqa: BLE001 - unknown usage fails closed
-            ok, reason = False, "PYRAMID_RESERVE_SLOTS:UNKNOWN"
+def pyramid_slot_check(agent, *, market, ticker, logger=None):
+    """Reserve rule for the active account, run BEFORE sizing (no add plan for a blocked row): (ok, reason)."""
+    try:
+        rows = _own_cursor(agent).execute(_ACCOUNT_TICKERS_SQL[str(market).upper()],
+                                          (agent._account_scope()[0],)).fetchall()
+        ok, reason = pyramid_reserve_check([row[0] for row in rows], agent.max_slots)
+    except Exception:  # noqa: BLE001 - unknown usage fails closed
+        ok, reason = False, "PYRAMID_RESERVE_SLOTS:UNKNOWN"
     if logger:
-        logger.warning("[PYRAMID_ROW][%s] %s %s: %s", market, ticker, "allowed" if ok else "blocked", reason)
+        logger.warning("[PYRAMID_ROW][%s] %s %s: %s", market, ticker, "slot ok" if ok else "blocked", reason)
     return ok, reason
+
+
+def pyramid_row_check(agent, *, market, ticker, plan, logger=None):
+    """Flag-on pyramid row admission: (ok, reason). The row must be micro-split (a B3 plan was
+    built) and pass the reserve rule for the active account."""
+    if plan is None:
+        if logger:
+            logger.warning("[PYRAMID_ROW][%s] %s blocked: PYRAMID_ROW_NO_MICRO_PLAN", market, ticker)
+        return False, "PYRAMID_ROW_NO_MICRO_PLAN"
+    return pyramid_slot_check(agent, market=market, ticker=ticker, logger=logger)
 
 
 def rows_cost_weighted_entry(rows):
@@ -549,6 +555,39 @@ _SCENARIO_SQL = {
     "KR": "SELECT scenario FROM stock_holdings WHERE id=?",
     "US": "SELECT scenario FROM us_stock_holdings WHERE id=?",
 }
+
+
+def record_order_price(agent, *, market, row_id, price, logger=None):
+    """Store the price that sized the first leg's broker order (``legs[0].order_price``).
+
+    The US path re-quotes at the broker after the strategy row is written, so the order can be
+    sized at another price than the leg; per-row exit quantities (prism_core.loop_row_split) use
+    it. Legacy rows and an unreadable row are left alone. Never raises (observation of the order).
+    """
+    conn = None
+    try:
+        market, price, conn = str(market).upper(), _dec(price), agent.conn
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")  # same guard as a worker add: no lost leg
+        row = conn.execute(_SCENARIO_SQL[market], (int(row_id),)).fetchone()
+        scenario = json.loads(row[0]) if row and row[0] else None
+        block = record(scenario)
+        if block is None or block["legs"][0].get("order_price") == str(price):
+            conn.rollback()
+            return False
+        block["legs"][0]["order_price"] = str(price)
+        conn.execute(_UPDATE_SQL[market], (json.dumps(scenario, ensure_ascii=False), int(row_id)))
+        conn.commit()
+        return True
+    except Exception as error:  # noqa: BLE001 - the leg price stays the sizing basis
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+        if logger:
+            logger.warning("[MICRO_SPLIT][%s] order price not recorded for row %s: %s", market, row_id, error)
+        return False
 
 
 def add_order_status(result, market):

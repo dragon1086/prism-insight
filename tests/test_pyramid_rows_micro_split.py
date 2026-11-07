@@ -299,8 +299,47 @@ def test_row_exit_sells_its_own_ledger_shares():
     assert L.row_sell_quantity(90, 2, first, [pyramid])[:2] == (35, "PYRAMID_ROW_LEDGER_QTY")
     # A rejected add order: the broker holds fewer shares; never take the other row's 35.
     assert L.row_sell_quantity(70, 2, pyramid, [first])[:2] == (35, "PYRAMID_ROW_LEDGER_QTY")
-    assert L.row_sell_quantity(20, 1, first, []) == (20, "LAST_ROW_REMAINDER", 1)   # last row sweeps
-    assert L.row_sell_quantity(90, 2, pyramid, [first])[2] == 2       # subscriber denominator ~ 90/55
+    assert L.row_sell_quantity(20, 1, first, []) == (20, "LAST_ROW_REMAINDER", 1, 1.0)   # last row sweeps
+    # Recorded order price (US broker re-quote) sizes the leg instead of the leg price.
+    requoted = _row(initial="0.35")
+    requoted["micro_split"]["legs"][0]["order_price"] = "10500"
+    assert L.row_ledger_quantity(requoted) == 33                      # 350,000 / 10,500
+
+
+@pytest.mark.parametrize("own,other", [(772, 291), (291, 772), (500, 500), (1, 999), (999, 1)])
+def test_subscriber_denominator_never_sells_another_rows_share(own, other):
+    # Review 2026-11-08: round(1063/772) = 1 made a mirror sell row B too. ceil and >= 2 while rows remain.
+    def row(qty):
+        return _row(initial="0.5", price=10, unit=20 * qty)  # exactly qty shares
+    available = own + other
+    quantity, reason, denominator, fraction = L.row_sell_quantity(available, 2, row(own), [row(other)])
+    assert quantity == own and denominator >= 2
+    assert available // denominator <= own                           # a same-sized mirror never over-sells
+    assert fraction == round(own / available, 4)
+
+
+def test_zero_share_row_sell_is_never_published(monkeypatch):
+    from messaging import gcp_pubsub_signal_publisher as gcp
+    from messaging import redis_signal_publisher as redis_pub
+    assert L.row_sell_quantity(100, 3, {"sector": "IT"}, [_row(), {"sector": "IT"}])[2:] == (0, 0.0)
+    for module in (redis_pub, gcp):
+        sent = []
+
+        class Publisher:
+            async def publish_signal(self, **kwargs):
+                sent.append(kwargs)
+                return "id"
+
+        async def fake_publisher():
+            return Publisher()
+        monkeypatch.setattr(module, "get_signal_publisher", fake_publisher)
+        args = dict(ticker="ABC", company_name="Abc", price=10, buy_price=9, profit_rate=1.0, sell_reason="stop")
+        assert asyncio.run(module.publish_sell_signal(**args, sell_denominator=0, sell_fraction=0.0)) is None
+        assert sent == []
+        asyncio.run(module.publish_sell_signal(**args, sell_denominator=2, sell_fraction=0.7262))
+        assert sent[-1]["extra_data"]["sell_fraction"] == 0.7262 and sent[-1]["extra_data"]["sell_denominator"] == 2
+        asyncio.run(module.publish_sell_signal(**args))                 # legacy payload unchanged
+        assert "sell_fraction" not in sent[-1]["extra_data"]
 
 
 def test_unknown_row_quantity_fails_safe():
@@ -310,7 +349,7 @@ def test_unknown_row_quantity_fails_safe():
     assert L.row_sell_quantity(100, 3, legacy, [micro, {"sector": "IT"}])[:2] == (0, "PYRAMID_ROW_QTY_UNKNOWN")
     assert L.row_sell_quantity(100, 2, broken, [legacy])[:2] == (0, "PYRAMID_ROW_QTY_UNKNOWN")
     # Legacy-only rows keep floor(qty / N) (#288).
-    assert L.row_sell_quantity(33, 3, legacy, [legacy, legacy]) == (11, "LEGACY_EQUAL_SPLIT", 3)
+    assert L.row_sell_quantity(33, 3, legacy, [legacy, legacy]) == (11, "LEGACY_EQUAL_SPLIT", 3, None)
 
 
 def test_loop_split_and_batch_read_scope_rows_by_id(flag_on):
@@ -333,12 +372,57 @@ def test_loop_split_and_batch_read_scope_rows_by_id(flag_on):
         0, "PYRAMID_ROW_QTY_UNKNOWN")
 
 
-def test_flag_off_batch_split_needs_no_read(flag_off):
-    class Deny:
+def test_batch_split_follows_the_rows_not_the_flag_and_never_raises(flag_off):
+    first, pyramid = _row(), _row(initial="0.4", price=10800)
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE stock_holdings (id INTEGER PRIMARY KEY, ticker TEXT, account_key TEXT, scenario TEXT)")
+    db.execute("INSERT INTO stock_holdings VALUES (3,'ABC','acc',?)", (json.dumps(first),))
+    legacy_row = json.dumps({"sector": "IT"})
+    db.execute("INSERT INTO stock_holdings VALUES (5,'XYZ','acc',?)", (legacy_row,))
+    db.execute("INSERT INTO stock_holdings VALUES (6,'XYZ','acc',?)", (legacy_row,))
+    # Flag off, but a micro-split row is held: the ledger path (same as hardstop / trend-exit).
+    stock = {"id": 7, "ticker": "ABC", "account_key": "acc", "scenario": json.dumps(pyramid)}
+    assert L.batch_row_sell_quantity(db.cursor(), "KR", stock, 72, 2)[:2] == (37, "PYRAMID_ROW_LEDGER_QTY")
+    legacy = {"id": 4, "ticker": "XYZ", "account_key": "acc", "scenario": legacy_row}
+    assert L.batch_row_sell_quantity(db.cursor(), "KR", legacy, 33, 3) == (11, "LEGACY_EQUAL_SPLIT", 3, None)
+
+    class Broken:
         def execute(self, *a):
-            pytest.fail("legacy split must not read rows")
-    stock = {"id": 1, "ticker": "ABC", "account_key": "acc", "scenario": json.dumps({"sector": "IT"})}
-    assert L.batch_row_sell_quantity(Deny(), "KR", stock, 33, 3) == (11, "LEGACY_EQUAL_SPLIT", 3)
+            raise sqlite3.OperationalError("database is locked")
+    assert L.batch_row_sell_quantity(Broken(), "KR", stock, 72, 2) == (0, "PYRAMID_ROW_QTY_UNKNOWN", 0, 0.0)
+    assert L.batch_row_sell_quantity(Broken(), "KR", legacy, 33, 3) == (11, "LEGACY_EQUAL_SPLIT", 3, None)
+
+
+def test_record_order_price_updates_only_the_first_leg(flag_on):
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE us_stock_holdings (id INTEGER PRIMARY KEY, scenario TEXT)")
+    db.execute("INSERT INTO us_stock_holdings VALUES (7, ?)", (json.dumps(_row(market="US", price=100, unit=1000)),))
+    db.execute("INSERT INTO us_stock_holdings VALUES (8, ?)", (json.dumps({"sector": "IT"}),))
+    db.commit()
+    agent = SimpleNamespace(conn=db, cursor=db.cursor())
+    assert live.record_order_price(agent, market="US", row_id=7, price=101.25)
+    leg = json.loads(db.execute("SELECT scenario FROM us_stock_holdings WHERE id=7").fetchone()[0])[
+        "micro_split"]["legs"][0]
+    assert leg["order_price"] == "101.25" and leg["price"] == "100"
+    assert not live.record_order_price(agent, market="US", row_id=8, price=101.25)   # legacy row untouched
+    assert not live.record_order_price(agent, market="US", row_id=99, price=101.25)  # missing row, no raise
+
+
+@pytest.mark.parametrize("module,getter,table", [
+    (KR, KR.get_existing_position_for_ticker, "stock_holdings"),
+    (US, US.get_us_existing_position_for_ticker, "us_stock_holdings")])
+def test_pilot_or_unknown_rows_still_block_with_the_flag_on(monkeypatch, module, getter, table):
+    db = sqlite3.connect(":memory:")
+    db.execute(f"CREATE TABLE {table} (ticker TEXT, account_key TEXT, buy_price REAL, scenario TEXT)")
+    db.execute(f"INSERT INTO {table} VALUES ('ABC','acc',10000,?)", (json.dumps(_row()),))
+    db.execute(f"INSERT INTO {table} VALUES ('ABC','acc',10000,?)",
+               (json.dumps({"regime_entry_policy": {"mode": "rebound_pilot", "position_fraction": .5}}),))
+    monkeypatch.setenv("PYRAMID_ROWS_MICRO_SPLIT_ENABLED", "true")
+    assert getter(db.cursor(), "ABC", account_key="acc")["pyramid_ownership"] == "SPLIT_PILOT"
+    db.execute(f"UPDATE {table} SET scenario='[1]' WHERE scenario LIKE '%rebound_pilot%'")
+    assert getter(db.cursor(), "ABC", account_key="acc")["pyramid_ownership"] == "UNKNOWN"
+    monkeypatch.setenv("PYRAMID_ROWS_MICRO_SPLIT_ENABLED", "false")  # flag off: unchanged precedence
+    assert getter(db.cursor(), "ABC", account_key="acc")["pyramid_ownership"] == "MICRO_SPLIT"
 
 
 # ── ClickStack ledger ──────────────────────────────────────────────────────────────────────────
@@ -420,7 +504,9 @@ def test_batch_paths_size_check_and_record_pyramid_rows(path):
             calls.setdefault(node.func.attr, []).append(node)
     prepare = calls["prepare_entry"]
     assert len(prepare) == 1 and any(k.arg == "pyramid_row" for k in prepare[0].keywords)
-    assert calls.get("pyramid_row_check") and calls.get("emit_row_opened")
+    assert calls.get("pyramid_slot_check") and calls.get("emit_row_opened")
+    # The free-row reserve runs before sizing, so a blocked row never records an add plan.
+    assert calls["pyramid_slot_check"][0].lineno < prepare[0].lineno
     assert "sizing" in {k.value.value for c in calls["emit_gate"] for k in c.keywords if k.arg == "stage"}
 
 
