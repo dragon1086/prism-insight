@@ -275,6 +275,7 @@ def _validate_scenario(raw, allocation, last_step):
     scenario = {"id": sid, "type": kind, "lens": list(dict.fromkeys(lens)), "trigger": out,
                 "target_allocation": str(target.quantize(Decimal("0.01"))),
                 "max_chase_pct": float(min(max(chase, MIN_CHASE_PCT), MAX_CHASE_PCT)),
+                "max_chase_pct_written": float(chase),  # the AI's own value, kept for later review
                 "rationale": rationale.strip()[:300] if isinstance(rationale, str) else ""}
     return scenario, ({"id": sid, "reason": "CHASE_CLAMPED"} if chase > MAX_CHASE_PCT else None)
 

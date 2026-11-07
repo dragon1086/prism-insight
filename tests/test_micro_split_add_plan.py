@@ -751,6 +751,7 @@ def test_add_planned_event_keeps_trigger_levels_and_chase_limits(monkeypatch):
     scenario, = [s for s in kw["attributes"]["scenarios"] if s["id"] == "breakout_1"]
     assert name == "micro_split.add_planned"
     assert scenario["trigger"]["price_above"] == 10400 and scenario["max_chase_pct"] == 1.5  # AI wrote 1.0; raised to the 1.5% floor (2026-11-08)
+    assert scenario["max_chase_pct_written"] == 1.0
     assert scenario["type"] == "breakout" and scenario["target_allocation"] == "0.60"
     assert json.loads(json.dumps(events._sanitize(kw["attributes"])))["scenarios"][0]["trigger"]["price_above"] == 10400
 
@@ -760,6 +761,7 @@ def test_chase_limit_is_raised_to_the_floor_and_capped():
     for written, stored in ((0.3, 1.5), (1.0, 1.5), (1.8, 1.8), (2.0, 2.0), (3.0, 2.0)):
         plan, _ = _plan(dict(_scenario(), max_chase_pct=written), _scenario("b2", price_above=10600))
         assert plan["scenarios"][0]["max_chase_pct"] == stored, written
+        assert plan["scenarios"][0]["max_chase_pct_written"] == written      # the AI's value stays reviewable
     plan, _ = _plan(dict(_scenario(), max_chase_pct=0.5), _scenario("b2", price_above=10600))
     # 10400 x 1.015 = 10556: a 1.2% chase now adds, 1.6% does not.
     assert P.evaluate_plan(plan, _state(), _evidence(closes=(10450, 10525), price=10525), now=_now())["action"] == "ADD"
