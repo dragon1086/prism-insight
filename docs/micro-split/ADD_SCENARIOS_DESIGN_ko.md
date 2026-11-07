@@ -86,6 +86,7 @@ LLM 지시문에서 각 시나리오에 근거 관점을 하나 이상 붙이게
   `gap_up_min_pct`, `hold_above_open_minutes`, `volume_pace_min`, `volume_dry_up_max`,
   `confirm` ∈ {`5m_close`, `daily_close`}, `bars`, `earliest_session`, `hold_sessions`.
   - `volume_pace_min`은 같은 경과 시각 기준 20일 평균 대비 배수다.
+  - 2026-11-08 지시문 변경(사용자 승인): breakout·pullback_reclaim에는 `volume_pace_min`을 쓰지 않고, 눌림에는 필요하면 `volume_dry_up_max`만 쓴다. `volume_pace_min`은 acceleration에만. 근거는 강세장 재현(`RESEARCH_LESSONS_ko.md` 11-07): 거래량 적은 날의 돌파·회복 증액이 더 좋았고, 거래량 증가 요구는 기회만 줄였다. 코드 검사는 그대로이며, AI가 따르는지는 원장 `micro_split.add_planned`의 `scenarios[].trigger`로 확인한다.
   - 눌림 구간(`zone_low`~`zone_high`) 판정은 최근 10세션 중 **종가가 처음 `zone_high` 위로 올라선 다음 세션부터** 본다
     (그런 종가가 없으면 10세션 전체). 그 뒤 저가가 `zone_high` 이하로 내려와야 눌림(`ZONE_NOT_TOUCHED` 아님)이고,
     그 뒤 종가가 `zone_low` 아래면 무효(`ZONE_UNDERCUT`)다. 지시문에도 같은 문장이 있다.
