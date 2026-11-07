@@ -31,6 +31,9 @@ _RULES = {
         "confirm(5m_close 또는 daily_close, 기본 5m_close), bars(5m_close일 때 연속 확인 5분봉 수, 기본 2), "
         "earliest_session(진입 세션=1), hold_sessions(가격 위 연속 종가 세션 수). 가격 기준(price_above, "
         "reclaim_above, new_closing_high_lookback, gap_up_min_pct) 중 하나는 반드시 있어야 합니다.\n"
+        "- 거래량 조건: breakout·pullback_reclaim 시나리오에는 volume_pace_min을 쓰지 마십시오. 우리 매매 재현에서 "
+        "거래량이 늘지 않은 날의 돌파·회복 증액이 더 좋았고, 거래량 증가 요구는 기회만 줄였습니다. 눌림에는 필요하면 "
+        "volume_dry_up_max만 쓰십시오. volume_pace_min은 acceleration 시나리오에만 씁니다.\n"
         "- target_allocation: 1슬롯 대비 누적 목표 비중, 0.05 단위, 1.00 이하. 현재 비중보다 커야 하고, 한 번 늘리는 "
         "폭은 0.25 이하이며 직전 매수분보다 크지 않아야 합니다(피라미드형).\n"
         "- max_chase_pct: 트리거 가격 대비 추격 한도(%), 기본이자 최대 2.0. 그보다 위로 달아나면 사지 않습니다.\n"
@@ -65,6 +68,10 @@ _RULES = {
         "(consecutive 5-minute closes for 5m_close, default 2), earliest_session (entry session = 1), hold_sessions "
         "(consecutive closes above the level). One price level (price_above, reclaim_above, "
         "new_closing_high_lookback or gap_up_min_pct) is required.\n"
+        "- Volume: do not put volume_pace_min on breakout or pullback_reclaim scenarios. In our trade replays, "
+        "breakout and reclaim adds on days without rising volume did better, and a volume-increase requirement only "
+        "removed chances. For a pullback use volume_dry_up_max if needed. Use volume_pace_min only on acceleration "
+        "scenarios.\n"
         "- target_allocation: cumulative target share of one slot, in 0.05 steps, at most 1.00, above the current "
         "allocation; one add is at most 0.25 and no larger than the previous buy (pyramid).\n"
         "- max_chase_pct: chase limit versus the trigger price in %, default and maximum 2.0; above it, no buy.\n"
@@ -87,15 +94,15 @@ _RULES = {
 _EXAMPLE = {
     "KR": ('{"thesis_check": "사업·실적 논리 유지 여부 1줄", "invalidation": {"close_below": 48500, '
            '"stall_sessions": 5, "note": "..."}, "scenarios": [{"id": "breakout_1", "lens": ["oneil"], '
-           '"type": "breakout", "trigger": {"price_above": 53200, "confirm": "5m_close", "bars": 2, '
-           '"volume_pace_min": 1.5}, "target_allocation": 0.60, "max_chase_pct": 2.0, "rationale": "..."}, '
+           '"type": "breakout", "trigger": {"price_above": 53200, "confirm": "5m_close", "bars": 2}, '
+           '"target_allocation": 0.60, "max_chase_pct": 2.0, "rationale": "..."}, '
            '{"id": "pullback_1", "lens": ["minervini"], "type": "pullback_reclaim", "trigger": {"zone_low": 49800, '
            '"zone_high": 50600, "reclaim_above": 51200, "volume_dry_up_max": 0.8, "confirm": "daily_close"}, '
            '"target_allocation": 0.55, "rationale": "..."}]}'),
     "US": ('{"thesis_check": "one line on the business/earnings thesis", "invalidation": {"close_below": 48.50, '
            '"stall_sessions": 5, "note": "..."}, "scenarios": [{"id": "breakout_1", "lens": ["oneil"], '
-           '"type": "breakout", "trigger": {"price_above": 53.20, "confirm": "5m_close", "bars": 2, '
-           '"volume_pace_min": 1.5}, "target_allocation": 0.60, "max_chase_pct": 2.0, "rationale": "..."}, '
+           '"type": "breakout", "trigger": {"price_above": 53.20, "confirm": "5m_close", "bars": 2}, '
+           '"target_allocation": 0.60, "max_chase_pct": 2.0, "rationale": "..."}, '
            '{"id": "pullback_1", "lens": ["minervini"], "type": "pullback_reclaim", "trigger": {"zone_low": 49.80, '
            '"zone_high": 50.60, "reclaim_above": 51.20, "volume_dry_up_max": 0.8, "confirm": "daily_close"}, '
            '"target_allocation": 0.55, "rationale": "..."}]}'),
