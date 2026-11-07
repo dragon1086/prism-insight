@@ -540,6 +540,15 @@ def _effective_buy_score(
     }
 
 
+def _pyramid_rows_enabled():
+    """PYRAMID_ROWS_MICRO_SPLIT_ENABLED (prism_core.micro_split_live); off when unreadable."""
+    try:
+        from prism_core.micro_split_live import pyramid_rows_enabled
+        return pyramid_rows_enabled()
+    except Exception:  # noqa: BLE001 - fail closed: micro-split rows stay out of #288
+        return False
+
+
 def check_sector_diversity(cursor, sector: str, max_same_sector: int, concentration_ratio: float, account_key: str | None = None) -> bool:
     """
     Check for over-concentration in same sector.
@@ -562,17 +571,25 @@ def check_sector_diversity(cursor, sector: str, max_same_sector: int, concentrat
         if not sector or sector.lower() == "unknown":
             return True
 
+        # Pyramid rows on: a ticker counts once (its extra rows are not extra names).
+        names = _pyramid_rows_enabled()
         if account_key:
-            cursor.execute("SELECT scenario FROM us_stock_holdings WHERE account_key = ?", (account_key,))
+            cursor.execute(("SELECT ticker, scenario FROM us_stock_holdings WHERE account_key = ?" if names
+                            else "SELECT scenario FROM us_stock_holdings WHERE account_key = ?"), (account_key,))
         else:
-            cursor.execute("SELECT scenario FROM us_stock_holdings")
+            cursor.execute("SELECT ticker, scenario FROM us_stock_holdings" if names else "SELECT scenario FROM us_stock_holdings")
         holdings_scenarios = cursor.fetchall()
 
         sectors = []
+        seen = set()
         for row in holdings_scenarios:
-            if row[0]:
+            if names:
+                if row[0] in seen:
+                    continue
+                seen.add(row[0])
+            if row[-1]:
                 try:
-                    scenario_data = json.loads(row[0])
+                    scenario_data = json.loads(row[-1])
                     if 'sector' in scenario_data:
                         sectors.append(scenario_data['sector'])
                 except Exception:
@@ -3922,12 +3939,18 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                             )
                                             pass_sold_qty[ticker] = 0
                                         available = pass_total_qty[ticker] - pass_sold_qty[ticker]
-                                        sell_quantity = compute_us_fractional_sell_quantity(available, remaining_rows)
+                                        # Equal split for legacy rows; a micro-split pyramid row sells its own
+                                        # ledger shares, never another row's (prism_core.loop_row_split).
+                                        from prism_core.loop_row_split import batch_row_sell_quantity
+                                        sell_quantity, row_reason, row_denominator = batch_row_sell_quantity(
+                                            self.cursor, "US", stock, available, remaining_rows)
                                         pass_sold_qty[ticker] += sell_quantity
+                                        if plan == "fractional":
+                                            sell_denominator = row_denominator
                                         logger.info(
                                             f"{ticker} pyramiding fractional sell: {sell_quantity} shares "
                                             f"(available {available} of snapshot {pass_total_qty[ticker]}, "
-                                            f"remaining rows={remaining_rows})"
+                                            f"remaining rows={remaining_rows}, reason={row_reason})"
                                         )
                                     # plan == "full_exit" -> sell_quantity stays None (full position);
                                     # the ticker was already added to fully_exited_tickers above.
@@ -4402,6 +4425,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             _pilot_freeze = False
                         if _pilot_freeze:
                             logger.info(f"[PULSE_PILOT] 중복매수 동결: {ticker} ({company_name}) already in holdings")
+                            from prism_core import pyramid_ledger
+                            pyramid_ledger.emit_gate(self, market="US", ticker=ticker, stage="gate", allowed=False,
+                                                     reason="PILOT_FREEZE", current_price=current_price,
+                                                     decision_id=source_decision_id)
                             state["held_skip_reason"] = state["held_skip_reason"] or (
                                 "기존 보유 종목이며 파일럿 정책에 따라 추가매수를 동결했습니다."
                             )
@@ -4415,6 +4442,11 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             existing_row_count=existing.get("row_count", 0),
                             ownership=existing.get("pyramid_ownership"),
                         )
+                        from prism_core import pyramid_ledger
+                        pyramid_ledger.emit_gate(self, market="US", ticker=ticker, stage="gate", allowed=allowed,
+                                                 reason=gate_reason, existing=existing, current_price=current_price,
+                                                 regime=scenario.get("_deterministic_market_regime"),
+                                                 decision_id=source_decision_id)
                         if not allowed:
                             logger.info(f"Skipping stock in holdings: {ticker} — add gate blocked: {gate_reason}")
                             state["held_skip_reason"] = state["held_skip_reason"] or (
@@ -4444,6 +4476,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         )
                         state["should_save_watchlist"] = True
                         state["skip_reason"] = state["skip_reason"] or reason
+                        if not is_add:  # a new name crowded out: codes + row counts on candidate.evaluated
+                            from prism_core import pyramid_ledger
+                            state.setdefault("skip_detail", {
+                                "skip_reason_codes": ["SLOT_FULL"], "slot_limit": (
+                                    "MAX_SLOTS" if current_slots >= self.max_slots else "AI_CAP"),
+                                **pyramid_ledger.slot_context(pyramid_ledger._account_rows(self, "US"), self.max_slots)})
                         continue
 
                     # Evaluate sector / score / decision independently so the displayed
@@ -4836,14 +4874,30 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             state["skip_reason"] = owned_initial["reason"]
             return int(owned_initial["strategy_recorded"])
         micro_plan = None
-        if not is_add and not rebound_pilot:
+        from prism_core import micro_split_live, pyramid_ledger
+        pyramid_row = bool(is_add) and micro_split_live.pyramid_rows_enabled()
+        if (not is_add or pyramid_row) and not rebound_pilot:
             # Micro-split LIVE: B3 first allocation sizes the real order (legacy full slot if OFF/unavailable).
-            from prism_core import micro_split_live
+            # A pyramid row (flag on) is its own micro-split position, sized like a first entry without tilt.
             # Conviction tilt only for regular batch entries; re-entry v3 (require_micro_plan) passes none.
             micro_plan, micro_cash, scenario = micro_split_live.prepare_entry(
                 self, market="US", ticker=ticker, current_price=current_price, scenario=scenario,
                 decision_ref=scenario.get("_decision_id") or source_decision_id,
-                account=account, logger=logger, trigger_type=None if require_micro_plan else trigger_type)
+                account=account, logger=logger,
+                trigger_type=None if (require_micro_plan or pyramid_row) else trigger_type,
+                pyramid_row=pyramid_ledger.lineage(self, "US", ticker) if pyramid_row else None)
+            if pyramid_row:
+                _row_ok, _row_reason = micro_split_live.pyramid_row_check(
+                    self, market="US", ticker=ticker, plan=micro_plan, logger=logger)
+                pyramid_ledger.emit_gate(
+                    self, market="US", ticker=ticker, stage="sizing", allowed=_row_ok, reason=_row_reason,
+                    existing=get_us_existing_position_for_ticker(self.cursor, ticker,
+                                                                 account_key=self._account_scope()[0]),
+                    current_price=current_price, regime=scenario.get("_deterministic_market_regime"),
+                    planned_allocation=micro_split_live.allocation(scenario), decision_id=source_decision_id)
+                if not _row_ok:
+                    state["skip_reason"] = state["skip_reason"] or "pyramid_row_blocked"
+                    return 0
             if micro_plan is not None:
                 entry_cash_amount = micro_cash
             elif micro_split_live.gate_score_override(scenario) is not None:
@@ -4901,7 +4955,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 )
             except Exception:  # noqa: BLE001 - optional capture cannot fail trading
                 logger.warning("[SCENARIO_SHADOW] initial capture unavailable")
-            if not is_add and not rebound_pilot:
+            if is_add:
+                pyramid_ledger.emit_row_opened(self, market="US", ticker=ticker, scenario=scenario,
+                                               position_id=legacy_position_id("US", buy_result.legacy_holding_id))
+            if (not is_add or micro_plan is not None) and not rebound_pilot:
                 # B3 all-entries SHADOW: fail-open, before the broker order.
                 try:  # fail-open: never affects the entry
                     from observability.b3_ae_capture import capture_entry as _b3_ae_entry

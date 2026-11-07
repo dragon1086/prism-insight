@@ -485,3 +485,22 @@ class TestTradingIntegration:
         price = parse_price_value(price_str)
 
         assert price == 485.25
+
+
+def test_us_sector_cap_counts_names_not_pyramid_rows(monkeypatch):
+    """2026-11-08 PYRAMID_ROWS_MICRO_SPLIT_ENABLED: a ticker's extra pyramid rows are not extra names."""
+    import json
+    import sqlite3
+    check = _import_us_tracking_agent().check_sector_diversity
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE us_stock_holdings (ticker TEXT, account_key TEXT, scenario TEXT)")
+    for ticker in ("A", "A", "A", "B"):
+        db.execute("INSERT INTO us_stock_holdings VALUES (?, 'acc', ?)", (ticker, json.dumps({"sector": "Technology"})))
+    for ticker in ("C", "D"):
+        db.execute("INSERT INTO us_stock_holdings VALUES (?, 'acc', ?)", (ticker, json.dumps({"sector": "Energy"})))
+    monkeypatch.delenv("PYRAMID_ROWS_MICRO_SPLIT_ENABLED", raising=False)
+    assert not check(db.cursor(), "Technology", 3, .6, account_key="acc")   # flag off: 4 rows (unchanged)
+    monkeypatch.setenv("PYRAMID_ROWS_MICRO_SPLIT_ENABLED", "true")
+    assert check(db.cursor(), "Technology", 3, .6, account_key="acc")       # 2 names of 4
+    db.execute("INSERT INTO us_stock_holdings VALUES ('E', 'acc', ?)", (json.dumps({"sector": "Technology"}),))
+    assert not check(db.cursor(), "Technology", 3, .6, account_key="acc")   # 3 distinct names

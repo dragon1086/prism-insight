@@ -102,6 +102,8 @@ ClickHouse process (mode `0644`).
 - `entry.executed`
 - `entry.fill_reconciled` (US CAPTURE: 제출과 실제 체결을 구분하는 주문 provenance)
 - `exit.executed`
+- `pyramid.gate_evaluated`, `pyramid.row_opened`, `entry.slot_blocked` (KR) — #288 pyramid
+  rows, see "Pyramid rows" under Trace linkage
 - `holding.evaluated` (every KR/US hold-or-sell review after the runner guard; shares the
   position's `trace_id`, because the holding-decision tables keep only the latest row)
 - `broker.order_request` (every KIS order TR from `trading/kis_auth._url_fetch`: accepted,
@@ -171,6 +173,29 @@ One `trace_id` reads a decision end to end. Read it with `tools/clickstack_query
   decision, falling back to a watch-scoped trace when it is unknown. A live re-entry buy
   is a new position with its own trace. `reentry_v3.live_entry` carries its
   `entry_trace_id`, and that position's context events carry `origin_trace_id`.
+- **Pyramid rows (2026-11-08, `PYRAMID_ROWS_MICRO_SPLIT_ENABLED`)**: a pyramid row (2nd/3rd row of a
+  ticker) is a new position with its own trace. Its context events from `entry.executed` on (the BUY-time `candidate.evaluated` comes before the row is sized)
+  context events and `pyramid.row_opened` carry `origin_trace_id` (the ticker's first row) and
+  `parent_trace_ids` (every earlier row), read from `scenario.micro_split.pyramid_row`.
+  `clickstack_query.py trace <trace>` lists every trace whose `origin_trace_id` is that trace (re-entry
+  buys and pyramid rows). Events (`prism_core/pyramid_ledger.py`, unknown values `null`, never 0):
+  - `pyramid.gate_evaluated` (on the first row's trace; emitted with the flag on or off): `stage`
+    (`pre_gate` before the BUY LLM, `gate`, `sizing` after the B3 plan), `allowed`, `reason_code`
+    (`ALLOWED`, `LEGACY_PYRAMID_BLOCKED_MICRO_SPLIT` = flag off, `REGIME_NOT_ALLOWED`, `PROFIT_BELOW_MIN`,
+    `MAX_ROWS`, `PRICE_MISSING`, `PILOT_FREEZE`, `PYRAMID_ROW_NO_MICRO_PLAN`, `PYRAMID_RESERVE_SLOTS`,
+    `PYRAMID_MAX_SLOTS`), `reason`, `flag_enabled`, `regime`, `entry_basis` (`cost_weighted`/`simple_mean`),
+    `existing_entry`, `current_price`, `profit_pct`, `ticker_rows`, `ownership`, `rows_held`,
+    `distinct_tickers`, `pyramid_rows_held`, `free_rows`, `reserve_applied`, `planned_allocation`
+    (sizing stage), `candidate_decision_id`. The sector cap never blocks a pyramid row with the flag on
+    (same-ticker rows are exempt), so it has no code here.
+  - `pyramid.row_opened` (new row's trace): `row_id`, `row_number`, `allocation`, `micro_split`,
+    `stop_loss`, `parent_row_ids`, `origin_trace_id`, `parent_trace_ids`.
+  - Crowded-out new names: KR `entry.slot_blocked` (`limit` MAX_SLOTS/AI_CAP, `buy_score`,
+    `decision_price`, `slots_max`, `rows_held`, `distinct_tickers`, `pyramid_rows_held`, `free_rows`);
+    US extends the existing skip `candidate.evaluated` decision context with
+    `skip_reason_codes: ["SLOT_FULL"]`, `slot_limit` and the same row counts.
+  - Row exits log `reason=` `PYRAMID_ROW_LEDGER_QTY` / `PYRAMID_ROW_QTY_RESIDUAL` /
+    `PYRAMID_ROW_QTY_UNKNOWN` / `LAST_ROW_REMAINDER` / `LEGACY_EQUAL_SPLIT` (batch and loop logs).
 - **Buy decision quarterly EPS (2026-10-23)**: `decision_inputs.shadow_captured` (same trace as
   the decision's `candidate.evaluated`) carries `quarterly_eps` (`quarterly_eps_v1`,
   `prism_core/decision_snapshot.quarterly_eps`): `period`, `eps`, `prior_year_period`,

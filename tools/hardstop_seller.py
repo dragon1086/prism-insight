@@ -350,7 +350,7 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                                             market, ticker, len(rows))
                                 continue
                             # Pyramided position: protect every row with its own stop (#288 batch parity).
-                            split = new_split_state(len(rows))
+                            split = new_split_state(len(rows), rows)
                         for h in rows:
                             try:
                                 buy_price = float(h.get("buy_price", 0) or 0)
@@ -744,9 +744,11 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
                 sold_qty = int(live_qty or 0)
                 if split is not None:
                     from prism_core.loop_row_split import split_sell_quantity
-                    sold_qty = split_sell_quantity(split, sold_qty)
-                    logger.info("[%s] %s pyramided row sell: %d shares (snapshot %s, remaining rows=%d)",
-                                market, ticker, sold_qty, split["snapshot"], split["remaining"])
+                    sold_qty = split_sell_quantity(split, sold_qty, row_id=stock_data.get("id"))
+                    sell_denominator = split.pop("last_denominator", sell_denominator)
+                    logger.info("[%s] %s pyramided row sell: %d shares (snapshot %s, remaining rows=%d, reason=%s)",
+                                market, ticker, sold_qty, split["snapshot"], split["remaining"],
+                                split.pop("last_reason", "LEGACY_EQUAL_SPLIT"))
                 if sold_qty <= 0:
                     logger.info("[%s] %s already flat at KIS (qty=0); sim closed", market, ticker)
                 else:

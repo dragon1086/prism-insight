@@ -562,8 +562,10 @@ def test_batch_entries_pass_the_trigger_and_reentry_passes_none(path):
              and isinstance(node.func.value, ast.Name) and node.func.value.id == "micro_split_live"]
     assert len(calls) == 1
     value = next(k.value for k in calls[0].keywords if k.arg == "trigger_type")
-    assert isinstance(value, ast.IfExp) and isinstance(value.test, ast.Name)
-    assert value.test.id == "require_micro_plan" and isinstance(value.body, ast.Constant) and value.body.value is None
+    assert isinstance(value, ast.IfExp) and isinstance(value.body, ast.Constant) and value.body.value is None
+    # 2026-11-08: micro-split pyramid rows (PYRAMID_ROWS_MICRO_SPLIT_ENABLED) get no tilt either.
+    assert isinstance(value.test, ast.BoolOp) and isinstance(value.test.op, ast.Or)
+    assert [n.id for n in value.test.values] == ["require_micro_plan", "pyramid_row"]
 
 
 def test_buy_prompt_never_mentions_the_tilt(live_on, monkeypatch):

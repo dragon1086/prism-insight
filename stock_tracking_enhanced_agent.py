@@ -945,16 +945,30 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 ),
             )
         micro_plan = None
-        if effects is None and not is_add and not rebound_pilot:
+        from prism_core import micro_split_live, pyramid_ledger
+        pyramid_row = bool(is_add) and micro_split_live.pyramid_rows_enabled()
+        if effects is None and (not is_add or pyramid_row) and not rebound_pilot:
             # Micro-split LIVE: B3 first allocation sizes the real order (legacy full slot if OFF/unavailable).
-            from prism_core import micro_split_live
+            # A pyramid row (flag on) is its own micro-split position, sized like a first entry without tilt.
             # Conviction tilt only for regular batch entries; re-entry v3 (require_micro_plan) passes none.
             micro_plan, micro_cash, scenario = micro_split_live.prepare_entry(
                 self, market="KR", ticker=ticker, current_price=current_price, scenario=scenario,
                 decision_ref=scenario.get("_decision_id") or source_decision_id,
                 account=getattr(self, "active_account", None), logger=logger,
-                trigger_type=None if require_micro_plan else (
-                    (getattr(self, "trigger_info_map", None) or {}).get(ticker) or {}).get("trigger_type"))
+                trigger_type=None if (require_micro_plan or pyramid_row) else (
+                    (getattr(self, "trigger_info_map", None) or {}).get(ticker) or {}).get("trigger_type"),
+                pyramid_row=pyramid_ledger.lineage(self, "KR", ticker) if pyramid_row else None)
+            if pyramid_row:
+                _row_ok, _row_reason = micro_split_live.pyramid_row_check(
+                    self, market="KR", ticker=ticker, plan=micro_plan, logger=logger)
+                pyramid_ledger.emit_gate(
+                    self, market="KR", ticker=ticker, stage="sizing", allowed=_row_ok, reason=_row_reason,
+                    existing={"avg_buy_price": analysis_result.get("existing_avg_buy_price"),
+                              "row_count": analysis_result.get("existing_row_count")},
+                    current_price=current_price, regime=scenario.get("_deterministic_market_regime"),
+                    planned_allocation=micro_split_live.allocation(scenario), decision_id=source_decision_id)
+                if not _row_ok:
+                    return 0
             if micro_plan is not None:
                 entry_cash_amount = micro_cash
                 analysis_result["scenario"] = scenario
@@ -1032,7 +1046,10 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     return 0
                 self._complete_pending_kr_entry(prepared)
                 self._record_broker_entry_observation(ticker, source_decision_id, getattr(prepared.intent, "source_position_id", None), prepared.intent.id, trade_result)
-                if not is_add and not rebound_pilot:
+                if is_add:
+                    pyramid_ledger.emit_row_opened(self, market="KR", ticker=ticker, scenario=scenario,
+                                                   position_id=getattr(prepared.intent, "source_position_id", None))
+                if (not is_add or micro_plan is not None) and not rebound_pilot:
                     try:  # fail-open: never affects the entry
                         from observability.b3_ae_capture import capture_entry as _b3_ae_entry
                         _b3_ae_entry(
@@ -1131,7 +1148,10 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             opened_position_id = legacy_position_id(
                 "KR", buy_result.legacy_holding_id
             )
-            if not is_add and not rebound_pilot:
+            if is_add:
+                pyramid_ledger.emit_row_opened(self, market="KR", ticker=ticker, scenario=scenario,
+                                               position_id=opened_position_id)
+            if (not is_add or micro_plan is not None) and not rebound_pilot:
                 # B3 all-entries SHADOW: fail-open, before the broker order.
                 try:  # fail-open: never affects the entry
                     from observability.b3_ae_capture import capture_entry as _b3_ae_entry

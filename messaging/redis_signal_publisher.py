@@ -193,6 +193,9 @@ class SignalPublisher:
                 # Re-entry v3 BUYs are labelled (entry_kind/reentry); other BUYs are unchanged.
                 from prism_core.reentry_v3_live import signal_fields as reentry_signal_fields
                 signal_data.update(reentry_signal_fields(scenario))
+                # Micro-split pyramid rows (2026-11-08) are labelled entry_kind PYRAMID_ADD.
+                from prism_core.micro_split_live import pyramid_signal_fields
+                signal_data.update(pyramid_signal_fields(scenario))
 
             # Merge additional data (SELL carries market here; it overrides if set)
             if extra_data:
