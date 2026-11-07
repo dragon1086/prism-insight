@@ -588,3 +588,39 @@ def test_untilted_buy_plan_is_not_rebased(live_on):
     _, _, scenario = _tilted(trigger=None, add_plan=raw)
     stored = scenario["micro_split"]["add_plan"]
     assert "rebased" not in stored and [s["target_allocation"] for s in stored["scenarios"]] == ["0.55", "0.60"]
+
+
+def _reentry_prepared(factor, monkeypatch, *, trigger_type=None, buy_score=None):
+    if factor is None:
+        monkeypatch.delenv("REENTRY_V3_FIRST_SIZE_FACTOR", raising=False)
+    else:
+        monkeypatch.setenv("REENTRY_V3_FIRST_SIZE_FACTOR", factor)
+    scenario = {"stop_loss": 9300, "reentry": {"version": "reentry_v3"}}
+    if buy_score is not None:
+        scenario["buy_score"] = buy_score
+    return live.prepare_entry(_agent(), market="KR", ticker="005930", current_price=10000, scenario=scenario,
+                              decision_ref="reentry_v3:x", account={"buy_amount_krw": 1_000_000},
+                              trigger_type=trigger_type)
+
+
+def test_reentry_first_size_halves_the_b3_initial(live_on, monkeypatch):
+    plan, cash, scenario = _reentry_prepared("0.5", monkeypatch)
+    block = scenario["micro_split"]
+    assert plan["initial_nominal"] == "0.7777"
+    assert block["allocation"] == block["legs"][0]["allocation"] == "0.3888" and cash == 388_800
+    assert block["reentry_size"] == {"base": "0.7777", "sized": "0.3888", "factor": "0.5",
+                                     "reason": live.REENTRY_SIZE_REASON}
+    assert "재진입 첫 비중 축소, 기본 78%에서 하향" in live.entry_message_block(scenario, "KR")[0]
+
+
+@pytest.mark.parametrize("factor", [None, "1", "0", "1.5", "abc"])
+def test_reentry_first_size_off_or_invalid_keeps_b3(live_on, monkeypatch, factor):
+    _, cash, scenario = _reentry_prepared(factor, monkeypatch)
+    assert scenario["micro_split"]["allocation"] == "0.7777" and cash == 777_700
+    assert "reentry_size" not in scenario["micro_split"]
+
+
+def test_regular_entry_ignores_the_reentry_factor(live_on, monkeypatch):
+    monkeypatch.setenv("REENTRY_V3_FIRST_SIZE_FACTOR", "0.5")
+    _, cash, scenario = _prepared()
+    assert scenario["micro_split"]["allocation"] == "0.7777" and "reentry_size" not in scenario["micro_split"]
