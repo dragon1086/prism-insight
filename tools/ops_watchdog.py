@@ -14,6 +14,11 @@ The same problem is held back for REPEAT_HOURS and then re-sent with its count. 
 runs again sends [복구]. Once a day (SUMMARY_AT, KST) a summary shows what ran, which also proves the
 watchdog itself is alive: no summary in the morning means the watchdog is down.
 
+Since 2026-11-07 (user decision) the chat gets only [장애]/[복구] and the disk alert by default: the daily
+summary and [주의]-only messages read like bug hunting and were replaced by the biweekly review
+(tools/two_week_review.py --every 14), which also reports when the watchdog last ran. Turn them back on with
+OPS_WATCHDOG_SUMMARY_ENABLED=true / OPS_WATCHDOG_NOTICES_ENABLED=true.
+
 Jobs that run under systemd (the B3 worker, which also runs the LIVE micro-split adds) log to journald;
 they are read with journalctl after a stored cursor. Without journalctl (CI, macOS) or a readable journal
 such a job is skipped for that run: no failure scan and no stopped-job alert.
@@ -513,13 +518,16 @@ def run(now_kst=None, *, state_path=STATE_PATH, sender=None, dry_run=False, jobs
     disk = disk_alert(state, now_kst)
     if disk:
         messages.append(disk)
+    if not _flag("OPS_WATCHDOG_NOTICES_ENABLED", False):
+        to_send = [item for item in to_send if item[0]["severity"] == "장애"]
     alert = build_alert(to_send, stale_new, recovered, now_kst, jobs)
     if alert:
         messages.append(alert)
     hour, minute = _hm(SUMMARY_AT)
     due = now_kst.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if now_kst >= due and state.get("summary_day") != now_kst.date().isoformat() and not first_run:
-        messages.append(build_summary(state, now_kst, jobs))
+        if _flag("OPS_WATCHDOG_SUMMARY_ENABLED", False):
+            messages.append(build_summary(state, now_kst, jobs))
         state["summary_day"] = now_kst.date().isoformat()
         state["summary_since"] = now_kst.isoformat()
         state["tally"] = {}
@@ -576,8 +584,15 @@ def _send(text):
     return send_ops_alert_sync(text)
 
 
+def _flag(name, default):
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
 def enabled():
-    return os.getenv("OPS_WATCHDOG_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+    return _flag("OPS_WATCHDOG_ENABLED", True)
 
 
 def main(argv=None):
