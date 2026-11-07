@@ -82,9 +82,10 @@
 - **구독자 매도 시그널**: 다른 행이 남아 있는 동안 `sell_denominator`는 2 이상이고 올림(`ceil(잔량/판 수량)`)이라
   구독자(`보유 // 분모`)가 다른 행 몫까지 팔지 않는다. 정확한 비율은 `sell_fraction`(판 수량/잔량, 소수 4자리)으로 함께 보낸다.
   0주를 판 행은 SELL 시그널을 보내지 않는다(분모 0을 "전량"으로 읽는 구독자 보호).
-- **알려진 한계(구독자 증액 추종)**: 예제 구독자(`examples/messaging/gcp_pubsub_subscriber_example.py`)의 ADD 추종은
-  종목 전체 보유 평가액을 한 행의 목표 비중과 비교하므로, 피라미딩 행의 증액은 대개 건너뛴다. 피라미딩 행 BUY
-  (`entry_kind: PYRAMID_ADD`)는 `position_fraction`대로 따라 산다. 외부 구독자 저장소는 이번에 고치지 않았다.
+- **구독자 증액 추종(2026-11-08 고침)**: ADD 시그널에 종목 전체 비중(`ticker_allocation_before/after`)과 칸 수
+  (`ticker_rows`)를 함께 보낸다. 예제 구독자(`examples/messaging/gcp_pubsub_subscriber_example.py`)는 종목 전체 보유
+  평가액을 이 합계(최대 칸 수 슬롯)와 비교하므로 피라미딩 행의 증액도 따라 산다. 피라미딩 행 매도는 `sell_fraction`이
+  있으면 그 비율로 판다. 피라미딩 행 BUY(`entry_kind: PYRAMID_ADD`)는 `position_fraction`대로 따라 산다.
 - 끄면(`false`) 다음 배치부터 main과 같다. 이미 열린 피라미딩 행은 자기 원장 수량으로 계속 청산된다.
 - 증액 주문은 정규장의 당일 지정가 주문이다. 손절가는 증액가보다 낮으므로 손절 전에 미체결 매수가 먼저
   체결된다. 남은 주문은 장 마감에 소멸한다. 장외 예약 증액은 없다(워커는 정규장에서만 판단).

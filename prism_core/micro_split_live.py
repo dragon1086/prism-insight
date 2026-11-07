@@ -638,6 +638,23 @@ def add_signal_fields(*, market, campaign, meta, before, after, price, stop_loss
             "trade_message": str(result.get("message") or "")[:200]}
 
 
+def ticker_signal_fields(agent, *, market, symbol, account_key, row_id, before, after):
+    """ticker_allocation_before/after and ticker_rows of an ADD ({} when the rows are unreadable).
+
+    Why (2026-11-08): with pyramid rows a subscriber sees only the broker's ticker total, so a row's
+    own allocation_after looked already filled and every pyramid-row add was skipped there.
+    """
+    from prism_core.loop_row_split import _ROWS_SQL
+    try:
+        rows = _own_cursor(agent).execute(_ROWS_SQL[market], (symbol, account_key)).fetchall()
+        others = sum(slot_fraction(json.loads(r[1] or "{}")) for r in rows if int(r[0]) != int(row_id))
+        count = len(rows) if any(int(r[0]) == int(row_id) for r in rows) else len(rows) + 1
+    except Exception:  # noqa: BLE001 - unknown stays absent; subscribers fall back to the row
+        return {}
+    return {"ticker_allocation_before": round(others + float(before), 4),
+            "ticker_allocation_after": round(others + float(after), 4), "ticker_rows": count}
+
+
 async def publish_add_signal(*, ticker, company_name, price, fields):
     """Publish the ADD on Redis Streams and GCP Pub/Sub; best effort, never raises.
 
@@ -754,6 +771,9 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
             fields = add_signal_fields(market=market, campaign=campaign, meta=meta, before=before, after=after,
                                        price=price, stop_loss=row.get("stop_loss"), result=result,
                                        signal_id=intent.source_decision_id)
+            fields.update(ticker_signal_fields(agent, market=market, symbol=campaign["symbol"],
+                                               account_key=campaign["account_key"], row_id=row_id,
+                                               before=before, after=after))
         except (KeyError, TypeError, ValueError) as error:
             import logging
             logging.getLogger(__name__).warning("[MICRO_SPLIT][%s] add signal skipped: %s", market, error)
