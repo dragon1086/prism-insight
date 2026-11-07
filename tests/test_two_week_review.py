@@ -132,6 +132,24 @@ def world(tmp_path):
         event("reentry_v3.shadow_recheck", "2026-10-13", "KR", "100004",
               {"approved": False, "rejection_reason": "추세 약함"}),
         event("runner.sell_blocked", "2026-09-01", "KR", "100001", {"code": "OLD", "source": "llm"}),
+        # 2026-11-08 pyramid rows: gate checks, a row, crowded-out names and add-plan day summaries
+        event("pyramid.gate_evaluated", "2026-10-10", "KR", "100001",
+              {"stage": "gate", "allowed": True, "reason_code": "ALLOWED", "current_price": 12000}),
+        event("pyramid.gate_evaluated", "2026-10-09", "KR", "100002",
+              {"stage": "pre_gate", "allowed": False, "reason_code": "PROFIT_BELOW_MIN", "current_price": 4000}),
+        event("pyramid.gate_evaluated", "2026-10-09", "KR", "100002",
+              {"stage": "pre_gate", "allowed": False, "reason_code": "PROFIT_BELOW_MIN", "current_price": 4000},
+              hour=2),
+        event("pyramid.row_opened", "2026-10-10", "KR", "100001", {"row_number": 2}),
+        event("entry.slot_blocked", "2026-10-11", "KR", "300001",
+              {"limit": "MAX_SLOTS", "decision_price": 1000, "pyramid_rows_held": 1}),
+        event("candidate.evaluated", "2026-10-11", "US", "MSFT",
+              {"decision_context": {"skip_reason_codes": ["SLOT_FULL"], "price": 100, "pyramid_rows_held": None}}),
+        event("micro_split.add_plan_day_summary", "2026-10-09", "KR", "100001",
+              {"outcome": "HOLD", "plan_waits": {}, "added": [],
+               "scenarios": {"breakout_2": {"reasons": {"PRICE_NOT_REACHED": 70}, "last": "PRICE_NOT_REACHED"}}}),
+        event("micro_split.add_plan_day_summary", "2026-10-09", "KR", "100002",
+              {"outcome": "HOLD", "plan_waits": {"NOT_PROFITABLE": 78}, "added": [], "scenarios": {}}),
     ]
     spool = tmp_path / "events.jsonl"
     spool.write_text("\n".join(json.dumps(e, ensure_ascii=False) for e in events) + "\nnot json\n", encoding="utf-8")
@@ -204,7 +222,7 @@ def test_dry_run_covers_every_change_with_counterfactuals(world, monkeypatch, ca
     world["db"].chmod(0o444)                               # read-only DB must be enough
     code, out = _run(world, monkeypatch, capsys, "--dry-run")
     assert code == 0
-    for heading in ("0) 근거 자료 상태", "1) 초분할", "2) 증액", "3) 상위 셋업", "4) 주도주", "5) 재진입", "6) 트리거",
+    for heading in ("0) 근거 자료 상태", "1) 초분할", "2) 증액", "2b) 피라미딩", "3) 상위 셋업", "4) 주도주", "5) 재진입", "6) 트리거",
                     "7) 매수 판단", "8) 오류", "9) 북극성"):
         assert heading in out
     # 1. micro-split, score floor, crowded-book rule
@@ -215,6 +233,8 @@ def test_dry_run_covers_every_change_with_counterfactuals(world, monkeypatch, ca
     assert "가속 구간 두 번째 증액 1건" in out and "최초가 대비 +10.0%, 거래량 1.8배" in out
     assert "막힌 증액 1건(RISK_LIMIT 1건)" in out.replace("조건은 맞았지만 안전장치로 ", "")
     assert "막힌 증액의 그 뒤 가격: 평균 +4.0%" in out
+    assert "장 마감 대기 사유(종목·하루 2건, 증액 난 날 0건): 시나리오별 마지막 사유 PRICE_NOT_REACHED 1건" in out
+    assert "계획 전체 대기 NOT_PROFITABLE 78건" in out
     # 3. conviction tilt: +20%p of a slot on a +30% first leg = +0.60%p
     assert "가중 진입 1건, 가중분(기본 비중 대비 더 산 몫) 손익 합계 +0.60%p" in out
     # 4. runner hold: two blocks after de-dup, one priced (12000 -> 13000)
@@ -238,6 +258,27 @@ def test_dry_run_covers_every_change_with_counterfactuals(world, monkeypatch, ca
     chunks = out.split("-" * 40)
     assert all(len(chunk.strip()) <= twr.WR.MESSAGE_LIMIT for chunk in chunks)
     assert not world["out"].exists()                      # dry run writes nothing
+
+
+def test_pyramid_rows_and_crowded_out_names(world, monkeypatch, capsys):
+    # 2026-11-08: a second row of 100001 (12000 -> 13000 = +8.3%), gate checks and crowded-out new names.
+    block = _micro([{"kind": "INITIAL", "allocation": "0.4", "price": "12000", "at": "2026-10-10T01:00:00+00:00"}],
+                   "0.4")
+    block["pyramid_row"] = {"entry_no": 2, "parent_row_ids": [1], "origin_trace_id": "o" * 32}
+    with sqlite3.connect(world["db"]) as conn:
+        conn.execute(HOLD.format(p=""), ("a", "100001", "가속전자", 12000, "2026-10-10 10:00:00", 13000,
+                                         json.dumps({"buy_score": 8, "micro_split": block}), "일중 상승률 상위주"))
+    code, out = _run(world, monkeypatch, capsys, "--dry-run")
+    assert code == 0
+    section = out[out.index("2b) 피라미딩"):out.index("3) 상위 셋업")]
+    assert "피라미딩 검사 2건(종목·하루·단계 기준), 조건 통과 1건, 막힘 1건(PROFIT_BELOW_MIN 1건)" in section
+    assert "피라미딩 칸 1개(1종목): 이긴 칸 1개 평균 +8.3%" in section and "가속전자(100001) 2번째 칸" in section
+    assert "막힌 피라미딩의 그 뒤 가격: 평균 +20.0%" in section          # 4000 -> 4800, duplicate collapsed
+    kr, us = section.split("[US]")
+    assert "칸이 차서 못 산 새 종목 1개(기록 1건), 그때 피라미딩 칸이 있던 경우 1개(모름 0개)" in kr
+    assert "+20% 도달 1개" in kr                                          # 300001: 1000 -> high 1400
+    assert "그때 피라미딩 칸이 있던 경우 0개(모름 1개)" in us                # unknown stays unknown
+    assert "기간 안에 열린 피라미딩 칸이 장부에 없습니다" in us
 
 
 def test_send_mode_writes_the_full_report_file(world, monkeypatch, capsys):
