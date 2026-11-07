@@ -756,6 +756,30 @@ def test_add_planned_event_keeps_trigger_levels_and_chase_limits(monkeypatch):
     assert json.loads(json.dumps(events._sanitize(kw["attributes"])))["scenarios"][0]["trigger"]["price_above"] == 10400
 
 
+def test_worker_records_each_scenarios_wait_reasons_once_at_the_close(live_worker):
+    # 2026-11-08: only rail blocks reached the ledger; a review could not see why a scenario waited all day.
+    worker = live_worker.worker
+    worker.providers["add_inputs"] = lambda symbol, at, phase, plan, pace_above=None: _evidence(
+        closes=(10300, 10350), price=10350)
+    assert _plan_rows(worker.once())[0]["status"] == "WAIT"
+    assert not [n for n, _ in live_worker.emitted if n == "micro_split.add_plan_day_summary"]  # not before the close
+    worker.providers["session_open"] = lambda moment: False
+    worker.providers["close_ready"] = lambda moment: SESSION
+    worker.providers["add_inputs"] = lambda symbol, at, phase, plan, pace_above=None: dict(
+        _evidence(phase="CLOSE", price=10350), today_daily={"date": SESSION, "open": 10000, "high": 10380,
+                                                            "low": 9990, "close": 10350, "volume": 900})
+    worker.once()
+    summaries = [kw["attributes"] for n, kw in live_worker.emitted if n == "micro_split.add_plan_day_summary"]
+    assert len(summaries) == 1
+    summary = summaries[0]
+    assert summary["evaluations"] == 2 and summary["outcome"] == "WAIT" and summary["session_date"] == SESSION
+    assert summary["scenarios"]["breakout_1"]["reasons"].get("PRICE_NOT_ABOVE", 0) >= 1
+    assert summary["added"] == [] and summary["plan_hash"]
+    kinds = [r[0] for r in sqlite3.connect(live_worker.store.path).execute("SELECT kind FROM b3_events")]
+    assert "add_plan.day_summary" in kinds
+    worker.once()  # the close runs once per session: no second summary
+    assert len([n for n, _ in live_worker.emitted if n == "micro_split.add_plan_day_summary"]) == 1
+
 def test_chase_limit_is_raised_to_the_floor_and_capped():
     # 2026-11-08: AI-written 0.3-1% limits blocked strong add days (팬오션 +12% day); floor 1.5%, cap 2.0%.
     for written, stored in ((0.3, 1.5), (1.0, 1.5), (1.8, 1.8), (2.0, 2.0), (3.0, 2.0)):
