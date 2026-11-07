@@ -216,10 +216,11 @@ PRISM 초분할 보유 종목의 증액이 `ADD` 시그널로 옵니다(형식: 
 | 안전장치 | 동작 |
 |---|---|
 | 보유 확인 | 증권사 잔고에 그 종목이 있어야 함. 없거나(`FLAT`) 잔고 조회가 불확실하면(`UNKNOWN`) 주문하지 않음. ADD로 새 포지션을 열지 않음 |
-| 크기 | `delta_fraction × 본인 1슬롯 금액`. 단 본인 보유 평가액(추가 매수가 기준)이 `allocation_after × 1슬롯`과 1슬롯을 넘지 않게 줄임. 예전 1슬롯 전량 진입 종목은 사지 않음 |
+| 크기 | `delta_fraction × 본인 1슬롯 금액`. 단 본인 보유 평가액(추가 매수가 기준)이 PRISM의 종목 전체 비중(`ticker_allocation_after`, 없으면 `allocation_after`) × 1슬롯과 칸 수(`ticker_rows`, 최대 3)슬롯을 넘지 않게 줄임. 예전 1슬롯 전량 진입 종목은 사지 않음 |
 | 중복 방지 | `signal_id`를 주문 **전에** `runtime/subscriber_add_signals.jsonl`(`SUBSCRIBER_ADD_LEDGER`로 변경)에 fsync로 기록. 재시작·Pub/Sub 재전달·주문 실패 후에도 같은 ADD는 다시 사지 않음 |
 | 시간 | 정규장에서만(장외 예약 증액 없음). 30분 지난 시그널은 기존 가드가 무시 |
 | 주문 | 지정가(`limit_price`) + 예산 엄수(`strict_budget`) |
+| 피라미딩 칸 매도 | `sell_fraction`이 오면 `보유 × sell_fraction`(내림), 없으면 `보유 // sell_denominator`. 1주 미만이면 남겨 두고 마지막 칸 매도 때 정리 (2026-11-08) |
 | 알림 | 건너뜀(`[ADD_SKIP]`)·실패(`[ADD_FAILED]`)는 `SUBSCRIBER_ALERT_CHAT_ID`로 텔레그램 알림 |
 | 끄기 | `.env`에 `SUBSCRIBER_FOLLOW_ADDS=false` 후 subscriber 재시작. `--dry-run`이면 주문 없이 로그만 |
 
