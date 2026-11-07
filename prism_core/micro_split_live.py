@@ -280,7 +280,8 @@ def _emit_planned(*, market, ticker, position_id, block, plan, issues, decision_
                                # Trigger levels and chase limits, so a blocked or missed add can be replayed
                                # after the holding row's plan history (last few sessions) is overwritten.
                                "scenarios": [{k: s.get(k) for k in ("id", "type", "trigger", "target_allocation",
-                                                                    "max_chase_pct")} for s in scenarios]})
+                                                                    "max_chase_pct", "max_chase_pct_written")}
+                                             for s in scenarios]})
     except Exception as error:  # noqa: BLE001 - observability never affects trading
         import logging
         logging.getLogger(__name__).warning("[MICRO_SPLIT][%s] add_planned event skipped: %s", market, error)
