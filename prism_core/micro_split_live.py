@@ -40,6 +40,12 @@ _ACCOUNT_TICKERS_SQL = {"KR": "SELECT ticker FROM stock_holdings WHERE account_k
                         "US": "SELECT ticker FROM us_stock_holdings WHERE account_key = ?"}
 
 
+def _own_cursor(agent):
+    """A separate cursor, so a read here never resets the caller's shared cursor results."""
+    conn = getattr(agent, "conn", None)
+    return conn.cursor() if conn is not None else agent.cursor
+
+
 def _setting(name, default):
     value = int(os.getenv(name, str(default)).strip())
     if value < 0:
@@ -77,7 +83,7 @@ def pyramid_row_check(agent, *, market, ticker, plan, logger=None):
         ok, reason = False, "PYRAMID_ROW_NO_MICRO_PLAN"
     else:
         try:
-            rows = agent.cursor.execute(_ACCOUNT_TICKERS_SQL[str(market).upper()],
+            rows = _own_cursor(agent).execute(_ACCOUNT_TICKERS_SQL[str(market).upper()],
                                         (agent._account_scope()[0],)).fetchall()
             ok, reason = pyramid_reserve_check([row[0] for row in rows], agent.max_slots)
         except Exception:  # noqa: BLE001 - unknown usage fails closed

@@ -22,7 +22,8 @@ _ACCOUNT_ROWS_SQL = {
 def _account_rows(agent, market):
     """[(id, ticker, scenario)] of the active account, or None when unreadable."""
     try:
-        return [tuple(row) for row in agent.cursor.execute(
+        from prism_core.micro_split_live import _own_cursor
+        return [tuple(row) for row in _own_cursor(agent).execute(
             _ACCOUNT_ROWS_SQL[str(market).upper()], (agent._account_scope()[0],)).fetchall()]
     except Exception:  # noqa: BLE001 - unknown stays null
         return None
