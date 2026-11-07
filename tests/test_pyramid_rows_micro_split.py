@@ -184,6 +184,22 @@ def test_new_pyramid_row_is_micro_split_sized_with_its_own_add_plan(flag_on, mon
     assert f"피라미딩 독립 행 · 이번 행 비중 {round(float(block['allocation']) * 100)}% (1슬롯 기준)" in text
 
 
+def test_pyramid_row_never_inherits_reentry_sizing(flag_on, monkeypatch):
+    # Coordination with #1306 (re-entry first size x REENTRY_V3_FIRST_SIZE_FACTOR when scenario.reentry.version).
+    import observability.b3_ae_capture as capture
+    monkeypatch.setattr(capture, "datetime", _FrozenDateTime)
+    monkeypatch.setenv("MICRO_SPLIT_LIVE_ENABLED", "true")
+    monkeypatch.setenv("REENTRY_V3_FIRST_SIZE_FACTOR", "0.5")
+    base = {"stop_loss": 9300, "sector": "IT", "buy_score": 9}
+    kwargs = dict(market="KR", ticker="005930", current_price=10000, decision_ref="report:x.pdf",
+                  account={"buy_amount_krw": 1_000_000}, trigger_type=None)
+    _, normal_cash, _ = live.prepare_entry(_bars_agent(), scenario=dict(base), **kwargs)
+    reentry = dict(base, reentry={"version": "v3", "origin_decision_id": "report:old.pdf"})
+    _, cash, scenario = live.prepare_entry(_bars_agent(), scenario=reentry, pyramid_row={"entry_no": 2}, **kwargs)
+    assert cash == normal_cash and "reentry" not in scenario
+    assert "reentry" in reentry  # the caller's scenario is not mutated
+
+
 class _FakeTrading:
     calls = []
 

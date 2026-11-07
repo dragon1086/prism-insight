@@ -298,6 +298,9 @@ def prepare_entry(agent, *, market, ticker, current_price, scenario, decision_re
     pyramid rows). ``pyramid_row`` (prism_core.pyramid_ledger.lineage: entry_no 2/3, parent rows and
     traces) marks a #288 pyramid row on the block.
     """
+    if pyramid_row:
+        # A pyramid row is a plain first entry linked by origin/parent traces: never re-entry sizing.
+        scenario = {k: v for k, v in scenario.items() if k != "reentry"}
     if not live_enabled(market):
         return None, None, scenario
     try:

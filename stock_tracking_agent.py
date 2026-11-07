@@ -1730,8 +1730,9 @@ class StockTrackingAgent:
             analysis_result["existing_row_count"] = existing.get("row_count", 0)
 
         sector = analysis_result.get("sector", "Unknown")
-        analysis_result["sector_diverse"] = await self._check_sector_diversity(
-            sector, is_pyramiding_add=bool(analysis_result.get("is_add")))
+        analysis_result["sector_diverse"] = (
+            await self._check_sector_diversity(sector, is_pyramiding_add=True) if analysis_result.get("is_add")
+            else await self._check_sector_diversity(sector))
         return analysis_result
 
     @staticmethod
