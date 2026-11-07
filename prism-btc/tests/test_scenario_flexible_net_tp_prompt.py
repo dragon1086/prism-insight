@@ -33,6 +33,14 @@ def test_draft_and_selection_share_flexible_tp_and_cost_semantics(side, holding)
             "estimated_net_before_unmodelled_costs is NOT guaranteed future net profit",
         ):
             assert clause in text
+        for clause in (
+            "Supported trend continuation (LONG or SHORT)",
+            "BETWEEN is a location, not proof of a range",
+            "One narrowing frame calls for more conservative evidence review, not a new automatic veto",
+            "Slow flow never excuses holding an invalidated thesis",
+            "Confidence is not measured win probability",
+        ):
+            assert clause in text
         assert "Start by considering 50% near" not in text
         assert "Compare TP allocations at the same entry and structural SL" in text
         assert "Bounded MA10-to-MA35 traversals retain their original cap" in text

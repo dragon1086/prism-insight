@@ -15,9 +15,9 @@ from live.scenario_analysis_frames import analysis_model_view
 def test_user_approved_flexible_management_prompt_version_is_pinned():
     import hashlib
     from live.scenario_llm import FLAT_ENTRY_PROMPT
-    # 2026-10-26: user-approved structural trend TP allocation; no preset weights.
+    # 2026-11-07: purpose-specific framing; host gates and TP allocation unchanged.
     expected = {
-        'SYSTEM_PROMPT': '63be06e8f36262c05593c0ad4a23cba47e04b5e966142313e00d69e8d82ac56e',
+        'SYSTEM_PROMPT': '7e9c462ad7c099be16e272ee11491f5e178f329a55cffddca287339eee9ef067',
         'MA_STRUCTURE_PROMPT': '82859463405921af991331e9d9dde51bd5a72a5c0294feecea6f2b52af578615',
         'FLAT_ENTRY_PROMPT': '6c3481909e3b75240edcee052b2bc0ba9cd3287ba5df1cf5b5cc17880c0f306b',
     }
@@ -277,7 +277,7 @@ def test_management_framing_preserves_both_trend_runner_and_failure_responses():
     assert '30m/1h/4h/12h/1d/1w' in text
     assert 'Do not use 15m, including timing or management' in text
     assert 'five-minute evaluation cadence is not a candle timeframe' in text
-    assert 'favorable LONG or favorable SHORT deserves the same opportunity-cost review' in text
+    assert 'Supported trend continuation (LONG or SHORT)' in text
     assert 'neither early profit-taking nor a distant all-size TP is mandatory' in text
     assert 'Ordinary pullbacks with an intact primary thesis may justify WAIT' in text
     assert 'deterioration must inform management of EXISTING exposure' in text
