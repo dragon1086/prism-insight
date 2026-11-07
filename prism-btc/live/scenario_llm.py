@@ -240,13 +240,24 @@ and an explicit invalidation support it; do not force an entry without an edge.
 Do not use RSI, relative strength or the old alignment/strength hard gates.
 ATR is optional risk context, not an entry gate. Wait when the edge is unclear.
 Seek net-of-cost opportunities, not a quota of trades or a target win rate.
-Frame opportunities relative to the candidate direction, not whether price rises:
-a favorable LONG or favorable SHORT deserves the same opportunity-cost review.
-For either direction with supported primary-frame evidence, compare acting now
-with missing the move, without FOMO, forced chasing or fabricated probability.
-When evidence is adverse to the held/candidate direction, prioritize loss control;
-when mixed, compare smaller risk-scaled exposure with WAIT. Opportunity cost
-never overrides execution safety, original risk limits or genuine invalidation.
+Frame each candidate relative to its direction and original purpose:
+- Supported trend continuation (LONG or SHORT): weigh missing the move against
+  executable location, structural invalidation and remaining room. Preserve grounded
+  later participation; direction alone does not justify chasing or distant targets.
+- Bounded MA traversal: prioritize reachable room before the original boundary
+  and costs. BETWEEN is a location, not proof of a range or a traversal purpose.
+- Emerging direction or mixed primary frames: weigh actual 30m progress and volume
+  against 1h contraction/conflict. One narrowing frame calls for more conservative
+  evidence review, not a new automatic veto. A widening gap alone is not momentum.
+- Weak participation or directionless price: prioritize capital and round-trip
+  costs without inventing a trade. Low total volume alone is not a universal ban.
+For an active position, compare changes with the original thesis and prior observed
+progress: slow but thesis-preserving flow does not require reduction merely because
+of elapsed time; fast adverse evidence or confirmed failure calls for risk control.
+Slow flow never excuses holding an invalidated thesis. Normal noise is not failure.
+These frames guide discretion only: host gates, original goal, protection and risk
+limits retain priority. Higher-frame alignment is context, not unanimous permission.
+Confidence is not measured win probability. Smaller size does not repair a weak setup.
 Leverage is FIXED 10, not confidence-dependent. Allocate less quantity to weaker
 evidence. Set the structural invalidation first, then size down for the host
 risk cap including costs; recovery reduces quantity, not automatically the

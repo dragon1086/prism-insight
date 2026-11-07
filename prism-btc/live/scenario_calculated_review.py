@@ -40,16 +40,21 @@ Unknown flags remain unknown: do not invent permission or a first-observation ba
 Choose strategic direction, entry,
 SL, TP, quantities and fractions yourself from supplied market evidence; the host
 does not choose these. Candidates are mutually exclusive alternatives, never a
-combined portfolio. Do not calculate reward/risk, costs or projected PnL yourself:
-the host will calculate your exact proposals for subsequent comparison. Do not
-shrink a structural SL to make size fit. A candidate may fail host risk validation;
-it will remain visible but cannot be selected. If no grounded candidate exists,
-return an empty candidates list and a qualitative
-reason identifying missing structure or evidence, not invented arithmetic.
-Economic objections alone must submit a candidate for host calculation, not use
-an empty list to bypass calculation. First recovery observation stays WAIT only,
-with empty candidates. Candidate submission is not an order or permission
-to trade. Unknown real fees never authorize invented net-reward arithmetic.
+combined portfolio. Use the same original purpose and evidence to compare a
+marketable entry, a grounded conditional entry or WAIT where supported; do not
+force two candidates, an opposite-side trade or a duplicate plan.
+Choose structural invalidation before sizing, and connect entry, reachable reaction
+zones, TP allocation and failure response into one coherent plan. Do not invent a
+farther target or shrink a structural SL to improve a ratio. Distinguish total
+volume from directional flow and confirmed facts from provisional observations.
+Do not calculate reward/risk, costs or projected PnL yourself: the host calculates
+exact effective plans for subsequent comparison. Unknown costs remain UNKNOWN.
+A candidate may fail host risk validation; it remains visible but cannot be selected.
+If no grounded structure exists, return no candidates and identify the missing
+qualitative evidence. Economic objections alone must submit a grounded candidate
+for host calculation instead of bypassing calculation with an empty list.
+First recovery observation stays WAIT only with no candidates. Submission is not
+an order or permission to trade; the original host expiry and gates still apply.
 For a new flat OPEN, consider TP, optional structural-weakening partial stops and
 remaining lots together. Noise alone need not justify partial SL; partial_stops=[]
 is valid when no structural reduction is grounded. Confirmed failure still means
@@ -85,8 +90,14 @@ from the schema enum. Each host token binds a candidate ID (or WAIT) and its ful
 receipt hash; never construct a token or copy a separate hash field. Never rewrite
 prices, quantities, expiry or confidence; revised plans require a new research
 run, not an extra call here. Interpret trend, support/resistance, fill plausibility
-and supplied host calculations. Do not invent net profit or recompute supplied
-arithmetic. Risk reserves are NOT observed per-side fees or guaranteed losses.
+and supplied host calculations. Compare effective entry location, evidenced reaction
+zones, whole-path costs and grounded continuation; a higher conditional ratio alone
+is not a reason to select an implausible target. Keep the candidate's original
+purpose, direction and goal references; do not relabel it to obtain a favorable frame.
+Do not invent net profit or recompute supplied arithmetic. Confidence is not win
+probability; conditional target payoff is not expected return. Compare future risk
+and opportunity when holding, without using past losses to justify recovery bets.
+Risk reserves are NOT observed per-side fees or guaranteed losses.
 Read calculation_field_units for projection.targets fields: gross_pnl is the
 before-cost USDT amount for that target's quantity, not whole-scenario profit;
 gross_reward_per_btc is USDT/BTC price distance, never total USDT reward. Keep
