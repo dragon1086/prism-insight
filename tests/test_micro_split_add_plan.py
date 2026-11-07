@@ -140,7 +140,7 @@ def test_pyramid_step_scenario_count_duplicates_and_chase_clamp():
     plan, issues = _plan(_scenario(), _scenario())
     assert len(plan["scenarios"]) == 1 and issues == [{"id": "breakout_1", "reason": "DUPLICATE_ID"}]
     plan, issues = _plan(dict(_scenario(), max_chase_pct=5), dict(_scenario("b2"), max_chase_pct=1))
-    assert [s["max_chase_pct"] for s in plan["scenarios"]] == [2.0, 1.0]
+    assert [s["max_chase_pct"] for s in plan["scenarios"]] == [2.0, 1.5]  # 1.0 raised to the floor (2026-11-08)
     assert issues == [{"id": "breakout_1", "reason": "CHASE_CLAMPED"}] and plan["dropped"] == []
     cancelled, _ = P.validate_plan({"cancel": True, "reason": "thesis broken"}, market="KR", source="REVIEW",
                                    created_at=_iso(OPEN), valid_for=SESSION, allocation="0.45", last_step="0.45")
@@ -750,6 +750,18 @@ def test_add_planned_event_keeps_trigger_levels_and_chase_limits(monkeypatch):
     (name, kw), = sent
     scenario, = [s for s in kw["attributes"]["scenarios"] if s["id"] == "breakout_1"]
     assert name == "micro_split.add_planned"
-    assert scenario["trigger"]["price_above"] == 10400 and scenario["max_chase_pct"] == 1.0
+    assert scenario["trigger"]["price_above"] == 10400 and scenario["max_chase_pct"] == 1.5  # AI wrote 1.0; raised to the 1.5% floor (2026-11-08)
     assert scenario["type"] == "breakout" and scenario["target_allocation"] == "0.60"
     assert json.loads(json.dumps(events._sanitize(kw["attributes"])))["scenarios"][0]["trigger"]["price_above"] == 10400
+
+
+def test_chase_limit_is_raised_to_the_floor_and_capped():
+    # 2026-11-08: AI-written 0.3-1% limits blocked strong add days (팬오션 +12% day); floor 1.5%, cap 2.0%.
+    for written, stored in ((0.3, 1.5), (1.0, 1.5), (1.8, 1.8), (2.0, 2.0), (3.0, 2.0)):
+        plan, _ = _plan(dict(_scenario(), max_chase_pct=written), _scenario("b2", price_above=10600))
+        assert plan["scenarios"][0]["max_chase_pct"] == stored, written
+    plan, _ = _plan(dict(_scenario(), max_chase_pct=0.5), _scenario("b2", price_above=10600))
+    # 10400 x 1.015 = 10556: a 1.2% chase now adds, 1.6% does not.
+    assert P.evaluate_plan(plan, _state(), _evidence(closes=(10450, 10525), price=10525), now=_now())["action"] == "ADD"
+    assert P.evaluate_plan(plan, _state(), _evidence(closes=(10450, 10570), price=10570),
+                           now=_now())["reasons"]["breakout_1"] == "CHASE_LIMIT"
