@@ -197,7 +197,10 @@ def test_pyramid_row_never_inherits_reentry_sizing(flag_on, monkeypatch):
     reentry = dict(base, reentry={"version": "v3", "origin_decision_id": "report:old.pdf"})
     _, cash, scenario = live.prepare_entry(_bars_agent(), scenario=reentry, pyramid_row={"entry_no": 2}, **kwargs)
     assert cash == normal_cash and "reentry" not in scenario
+    assert "reentry_size" not in scenario["micro_split"]
     assert "reentry" in reentry  # the caller's scenario is not mutated
+    _, halved, plain = live.prepare_entry(_bars_agent(), scenario=dict(reentry), **kwargs)  # #1306 still applies
+    assert halved < normal_cash and plain["micro_split"]["reentry_size"]["factor"] == "0.5"
 
 
 class _FakeTrading:
@@ -268,7 +271,13 @@ def test_kr_sector_cap_counts_names_not_pyramid_rows(monkeypatch):
 
 
 def test_kr_pyramid_add_is_exempt_from_the_sector_cap_only_with_the_flag(monkeypatch):
-    import stock_tracking_agent as kr
+    import os
+    saved = os.environ.copy()
+    try:
+        import stock_tracking_agent as kr
+    finally:  # the agent import loads .env defaults; keep other tests' environment unchanged
+        os.environ.clear()
+        os.environ.update(saved)
     agent = SimpleNamespace(_account_scope=lambda: ("acc", ""), cursor=None, MAX_SAME_SECTOR=3,
                             SECTOR_CONCENTRATION_RATIO=.3)
     monkeypatch.setattr(kr, "check_sector_diversity", lambda *a, **k: False)
