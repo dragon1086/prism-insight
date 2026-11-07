@@ -8,6 +8,7 @@ fills, like the legacy full-slot entry. OFF unless MICRO_SPLIT_LIVE_ENABLED.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from copy import deepcopy
@@ -581,10 +582,8 @@ def record_order_price(agent, *, market, row_id, price, logger=None):
         return True
     except Exception as error:  # noqa: BLE001 - the leg price stays the sizing basis
         if conn is not None:
-            try:
+            with contextlib.suppress(Exception):  # a failed rollback must not hide the original error
                 conn.rollback()
-            except Exception:  # noqa: BLE001
-                pass
         if logger:
             logger.warning("[MICRO_SPLIT][%s] order price not recorded for row %s: %s", market, row_id, error)
         return False
