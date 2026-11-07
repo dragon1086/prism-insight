@@ -1001,6 +1001,15 @@ US_PYRAMID_MIN_PROFIT_PCT = 5.0
 US_PYRAMID_MAX_ROWS = 3
 
 
+def _pyramid_rows_enabled():
+    """PYRAMID_ROWS_MICRO_SPLIT_ENABLED (prism_core.micro_split_live); off when unreadable."""
+    try:
+        from prism_core.micro_split_live import pyramid_rows_enabled
+        return pyramid_rows_enabled()
+    except Exception:  # noqa: BLE001 - fail closed: micro-split rows stay out of #288
+        return False
+
+
 def _stored_pyramid_ownership(raw):
     """Classify stored evidence only; never adopt an unowned legacy campaign."""
     if raw is None or raw == "":
@@ -1072,9 +1081,21 @@ def get_us_existing_position_for_ticker(cursor, ticker: str, account_key: Option
         ownership = {_stored_pyramid_ownership(row[1] if len(row) > 1 else None) for row in rows}
         summary = ("MICRO_SPLIT" if "MICRO_SPLIT" in ownership else "SPLIT_PILOT" if "SPLIT_PILOT" in ownership
                    else ("UNKNOWN" if "UNKNOWN" in ownership else "LEGACY_OR_UNOWNED"))
+        if _pyramid_rows_enabled():  # pyramid rows on: a pilot or unknown row still blocks the ticker
+            summary = next(o for o in ("SPLIT_PILOT", "UNKNOWN", "MICRO_SPLIT", "LEGACY_OR_UNOWNED")
+                           if o in ownership or o == "LEGACY_OR_UNOWNED")
         prices = [float(r[0]) for r in rows if r[0] is not None]
         row_count = len(prices)
         avg_buy_price = (sum(prices) / row_count) if row_count else 0.0
+        if row_count and _pyramid_rows_enabled():
+            # Micro-split rows keep the first-leg price in buy_price: the +5% gate and the add
+            # message use the cost-weighted entry over every row's legs (0 when unreadable -> gate fails closed).
+            from prism_core.micro_split_live import rows_cost_weighted_entry
+            try:
+                avg_buy_price = rows_cost_weighted_entry(
+                    [(r[0], r[1] if len(r) > 1 else None) for r in rows]) or 0.0
+            except (KeyError, TypeError, ValueError, ArithmeticError):
+                avg_buy_price = 0.0
         return {"row_count": row_count, "avg_buy_price": avg_buy_price, "pyramid_ownership": summary}
     except Exception as e:
         logger.error(f"Error querying existing US position for {ticker}: {e}")
@@ -1112,7 +1133,7 @@ def evaluate_us_pyramid_add_gate(
     """
     if ownership == "SPLIT_PILOT":
         return False, "LEGACY_PYRAMID_BLOCKED_SPLIT_PILOT"
-    if ownership == "MICRO_SPLIT":
+    if ownership == "MICRO_SPLIT" and not _pyramid_rows_enabled():
         return False, "LEGACY_PYRAMID_BLOCKED_MICRO_SPLIT"
     if ownership == "UNKNOWN":
         return False, "LEGACY_PYRAMID_OWNERSHIP_UNKNOWN"

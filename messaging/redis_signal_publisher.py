@@ -193,6 +193,9 @@ class SignalPublisher:
                 # Re-entry v3 BUYs are labelled (entry_kind/reentry); other BUYs are unchanged.
                 from prism_core.reentry_v3_live import signal_fields as reentry_signal_fields
                 signal_data.update(reentry_signal_fields(scenario))
+                # Micro-split pyramid rows (2026-11-08) are labelled entry_kind PYRAMID_ADD.
+                from prism_core.micro_split_live import pyramid_signal_fields
+                signal_data.update(pyramid_signal_fields(scenario))
 
             # Merge additional data (SELL carries market here; it overrides if set)
             if extra_data:
@@ -273,6 +276,7 @@ class SignalPublisher:
         trade_result: Optional[Dict[str, Any]] = None,
         event_id: Optional[str] = None,
         sell_denominator: int = 1,
+        sell_fraction: Optional[float] = None,
     ) -> Optional[str]:
         """
         Publish sell signal
@@ -289,6 +293,10 @@ class SignalPublisher:
                 mirroring subscribers can match a partial (pyramiding) exit.
                 Subscribers sell floor(their_holding / sell_denominator);
                 1 (default) means a full-position sell (unchanged behavior).
+                0 = nothing sold (not published). sell_fraction: exact share, optional.
+            0 means nothing was sold (a pyramid row with unknown shares): not published.
+        sell_fraction: Exact share of the position this sell represents (micro-split
+            pyramid rows, 4 decimals); omitted when None.
 
         Returns:
             str: Message ID
@@ -299,6 +307,11 @@ class SignalPublisher:
             "sell_reason": sell_reason,
             "sell_denominator": sell_denominator,
         }
+        if not sell_denominator:  # 0 shares sold: a subscriber would read 0 as "sell all"
+            logger.warning(f"Partial SELL for {ticker} sold 0 shares; signal not published")
+            return None
+        if sell_fraction is not None:
+            extra_data["sell_fraction"] = sell_fraction
 
         if trade_result:
             extra_data["trade_success"] = trade_result.get("success", False)
@@ -404,6 +417,7 @@ async def publish_sell_signal(
     market: str = "KR",
     event_id: Optional[str] = None,
     sell_denominator: int = 1,
+    sell_fraction: Optional[float] = None,
 ) -> Optional[str]:
     """Publish sell signal via global publisher (convenience function)
 
@@ -413,6 +427,9 @@ async def publish_sell_signal(
             mirroring subscribers can match a partial (pyramiding) exit.
             Subscribers sell floor(their_holding / sell_denominator);
             1 (default) means a full-position sell (unchanged behavior).
+            0 means nothing was sold (a pyramid row with unknown shares): not published.
+        sell_fraction: Exact share of the position this sell represents (micro-split
+            pyramid rows, 4 decimals); omitted when None.
     """
     publisher = await get_signal_publisher()
     # Include market in extra_data by passing through the publish_signal method
@@ -424,6 +441,11 @@ async def publish_sell_signal(
         "market": market,
         "sell_denominator": sell_denominator,
     }
+    if not sell_denominator:  # 0 shares sold: a subscriber would read 0 as "sell all"
+        logger.warning(f"Partial SELL for {ticker} sold 0 shares; signal not published")
+        return None
+    if sell_fraction is not None:
+        extra_data["sell_fraction"] = sell_fraction
 
     if trade_result:
         extra_data["trade_success"] = trade_result.get("success", False)

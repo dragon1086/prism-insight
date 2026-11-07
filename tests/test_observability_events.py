@@ -35,6 +35,10 @@ def test_suppression_is_scoped_and_restored_on_error(tmp_path):
 
 def test_build_event_has_correlation_and_provenance(monkeypatch):
     monkeypatch.delenv("SCENARIO_SHADOW_CAPTURE_ENABLED", raising=False)
+    # 2026-11-08: sizing switches joined the config keys (root conftest and other tests set some); pin only this one.
+    from observability.events import _CONFIG_KEYS
+    for key in _CONFIG_KEYS:
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("PRISM_ENV", "test")
     monkeypatch.setenv("TRIGGER_PERFORMANCE_FEEDBACK", "shadow")
     event = build_event(

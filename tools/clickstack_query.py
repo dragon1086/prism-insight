@@ -140,6 +140,16 @@ def cmd_trace(args) -> None:
             print(json.dumps(body, ensure_ascii=False))
             continue
         print(f"{row['kst'][:19]}  {row['event']:<34} {summarize(body, 0 if args.full else 220)}")
+    # Positions that point back here (re-entry buys, pyramid rows 2/3): their own traces.
+    linked = run_query(
+        "SELECT TraceId AS trace, toString(toTimeZone(min(Timestamp), 'Asia/Seoul')) AS first_kst,"
+        " any(LogAttributes['event.name']) AS event FROM otel_logs"
+        " WHERE TimestampTime >= now() - INTERVAL 180 DAY AND TraceId != {trace:String}"
+        " AND JSONExtractString(Body, 'attributes', 'origin_trace_id') = {trace:String}"
+        " GROUP BY TraceId ORDER BY min(Timestamp)",
+        {"trace": args.trace_id}, local=args.local)
+    for row in linked:
+        print(f"linked trace {row['trace']} (origin_trace_id = this trace, from {row['first_kst'][:16]})")
 
 
 def cmd_ticker(args) -> None:

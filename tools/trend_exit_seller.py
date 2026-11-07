@@ -724,7 +724,7 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                         summary["acted"] += 1
                         split = None
                         if len(rows) > 1:
-                            split = splits.setdefault(id(rows), new_split_state(len(rows)))
+                            split = splits.setdefault(id(rows), new_split_state(len(rows), rows))
                         h = dict(h)
                         h["current_price"] = cur_price
                         await _act_on_trigger(conn, market, ticker, h, reason, streak,
@@ -1064,6 +1064,7 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
             release_lock(conn, ticker, market, run_id, new_state="HOLDING")
             return
         sell_denominator = split["remaining"] if split is not None else 1
+        sell_fraction = None
 
         if market == "US" and stock_data.get("_oneil_owned_exit") is True:
             # Ownership-specific cancellation/reconciliation belongs to the
@@ -1090,9 +1091,12 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
                 sold_qty = int(live_qty or 0)
                 if split is not None:
                     from prism_core.loop_row_split import split_sell_quantity
-                    sold_qty = split_sell_quantity(split, sold_qty)
-                    logger.info("[%s] %s pyramided row sell: %d shares (snapshot %s, remaining rows=%d)",
-                                market, ticker, sold_qty, split["snapshot"], split["remaining"])
+                    sold_qty = split_sell_quantity(split, sold_qty, row_id=stock_data.get("id"))
+                    sell_denominator = split.pop("last_denominator", sell_denominator)
+                    sell_fraction = split.pop("last_fraction", None)
+                    logger.info("[%s] %s pyramided row sell: %d shares (snapshot %s, remaining rows=%d, reason=%s)",
+                                market, ticker, sold_qty, split["snapshot"], split["remaining"],
+                                split.pop("last_reason", "LEGACY_EQUAL_SPLIT"))
                 if sold_qty <= 0:
                     logger.info("[%s] %s already flat at KIS (qty=0); sim closed", market, ticker)
                 else:
@@ -1168,6 +1172,7 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
                 sell_reason=reason,
                 trade_result={"success": bool(ok or sold_qty == 0), "order_no": order_no},
                 sell_denominator=sell_denominator,
+                sell_fraction=sell_fraction,
             )
         except Exception as e:
             logger.warning("[%s] %s sell signal publish failed (non-critical): %s", market, ticker, e)
