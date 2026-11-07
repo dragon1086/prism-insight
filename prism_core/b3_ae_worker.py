@@ -75,6 +75,7 @@ class B3AeWorker:
         self.market, self.store, self.holdings_db = market, store, str(holdings_db)
         self.providers, self.clock, self.max_slots = providers, clock, max_slots
         self._close_done, self._announced = set(), set()
+        self._day_tally = {}   # (campaign, plan_hash, session) -> per-scenario wait reasons, emitted at the close
 
     def _reader(self):
         db = sqlite3.connect(f"file:{self.holdings_db}?mode=ro", uri=True, timeout=30)
@@ -200,6 +201,8 @@ class B3AeWorker:
                      blocked=self._sell_day_block(db, symbol, (evidence or {}).get("session_date") or today, current))
         decision = add_plan.evaluate_plan(plan, state, evidence, now=current)
         out.update(status=decision["action"], reason=decision["reason"])
+        self._tally_day(cid, campaign, symbol, plan, today, decision, phase, current,
+                        allocation=float(block["allocation"]), price=(evidence or {}).get("price"))
         attributes = {"campaign_id": cid, "slot_allocation": float(block["allocation"]),
                       "plan_hash": plan.get("plan_hash"), "phase": phase, "reason": decision["reason"]}
         service = f"prism-{self.market.lower()}-micro-split"
@@ -238,6 +241,44 @@ class B3AeWorker:
         out["submitted"] = bool((live.get("broker") or {}).get("success"))
         self.store.record_event(cid, current, "add_plan.executed", dict(attributes, live=out["live"]))
         return out
+
+    def _tally_day(self, cid, campaign, symbol, plan, today, decision, phase, now, *, allocation, price):
+        """Count each scenario's wait reason through the session; one summary event at the close.
+
+        Why (2026-11-08): only rail blocks reached the ledger, so a later review could not tell
+        whether a scenario never reached its price, failed a volume/zone/bar condition, or was
+        never profitable. A worker restart loses the counts so far: ``evaluations`` and
+        ``first_at`` show how much of the session the summary covers.
+        """
+        key = (cid, plan.get("plan_hash"), today)
+        for stale in [k for k in self._day_tally if k[0] == cid and k[2] != today]:
+            self._day_tally.pop(stale)
+        tally = self._day_tally.setdefault(key, {"evaluations": 0, "first_at": now, "plan": {}, "scenarios": {},
+                                                 "added": []})
+        tally["evaluations"] += 1
+        tally["last_at"] = now
+        reasons = decision.get("reasons") or {}
+        for sid, why in reasons.items():
+            entry = tally["scenarios"].setdefault(sid, {"reasons": {}, "last": None})
+            entry["reasons"][why] = entry["reasons"].get(why, 0) + 1
+            entry["last"] = why
+        if decision["action"] == "ADD":
+            tally["added"].append({"scenario_id": decision.get("scenario_id"), "at": now, "price": decision.get("price")})
+        elif not reasons:  # a plan-level wait (NOT_PROFITABLE, SELL_DAY_BLOCK, PRICE_MISSING, ...)
+            tally["plan"][decision["reason"]] = tally["plan"].get(decision["reason"], 0) + 1
+        if phase != "CLOSE" or str(decision.get("reason", "")).startswith("EVIDENCE_"):
+            return
+        from observability.events import emit_event
+        self._day_tally.pop(key, None)
+        attributes = {"campaign_id": cid, "plan_hash": plan.get("plan_hash"), "session_date": today,
+                      "slot_allocation": allocation, "close_price": price, "outcome": decision["action"],
+                      "evaluations": tally["evaluations"], "first_at": tally["first_at"],
+                      "last_at": tally["last_at"], "plan_waits": tally["plan"], "scenarios": tally["scenarios"],
+                      "added": tally["added"]}
+        self.store.record_event(cid, now, "add_plan.day_summary", attributes)
+        emit_event("micro_split.add_plan_day_summary", service=f"prism-{self.market.lower()}-micro-split",
+                   market=self.market, ticker=symbol, position_id=campaign["position_id"],
+                   **_trace(self.market, campaign), attributes=attributes)
 
     def _record_rail_blocks(self, cid, campaign, symbol, now, decision, state, attributes, *, price=None):
         """Once per plan/session/scenario: a scenario whose conditions held but a safety rail blocked it.
