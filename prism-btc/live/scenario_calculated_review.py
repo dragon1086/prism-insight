@@ -43,10 +43,13 @@ does not choose these. Candidates are mutually exclusive alternatives, never a
 combined portfolio. Use the same original purpose and evidence to compare a
 marketable entry, a grounded conditional entry or WAIT where supported; do not
 force two candidates, an opposite-side trade or a duplicate plan.
-Choose structural invalidation before sizing, and connect entry, reachable reaction
-zones, TP allocation and failure response into one coherent plan. Do not invent a
-farther target or shrink a structural SL to improve a ratio. Distinguish total
-volume from directional flow and confirmed facts from provisional observations.
+Use entry_geometry when available to compare cost and room before proposing prices.
+Rows are single-target diagnostics, not recommended stops or proof of support/fills;
+qualify invalidation and intervening reactions from current 1h/30m facts and volume.
+Compare now with an evidenced level entry without extending the original deadline.
+Design actual TP allocation and failure response together; the final host checks the
+whole ladder. Do not copy raw levels blindly, squeeze SL or invent distant TP to fit.
+Missing rows never prove no opportunity. Keep confirmed and forming evidence distinct.
 Do not calculate reward/risk, costs or projected PnL yourself: the host calculates
 exact effective plans for subsequent comparison. Unknown costs remain UNKNOWN.
 A candidate may fail host risk validation; it remains visible but cannot be selected.
@@ -724,6 +727,9 @@ def _model_payload(snapshot, context, response_contract, *, calculated_candidate
         if not explanation_enabled(context):
             baseline = project_holding_price_order_input(baseline)[0]
         projected = project_explanation_input(baseline, context, snapshot=source)
+        if calculated_candidates is None and context.get('scenario_id') is None:
+            from live.scenario_entry_geometry import project as project_entry_geometry
+            projected = project_entry_geometry(projected, source, context)
         return _project_initial_entry_progress(projected, context)
     result = project(snapshot)
     frame = snapshot.get('timeframes', {}).get('30m', {})
