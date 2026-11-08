@@ -123,3 +123,20 @@ def test_us_bars_pass_the_registry_exchange(monkeypatch):
     assert set(seen) == {"AMS"} and bars[-1].close == 16.5
     with pytest.raises(Unsupported):
         kis_data.KisUsData().daily_bars(Instrument("US", "QID", "etf"), date(2026, 11, 6), date(2026, 11, 6))
+
+
+def test_long_lane_db_reads_holdings_read_only_and_missing_is_unavailable(tmp_path):
+    import sqlite3
+
+    from prism_inverse.adapters.long_lane_db import LongLaneDb
+
+    path = tmp_path / "trading.sqlite"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE stock_holdings (ticker TEXT)")
+        db.execute("CREATE TABLE us_stock_holdings (ticker TEXT)")
+        db.executemany("INSERT INTO stock_holdings VALUES (?)", [("000660",), ("000660",)])
+        db.execute("INSERT INTO us_stock_holdings VALUES ('nvda')")
+    book = LongLaneDb(path)
+    assert book.tickers("KR") == {"000660"} and book.tickers("US") == {"NVDA"}
+    with pytest.raises(Unavailable):
+        LongLaneDb(tmp_path / "absent.sqlite").tickers("KR")

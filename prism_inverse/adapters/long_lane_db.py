@@ -11,7 +11,10 @@ from pathlib import Path
 from prism_inverse.ports import Unavailable
 
 DEFAULT_PATH = Path(__file__).resolve().parents[2] / "stock_tracking_db.sqlite"
-_TABLE = {"KR": "stock_holdings", "US": "us_stock_holdings"}
+_QUERY = {
+    "KR": "SELECT DISTINCT ticker FROM stock_holdings",
+    "US": "SELECT DISTINCT ticker FROM us_stock_holdings",
+}
 
 
 class LongLaneDb:
@@ -24,7 +27,7 @@ class LongLaneDb:
         uri = f"file:{self.path}?mode=ro"
         try:
             with sqlite3.connect(uri, uri=True) as db:
-                rows = db.execute(f"SELECT DISTINCT ticker FROM {_TABLE[market]}").fetchall()
+                rows = db.execute(_QUERY[market]).fetchall()
         except sqlite3.Error as exc:
             raise Unavailable(f"holdings read failed: {type(exc).__name__}") from exc
         return frozenset(str(r[0]).strip().upper() for r in rows if r[0])

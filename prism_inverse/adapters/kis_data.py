@@ -114,7 +114,7 @@ class KisUsData:
         first, last = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
         symbol = instrument.code.replace("-", "/")
 
-        def frame(modp: str):
+        def fetch_frame(modp: str):
             def page(cursor):
                 body = m._fetch(m.STOCK_URL, m.STOCK_TR_ID, {
                     "AUTH": "", "EXCD": instrument.exchange, "SYMB": symbol, "GUBN": "0", "BYMD": cursor,
@@ -124,7 +124,8 @@ class KisUsData:
                                      symbol=instrument.code)
 
         # Same basis as the runtime US provider: split-adjusted, not dividend-adjusted.
-        adjusted = _wrap(lambda: m.yfinance_basis(frame("0"), frame("1"), adjusted=False), instrument.code)
+        adjusted = _wrap(lambda: m.yfinance_basis(fetch_frame("0"), fetch_frame("1"), adjusted=False),
+                         instrument.code)
         return frame_to_bars(adjusted)
 
     def snapshot(self, spec: EtfSpec, day: date) -> EtfSnapshot:
