@@ -200,6 +200,10 @@ def _loaded_parity(name, source, selected=None):
 
 
 def _manifest():
+    # Pure optional adapter must also be loaded before legacy provenance checks.
+    from live import scenario_entry_geometry
+    if sys.modules.get('live.scenario_entry_geometry') is not scenario_entry_geometry:
+        raise ValueError('review_mixed_loaded_policy')
     root = Path(__file__).resolve().parents[1]
     policy_files = ['core/scenario_convergence.py', 'live/scenario_llm.py', 'live/scenario_contract.py',
                     'live/scenario_recovery.py',
