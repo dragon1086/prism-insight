@@ -14,7 +14,9 @@
 - Pulse 불명·UNDER_PRESSURE·CORRECTION: sideways 하한 8 유지.
 - moderate_bear 8, strong_bear 9 유지.
 - 분산 매도 경고에 따른 레짐 하향이 있으면 7점 예외를 적용하지 않습니다.
-  moderate_bull이 sideways로 내려온 경우에도 8을 유지합니다.
+  2026-09-30부터 강세장(parabolic/strong/moderate bull)이 분산일로 한 단계 내려온 경우는 원래 강세장 하한(0)과
+  강등된 레짐 규칙(횡보 5)·LLM min_score 중 큰 값을 씁니다(경계일 8점 이상 후보가 398건 중 9건뿐이라 8점 하한이 차단으로만 작동).
+  US dual 모드의 분산일 수는 min(S&P 500, NASDAQ)입니다. 경계일 신규 진입 손절률이 10%p 이상 나쁘면 되돌립니다.
 - 6점 파일럿: 정확히 6점, 명시적 Enter/entry, 원래 LLM 하한 6 이하,
   sideways + UPTREND, 분산 매도 경고 없음, 신규 진입, 유효한 50% 예산이 모두 필요합니다.
   6.9를 정수 6으로 잘라 파일럿으로 인정하지 않습니다. 추가매수에는 이 예외를 적용하지 않습니다.
