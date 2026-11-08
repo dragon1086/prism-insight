@@ -115,7 +115,11 @@ def test_production_flat_broker_context_supplies_policy(tmp_path):
     assert fresh.context()['entry_economics']==policy()
 
 
-def test_economics_module_is_bound_in_provenance():
+def test_economics_module_is_bound_in_provenance(monkeypatch):
     from live.scenario_provenance import review_policy_binding
     result=review_policy_binding(research_mode='economic-reject-calculated-v1')
     assert 'scenario_entry_economics' in json.dumps(result)
+    from live import scenario_entry_economics
+    monkeypatch.setattr(scenario_entry_economics,'MINIMUM_RATIO','0.1')
+    with pytest.raises(ValueError,match='review_mixed_loaded_policy'):
+        review_policy_binding(research_mode='economic-reject-calculated-v1')

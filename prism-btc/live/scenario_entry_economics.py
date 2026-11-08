@@ -2,7 +2,7 @@
 from decimal import Decimal
 import math
 
-MINIMUM_RATIO = Decimal('1.2')
+MINIMUM_RATIO = '1.2'
 
 
 def policy():
@@ -50,7 +50,7 @@ def assess(plan, context, projection):
         value = float(ratio)
         if not math.isfinite(value):
             raise ValueError('nonfinite_ratio')
-        result.update(status='PASS' if ratio >= MINIMUM_RATIO else 'REJECTED',
+        result.update(status='PASS' if ratio >= _number(MINIMUM_RATIO) else 'REJECTED',
                       ratio=value, basis=basis, conditional_reward=float(reward), full_stop_loss=float(loss))
     except (KeyError, TypeError, ValueError, ArithmeticError, StopIteration):
         pass
