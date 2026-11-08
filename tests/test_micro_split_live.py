@@ -592,12 +592,14 @@ def test_untilted_buy_plan_is_not_rebased(live_on):
     assert "rebased" not in stored and [s["target_allocation"] for s in stored["scenarios"]] == ["0.55", "0.60"]
 
 
-def _reentry_prepared(factor, monkeypatch, *, trigger_type=None, buy_score=None):
+def _reentry_prepared(factor, monkeypatch, *, trigger_type=None, buy_score=None, regime=None):
     if factor is None:
         monkeypatch.delenv("REENTRY_V3_FIRST_SIZE_FACTOR", raising=False)
     else:
         monkeypatch.setenv("REENTRY_V3_FIRST_SIZE_FACTOR", factor)
     scenario = {"stop_loss": 9300, "reentry": {"version": "reentry_v3"}}
+    if regime is not None:
+        scenario["_deterministic_market_regime"] = regime
     if buy_score is not None:
         scenario["buy_score"] = buy_score
     return live.prepare_entry(_agent(), market="KR", ticker="005930", current_price=10000, scenario=scenario,
@@ -626,3 +628,40 @@ def test_regular_entry_ignores_the_reentry_factor(live_on, monkeypatch):
     monkeypatch.setenv("REENTRY_V3_FIRST_SIZE_FACTOR", "0.5")
     _, cash, scenario = _prepared()
     assert scenario["micro_split"]["allocation"] == "0.7777" and "reentry_size" not in scenario["micro_split"]
+
+
+@pytest.mark.parametrize("regime,bucket,else0,else05", [("strong_bull", "bull", "0.7777", "0.7777"),
+                                                         ("sideways", "sideways", "0", "0.3888"),
+                                                         ("moderate_bear", "bear", "0", "0.3888")])
+def test_regime_size_shadow_records_arms_without_changing_the_order(live_on, monkeypatch, regime, bucket, else0, else05):
+    monkeypatch.setenv("REENTRY_REGIME_SIZE_SHADOW", "true")
+    _, cash, scenario = _reentry_prepared("0.5", monkeypatch, regime=regime)
+    block = scenario["micro_split"]
+    assert block["allocation"] == "0.3888" and cash == 388_800          # the order keeps the live 0.5 factor
+    shadow = block["reentry_regime_shadow"]
+    assert shadow["bucket"] == bucket and shadow["applied"] == "0.3888" and shadow["applied_factor"] == "0.5"
+    assert shadow["arms"]["bull1_else0"]["sized"] == else0 and shadow["arms"]["bull1_else05"]["sized"] == else05
+
+
+def test_regime_size_shadow_missing_regime_and_off(live_on, monkeypatch):
+    monkeypatch.setenv("REENTRY_REGIME_SIZE_SHADOW", "true")
+    _, _, scenario = _reentry_prepared("0.5", monkeypatch)
+    shadow = scenario["micro_split"]["reentry_regime_shadow"]
+    assert shadow["bucket"] == "MISSING" and "arms" not in shadow
+    monkeypatch.delenv("REENTRY_REGIME_SIZE_SHADOW")
+    _, _, scenario = _reentry_prepared("0.5", monkeypatch, regime="strong_bull")
+    assert "reentry_regime_shadow" not in scenario["micro_split"]
+
+
+def test_regime_size_shadow_ignores_regular_entries(live_on, monkeypatch):
+    monkeypatch.setenv("REENTRY_REGIME_SIZE_SHADOW", "true")
+    _, _, scenario = _prepared()
+    assert "reentry_regime_shadow" not in scenario["micro_split"]
+
+
+def test_regime_size_shadow_failure_keeps_the_live_entry(live_on, monkeypatch):
+    monkeypatch.setenv("REENTRY_REGIME_SIZE_SHADOW", "true")
+    monkeypatch.setattr(live, "regime_size_shadow", lambda *a, **k: 1 / 0)
+    _, cash, scenario = _reentry_prepared("0.5", monkeypatch, regime="strong_bull")
+    assert scenario["micro_split"]["allocation"] == "0.3888" and cash == 388_800
+    assert "reentry_regime_shadow" not in scenario["micro_split"]
