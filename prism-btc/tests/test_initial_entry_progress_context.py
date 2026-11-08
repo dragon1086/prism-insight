@@ -84,3 +84,14 @@ def test_projection_refuses_to_trade_away_existing_history(monkeypatch):
 
     monkeypatch.setattr(model_input,'project_model_input',corrupt)
     assert _project_initial_entry_progress(base,c)==base
+
+
+@pytest.mark.parametrize('mark,expected', [(75750.9,15.1/239),(75774.3,-8.3/239),(75795.7,-29.7/239)])
+def test_partial_exit_and_tighter_stop_preserve_original_progress_scale(mark,expected):
+    c=active('SHORT',mark)
+    c.update(positions=[dict(price=75766,quantity=.007)],previous_hard_stop=75960)
+    c['entry_thesis'].update(initial_fill_average=75766,initial_hard_stop=76005,
+                            favorable_price_change_from_initial_average=75766-mark)
+    assert _initial_entry_progress_units(c)['value']==pytest.approx(expected)
+    c['positions'][0]['quantity']=.014
+    assert _initial_entry_progress_units(c)['value']==pytest.approx(expected)
