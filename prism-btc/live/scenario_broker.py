@@ -644,7 +644,7 @@ class ScenarioDemoBroker(ScenarioExecution):
         incident_blocked = new_risk_blocked(self)
         from live.scenario_entry_economics import policy as entry_economics_policy
         economics = ({'entry_economics': entry_economics_policy()}
-                     if self.entry_economics_enabled and not active and observed.get('exchange_flat') is True else {})
+                     if getattr(self, 'entry_economics_enabled', False) and not active and observed.get('exchange_flat') is True else {})
         return dict(**economics, historical_unsettled=historical(self.conn), incident_epoch_blocked=incident_blocked,
             entry_thesis=initial_entry_evidence, stop_policy=stop_policy, scenario_risk_fraction=fraction, conditional_entry_version=1, account_version=observed["account_version"],legacy_fenced=observed["legacy_fenced"],
             **({'management_quarantine': management} if management else {}),
