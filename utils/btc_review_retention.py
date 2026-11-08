@@ -1,4 +1,4 @@
-"""Identify strictly flat WAIT tapes for later archive and delivery verification.
+"""Identify strictly flat WAIT and proven entry-rejection tapes for later archive and delivery verification.
 
 This module never deletes data. A candidate is not proof of safe deletion.
 """
@@ -162,6 +162,60 @@ def _recovery_wait_proven(conn, slot, snapshot, context, plan, outcome, original
         return False
 
 
+
+def _entry_rejection_proven(conn, slot, snapshot, context, outcome, original):
+    """Only sealed, non-authorizing flat entry-economics rejections may age out."""
+    try:
+        rule = context.get('entry_economics')
+        if (not isinstance(rule, dict) or type(rule.get('version')) is not int or rule['version'] != 1
+                or rule.get('minimum_ratio') != 1.2 or context.get('accounting_status') != 'confirmed'
+                or context.get('legacy_fenced') is not False or context.get('protection_ok') is not True):
+            return False
+        tape = json.loads(original)
+        digest = lambda value, ascii=False: hashlib.sha256(json.dumps(value, ensure_ascii=ascii,
+            sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+        seal = {k: v for k, v in tape.items() if k != 'sha256'}
+        result = tape['outcome']['result']
+        receipt = outcome['rejection_receipt']
+        bundle = result['candidates']
+        candidates_ = bundle['candidates']
+        if (tape['sha256'] != digest(seal, True) or tape['outcome']['status'] != 'COMPLETE'
+                or tape['inputs']['snapshot'] != snapshot or tape['inputs']['context'] != context
+                or result.get('disposition') != 'REJECTED_NO_ACTION' or 'selected' in result
+                or result.get('executable') is not False or result.get('orders_submitted') != 0
+                or tape.get('calls') != 1 or result.get('calls') != 1
+                or receipt.get('execution_authorized') is not False
+                or receipt.get('envelope_sha256') != tape['sha256']
+                or receipt.get('bundle_sha256') != result['bundle_sha256']
+                or result['bundle_sha256'] != digest(bundle) or not isinstance(candidates_,list)
+                or not 1 <= len(candidates_) <= 2):
+            return False
+        for item in candidates_:
+            metric = item.get('entry_economics', {})
+            if (item.get('eligible') is not False or item.get('rejection_type') != 'PREAUTHORITY_ECONOMIC'
+                    or metric.get('status') not in {'REJECTED', 'UNKNOWN'} or metric.get('minimum_ratio') != 1.2
+                    or item.get('rejection') not in {'entry_payoff_below_minimum', 'entry_payoff_unavailable'}
+                    or item.get('receipt_sha256') != digest({k:v for k,v in item.items() if k!='receipt_sha256'})):
+                return False
+        if outcome.get('rejection_codes') != [v['rejection'] for v in candidates_]:
+            return False
+        ops = tape['operations']
+        if not isinstance(ops,list) or len(ops)>128 or any(o.get('kind') not in {'clock','generate','record'} for o in ops):
+            return False
+        records = [o['event'] for o in ops if o['kind']=='record']
+        expected = dict(kind='RESEARCH_REJECTION', body=result, sha256=digest(result))
+        if sum(v == expected for v in records) != 1:
+            return False
+        if [r[2] for r in conn.execute('PRAGMA index_info(sqlite_autoindex_llm_scenario_review_events_1)')] != ['slot','sequence']:
+            return False
+        stored = conn.execute('SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence LIMIT ?',
+                              (slot,len(records)+1)).fetchall()
+        return len(stored)==len(records) and all(i==n and json.loads(_review_event_text(body,conn,slot,i))==records[n]
+                                                for n,(i,body) in enumerate(stored))
+    except (sqlite3.Error, ValueError, TypeError, KeyError, OverflowError, AttributeError):
+        return False
+
+
 def candidates(conn, now, *, after_slot=-1, limit=100, guard=None):
     if (type(now) not in (int, float) or not math.isfinite(now) or now <= 7 * 86400
             or type(after_slot) is not int or after_slot < -1
@@ -183,10 +237,10 @@ def candidates(conn, now, *, after_slot=-1, limit=100, guard=None):
         try:
             if isinstance(snapshot, bytes):
                 snapshot = review_text(snapshot)
-            market, ctx, plan, result = json.loads(snapshot), json.loads(context), json.loads(proposal), json.loads(outcome)
+            market, ctx, plan, result = json.loads(snapshot), json.loads(context), json.loads(proposal) if proposal is not None else None, json.loads(outcome)
         except (TypeError, ValueError):
             continue
-        if not all(isinstance(item, dict) for item in (market, ctx, plan, result)):
+        if not all(isinstance(item, dict) for item in (market, ctx, result)) or (plan is not None and not isinstance(plan, dict)):
             continue
         historical = ctx.get('historical_unsettled')
         if (not isinstance(historical, list) or any(
@@ -195,11 +249,14 @@ def candidates(conn, now, *, after_slot=-1, limit=100, guard=None):
             continue
         if (ctx.get('scenario_id', True) is not None or ctx.get('positions') != []
                 or ctx.get('pending_entries') != [] or ctx.get('unknown_intents') is not False
-                or ctx.get('incident_epoch_blocked') is not False or plan.get('action') != 'WAIT'
-                or result.get('status') != 'wait'):
+                or ctx.get('incident_epoch_blocked') is not False):
             continue
-        observing = ctx.get('recovery_observing', False)
-        if observing is not True and (observing is not False or 'recovery' in ctx or 'recovery_contract_version' in ctx):
+        rejected = plan is None and result.get('status') == 'rejected_no_action'
+        waiting = isinstance(plan,dict) and plan.get('action')=='WAIT' and result.get('status')=='wait'
+        if not rejected and not waiting:
+            continue
+        observing = ctx.get('recovery_observing', False) if waiting else False
+        if waiting and observing is not True and (observing is not False or 'recovery' in ctx or 'recovery_contract_version' in ctx):
             continue
         if observing is True and [row[2] for row in conn.execute(
                 'PRAGMA index_info(sqlite_autoindex_llm_scenario_review_events_1)')] != ['slot', 'sequence']:
@@ -210,6 +267,8 @@ def candidates(conn, now, *, after_slot=-1, limit=100, guard=None):
             if observing is True:
                 continue
             raise
+        if rejected and not _entry_rejection_proven(conn,slot,market,ctx,result,original):
+            continue
         if observing is True:
             reference_verified = isinstance(tape, bytes) and tape.startswith(REVIEW_REFERENCE_MAGIC)
             if not _recovery_wait_proven(conn, slot, market, ctx, plan, result, original,

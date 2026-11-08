@@ -54,15 +54,17 @@ If no grounded structure exists, return no candidates and identify the missing
 qualitative evidence. Economic objections alone must submit a grounded candidate
 for host calculation instead of bypassing calculation with an empty list.
 First recovery observation stays WAIT only with no candidates. Submission is not
-an order or permission to trade; the original host expiry and gates still apply.
+an order or permission to trade; the original host expiry and gates still apply. Supplied entry_economics is a
+host eligibility constraint, never a reason to invent a distant TP or squeeze SL.
 For a new flat OPEN, consider TP, optional structural-weakening partial stops and
 remaining lots together. Noise alone need not justify partial SL; partial_stops=[]
 is valid when no structural reduction is grounded. Confirmed failure still means
 the existing full EXIT/protection rules, never partial-SL risk-budget credit.
 Cut invalidated exposure, not normal thesis-preserving fluctuations. Compare early
 TP concentration with participation in a sustained move: grounded later targets or
-SL-protected lots without fixed TP are allowed, never mandatory. Do not label
-rounding dust an intentional runner or invent a distant target to improve payoff.
+SL-protected residual lots are allowed subject to supplied entry_economics for new
+OPEN; holdings may retain unpriced targets. Never call rounding dust a runner
+or invent a distant target to improve payoff.
 Partial SL saves exposure on continued weakness but sacrifices lots on recovery;
 design that tradeoff before entry, without a fixed stop width or exit percentage.
 For an active scenario keep its side and original risk budget. ADJUST entries are
@@ -112,7 +114,8 @@ new flat OPEN and confirmed remaining lots of a proposed ADJUST. Compare whole-p
 independent target profits. Flat paths assume full entry fills; active paths use
 only confirmed remaining lots. Both assume the displayed exit fills, not
 probabilities or expected net profit; partial SL is optional, never risk
-credit or a substitute for full EXIT on confirmed failure. No fixed payoff gate.
+credit or a substitute for full EXIT on confirmed failure. When entry_economics is supplied, the host enforces it before selection.
+Without that policy no fixed payoff gate is implied.
 Each path closes any remaining quantity at hard SL as a stress test, NOT the
 expected ending of a trend or the value of an open runner. Do not prefer liquidating upside simply because
 an assumed later hard-stop exit makes retained lots look costly. Separately assess
@@ -139,7 +142,8 @@ Flat OPEN whole_plan_payoff uses that all-TP-then-residual-hard-SL fee-only net_
 and full_stop_loss from full hard SL WITHOUT partial SL; both are USDT, ratio is
 dimensionless. UNKNOWN means missing costs/path or nonpositive loss denominator.
 This is a hypothetical payoff, not probability, expectancy or a guarantee; future
-funding/slippage are excluded, NOT zero. It changes no eligibility or risk budget.
+funding/slippage are excluded, NOT zero. The calculation does not change risk budgets; supplied entry_economics
+separately restricts fresh OPEN eligibility. Held protection remains available.
 ADJUST confirmed_remaining joint paths version3 are supplied separately as
 contract_context.holding_exit_paths rows [candidate_id,receipt_sha256,paths].
 This optional view uses the same row columns and
@@ -631,9 +635,87 @@ def calculate_candidate(wire, context, *, candidate_id, original_input_now=None,
         if strict or context.get('entry_contract_version') == 2:
             raise
         receipt["rejection"] = "wire_economic_or_calculation_invalid"
+    if receipt.get('eligible') is True:
+        from live.scenario_entry_economics import assess
+        economics = assess(receipt['effective_plan'], context, receipt.get('projection', {}))
+        if economics is not None:
+            receipt['entry_economics'] = economics
+            if economics['status'] != 'PASS':
+                receipt.update(eligible=False, rejection_type='PREAUTHORITY_ECONOMIC',
+                    rejection='entry_payoff_below_minimum' if economics['status'] == 'REJECTED'
+                              else 'entry_payoff_unavailable')
     bind_receipt(receipt, context, snapshot=explanation_snapshot)
     receipt["receipt_sha256"] = receipt_hash(receipt)
     return receipt
+
+
+_ENTRY_PROGRESS_INPUT_LIMIT = 100_000
+
+
+def _initial_entry_progress_units(context):
+    """Initial entry-to-Mark geometry is neither portfolio PnL nor current risk."""
+    try:
+        evidence = context.get('entry_thesis')
+        positions = context.get('positions')
+        if (not context.get('scenario_id') or context.get('accounting_status') != 'confirmed'
+                or not isinstance(positions, list) or not positions
+                or any(not isinstance(p, dict) or _decimal(p.get('quantity')) <= 0 for p in positions)
+                or not isinstance(evidence, dict) or evidence.get('status') != 'VERIFIED'):
+            return None
+        side = evidence['side']
+        if side not in ('LONG', 'SHORT') or side != context.get('side'):
+            return None
+        average, stop, mark = (_decimal(evidence[k]) for k in ('initial_fill_average', 'initial_hard_stop', 'current_mark'))
+        now, observed, first, captured = (_decimal(v) for v in
+            (context['now'], evidence['observed_at'], evidence['first_fill_at'], context['account_captured_at']))
+        if (min(average, stop, mark, first) <= 0 or not first <= captured <= now
+                or not first <= observed <= now or now - captured > 120 or now - observed > 120
+                or abs(observed - captured) > Decimal('0.001') or mark != _decimal(context['mark_price'])):
+            return None
+        sign = Decimal(1) if side == 'LONG' else Decimal(-1)
+        distance = sign * (average - stop)
+        progress = sign * (mark - average)
+        if distance <= 0 or abs(progress - _decimal(evidence['favorable_price_change_from_initial_average'])) > Decimal('0.000001'):
+            return None
+        value = float(progress / distance)
+        if not math.isfinite(value):
+            return None
+        return dict(value=value, meaning='SIGNED_PRICE_PROGRESS_OVER_INITIAL_STOP_DISTANCE_NOT_PNL_OR_CURRENT_RISK',
+                    positive='FAVORABLE', negative='ADVERSE',
+                    scope='INITIAL_OPEN_ENDPOINT_ONLY_NOT_INTERVENING_PATH_OR_EXIT_RULE')
+    except (AttributeError, KeyError, TypeError, ValueError, ArithmeticError, OverflowError):
+        return None
+
+
+def _project_initial_entry_progress(projected, context):
+    """Add only if the original model input survives unchanged within its cap."""
+    value = _initial_entry_progress_units(context)
+    if value is None:
+        return projected
+    try:
+        from live.scenario_model_input import project_model_input, restore_model_input
+        if len(_encoded(projected).encode()) > _ENTRY_PROGRESS_INPUT_LIMIT:
+            return projected
+        original = restore_model_input(projected)
+        logical = deepcopy(original)
+        target = logical['contract_context']
+        if (target.get('scenario_id') != context.get('scenario_id')
+                or target.get('entry_thesis') != context.get('entry_thesis')
+                or target.get('mark_price') != context.get('mark_price')
+                or target.get('positions') != context.get('positions')
+                or target.get('accounting_status') != context.get('accounting_status')
+                or target.get('account_captured_at') != context.get('account_captured_at')
+                or 'initial_entry_progress_units' in target):
+            return projected
+        target['initial_entry_progress_units'] = value
+        candidate, _ = project_model_input(logical, allow_gap_rescue=True)
+        if len(_encoded(candidate).encode()) > _ENTRY_PROGRESS_INPUT_LIMIT:
+            return projected
+        restored = restore_model_input(candidate)
+        restored['contract_context'].pop('initial_entry_progress_units', None)
+        return candidate if restored == original else projected
+    except (KeyError, TypeError, ValueError, ArithmeticError, OverflowError):
+        return projected
 
 
 def _model_payload(snapshot, context, response_contract, *, calculated_candidates=None):
@@ -641,7 +723,8 @@ def _model_payload(snapshot, context, response_contract, *, calculated_candidate
         baseline = _base_model_payload(source, context, response_contract, calculated_candidates=calculated_candidates)
         if not explanation_enabled(context):
             baseline = project_holding_price_order_input(baseline)[0]
-        return project_explanation_input(baseline, context, snapshot=source)
+        projected = project_explanation_input(baseline, context, snapshot=source)
+        return _project_initial_entry_progress(projected, context)
     result = project(snapshot)
     frame = snapshot.get('timeframes', {}).get('30m', {})
     if (context.get('scenario_id') is None and not context.get('positions')

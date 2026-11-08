@@ -650,8 +650,9 @@ No candidate or first observation: do not invent a plan to compare. Distinguish 
 progress from remaining room using current evidence, not direction alone. Smaller quantity or a nearer
 TP does not repair an unsupported location. If current evidence justifies entry, a strong
 immediate break or valid numeric crossing remains allowed; do not demand another close,
-new low/high or retest by habit. No fixed distance, minimum reward/risk, or automatic
-MA/round-number wall is added. Neither immediate entry nor conditional entry is compulsory.
+new low/high or retest by habit. Supplied host entry_economics governs fresh OPEN eligibility; without it no fixed
+reward/risk floor is implied. No fixed price distance or automatic MA/round-number
+wall is added. Neither immediate entry nor conditional entry is compulsory.
 Existing sizing cap: sum(new-entry risk) <= min(original_budget*confidence,
 budget remaining after consumed/reserved risk). Per-BTC risk is positive entry-to-SL
 distance + entry*estimated_cost_rate + hard_stop*slippage_bps/10000; round quantity

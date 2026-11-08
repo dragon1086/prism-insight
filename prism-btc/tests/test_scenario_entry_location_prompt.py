@@ -32,7 +32,7 @@ def test_flat_draft_and_selection_receive_price_basis_without_contract_changes(s
         assert 'In calculated SELECT use the supplied effective_plan entry price' in prompt
         assert 'entry cap, first TP and first evidenced reaction zone, if any' in prompt
         assert 'a strong immediate break or valid numeric crossing remains allowed' in prompt
-        assert 'No fixed distance, minimum reward/risk, or automatic MA/round-number wall' in prompt
+        assert 'Supplied host entry_economics governs fresh OPEN eligibility' in prompt
         assert len(call['user_prompt'].encode()) <= 100000
 
 

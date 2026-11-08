@@ -23,7 +23,7 @@ _REQUIRED_STABLE = (
     "accounting_status", "protection_ok", "legacy_fenced",
 )
 _OPTIONAL_STABLE = (
-    'entry_convergence', 'management_quarantine',
+    'entry_convergence', 'entry_economics', 'management_quarantine',
     'management_quarantine_block',
     "side", "scenario_risk_fraction", "seen_action_ids", "current_plan", "stop_policy",
     "execution_price_policy", "conditional_entry_version",
@@ -181,6 +181,12 @@ def guard_review(snapshot, original_context, response_contract, envelope, fresh_
             raise ValueError("review_guard_effective_plan_changed")
         if validated.get("risk") != expected.get("risk"):
             raise ValueError("review_guard_risk_changed")
+    if core['action'] == 'OPEN' and fresh.get('entry_economics') is not None:
+        from live.scenario_entry_economics import assess
+        from live.scenario_calculated_review import _gross_projection
+        economics = assess(validated, fresh, _gross_projection(validated, fresh))
+        if economics is None or economics['status'] != 'PASS':
+            raise ValueError('review_guard_entry_economics_changed')
     receipt = dict(status="FRESH_VALIDATED_NOT_AUTHORIZED", checked_at=now,
         envelope_sha256=envelope["sha256"], bundle_sha256=result["bundle_sha256"],
         selected_receipt_sha256=selected["receipt_sha256"],

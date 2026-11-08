@@ -127,11 +127,14 @@ class ScenarioDemoBroker(ScenarioExecution):
     capabilities = frozenset()
     execution_blockers = ("explicit_execution_enablement_required",)
 
-    def __init__(self, conn, *, session=None, expected_main_uid, clock=time.time, execution_enabled=False, convergence_entry_enabled=False):
+    def __init__(self, conn, *, session=None, expected_main_uid, clock=time.time, execution_enabled=False, convergence_entry_enabled=False, entry_economics_enabled=False):
         database_path(conn)
         if type(convergence_entry_enabled) is not bool:
             raise ValueError('convergence_entry_flag_must_be_bool')
         self.convergence_entry_enabled = convergence_entry_enabled
+        if type(entry_economics_enabled) is not bool:
+            raise ValueError('entry_economics_flag_must_be_bool')
+        self.entry_economics_enabled = entry_economics_enabled
         if not isinstance(expected_main_uid, str) or not expected_main_uid.isdigit() or int(expected_main_uid) <= 0:
             raise BrokerNotReady("explicit_main_uid_required")
         if session is None:
@@ -639,7 +642,10 @@ class ScenarioDemoBroker(ScenarioExecution):
             unknown_intents=any(c["status"] == "UNKNOWN" or not c["evidence"] for c in children))
         from live.scenario_incident_epoch import new_risk_blocked, historical
         incident_blocked = new_risk_blocked(self)
-        return dict(historical_unsettled=historical(self.conn), incident_epoch_blocked=incident_blocked,
+        from live.scenario_entry_economics import policy as entry_economics_policy
+        economics = ({'entry_economics': entry_economics_policy()}
+                     if getattr(self, 'entry_economics_enabled', False) and not active and observed.get('exchange_flat') is True else {})
+        return dict(**economics, historical_unsettled=historical(self.conn), incident_epoch_blocked=incident_blocked,
             entry_thesis=initial_entry_evidence, stop_policy=stop_policy, scenario_risk_fraction=fraction, conditional_entry_version=1, account_version=observed["account_version"],legacy_fenced=observed["legacy_fenced"],
             **({'management_quarantine': management} if management else {}),
             **({'management_quarantine_block': management_block} if management_block else {}),

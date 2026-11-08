@@ -285,7 +285,8 @@ def main():
         failure_stage="broker_init"
         from live.scenario_broker import ScenarioDemoBroker
         broker=ScenarioDemoBroker(conn,expected_main_uid=main_uid,execution_enabled=True,
-                                  convergence_entry_enabled=True)
+                                  convergence_entry_enabled=True,
+                                  entry_economics_enabled=args.calculated_review)
         if args.activate:
             failure_stage="activation"
             from live.scenario_control import begin_transition,activate,flat_handoff_probe
