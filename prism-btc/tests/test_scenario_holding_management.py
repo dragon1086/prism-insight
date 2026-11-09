@@ -34,6 +34,24 @@ def test_no_stop_loosened_without_existing_permission(side):
     assert v['rows'][1]['requires_stop_revision'] is False
 
 
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_profit_ratchet_requires_positive_net_at_stop_not_only_at_mark(side):
+    s,c,t=inputs(side)
+    c['mark_price']=105. if side=='LONG' else 95.
+    v=holding_management_view(s,c,t);row=v['rows'][0]
+    assert v['fee_only_net_if_flatten']>0 and row['favorable_price_progress_atr']==.5
+    assert row['ratchet_reference_active'] is False
+    assert row['candidate_stop']==c['previous_hard_stop']
+
+
+@pytest.mark.parametrize('recorded,ready',[(.055,False),(2.,True),(None,None)])
+def test_stop_activation_includes_recorded_net_and_strict_zero_boundary(recorded,ready):
+    s,c,t=inputs();c.update(mark_price=105.,recorded_scenario_net=recorded)
+    row=holding_management_view(s,c,t)['rows'][0]
+    assert row['ratchet_reference_active'] is ready
+    assert row['candidate_stop']==(100. if ready else c['previous_hard_stop'])
+
+
 def test_missing_recorded_net_fee_or_atr_never_becomes_known_zero():
     s,c,t=inputs();c['recorded_scenario_net']=None;s['timeframes']['1h']['confirmed']['is_confirmed']=False
     v=holding_management_view(s,c,t)

@@ -652,7 +652,8 @@ def holding_management_view(snapshot, context, structure):
             if reference<=0:continue
             proposed=max(D(str(old)),reference) if side=='LONG' else min(D(str(old)),reference)
             progress=sign*(D(str(mark))-entry)/D(str(atr))
-            ratchet_ready=(flatten>0 and progress>=D(str(buffer))) if flatten is not None else None
+            stop_net=net(float(proposed)) if name=='REACTION' else None
+            ratchet_ready=(stop_net>0 and progress>=D(str(buffer))) if stop_net is not None else None
             if name=='REACTION' and ratchet_ready is not True:proposed=D(str(old))
             restore=False
             if name=='TREND' and sign*(reference-D(str(old)))<0:
