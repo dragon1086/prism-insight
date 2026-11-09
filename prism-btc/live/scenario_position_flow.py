@@ -594,3 +594,109 @@ def _mark_pace(snapshot, active, context, now, marks):
                     last30_range_atr=compact(forming_range) if forming_range is not None else None)
     except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
         return dict(status='MISSING')
+
+
+HOLDING_REFERENCES = [('REACTION', '30m', 1800000, .5), ('TREND', '1h', 3600000, 1.)]
+HOLDING_VIEW_MAX_BYTES = 1800
+
+
+def holding_management_view(snapshot, context, structure):
+    """Price references only; the model chooses posture and the host rechecks risk."""
+    from decimal import Decimal as D, ROUND_FLOOR, ROUND_CEILING
+    from live.scenario_fee_projection import fee_only_projection
+    try:
+        if (not context.get('scenario_id') or context.get('accounting_status') != 'confirmed'
+                or context.get('protection_ok') is not True or context.get('management_quarantine')
+                or context.get('pending_entries')!=[]
+                or snapshot.get('valid') is not True):
+            return None
+        now, captured, at = context['now'], context['account_captured_at'], snapshot['as_of_ms']
+        if not all(_number(v) and v>0 for v in (now,captured,at)) or not 0<=now-captured<=120 or not 0<=now*1000-at<=120000:
+            return None
+        side, mark, old, tick = (context.get(k) for k in ('side','mark_price','previous_hard_stop','price_tick'))
+        if side not in ('LONG','SHORT') or not all(_number(v) and v>0 for v in (mark,old,tick)):
+            return None
+        sign = 1 if side=='LONG' else -1
+        if sign*(mark-old)<=0:
+            return None
+        lots = context['positions']
+        if (not isinstance(lots,list) or not lots or len(lots)>20
+                or any(not isinstance(p,dict) or not all(_number(p.get(k)) and p[k]>0 for k in ('price','quantity')) for p in lots)):
+            return None
+        quantity = sum((D(str(p['quantity'])) for p in lots),D(0))
+        entry = sum((D(str(p['price']))*D(str(p['quantity'])) for p in lots),D(0))/quantity
+        recorded = context.get('recorded_scenario_net')
+        def net(price):
+            if not _number(recorded):
+                return None
+            v=fee_only_projection(side=side,entry_price=float(entry),exit_price=price,quantity=float(quantity),
+                evidence=context.get('observed_execution_fee_evidence'),now=now,new_entry=False,recorded_net=recorded)
+            return v.get('estimated_net_before_unmodelled_costs') if v['status']=='AVAILABLE' else None
+        flatten = net(mark)
+        rows=[]
+        for name,frame,duration,buffer in HOLDING_REFERENCES:
+            row=dict(profile=name,frame=frame,status='MISSING');rows.append(row)
+            raw=snapshot.get('timeframes',{}).get(frame,{}).get('confirmed',{})
+            atr,opened=raw.get('atr14_risk_only'),raw.get('open_time_ms')
+            points=[p for p in structure.get('primary',{}).get(frame,{}).get('points',[])
+                    if p.get('phase')=='CONFIRMED' and p.get('is_confirmed') is True]
+            if not points:continue
+            p=points[-1];ma,close=p.get('ma10'),p.get('close')
+            if (raw.get('is_confirmed') is not True or type(opened) is not int
+                    or opened+duration!=int(at//duration)*duration or p.get('as_of_ms')!=opened+duration
+                    or not all(_number(v) and v>0 for v in (atr,ma,close))):
+                continue
+            center=D(str(mark if name=='REACTION' else ma))
+            reference=center-sign*D(str(buffer))*D(str(atr))
+            reference=(reference/D(str(tick))).to_integral_value(rounding=ROUND_FLOOR if side=='LONG' else ROUND_CEILING)*D(str(tick))
+            if reference<=0:continue
+            proposed=max(D(str(old)),reference) if side=='LONG' else min(D(str(old)),reference)
+            progress=sign*(D(str(mark))-entry)/D(str(atr))
+            ratchet_ready=(flatten>0 and progress>=D(str(buffer))) if flatten is not None else None
+            if name=='REACTION' and ratchet_ready is not True:proposed=D(str(old))
+            restore=False
+            if name=='TREND' and sign*(reference-D(str(old)))<0:
+                policy=context.get('stop_policy') or {};anchor=policy.get('initial_hard_stop')
+                if (type(policy.get('version')) is int and policy['version']==1
+                        and context.get('new_risk_blocked') is False
+                        and policy.get('anchor_available') is True and policy.get('widening_eligible') is True
+                        and _number(anchor) and anchor>0 and sign*(old-anchor)>=0):
+                    proposed=max(D(str(anchor)),reference) if side=='LONG' else min(D(str(anchor)),reference)
+                    restore=sign*(proposed-D(str(old)))<0
+            usable=proposed>0 and sign*(D(str(mark))-proposed)>0
+            row.update(status='AVAILABLE',confirmed_at_ms=opened+duration,ma10=ma,atr=atr,buffer_atr=buffer,
+                reference_basis='FRESH_MARK' if name=='REACTION' else 'CONFIRMED_MA10',
+                ratchet_reference_active=ratchet_ready if name=='REACTION' else None,
+                reference_stop=float(reference),candidate_stop=float(proposed) if usable else None,
+                requires_stop_revision=restore if usable else False,
+                confirmed_close_against_ma10=sign*(close-ma)<0,
+                favorable_price_progress_atr=round(float(progress),6),
+                fee_only_net_at_candidate=net(float(proposed)) if usable else None)
+        if not any(row['status']=='AVAILABLE' for row in rows):
+            return None
+        result=dict(version=1,status='PARTIAL' if any(r['status']=='MISSING' for r in rows) else 'AVAILABLE',
+            fee_only_net_if_flatten=flatten,cost_only_exit_estimate_positive=flatten>0 if flatten is not None else None,
+            rows=rows,meaning='Advisory references, not regime classification or orders. Mark versus Last-close SMA; basis not adjusted. Fee-only estimates include recorded net, exclude future funding/slippage. Restored price bounds are not risk approval; existing stop_revision and fresh budget validation remain mandatory.')
+        return result if _size(result)<=HOLDING_VIEW_MAX_BYTES else None
+    except (KeyError,TypeError,ValueError,AttributeError,ArithmeticError,OverflowError):
+        return None
+
+
+def project_holding_management_input(projected, context):
+    """Never evict an original fact/history item to add optional management data."""
+    try:
+        if not context.get('scenario_id') or not context.get('positions'):return projected
+        original=restore_model_input(projected);target=original.get('contract_context',{})
+        fields=_CONTEXT_FIELDS+('side','pending_entries','management_quarantine','protection_ok','price_tick','observed_execution_fee_evidence','stop_policy')
+        if ('holding_management' in target or _size(projected)>_MODEL_INPUT_LIMIT
+                or any(target.get(k)!=context.get(k) for k in fields)):
+            return projected
+        view=holding_management_view(original.get('market_snapshot',{}),target,target.get('ma_structure',{}))
+        if view is None:return projected
+        logical=copy.deepcopy(original);logical['contract_context']['holding_management']=view
+        candidate,_=project_model_input(logical,allow_gap_rescue=True)
+        if _size(candidate)>_MODEL_INPUT_LIMIT:return projected
+        restored=restore_model_input(candidate);restored['contract_context'].pop('holding_management',None)
+        return candidate if restored==original else projected
+    except (KeyError,TypeError,ValueError,AttributeError,ArithmeticError,OverflowError):
+        return projected

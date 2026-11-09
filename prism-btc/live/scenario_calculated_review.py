@@ -731,7 +731,9 @@ def _model_payload(snapshot, context, response_contract, *, calculated_candidate
         if calculated_candidates is None and context.get('scenario_id') is None:
             from live.scenario_entry_geometry import project as project_entry_geometry
             projected = project_entry_geometry(projected, source, context)
-        return _project_initial_entry_progress(projected, context)
+        projected = _project_initial_entry_progress(projected, context)
+        from live.scenario_position_flow import project_holding_management_input
+        return project_holding_management_input(projected, context)
     result = project(snapshot)
     frame = snapshot.get('timeframes', {}).get('30m', {})
     if (context.get('scenario_id') is None and not context.get('positions')
@@ -1078,6 +1080,7 @@ def research_review(snapshot, context, response_contract, *, generate, record,
     if context.get("scenario_id") is None:
         base += scenario_llm.FLAT_ENTRY_PROMPT
     base += scenario_llm.convergence_entry_instructions(context)
+    base = scenario_llm.holding_management_instructions(base, context)
     allocation = research_mode != "legacy"
     if allocation:
         base = allocation_system_prompt(base)
@@ -1215,6 +1218,16 @@ def research_review(snapshot, context, response_contract, *, generate, record,
             raise ValueError("research_selected_expired")
         return deepcopy(result)
     draft_prompt = DRAFT_PROMPT
+    if (context.get('scenario_id') and context.get('positions')
+            and context.get('accounting_status')=='confirmed' and context.get('protection_ok') is True
+            and context.get('pending_entries')==[] and not context.get('management_quarantine')):
+        start='When weakening evidence or a nearer TP changes a held trade, compare retaining the'
+        end='Pending quantities are unfilled reservations, not confirmed holdings; cancellation'
+        before,separator,tail=draft_prompt.partition(start)
+        if not separator or tail.count(end)!=1:
+            raise ValueError('holding_draft_source_changed')
+        _,_,after=tail.partition(end)
+        draft_prompt=before+'Use the holding management policy above; confirmed failure still requires EXIT.\n'+end+after
     if context.get("entry_contract_version") in (1, 2):
         draft_prompt += "\nEntry-contract exception: FAILED wait_proposal is a nonexecutable template, not a fallback. Draft assessments must share contract_id/status, not reason wording; supply valid EXIT candidates only when FAILED.\n"
     if allocation:
