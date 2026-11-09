@@ -1,4 +1,4 @@
-"""Virtual (paper) trade for one signal family. Ported from s4_track.sim (stop atr2, target 3, 20 days).
+"""Virtual (paper) trade for one signal family. Ported from s4_track.sim (stop atr2, target 3, 20 days; KQ_X10 10 days).
 
 Enter at the next session's open of the inverse ETF; judge each underlying close from the entry
 day on; exit at the next session's open. The job runs after the close, so each "next open" is
@@ -15,6 +15,7 @@ from prism_inverse.domain.models import Bar
 
 PENDING_ENTRY, OPEN, PENDING_EXIT, CLOSED = "PENDING_ENTRY", "OPEN", "PENDING_EXIT", "CLOSED"
 STOP_ATR, TARGET_ATR, MAX_HELD, COST = 2.0, 3.0, 20, 0.001
+MAX_HELD_BY_FAMILY = {"KQ_X10": 10}       # S11 short hold
 
 
 @dataclass(frozen=True)
@@ -57,13 +58,13 @@ def advance(t: VirtualTrade, calendar: Sequence[date], etf: Mapping[date, Bar],
         t = replace(t, status=OPEN, entry_date=day, entry_open=etf[day].open, entry_underlying=e,
                     stop=e + STOP_ATR * t.atr, target=e - TARGET_ATR * t.atr)
     if t.status == OPEN:
-        held = 0
+        held, max_held = 0, MAX_HELD_BY_FAMILY.get(t.family, MAX_HELD)
         for day in (d for d in calendar if d >= t.entry_date):
             if day not in und:
                 return replace(t, error=f"MISSING_UNDERLYING_BAR {day.isoformat()}")
             held += 1
             c = und[day].close
-            reason = "STOP" if c >= t.stop else "TARGET" if c <= t.target else "TIME" if held >= MAX_HELD else None
+            reason = "STOP" if c >= t.stop else "TARGET" if c <= t.target else "TIME" if held >= max_held else None
             if reason:
                 t = replace(t, status=PENDING_EXIT, exit_signal_date=day, exit_reason=reason)
                 break

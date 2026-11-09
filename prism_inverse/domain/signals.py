@@ -1,4 +1,4 @@
-"""KR inverse-index signals (S4 KQ_F1, S6 driver sector), ported from the research engine.
+"""KR inverse-index signals (S4 KQ_F1, S6 driver sector, S11 KQ_X10), ported from the research engine.
 
 Source: tasks/research-20261109/inverse-s3/s4_track.py (``ind``, ``second_breaks``) and
 s6_driver.py (``group_frame``, KR driver selection). Daily series aligned to one calendar,
@@ -12,7 +12,7 @@ from typing import Callable, Optional, Sequence
 
 Series = Sequence[Optional[float]]
 
-FAMILIES = ("KQ_F1", "KQ_DRIVER", "K200_DRIVER")
+FAMILIES = ("KQ_F1", "KQ_DRIVER", "K200_DRIVER", "KQ_X10")
 WINDOW, EPISODE = 100, 120          # re-break must come within 100 sessions; episode ends after 120
 LEADER_GAIN, LEADER_RANK, LEADER_LOOKBACK = 0.15, 2 / 3, 120
 CORR_WINDOW, CORR_MIN = 60, 48
@@ -36,7 +36,7 @@ def rolling_max(xs: Series, n: int, min_periods: int) -> list[Optional[float]]:
 
 
 def ind(o: Series, h: Series, l: Series, c: Series) -> dict:
-    """s4_track.ind: ATR20 (mean true range), MA50, PEAK120 (min 60 sessions)."""
+    """s4_track.ind: ATR20 (mean true range), MA10, MA50, PEAK120 (min 60 sessions)."""
     tr = []
     for i in range(len(c)):
         if None in (h[i], l[i]):
@@ -46,7 +46,7 @@ def ind(o: Series, h: Series, l: Series, c: Series) -> dict:
         if i and c[i - 1] is not None:
             parts += [abs(h[i] - c[i - 1]), abs(l[i] - c[i - 1])]
         tr.append(max(parts))
-    return {"o": list(o), "c": list(c), "atr": rolling_mean(tr, 20), "ma50": rolling_mean(c, 50),
+    return {"o": list(o), "c": list(c), "atr": rolling_mean(tr, 20), "ma10": rolling_mean(c, 10), "ma50": rolling_mean(c, 50),
             "peak": rolling_max(c, 120, 60)}
 
 
@@ -83,6 +83,13 @@ def kq_f1(a: dict) -> list[int]:
     c, ma, pk, at = a["c"], a["ma50"], a["peak"], a["atr"]
     return second_breaks(c, ma, pk, lambda i: _lt(c[i], ma[i]) and pk[i] is not None and at[i] is not None
                          and c[i] <= pk[i] - 3 * at[i])
+
+
+def kq_x10(a: dict) -> list[int]:
+    """S11 (2026-11-09, exploratory): first close below the 10-day line (the day before was not below it)."""
+    c, m = a["c"], a["ma10"]
+    return [i for i in range(1, len(c)) if _lt(c[i], m[i]) and c[i - 1] is not None and m[i - 1] is not None
+            and not c[i - 1] < m[i - 1]]
 
 
 def _pct_rank(values: dict) -> dict:
