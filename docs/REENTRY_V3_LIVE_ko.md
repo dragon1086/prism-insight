@@ -443,6 +443,12 @@ REENTRY_V3_LIVE_MARKETS=KR,US      # 한 시장만 켜려면 KR 또는 US
 - 감시: 2주 점검마다 등록일 이후 재진입을 시장×국면으로 승률·평균 수익·평균 손실·손익비·+25% 이상으로 본다. US 강세 재진입이
   20건 이상 쌓였는데 기대값이 마이너스면 US만 끄는 것을 사용자에게 묻는다.
 - 끄기: 변수 false 또는 제거(다음 재진입부터 절반으로 돌아감).
+- 나중 분석용 기록(오프라인 엔진을 실제 v3 신호에 맞추는 자료):
+  - 신호·근접 신호: `reentry_v3.shadow_trigger`·`shadow_near_miss` + 후보 원장 `mode=reentry_v3_signal|near_miss`
+    (지지선 기준, 스냅샷 10·20·50·200일선 값·거리·10봉 기울기, 50일선 상태, ATR, 60·252일 고점 거리, 거래량비, RS60).
+  - 결과: 주간 `candidate.forward_outcome`(5·10·20·30세션 최고·최저, 7·14·30일 수익) — 매수 안 한 신호도 포함.
+  - 실매수: `reentry_v3.live_entry`(신호·시도 횟수·손절·목표) + 새 포지션 `entry.executed`의 `micro_split`
+    (`reentry_size` 비중·사유·국면, `reentry_regime_shadow` 가상 비중) → `exit.executed`. 건너뜀은 `reentry_v3.live_skipped` 사유 코드.
 
 ### 11.7 첫 실거래일 점검표
 1. 14:00(한국)/13:50(미국) 실행 로그: 시세 수신 수, 신호 수, 재점검 결과(OK/승인 수), `live_results`.

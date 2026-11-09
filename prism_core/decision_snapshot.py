@@ -45,7 +45,7 @@ def snapshot(bars, *, price=None, bench=None):
     out.update(price=round(price, 6), last_completed_date=str(rows[-1]["date"])[:10],
                prev_close=round(closes[-1], 6), move_vs_prev_close_pct=_pct(price, closes[-1]),
                completed_bars=len(rows))
-    for length in (20, 50, 200):
+    for length in (10, 20, 50, 200):  # ma10 added 2026-11-09 (O'Neil 10-day line, re-entry research)
         ma = _ma(closes, length)
         before = _ma(closes, length, len(closes) - SLOPE_LOOKBACK) if len(closes) - SLOPE_LOOKBACK >= length else None
         if ma is None:

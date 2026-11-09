@@ -210,7 +210,7 @@ One `trace_id` reads a decision end to end. Read it with `tools/clickstack_query
 - **Re-entry evidence (2026-10-21)**: `reentry_v3.shadow_trigger` and
   `reentry_v3.shadow_near_miss` (the primary rule missed only on its own filters: R/R floor,
   no target, chase, below the level, shakeout volume) carry a `snapshot`
-  (`prism_core/decision_snapshot.py`, `decision_snapshot_v1`). It holds MA20/50/200 values,
+  (`prism_core/decision_snapshot.py`, `decision_snapshot_v1`). It holds MA10/20/50/200 values (MA10 from 2026-11-09),
   distances and 10-bar slopes, the 50-day line flags, ATR14, the 60/252-day high distance,
   50-day volume ratios and RS60. Uncomputable values are `null` and listed in `missing`.
   The events also carry the level basis, previous close, day low, prior attempts and the
