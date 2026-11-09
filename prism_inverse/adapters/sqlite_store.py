@@ -47,13 +47,14 @@ CREATE TABLE IF NOT EXISTS inv_virtual_trades (
   exit_date TEXT, exit_open REAL, exit_reason TEXT, ret REAL, status TEXT, error TEXT, updated_at TEXT);
 """
 _TRADE_COLS = [f.name for f in fields(VirtualTrade)]
-# Fixed SQL text (no string building at execute time); the assert keeps it in step with VirtualTrade.
+# Fixed SQL text (no string building at execute time); the check below keeps it in step with VirtualTrade.
 _TRADE_SELECT = ("SELECT trade_id, family, etf, underlying, signal_date, atr, status, entry_date, entry_open, entry_underlying, stop, target, exit_signal_date, exit_date, exit_open, exit_reason, ret, error "
                  "FROM inv_virtual_trades WHERE status != ? ORDER BY signal_date")
 _TRADE_UPSERT = ("INSERT OR REPLACE INTO inv_virtual_trades (trade_id, family, etf, underlying, signal_date, atr, status, entry_date, entry_open, entry_underlying, stop, target, exit_signal_date, exit_date, exit_open, exit_reason, ret, error, updated_at) "
                  "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
 _TRADE_INSERT = _TRADE_UPSERT.replace("INSERT OR REPLACE", "INSERT OR IGNORE", 1)
-assert _TRADE_SELECT.split("SELECT ", 1)[1].split(" FROM")[0].split(", ") == _TRADE_COLS
+if _TRADE_SELECT.split("SELECT ", 1)[1].split(" FROM")[0].split(", ") != _TRADE_COLS:
+    raise RuntimeError("inv_virtual_trades SQL columns differ from VirtualTrade fields")
 _DATE_COLS = {"signal_date", "entry_date", "exit_signal_date", "exit_date"}
 
 
