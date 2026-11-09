@@ -74,6 +74,7 @@ def test_thin_room_stays_negative_instead_of_becoming_a_valid_plan():
     s,c,t=inputs();p=t['primary']['30m']['points'][0];t['primary']['30m']['points']=[dict(p,high=100.15,low=99.95,ma10=99.98,ma35=100.05)]
     v=build(s,c,t)
     assert v['status']=='AVAILABLE' and any(r['single_target_ratio']<0 for r in rows(v))
+    assert any(r['fee_to_price_stop_risk']>1 for r in rows(v))
 
 
 def test_round_reference_uses_existing_static_worst_entry_bound():
@@ -123,3 +124,32 @@ def test_geometry_limits_are_part_of_loaded_code_provenance(monkeypatch):
     monkeypatch.setattr(geometry,'MAX_ROWS',100)
     with pytest.raises(ValueError,match='review_mixed_loaded_policy'):
         review_policy_binding()
+
+
+def test_cost_share_and_both_confirmed_atrs_are_computed_before_draft():
+    s,c,t=inputs();s['timeframes']['1h']={'confirmed':{'is_confirmed':True,'open_time_ms':3600000,'atr14_risk_only':20}}
+    c.update(entry_contract_version=2,input_captured_at=9999.)
+    v=build(s,c,t)
+    assert v['version']==2 and v['entry_deadline_seconds_remaining']==200.
+    for r in rows(v):
+        gap=abs(r['worst_entry_bound']-r['stop_level'])
+        reference=c['limit_price_quotes']['ask' if r['side']=='LONG' else 'bid']
+        assert r['stop_distance_atr1h']==pytest.approx(gap/20,abs=1e-6)
+        assert r['entry_distance_atr30']==pytest.approx(abs(r['raw_entry_reference']-reference)/10,abs=1e-6)
+        assert r['fee_to_price_stop_risk']==pytest.approx((r['worst_entry_bound']+r['stop_level'])*.00055/gap,abs=1e-6)
+        assert r['reserve_to_price_stop_risk'] is None
+
+
+def test_unknown_fees_and_unconfirmed_atr_do_not_turn_into_zero():
+    s,c,t=inputs();c.pop('observed_execution_fee_evidence');s['timeframes']['1h']={'confirmed':{'is_confirmed':True,'open_time_ms':0,'atr14_risk_only':20}}
+    v=build(s,c,t)
+    assert v['entry_deadline_seconds_remaining'] is None
+    for r in rows(v):
+        assert r['fee_to_price_stop_risk'] is None and r['stop_distance_atr1h'] is None
+        risk=abs(r['worst_entry_bound']-r['stop_level'])
+        assert r['reserve_to_price_stop_risk']==pytest.approx((r['loss_per_btc']-risk)/risk,abs=1e-6)
+
+
+def test_expired_original_entry_deadline_is_not_extended():
+    s,c,t=inputs();c.update(entry_contract_version=2,input_captured_at=9890.)
+    assert build(s,c,t)['entry_deadline_seconds_remaining']==0

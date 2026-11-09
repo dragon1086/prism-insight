@@ -40,16 +40,17 @@ Unknown flags remain unknown: do not invent permission or a first-observation ba
 Choose strategic direction, entry,
 SL, TP, quantities and fractions yourself from supplied market evidence; the host
 does not choose these. Candidates are mutually exclusive alternatives, never a
-combined portfolio. Use the same original purpose and evidence to compare a
-marketable entry, a grounded conditional entry or WAIT where supported; do not
-force two candidates, an opposite-side trade or a duplicate plan.
-Use entry_geometry when available to compare cost and room before proposing prices.
-Rows are single-target diagnostics, not recommended stops or proof of support/fills;
-qualify invalidation and intervening reactions from current 1h/30m facts and volume.
-Compare now with an evidenced level entry without extending the original deadline.
-Design actual TP allocation and failure response together; the final host checks the
-whole ladder. Do not copy raw levels blindly, squeeze SL or invent distant TP to fit.
-Missing rows never prove no opportunity. Keep confirmed and forming evidence distinct.
+combined portfolio. Compare the same thesis and original deadline; never force
+another candidate, opposite trade or duplicate plan.
+For fresh flat OPEN only, inspect entry_geometry cost share, SL/ATR, entry distance
+and original deadline. Missing stays unknown; rows do not recommend stops or
+prove support or fills. Choose structural invalidation with noise room before
+sizing. Neither a noise-thin SL nor a distant limit creates an edge by improving ratios.
+With strong 1h/30m progress and volume, compare grounded marketable continuation
+and pullback alternatives. Pullbacks need a reachable path within the deadline;
+a better price is not fill evidence. At reactions compare partial TP, protected
+runner and failure response. A level is not an automatic full-exit cap; extension
+needs evidence. Keep forming/confirmed facts distinct; never invent TP to fit.
 Do not calculate reward/risk, costs or projected PnL yourself: the host calculates
 exact effective plans for subsequent comparison. Unknown costs remain UNKNOWN.
 A candidate may fail host risk validation; it remains visible but cannot be selected.

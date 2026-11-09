@@ -49,12 +49,21 @@ def build(snapshot, context, structure):
                 levels.setdefault(price,ref)
                 if ref.startswith('P:') and ref.rsplit(':',1)[-1] in {'high','low'}:
                     extremes.add(price)
-        confirmed=snapshot.get('timeframes',{}).get('30m',{}).get('confirmed',{})
-        atr = confirmed.get('atr14_risk_only')
-        opened = confirmed.get('open_time_ms')
-        atr=(_number(atr) if confirmed.get('is_confirmed') is True and type(opened) is int
-             and opened+1800000==int(asof)//1800000*1800000
-             and type(atr) in (int,float) and math.isfinite(atr) and atr>0 else None)
+        atrs = {}
+        for frame, duration in [('30m', 1800000), ('1h', 3600000)]:
+            confirmed = snapshot.get('timeframes', {}).get(frame, {}).get('confirmed', {})
+            value = confirmed.get('atr14_risk_only')
+            opened = confirmed.get('open_time_ms')
+            atrs[frame] = (_number(value) if confirmed.get('is_confirmed') is True
+                and type(opened) is int and opened + duration == int(asof) // duration * duration
+                and type(value) in (int, float) and math.isfinite(value) and value > 0 else None)
+        atr = atrs['30m']
+        captured = context.get('input_captured_at')
+        deadline_remaining = None
+        if (type(context.get('entry_contract_version')) is int and context['entry_contract_version'] == 2
+                and type(captured) in (int, float) and math.isfinite(captured)
+                and 0 <= now - _number(captured) <= 120):
+            deadline_remaining = max(0., float((_number(captured) // 300 + 1) * 300 - now))
         rows=[]
         for side,entry in [('LONG',ask),('SHORT',bid)]:
             sign=Decimal(1 if side=='LONG' else -1)
@@ -95,11 +104,19 @@ def build(snapshot, context, structure):
                         if not result or result['status']=='UNKNOWN':
                             continue
                         basis='FEE' if result['basis'].startswith('VERIFIED_') else 'RESERVE'
-                        rows.append([side,kind,float(raw_entry),float(e),levels[stop],float(stop),levels[target],float(target),float(abs(e-stop)/atr) if atr else None,result['ratio'],result['conditional_reward'],result['full_stop_loss'],basis])
-        view={'version':1,'status':'AVAILABLE' if rows else 'UNAVAILABLE','snapshot_as_of_ms':int(asof),'quote_captured_at':float(stamp),
-              'columns':['side','entry_kind','raw_entry_reference','worst_entry_bound','stop_ref','stop_level','target_ref','target_level','stop_distance_atr30','single_target_ratio','reward_per_btc','loss_per_btc','cost_basis'],
+                        price_risk = abs(e - stop)
+                        fee_share = ((_number(loss['assumed_entry_fee']) + _number(loss['assumed_exit_fee'])) / price_risk
+                                     if basis == 'FEE' else None)
+                        reserve_share = ((_number(unit) - price_risk) / price_risk if basis == 'RESERVE' else None)
+                        rounded = lambda value: round(float(value), 6) if value is not None else None
+                        diagnostics = [rounded(price_risk / atrs['1h']) if atrs['1h'] else None,
+                                       rounded(abs(raw_entry - entry) / atr) if atr else None,
+                                       rounded(fee_share), rounded(reserve_share)]
+                        rows.append([side,kind,float(raw_entry),float(e),levels[stop],float(stop),levels[target],float(target),float(abs(e-stop)/atr) if atr else None,result['ratio'],result['conditional_reward'],result['full_stop_loss'],basis] + diagnostics)
+        view={'version':2,'status':'AVAILABLE' if rows else 'UNAVAILABLE','snapshot_as_of_ms':int(asof),'quote_captured_at':float(stamp),'entry_deadline_seconds_remaining':deadline_remaining,
+              'columns':['side','entry_kind','raw_entry_reference','worst_entry_bound','stop_ref','stop_level','target_ref','target_level','stop_distance_atr30','single_target_ratio','reward_per_btc','loss_per_btc','cost_basis','stop_distance_atr1h','entry_distance_atr30','fee_to_price_stop_risk','reserve_to_price_stop_risk'],
               'rows':rows[:MAX_ROWS],
-              'meaning':'Hypothetical full-size single-target geometry in USDT/BTC, ratio dimensionless. Not orders, ladder payoff, current risk, support strength or win probability. Nearest levels and outer observed primary bar extremes, not strength rankings or exhaustive. Raw levels precede tick buffers. Worst entry uses the existing static pricing anchor, not promised repricing/fill. LEVEL_LIMIT requires evidence and fill; no expiry extension. FEE=historical taker assumption excluding future funding/slippage; RESERVE=existing host cost stress, not observed fees. Final host validates actual plan.'}
+              'meaning':'USDT/BTC single-target diagnostics, not orders, ladder payoff, support strength or win/fill probability. Observed nearest/outer levels are not rankings. Raw levels precede buffers; static worst-entry anchor does not promise repricing/fill. FEE assumes historical taker and excludes future funding/slippage; RESERVE is host cost stress, never known fees. New cost/ATR ratios rounded to 6 decimals. Missing stays null. V2 deadline is entry-only. Final host validates the actual ladder.'}
         return view if len(json.dumps(view,ensure_ascii=False).encode())<=MAX_BYTES else unavailable
     except (KeyError,TypeError,ValueError,ArithmeticError,OverflowError):
         return unavailable
@@ -112,7 +129,7 @@ def project(projected, snapshot, context):
         logical = restore_model_input(projected)
         target = logical['contract_context']
         if ('entry_geometry' in target or target.get('scenario_id',True) is not None
-                or any(target.get(k)!=context.get(k) for k in ['positions','pending_entries','mark_price','limit_price_quotes','entry_economics','now','initial_equity','estimated_cost_rate','slippage_bps','observed_execution_fee_evidence'])):
+                or any(target.get(k)!=context.get(k) for k in ['positions','pending_entries','input_captured_at','entry_contract_version','mark_price','limit_price_quotes','entry_economics','now','initial_equity','estimated_cost_rate','slippage_bps','observed_execution_fee_evidence'])):
             return projected
         view=build(logical.get('market_snapshot',{}),target,target.get('ma_structure',{}))
         if view['status']!='AVAILABLE':
