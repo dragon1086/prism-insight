@@ -139,3 +139,22 @@ def test_management_reference_parameters_are_bound_to_loaded_provenance(monkeypa
     monkeypatch.setattr(flow,'HOLDING_REFERENCES',[('REACTION','30m',1800000,.01)])
     with pytest.raises(ValueError,match='review_mixed_loaded_policy'):
         review_policy_binding()
+
+
+def test_legacy_proposer_uses_the_same_scoped_holding_policy():
+    import json
+    from types import SimpleNamespace
+    from tests.test_scenario_entry_contract_wire import context,wire
+    from live.scenario_llm import propose
+    from live.scenario_preview import response_contract
+    c=context();c.update(accounting_status='confirmed',protection_ok=True,pending_entries=[])
+    captured=[]
+    def generate(**q):
+        captured.append(q)
+        return SimpleNamespace(text=json.dumps(wire(c,'WAIT','INTACT')))
+    out=propose(dict(valid=True,as_of_ms=1000000),c,response_contract(c),generate=generate,clock=lambda:1000)
+    assert out['action']=='WAIT'
+    assert captured[0]['system_prompt'].count('SUSTAINED DIRECTION')==1
+    assert '100-300 USDT' not in captured[0]['system_prompt']
+    base=SYSTEM_PROMPT+MA_STRUCTURE_PROMPT+FLAT_ENTRY_PROMPT
+    assert holding_management_instructions(base,{**c,'scenario_id':None})==base
