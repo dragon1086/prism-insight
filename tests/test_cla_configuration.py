@@ -71,6 +71,7 @@ def test_cla_workflow_is_pinned_and_minimally_scoped() -> None:
     condition = workflow["jobs"]["cla"]["if"]
     assert "github.event_name != 'pull_request'" in condition
     assert "github.event.pull_request.head.repo.full_name == github.repository" in condition
+    assert "github.event.action == 'reopened'" in workflow["jobs"]["cla"]["steps"][0]["if"]
     assert "actions/checkout" not in workflow_text
     assert "github.event_name == 'pull_request'" in workflow["jobs"]["cla"]["steps"][0]["if"]
     assert workflow["on"]["pull_request_target"]["types"] == [
