@@ -215,7 +215,47 @@ def reentry_first_size(base, scenario):
     return {"base": str(base), "sized": str(_dec(sized)), "factor": str(factor), "reason": REENTRY_SIZE_REASON}
 
 
-def entry_record(*, plan, unit_amount, market, entered_at, tilt=None, reentry_size=None):
+# H-1109-kr-reentry-bull-size SHADOW (2026-11-09, user approval): record what the first re-entry size
+# would be under regime sizing (bull 1.0; sideways/bear 0 or 0.5). Observation only, never the order.
+REGIME_SHADOW_ID = "H-1109-reentry-regime-size"
+_BULL = {"parabolic", "strong_bull", "moderate_bull"}
+_BEAR = {"moderate_bear", "strong_bear"}
+REGIME_SHADOW_ARMS = {"bull1_else0": {"bull": "1", "sideways": "0", "bear": "0"},
+                      "bull1_else05": {"bull": "1", "sideways": "0.5", "bear": "0.5"}}
+
+
+def regime_size_shadow(base, scenario, reentry_size=None):
+    """Hypothetical first re-entry sizes per regime arm, or None when off or not a re-entry.
+
+    A missing or unknown regime stays MISSING (no arm sizes), never a default bucket.
+    """
+    if os.getenv("REENTRY_REGIME_SIZE_SHADOW", "false").strip().lower() not in {"1", "true", "yes", "on"}:
+        return None
+    meta = (scenario or {}).get("reentry") if isinstance(scenario, dict) else None
+    if not isinstance(meta, dict) or not meta.get("version"):
+        return None
+    regime = scenario.get("_deterministic_market_regime")
+    bucket = ("bull" if regime in _BULL else "bear" if regime in _BEAR else "sideways" if regime == "sideways"
+              else None)
+    base = _dec(base)
+    out = {"id": REGIME_SHADOW_ID, "regime": regime, "bucket": bucket or "MISSING", "base": str(base),
+           "applied_factor": (reentry_size or {}).get("factor", "1"),
+           "applied": (reentry_size or {}).get("sized", str(base))}
+    if bucket:
+        out["arms"] = {name: {"factor": f[bucket],
+                              "sized": str((base * Decimal(f[bucket])).quantize(Decimal("0.0001"), rounding=ROUND_DOWN).normalize())}
+                       for name, f in REGIME_SHADOW_ARMS.items()}
+    return out
+
+
+def _safe_regime_shadow(base, scenario, reentry_size):
+    try:
+        return regime_size_shadow(base, scenario, reentry_size)
+    except Exception:  # noqa: BLE001 - the shadow record must never change the live entry
+        return None
+
+
+def entry_record(*, plan, unit_amount, market, entered_at, tilt=None, reentry_size=None, regime_shadow=None):
     """The micro_split block stored on the new holding's scenario.
 
     With a conviction ``tilt`` the first leg and the allocation are the tilted value and the
@@ -230,6 +270,8 @@ def entry_record(*, plan, unit_amount, market, entered_at, tilt=None, reentry_si
         block["conviction_tilt"] = dict(tilt)
     if reentry_size:
         block["reentry_size"] = dict(reentry_size)
+    if regime_shadow:
+        block["reentry_regime_shadow"] = dict(regime_shadow)
     # Why the first size is what it is (observation only; the plan hash above freezes the same values).
     setup = plan.get("setup") or {}
     block["sizing"] = {k: (str(v) if v is not None else None) for k, v in (
@@ -322,7 +364,9 @@ def prepare_entry(agent, *, market, ticker, current_price, scenario, decision_re
         cash = scaled_cash(unit, initial, market)
         updated = dict(scenario)
         updated[SCENARIO_KEY] = entry_record(plan=plan, unit_amount=unit, market=market,
-                                             entered_at=plan["created_at"], tilt=tilt, reentry_size=size)
+                                             entered_at=plan["created_at"], tilt=tilt, reentry_size=size,
+                                             regime_shadow=None if tilt else _safe_regime_shadow(
+                                                 plan["initial_nominal"], scenario, size))
         if pyramid_row:
             updated[SCENARIO_KEY]["pyramid_row"] = dict(pyramid_row)
         attach_buy_add_plan(updated, market=market, ticker=ticker, raw=updated.pop("add_plan", None), logger=logger)
