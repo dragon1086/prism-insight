@@ -665,3 +665,32 @@ def test_regime_size_shadow_failure_keeps_the_live_entry(live_on, monkeypatch):
     _, cash, scenario = _reentry_prepared("0.5", monkeypatch, regime="strong_bull")
     assert scenario["micro_split"]["allocation"] == "0.3888" and cash == 388_800
     assert "reentry_regime_shadow" not in scenario["micro_split"]
+
+
+@pytest.mark.parametrize("regime,cash,factor", [("strong_bull", 777_700, "1"), ("moderate_bull", 777_700, "1"),
+                                                ("parabolic", 777_700, "1"), ("sideways", 388_800, "0.5"),
+                                                ("strong_bear", 388_800, "0.5"), (None, 388_800, "0.5")])
+def test_reentry_bull_full_size_only_in_bull(live_on, monkeypatch, regime, cash, factor):
+    monkeypatch.setenv("REENTRY_V3_BULL_FULL_SIZE", "true")
+    monkeypatch.setenv("REENTRY_REGIME_SIZE_SHADOW", "true")
+    _, got, scenario = _reentry_prepared("0.5", monkeypatch, regime=regime)
+    block = scenario["micro_split"]
+    assert got == cash and block["reentry_size"]["factor"] == factor
+    assert block["reentry_regime_shadow"]["applied_factor"] == factor
+    msg = live.entry_message_block(scenario, "KR")[0]
+    assert ("재진입 첫 비중 축소" in msg) == (factor == "0.5")
+    if factor == "1":
+        assert block["reentry_size"]["reason"] == live.REENTRY_BULL_SIZE_REASON and block["allocation"] == "0.7777"
+
+
+def test_reentry_bull_full_size_off_keeps_half(live_on, monkeypatch):
+    monkeypatch.delenv("REENTRY_V3_BULL_FULL_SIZE", raising=False)
+    _, cash, scenario = _reentry_prepared("0.5", monkeypatch, regime="strong_bull")
+    assert cash == 388_800 and scenario["micro_split"]["reentry_size"]["factor"] == "0.5"
+
+
+def test_regular_entry_ignores_the_bull_full_size(live_on, monkeypatch):
+    monkeypatch.setenv("REENTRY_V3_BULL_FULL_SIZE", "true")
+    monkeypatch.setenv("REENTRY_V3_FIRST_SIZE_FACTOR", "0.5")
+    _, cash, scenario = _prepared()
+    assert cash == 777_700 and "reentry_size" not in scenario["micro_split"]
