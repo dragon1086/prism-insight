@@ -119,6 +119,10 @@ def test_us_legacy_seed_evidence_migrates_without_reconstruction():
 
 
 def test_slow_provider_attempts_outcome_before_twenty_active_watches(tmp_path, monkeypatch):
+    from importlib import import_module
+    # Keep cold provider imports outside the 100ms scheduling assertion.
+    import_module("cores.kis_market_snapshot")
+    import_module("cores.market_data.kis_source")
     from observability import oneil_watchlist as capture
     from observability import watchlist_outcomes
     tickers = [f"{i:06d}" for i in range(20)]
