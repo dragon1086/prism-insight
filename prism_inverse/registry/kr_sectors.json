@@ -1,0 +1,7 @@
+{
+ "_note": "KR sector ETF universe of the S4/S6 research (tasks/research-20261109/inverse-s3 dev_kr/ho_kr, all with bars through 2025-05). Order breaks driver-correlation ties (first wins). benchmark = relative-strength base and signal calendar.",
+ "benchmark": "069500",
+ "sectors": ["091160", "091170", "091180", "117460", "117680", "117700", "140710", "102960", "102970",
+             "139260", "139270", "139220", "139230", "139240", "139250", "139280", "139290", "143860",
+             "157490", "228790", "228800", "305540", "266360", "244580"]
+}

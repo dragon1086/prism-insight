@@ -54,6 +54,8 @@ class MemoryStore:
     def __init__(self):
         self.runs, self.decisions, self.snapshots, self.market = {}, [], [], []
         self.positions: dict[str, dict] = {}
+        self.signal_days: list[tuple] = []
+        self.virtual: dict = {}
 
     def start_run(self, run_id, market, day, mode, policy_version, config_hash):
         self.runs[run_id] = {"status": "running", "market": market, "day": day}
@@ -86,3 +88,15 @@ class MemoryStore:
 
     def close_position(self, position_id, day, price, reason):
         self.positions[position_id]["closed"] = (day, price, reason)
+
+    def record_signal_day(self, run_id, day, family, status, inputs, error):
+        self.signal_days.append((run_id, day, family, status, inputs, error))
+
+    def active_virtual_trades(self):
+        return [t for t in self.virtual.values() if t.status != "CLOSED"]
+
+    def save_virtual_trade(self, t):
+        self.virtual[t.trade_id] = t
+
+    def add_virtual_trade(self, t):
+        return self.virtual.setdefault(t.trade_id, t) is t

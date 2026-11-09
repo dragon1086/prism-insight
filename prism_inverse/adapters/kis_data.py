@@ -10,6 +10,7 @@ Nothing here places orders.
 from __future__ import annotations
 
 import math
+import time
 from datetime import date
 from typing import Optional
 
@@ -65,8 +66,28 @@ def _wrap(call, what: str):
 
 
 class KisKrData:
-    def __init__(self, source=None):
-        self._source = source
+    def __init__(self, source=None, min_interval: float = 0.0):
+        """``min_interval``: seconds between KIS calls (EGW00201 shows at ~1 call/s bursts on the
+        shared key). KisSource's own rate-limit retry still applies on top."""
+        self._source, self.min_interval, self._last_call = source, min_interval, 0.0
+        if source is not None:
+            self._pace(source)
+
+    def _pace(self, source) -> None:
+        if self.min_interval <= 0:
+            return
+        fetch = source._fetch  # shortcut: paces the instance's shared fetch; no public hook on KisSource
+
+        def paced(*args, **kwargs):
+            wait = self._last_call + self.min_interval - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                return fetch(*args, **kwargs)
+            finally:
+                self._last_call = time.monotonic()
+
+        source._fetch = paced
 
     @property
     def source(self):
@@ -74,6 +95,7 @@ class KisKrData:
             from cores.market_data.kis_source import KisSource
 
             self._source = KisSource()
+            self._pace(self._source)
         return self._source
 
     def daily_bars(self, instrument: Instrument, start: date, end: date) -> list[Bar]:
