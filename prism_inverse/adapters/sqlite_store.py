@@ -47,6 +47,13 @@ CREATE TABLE IF NOT EXISTS inv_virtual_trades (
   exit_date TEXT, exit_open REAL, exit_reason TEXT, ret REAL, status TEXT, error TEXT, updated_at TEXT);
 """
 _TRADE_COLS = [f.name for f in fields(VirtualTrade)]
+# Fixed SQL text (no string building at execute time); the assert keeps it in step with VirtualTrade.
+_TRADE_SELECT = ("SELECT trade_id, family, etf, underlying, signal_date, atr, status, entry_date, entry_open, entry_underlying, stop, target, exit_signal_date, exit_date, exit_open, exit_reason, ret, error "
+                 "FROM inv_virtual_trades WHERE status != ? ORDER BY signal_date")
+_TRADE_UPSERT = ("INSERT OR REPLACE INTO inv_virtual_trades (trade_id, family, etf, underlying, signal_date, atr, status, entry_date, entry_open, entry_underlying, stop, target, exit_signal_date, exit_date, exit_open, exit_reason, ret, error, updated_at) "
+                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+_TRADE_INSERT = _TRADE_UPSERT.replace("INSERT OR REPLACE", "INSERT OR IGNORE", 1)
+assert _TRADE_SELECT.split("SELECT ", 1)[1].split(" FROM")[0].split(", ") == _TRADE_COLS
 _DATE_COLS = {"signal_date", "entry_date", "exit_signal_date", "exit_date"}
 
 
@@ -122,21 +129,18 @@ class SqliteStore:
                     error))
 
     def active_virtual_trades(self) -> list[VirtualTrade]:
-        rows = self.db.execute(f"SELECT {', '.join(_TRADE_COLS)} FROM inv_virtual_trades WHERE status != ? "
-                               "ORDER BY signal_date", (CLOSED,)).fetchall()
+        rows = self.db.execute(_TRADE_SELECT, (CLOSED,)).fetchall()
         return [VirtualTrade(**{k: date.fromisoformat(v) if k in _DATE_COLS and v else v
                                 for k, v in zip(_TRADE_COLS, r)}) for r in rows]
 
-    def save_virtual_trade(self, t: VirtualTrade, verb: str = "INSERT OR REPLACE") -> bool:
+    def save_virtual_trade(self, t: VirtualTrade, sql: str = _TRADE_UPSERT) -> bool:
         row = {k: v.isoformat() if isinstance(v, date) else v for k, v in asdict(t).items()}
-        cols = [*_TRADE_COLS, "updated_at"]
         with self.db:
-            cur = self.db.execute(f"{verb} INTO inv_virtual_trades ({', '.join(cols)}) VALUES "
-                                  f"({', '.join('?' * len(cols))})", (*(row[k] for k in _TRADE_COLS), _now()))
+            cur = self.db.execute(sql, (*(row[k] for k in _TRADE_COLS), _now()))
         return cur.rowcount == 1
 
     def add_virtual_trade(self, t: VirtualTrade) -> bool:
-        return self.save_virtual_trade(t, "INSERT OR IGNORE")
+        return self.save_virtual_trade(t, _TRADE_INSERT)
 
 
 def _now() -> str:
