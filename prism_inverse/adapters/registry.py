@@ -9,6 +9,13 @@ from pathlib import Path
 from prism_inverse.domain.models import EtfSpec, Instrument
 
 DEFAULT_PATH = Path(__file__).resolve().parents[1] / "registry" / "etfs.json"
+KR_SECTORS_PATH = DEFAULT_PATH.with_name("kr_sectors.json")
+
+
+def load_kr_sectors(path: Path = KR_SECTORS_PATH) -> tuple[list[str], str]:
+    """(sector ETF codes, relative-strength benchmark) for the KR signal recorder."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return list(data["sectors"]), data["benchmark"]
 
 
 def load_registry(path: Path = DEFAULT_PATH) -> list[EtfSpec]:

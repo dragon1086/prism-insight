@@ -50,6 +50,19 @@ class Store(Protocol):
     def close_position(self, position_id: str, day: date, price: Optional[float], reason: str) -> None: ...
 
 
+class SignalStore(Protocol):
+    """Signal recorder: one row per family per run, and the virtual trade book (no orders)."""
+    def start_run(self, run_id: str, market: str, day: date, mode: str, policy_version: str,
+                  config_hash: str) -> None: ...
+    def finish_run(self, run_id: str, status: str, error: Optional[str] = None) -> None: ...
+    def record_signal_day(self, run_id: str, day: date, family: str, status: str, inputs: dict,
+                          error: Optional[str]) -> None: ...
+    def active_virtual_trades(self) -> list: ...
+    def save_virtual_trade(self, trade) -> None: ...
+    def add_virtual_trade(self, trade) -> bool:
+        """Insert a new trade; False (and no change) when the trade_id already exists."""
+
+
 class EventSink(Protocol):
     def emit(self, event_type: str, **fields) -> None:
         """Must never raise: observability cannot block a decision."""
