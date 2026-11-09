@@ -197,13 +197,25 @@ def conviction_tilt(base, *, market, buy_score, trigger_type):
 # Re-entry first size (2026-11-08, user decision after H-1106-reentry-shrink): a LIVE re-entry starts
 # at REENTRY_V3_FIRST_SIZE_FACTOR x the B3 initial; adds still come from the add_plan rails.
 REENTRY_SIZE_REASON = "REENTRY_FIRST_SIZE"
+# H-1109 LIVE (2026-11-09, user decision): a re-entry in a bull regime keeps the full B3 initial (KR and US);
+# sideways, bear and MISSING regimes keep the REENTRY_V3_FIRST_SIZE_FACTOR size.
+REENTRY_BULL_SIZE_REASON = "REENTRY_BULL_FULL_SIZE"
 
 
 def reentry_first_size(base, scenario):
-    """{"base", "sized", "factor", "reason"} for a re-entry scenario when the factor is below 1, else None."""
+    """{"base", "sized", "factor", "reason"} for a re-entry scenario when the factor is below 1, else None.
+
+    With REENTRY_V3_BULL_FULL_SIZE on, a bull-regime re-entry records factor 1 (the full B3 initial).
+    """
     meta = (scenario or {}).get("reentry") if isinstance(scenario, dict) else None
     if not isinstance(meta, dict) or not meta.get("version"):
         return None
+    regime = scenario.get("_deterministic_market_regime")
+    if (os.getenv("REENTRY_V3_BULL_FULL_SIZE", "false").strip().lower() in {"1", "true", "yes", "on"}
+            and regime in _BULL):
+        base = _dec(base)
+        return {"base": str(base), "sized": str(base), "factor": "1", "reason": REENTRY_BULL_SIZE_REASON,
+                "regime": regime}
     try:
         factor = Decimal(os.getenv("REENTRY_V3_FIRST_SIZE_FACTOR", "1").strip())
     except ArithmeticError:
@@ -452,7 +464,7 @@ def entry_message_block(scenario, market):
     tilt = block.get("conviction_tilt") or {}
     base = round(float(tilt["base"]) * 100) if tilt.get("base") else None
     tilted = f" (상위 셋업 가중, 기본 {base}%에서 상향)" if base is not None else ""
-    if block.get("reentry_size"):
+    if (block.get("reentry_size") or {}).get("reason") == REENTRY_SIZE_REASON:
         tilted = f" (재진입 첫 비중 축소, 기본 {round(float(block['reentry_size']['base']) * 100)}%에서 하향)"
     plan = block.get("add_plan") or {}
     labels = [add_plan.scenario_label(s, market, "ko") for s in plan.get("scenarios") or []]
