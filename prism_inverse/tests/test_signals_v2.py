@@ -56,6 +56,20 @@ def test_kq_f1_break_threshold_is_three_atr_under_peak():
                     "atr": [None] * 3}) == []  # unknown ATR never counts as a break
 
 
+def test_kq_x10_fires_only_on_the_first_close_below_the_10_day_line():
+    a = {"c": [10.0, 9.0, 8.0, 11.0, 9.0, None, 8.0], "ma10": [9.5, 9.5, 9.5, 9.5, 9.5, 9.5, 9.5]}
+    assert S.kq_x10(a) == [1, 4]  # 2 stays below; 6 follows an unknown close, so it is not a confirmed first break
+    assert S.kq_x10({"c": [10.0, 9.0], "ma10": [None, 9.5]}) == []  # unknown line the day before
+
+
+def test_kq_x10_virtual_trade_times_out_after_10_sessions():
+    cal = _days(15)
+    und = {d: _bar(d, 100, 100) for d in cal[1:]}
+    etf = {d: _bar(d, 5000, 5000) for d in cal[1:]}
+    t = advance(VirtualTrade("KQ_X10-x", "KQ_X10", "251340", "229200", D0, atr=1.0), cal, etf, und)
+    assert (t.exit_reason, t.exit_signal_date, t.exit_date) == ("TIME", cal[10], cal[11])
+
+
 # ---------------------------------------------------------------- sector panel
 
 
@@ -196,7 +210,7 @@ def test_recorder_fires_queues_and_fills_next_open(tmp_path):
     r = C.run_signals(fire_day, SECTORS, "069500", FakeMarketData(series), store, events, mode="observe")
     status, inputs, error = r.days["KQ_F1"]
     assert status == C.FIRED and error is None and inputs["virtual"] == f"QUEUED:KQ_F1-{fire_day}"
-    assert {f for f, (s, _, _) in r.days.items() if s == C.NOT_FIRED} == {"KQ_DRIVER", "K200_DRIVER"}
+    assert {f for f, (s, _, _) in r.days.items() if s == C.NOT_FIRED} == {"KQ_DRIVER", "K200_DRIVER", "KQ_X10"}
     [t] = store.active_virtual_trades()
     assert t.status == PENDING_ENTRY and t.atr == inputs["atr"]
     again = C.run_signals(fire_day, SECTORS, "069500", FakeMarketData(series), store, events, mode="observe")
@@ -205,15 +219,15 @@ def test_recorder_fires_queues_and_fills_next_open(tmp_path):
     series, _ = _market(n_extra=1)
     nxt = series["251340"][-1].day
     C.run_signals(nxt, SECTORS, "069500", FakeMarketData(series), store, events, mode="observe")
-    [t] = store.active_virtual_trades()
+    [t] = [x for x in store.active_virtual_trades() if x.family == "KQ_F1"]  # KQ_X10 keeps its own trade
     assert (t.status, t.entry_date, t.entry_open) == (OPEN, nxt, series["251340"][-1].open)
     assert t.entry_underlying == series["229200"][-1].open and t.stop == pytest.approx(t.entry_underlying + 2 * t.atr)
     kinds = [e for e, _ in events.events]
-    assert kinds.count("inverse.signal_evaluated") == 9 and kinds.count("inverse.virtual_entry") == 1
+    assert kinds.count("inverse.signal_evaluated") == 12 and kinds.count("inverse.virtual_entry") == 1
     tids = {f["trace_id"] for e, f in events.events if f["attributes"].get("family") == "KQ_F1" or e != "inverse.signal_evaluated"}
     assert len(tids) == 2  # signal day and the trade share one trace; the next day's evaluation has its own
     rows = store.db.execute("SELECT family, status, inputs_json FROM inv_signal_days").fetchall()
-    assert len(rows) == 9 and json.loads(rows[0][2])["underlying"] == "229200"
+    assert len(rows) == 12 and json.loads(rows[0][2])["underlying"] == "229200"
 
 
 def test_unavailable_or_stale_input_is_missing_not_not_fired():
@@ -331,8 +345,12 @@ def test_parity_with_research_on_synthetic_panel():
     tr = pd.concat([x.High - x.Low, (x.High - pc).abs(), (x.Low - pc).abs()], axis=1).max(1)
     ra = dict(c=x.Close.to_numpy(), atr=tr.rolling(20).mean().to_numpy(), ma50=x.Close.rolling(50).mean().to_numpy(),
               peak=x.Close.rolling(120, min_periods=60).max().to_numpy())
-    for k in ("atr", "ma50", "peak"):
+    ra["ma10"] = x.Close.rolling(10).mean().to_numpy()
+    for k in ("atr", "ma10", "ma50", "peak"):
         np.testing.assert_allclose(_nan(mine[k]), ra[k], rtol=1e-12, equal_nan=True)
+    below = x.Close.to_numpy() < ra["ma10"]
+    ref_x10 = [i for i in np.where(below & ~np.r_[False, below[:-1]])[0] if i >= 10]  # s11 research rule after warm-up
+    assert S.kq_x10(mine) == ref_x10 and ref_x10
     rc, rm, rp, rt = ra["c"], ra["ma50"], ra["peak"], ra["atr"]
     ref_f1 = _research_second_breaks(rc, rm, rp, lambda i: rc[i] < rm[i] and np.isfinite(rp[i]) and rc[i] <= rp[i] - 3 * rt[i])
     assert [i for i in S.kq_f1(mine) if i < n - 1] == ref_f1 and ref_f1

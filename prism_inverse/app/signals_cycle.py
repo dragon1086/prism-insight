@@ -1,7 +1,7 @@
 """KR inverse signal recorder: after the close, evaluate three signals and keep virtual trades.
 
 No order path. Each run (1) advances open virtual trades with today's bars (fills pending
-next-open entries/exits), then (2) evaluates KQ_F1, KQ_DRIVER, K200_DRIVER for ``day``. A signal
+next-open entries/exits), then (2) evaluates KQ_F1, KQ_X10, KQ_DRIVER, K200_DRIVER for ``day``. A signal
 whose inputs are unavailable or lack a bar on ``day`` is MISSING, never "not fired".
 """
 
@@ -20,10 +20,11 @@ from prism_inverse.domain.models import Bar, Instrument
 from prism_inverse.domain.virtual import CLOSED, VirtualTrade, advance
 from prism_inverse.ports import EventSink, MarketData, SignalStore, Unavailable, Unsupported
 
-SIGNALS_VERSION = "inverse-signals-kr-v1"
+SIGNALS_VERSION = "inverse-signals-kr-v2"  # v2: + KQ_X10
 KOSDAQ, K200 = "229200", "069500"
 # family -> (underlying the rules read, inverse ETF the virtual trade uses)
-FAMILY_MAP = {"KQ_F1": (KOSDAQ, "251340"), "KQ_DRIVER": (KOSDAQ, "251340"), "K200_DRIVER": (K200, "114800")}
+FAMILY_MAP = {"KQ_F1": (KOSDAQ, "251340"), "KQ_DRIVER": (KOSDAQ, "251340"), "K200_DRIVER": (K200, "114800"),
+              "KQ_X10": (KOSDAQ, "251340")}
 FIRED, NOT_FIRED, MISSING = "FIRED", "NOT_FIRED", "MISSING"
 
 
@@ -69,13 +70,14 @@ def evaluate(day: date, sectors: Sequence[str], bench: str, bars: dict, errors: 
     out = {}
     err = missing([KOSDAQ])
     if err:
-        out["KQ_F1"] = (MISSING, {}, err)
+        out["KQ_F1"] = out["KQ_X10"] = (MISSING, {}, err)
     else:
         a = _ind(bars[KOSDAQ])
-        fired = len(a["c"]) - 1 in S.kq_f1(a)
-        out["KQ_F1"] = (FIRED if fired else NOT_FIRED, {
-            "underlying": KOSDAQ, "close": _last(a, "c"), "ma50": _last(a, "ma50"), "atr": _last(a, "atr"),
-            "peak": _last(a, "peak")}, None)
+        t = len(a["c"]) - 1
+        base = {"underlying": KOSDAQ, "close": _last(a, "c"), "atr": _last(a, "atr")}
+        out["KQ_F1"] = (FIRED if t in S.kq_f1(a) else NOT_FIRED,
+                        {**base, "ma50": _last(a, "ma50"), "peak": _last(a, "peak")}, None)
+        out["KQ_X10"] = (FIRED if t in S.kq_x10(a) else NOT_FIRED, {**base, "ma10": _last(a, "ma10")}, None)
 
     err = missing([bench, *sectors])  # every sector feeds the leader rank, so one gap blocks both
     if err:
