@@ -249,3 +249,20 @@ def test_get_configured_accounts_rejects_too_many_accounts(monkeypatch):
 
     with pytest.raises(ValueError, match="Too many accounts configured"):
         ka.get_configured_accounts()
+
+
+def test_auth_rereads_token_under_issue_lock_before_requesting(monkeypatch, tmp_path):
+    # 2026-11-09 13:57: two cron jobs saw the expired token together; the second hit EGW00133 (1/min).
+    cfg = {**_base_cfg(), "paper_app": "PSVTTESTKEY", "paper_sec": "paper-secret", "vps": "https://example.com"}
+    _patch_cfg(monkeypatch, cfg)
+    monkeypatch.setattr(ka, "config_root", str(tmp_path))
+    reads = iter([None, "token-saved-by-peer"])
+    monkeypatch.setattr(ka, "read_token", lambda account_key=None: next(reads))
+    monkeypatch.setattr(ka, "_request_token_with_retry", lambda *a, **k: pytest.fail("must not request a new token"))
+    seen = {}
+    monkeypatch.setattr(ka, "changeTREnv", lambda token, *a, **k: seen.setdefault("token", token))
+
+    ka.auth(svr="vps")
+
+    assert seen["token"] == "token-saved-by-peer"
+    assert not (tmp_path / ".token_issue.lock").exists()
