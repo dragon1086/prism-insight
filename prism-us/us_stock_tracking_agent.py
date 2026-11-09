@@ -98,6 +98,7 @@ try:
     from cores.oneil_fallback import (
         evaluate_oneil_sell as _oneil_eval,
         from_stock_data as _oneil_from,
+        entry_regime_of as _oneil_entry_regime,
     )
     _ONEIL_FALLBACK_AVAILABLE = True
 except Exception:  # pragma: no cover - defensive
@@ -2536,7 +2537,8 @@ class USStockTrackingAgent:
             # Same trailing band as the automatic exit, which trails on _live_regime_cache
             # (KR carries it in kr_live_regime_block).
             from prism_core.sell_regime_context import trailing_band_line
-            live_regime_block += "\n" + trailing_band_line(getattr(self, "_live_regime_cache", None), "en").rstrip()
+            live_regime_block += "\n" + trailing_band_line(
+                getattr(self, "_live_regime_cache", None), "en", _oneil_entry_regime(stock_data.get("scenario"))).rstrip()
 
             prompt_message = f"""
 Please make a sell/hold decision for the following US stock holding.

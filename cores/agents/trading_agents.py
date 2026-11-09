@@ -964,6 +964,7 @@ def create_sell_decision_agent(language: str = "ko"):
         - Trailing stop activates ONLY after highest_price since entry ≥ entry_price × 1.05.
         - Before activation (peak still under entry +5%), keep the initial stop_loss from the buy scenario; do NOT switch to a trailing stop.
         - This prevents the post-entry noise from pushing the trailing stop below the entry price and losing its protective function.
+        - If the per-stock trailing line (current-regime block, system-computed facts) differs from these defaults (+5%, × 0.92/× 0.95), it is this position's automatic exit rule; follow it (a position bought in a sideways/bear regime may show +3%, × 0.94/× 0.96).
 
         **Core-4) Sell-signal priority (single source of truth):**
         - Tier 1: Absolute sell (live-price loss ≥ -7%, OR live price at or below stop_loss × 0.995 — executed automatically by the intraday hard stop).
@@ -1197,6 +1198,7 @@ def create_sell_decision_agent(language: str = "ko"):
         - 진입 후 고점(highest_price) ≥ 진입가 × 1.05를 충족한 이후에만 trailing stop이 활성화됩니다.
         - 활성화 전(고점이 진입가 +5% 미만)에는 매수 시 설정된 초기 stop_loss를 유지하며 trailing stop으로 변경하지 않습니다.
         - 이는 진입 직후 작은 변동으로 trailing stop이 진입가 아래로 내려가서 보호 기능을 잃는 현상을 방지합니다.
+        - 종목별 입력의 트레일링 줄(현재 시장 국면 블록·시스템 계산 사실)이 위 기본값(+5%, × 0.92/× 0.95)과 다르면 그것이 이 종목의 자동 청산 기준이므로 그 값을 따르십시오(매수 시점 국면이 횡보·약세인 종목은 +3%, × 0.94/× 0.96일 수 있습니다).
 
         **핵심-4) 매도 신호 우선순위 (single source of truth):**
         - 1단계: 절대 매도 (장중 현재가 기준 -7% 이상 손실 OR 현재가 stop_loss×0.995 이하 — 장중 하드스탑이 자동 실행)

@@ -14,8 +14,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, time
 
-from cores.oneil_fallback import (BULL_REGIMES, STOP_WICK_BUFFER, TRAIL_ACTIVATION_PCT, TRAIL_DROP_BULL,
-                                  TRAIL_DROP_UNKNOWN, TRAIL_DROP_WEAK, _normalize_regime)
+from cores.oneil_fallback import STOP_WICK_BUFFER, entry_regime_of, trail_params
 from prism_core import runner_hold as R
 
 TREND_DOWN_CLOSES = 3      # tier 3: three consecutive lower daily closes
@@ -29,24 +28,20 @@ def enabled():
     return os.getenv("SELL_FACTS_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
 
 
-def trailing_state(*, buy_price, highest_price, stop_loss, current_price, regime, threshold_pct, last_close):
+def trailing_state(*, buy_price, highest_price, stop_loss, current_price, regime, threshold_pct, last_close,
+                   entry_regime=""):
     """Trailing line and stop-raise eligibility exactly as the exit code computes them."""
     buy, peak = R._num(buy_price), R._num(highest_price)
     if buy is None or peak is None:
         return None
-    if not regime:
-        drop = TRAIL_DROP_UNKNOWN
-    elif _normalize_regime(regime) in BULL_REGIMES:
-        drop = TRAIL_DROP_BULL
-    else:
-        drop = TRAIL_DROP_WEAK
+    act, drop = trail_params(regime or "", bool(regime), entry_regime)
     line = peak * drop
     stop, price, close = R._num(stop_loss), R._num(current_price), R._num(last_close)
     gap = (line - stop) / stop * 100 if stop else None
-    activated = peak >= buy * (1 + TRAIL_ACTIVATION_PCT / 100)
+    activated = peak >= buy * (1 + act / 100)
     raise_ok = bool(activated and regime and gap is not None and gap >= float(threshold_pct)
                     and price is not None and line < price)
-    return {"activated": activated, "drop": drop, "regime_live": bool(regime), "peak": peak, "line": line,
+    return {"activated": activated, "activation_pct": act, "drop": drop, "regime_live": bool(regime), "peak": peak, "line": line,
             "trigger": line * (1 - STOP_WICK_BUFFER), "close": close,
             "close_below": None if close is None else close <= line * (1 - STOP_WICK_BUFFER),
             "gap_pct": gap, "threshold_pct": float(threshold_pct), "raise_ok": raise_ok}
@@ -181,12 +176,14 @@ def prompt_block(*, market, language, stock_data, highest_price, threshold_pct, 
     if not runner:
         t = trailing_state(buy_price=stock_data.get("buy_price"), highest_price=highest_price,
                            stop_loss=stock_data.get("stop_loss"), current_price=stock_data.get("current_price"),
-                           regime=regime, threshold_pct=threshold_pct, last_close=last_close)
+                           regime=regime, threshold_pct=threshold_pct, last_close=last_close,
+                           entry_regime=entry_regime_of(stock_data.get("scenario")))
         if t is None:
             lines.append("- 트레일링: 확인 불가" if ko else "- Trailing stop: unknown")
         elif not t["activated"]:
-            lines.append(f"- 트레일링: 아직 꺼짐(고점 {m(t['peak'])}이 매수가 +5% 미만). 초기 손절가를 유지하십시오." if ko else
-                         f"- Trailing stop: not active yet (peak {m(t['peak'])} is under entry +5%). Keep the initial stop.")
+            lines.append(f"- 트레일링: 아직 꺼짐(고점 {m(t['peak'])}이 매수가 +{t['activation_pct']:g}% 미만). 초기 손절가를 유지하십시오."
+                         if ko else f"- Trailing stop: not active yet (peak {m(t['peak'])} is under entry "
+                         f"+{t['activation_pct']:g}%). Keep the initial stop.")
         else:
             band = f"× {t['drop']:.2f}" + ("" if t["regime_live"] else (" (국면 미확인)" if ko else " (regime unavailable)"))
             if trend and today and trend["date"] == today:

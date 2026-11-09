@@ -29,6 +29,7 @@ from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmented
 # Import core agents
 from cores.agents.trading_agents import create_sell_decision_agent
 from cores.utils import parse_llm_json
+from cores.oneil_fallback import entry_regime_of
 from prism_core.sell_regime_context import kr_live_regime_block
 from prism_core.execution_service import ExecutionService, OrderOutcomeUnknown
 from prism_core.order_intents import OrderIntent
@@ -1803,7 +1804,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             # TIER2 loop trails on the same value, so the AI must not judge it separately.
             live_regime = getattr(self, "_live_regime_cache", None)
             live_regime_block = kr_live_regime_block(
-                live_regime, getattr(self, "_live_market_context", None), self.language)
+                live_regime, getattr(self, "_live_market_context", None), self.language,
+                entry_regime_of(stock_data.get("scenario")))
             logger.info(f"[sell] {ticker} AI sell regime input: {live_regime or 'unavailable'}")
 
             # Prepare prompt based on language (Korean text preserved for language == "ko" blocks)
