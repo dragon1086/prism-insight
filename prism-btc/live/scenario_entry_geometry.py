@@ -111,12 +111,12 @@ def build(snapshot, context, structure):
                         rounded = lambda value: round(float(value), 6) if value is not None else None
                         diagnostics = [rounded(price_risk / atrs['1h']) if atrs['1h'] else None,
                                        rounded(abs(raw_entry - entry) / atr) if atr else None,
-                                       rounded(fee_share), rounded(reserve_share)]
+                                       rounded(fee_share), rounded(reserve_share), rounded(sign * (target - e) / price_risk)]
                         rows.append([side,kind,float(raw_entry),float(e),levels[stop],float(stop),levels[target],float(target),float(abs(e-stop)/atr) if atr else None,result['ratio'],result['conditional_reward'],result['full_stop_loss'],basis] + diagnostics)
         view={'version':2,'status':'AVAILABLE' if rows else 'UNAVAILABLE','snapshot_as_of_ms':int(asof),'quote_captured_at':float(stamp),'entry_deadline_seconds_remaining':deadline_remaining,
-              'columns':['side','entry_kind','raw_entry_reference','worst_entry_bound','stop_ref','stop_level','target_ref','target_level','stop_distance_atr30','single_target_ratio','reward_per_btc','loss_per_btc','cost_basis','stop_distance_atr1h','entry_distance_atr30','fee_to_price_stop_risk','reserve_to_price_stop_risk'],
+              'columns':['side','entry_kind','raw_entry_reference','worst_entry_bound','stop_ref','stop_level','target_ref','target_level','stop_distance_atr30','single_target_ratio','reward_per_btc','loss_per_btc','cost_basis','stop_distance_atr1h','entry_distance_atr30','fee_to_price_stop_risk','reserve_to_price_stop_risk','target_distance_R'],
               'rows':rows[:MAX_ROWS],
-              'meaning':'USDT/BTC single-target diagnostics, not orders, ladder payoff, support strength or win/fill probability. Observed nearest/outer levels are not rankings. Raw levels precede buffers; static worst-entry anchor does not promise repricing/fill. FEE assumes historical taker and excludes future funding/slippage; RESERVE is host cost stress, never known fees. New cost/ATR ratios rounded to 6 decimals. Missing stays null. V2 deadline is entry-only. Final host validates the actual ladder.'}
+              'meaning':'USDT/BTC single-target diagnostics, not orders, ladder payoff, support strength or win/fill probability. Observed nearest/outer levels are not rankings. Raw levels precede buffers; static worst-entry anchor does not promise repricing/fill. FEE assumes historical taker and excludes future funding/slippage; RESERVE is host cost stress, never known fees. R is price distance / structural stop distance, before costs; not ladder payoff. New ratios rounded to 6 decimals. Missing stays null. V2 deadline is entry-only. Final host validates the actual ladder.'}
         return view if len(json.dumps(view,ensure_ascii=False).encode())<=MAX_BYTES else unavailable
     except (KeyError,TypeError,ValueError,ArithmeticError,OverflowError):
         return unavailable

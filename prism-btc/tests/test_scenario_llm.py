@@ -54,12 +54,12 @@ def test_assembled_tp_distance_baseline_is_symmetric_and_preserves_remaining_quo
             generate=generate, clock=lambda: 1000)
     policy = ' '.join(calls[0]['system_prompt'].split())
     for clause in (
-        '100-300 USDT away only when evidenced structure and cost room support it',
-        '100-200 USDT of favorable movement is NOT automatically net profit',
-        'later partial profit around 500 USDT',
-        'residual runner around 800-1000 USDT',
-        'not mandatory distances, minimum spacing',
-        'absolute BTC price differences',
+        'fixed USDT distances',
+        'A single target ratio is not a ladder ratio',
+        'final candidate receipts price the actual rounded TP allocations',
+        'A final dust lot does not preserve a trend',
+        'never stretch TP or squeeze SL to pass',
+        'not account risk or a leveraged return',
         'For LONG profitable objectives are above entry; for SHORT they are below entry',
         'Choose the structural invalidation SL first',
         'Do not tighten SL merely to enlarge a bet',
@@ -67,7 +67,7 @@ def test_assembled_tp_distance_baseline_is_symmetric_and_preserves_remaining_quo
         'not a preset near-heavy' ,
         'not a forced allocation',
         'support for SHORT takes precedence',
-        '500 USDT is a reference, not a minimum profit distance',
+        'Use structure and volatility for distance',
         'For a SHORT buy-to-close TP, choose a price slightly ABOVE the support',
         'for a LONG sell-to-close TP, slightly BELOW the resistance',
         'roundness alone does not prove support or resistance',

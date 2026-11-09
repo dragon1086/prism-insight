@@ -153,3 +153,11 @@ def test_unknown_fees_and_unconfirmed_atr_do_not_turn_into_zero():
 def test_expired_original_entry_deadline_is_not_extended():
     s,c,t=inputs();c.update(entry_contract_version=2,input_captured_at=9890.)
     assert build(s,c,t)['entry_deadline_seconds_remaining']==0
+
+
+def test_price_R_is_host_computed_and_not_net_or_ladder_payoff():
+    s,c,t=inputs()
+    for row in rows(build(s,c,t)):
+        price_R=abs(row['target_level']-row['worst_entry_bound'])/abs(row['worst_entry_bound']-row['stop_level'])
+        assert row['target_distance_R']==pytest.approx(price_R,abs=0.000001)
+        assert row['single_target_ratio']<price_R

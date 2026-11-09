@@ -20,9 +20,9 @@ def test_draft_and_selection_share_flexible_tp_and_cost_semantics(side, holding)
     for call in calls:
         text = " ".join(call["system_prompt"].split())
         for clause in (
-            "100-200 USDT of favorable movement is NOT automatically net profit",
-            "100-300 USDT away only when evidenced structure and cost room support it",
-            "not a minimum profit distance", "not a forced allocation",
+            "A single target ratio is not a ladder ratio",
+            "fixed USDT distances",
+            "Use structure and volatility for distance", "not a forced allocation",
             "NOT actual breakeven or a mandatory SL boundary",
             "LEG_ONLY projections from WHOLE_SCENARIO projections",
             "Missing fee evidence stays UNKNOWN, not zero and not an automatic WAIT",
@@ -60,5 +60,5 @@ def test_host_allocation_mode_keeps_new_tp_policy_in_both_phases():
     assert "Return exactly selection_token and rationale" in calls[1]["system_prompt"]
     for call in calls:
         text = " ".join(call["system_prompt"].split())
-        assert "100-200 USDT of favorable movement is NOT automatically net profit" in text
+        assert "A single target ratio is not a ladder ratio" in text
         assert "NOT actual breakeven or a mandatory SL boundary" in text
