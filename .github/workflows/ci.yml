@@ -337,6 +337,7 @@ jobs:
             prism-btc/tests/test_initial_entry_progress_context.py \
             prism-btc/tests/test_scenario_entry_economics.py \
             prism-btc/tests/test_scenario_entry_geometry.py \
+            prism-btc/tests/test_scenario_holding_management.py \
             prism-btc/tests/test_entry_economics_retention.py \
             prism-btc/tests/test_scenario_calculated_replay.py \
             prism-btc/tests/test_scenario_review_guard.py \

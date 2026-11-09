@@ -8,7 +8,8 @@ from collections.abc import Callable
 
 from engine.scenario_ma_context import build_ma_structure_context
 from live.scenario_entry_display import project_entry_display_input
-from live.scenario_position_flow import project_position_flow_input, project_holding_price_order_input
+from live.scenario_position_flow import (project_position_flow_input, project_holding_price_order_input,
+                                          project_holding_management_input)
 from live.scenario_analysis_frames import analysis_model_view, PRIMARY_FRAMES
 
 MODEL = "gpt-6.1-terra"
@@ -1057,6 +1058,55 @@ and fill timing remain unknown. FAILED requires full EXIT, never partial delay.
 '''
 
 
+
+HOLDING_MANAGEMENT_PROMPT = """For confirmed holdings, judge strength along the held side: a strong decline
+can support a SHORT runner. Weakened follow-through matters before formal failure;
+absence of failure is not an edge. Use computed holding_management references; assess
+1h/30m price progress, volume and pace rather than calculating prices/costs.
+SUSTAINED DIRECTION: within the original purpose, preserve meaningful exposure
+through ordinary pullbacks;
+compare the 1h MA10/ATR TREND reference, not a ratchet on each new Mark.
+A confirmed 1h close against MA10 prompts failure/recovery review. Hard protection
+or genuine failure EXIT never waits for that close.
+WEAKENING/RANGE: after meaningful favorable progress, compare an active Mark/30m-ATR
+REACTION reference or partial TP; do not choke SL on entry noise before progress.
+Read prior changes, observed Mark pace and review checkpoints. Change posture for
+new evidence, not merely another five-minute slot. Price references and positive
+fee-only estimates guarantee neither profit nor risk permission.
+Retain broker hard SL. Wider TREND restoration needs existing eligible stop_policy,
+stop_revision and fresh risk validation within the original anchor/budget; otherwise
+keep current protection. Never restore sold lots or enlarge the budget.
+Preserve a bounded MA35 traversal; do not silently convert it into trend extension.
+At reactions compare partial TP, protected residual and failure exit using structure
+and volatility, not fixed USDT spacing. Measure TP from verified entry: profitable
+LONG objectives are above it, SHORT below. Noise/fees alone never mandate EXIT;
+confirmed failure does. Missing MA/ATR/costs stay unknown and never cancel protection.
+"""
+
+
+def holding_management_instructions(text, context):
+    if (not context.get('scenario_id') or not context.get('positions')
+            or context.get('accounting_status')!='confirmed' or context.get('protection_ok') is not True
+            or context.get('pending_entries')!=[] or context.get('management_quarantine')):
+        return text
+    start='Use flexible near, intermediate and extension TP allocation rather than'
+    end='Choose the structural invalidation SL first, then let host risk sizing calculate'
+    if text.count(start)!=1 or text.count(end)!=1:
+        raise ValueError('holding_prompt_source_changed')
+    before,_,tail=text.partition(start);_,_,after=tail.partition(end)
+    text=before+HOLDING_MANAGEMENT_PROMPT+end+after
+    start='On every holding review distinguish current holding advantage from merely NOT FAILED:'
+    end='An infeasible cost-positive SL alone does not justify retaining exposure:'
+    if text.count(start)!=1 or text.count(end)!=1:
+        raise ValueError('holding_prompt_source_changed')
+    before,_,tail=text.partition(start);_,_,after=tail.partition(end)
+    text=before+end+after
+    text=text.replace('Replanning must still preserve\nthe original budget, original side and no stop widening, even before any fill.',
+        'Pending-entry replanning preserves budget, side and the original SL;\nsettled-holding restoration uses the stop_policy below.')
+    return text.replace('500 USDT is a reference, not a minimum profit distance. Inspect intervening\n',
+                        'Use structure and volatility for distance. Inspect intervening\n')
+
+
 def propose(snapshot: dict, context: dict, response_contract: dict, *,
             generate: Callable | None = None, clock: Callable = time.time) -> dict:
     """Read-only proposal; caller must revalidate against fresh execution state.
@@ -1107,6 +1157,7 @@ def propose(snapshot: dict, context: dict, response_contract: dict, *,
         else:
             payload, projection_audit = project_position_flow_input(payload)
         payload, projection_audit = project_holding_price_order_input(payload, projection_audit)
+        payload = project_holding_management_input(payload, context)
         prompt = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     except (TypeError, ValueError):
         raise ScenarioModelError("invalid_input") from None
@@ -1122,6 +1173,7 @@ def propose(snapshot: dict, context: dict, response_contract: dict, *,
         system_prompt += FLAT_ENTRY_PROMPT
     system_prompt += convergence_entry_instructions(context)
     system_prompt = immediate_reduce_instructions(system_prompt, context)
+    system_prompt = holding_management_instructions(system_prompt, context)
     from live.scenario_recovery import record_model_request, record_model_wire, record_model_error
     record_model_request(system_prompt=system_prompt, user_prompt=prompt,
                          response_schema=schema, model=MODEL, effort=EFFORT, fast=False,
