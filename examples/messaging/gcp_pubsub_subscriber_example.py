@@ -674,7 +674,8 @@ async def follow_add_signal(signal: Dict[str, Any], logger: logging.Logger, *, d
         logger.info(f"[ADD_DUPLICATE] {market} {company_name}({ticker}) signal {fields['signal_id']} already handled")
         return {"success": True, "skipped": True, "message": "duplicate signal"}
     if not (market_open or is_market_hours)(market):
-        return skip("outside regular market hours (adds are intraday only)")
+        # PRISM's close-confirmation adds arrive after the close by design; skipping them is expected (log only).
+        return skip("outside regular market hours (adds are intraday only)", send=False)
     if dry_run:
         logger.info(f"🔸 [DRY-RUN] Add skipped: {market} {company_name}({ticker}) +{fields['delta']:.0%} of one slot "
                     f"({fields['before']:.0%} -> {fields['after']:.0%}) @ {fields['limit_price']:,.2f}")

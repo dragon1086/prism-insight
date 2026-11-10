@@ -343,7 +343,7 @@ def test_kill_switch_dry_run_market_hours_and_bad_payloads_place_no_order(sub, m
     alerts = []
     assert _follow(sub, _signal(signal_id="f"), dry_run=True)["message"] == "dry-run"
     assert _follow(sub, _signal(signal_id="g"), market_open=False, alerts=alerts)["skipped"]
-    assert "outside regular market hours" in alerts[-1]
+    assert alerts == []  # after-close adds are expected (PRISM close-confirmation phase): log only, no alert
     for bad in (_signal(signal_id=""), _signal(signal_id="h", allocation_after=1.2, delta_fraction=0.9),
                 _signal(signal_id="i", delta_fraction=0.1)):
         assert _follow(sub, bad, alerts=alerts)["skipped"]
