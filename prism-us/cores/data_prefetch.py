@@ -1686,9 +1686,17 @@ def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, v
     index_summary["effective_entry_regime"] = regime
 
     k8b = {}
-    if _os.environ.get("US_REGIME_K8B_MODE", "off").strip().lower() == "shadow":
+    k8b_mode = _os.environ.get("US_REGIME_K8B_MODE", "off").strip().lower()
+    if k8b_mode in ("shadow", "live"):
         k8b = _compute_us_regime_k8b_shadow(sp500_df, close_col, nasdaq_df)
+        k8b["k8b_mode"] = k8b_mode
+        k8b["legacy_regime"] = regime
+        if k8b_mode == "live" and k8b.get("regime_k8b_shadow"):
+            regime = k8b["regime_k8b_shadow"]
+        k8b["k8b_live_applied"] = k8b_mode == "live" and regime == k8b.get("regime_k8b_shadow")
         index_summary.update(k8b)  # index_summary rides into market.regime_snapshot
+        index_summary["primary_trend_regime"] = regime
+        index_summary["effective_entry_regime"] = regime
 
     return {
         **k8b,

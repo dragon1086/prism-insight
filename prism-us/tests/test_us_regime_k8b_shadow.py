@@ -17,7 +17,8 @@ import cores.data_prefetch as dp  # noqa: E402
 from cores.data_prefetch import _compute_us_regime, _k8b_index_label  # noqa: E402
 
 K8B_KEYS = {"regime_k8b_shadow", "regime_k8b_shadow_sp", "regime_k8b_shadow_ndx",
-            "k8b_ibd_state", "k8b_shadow_missing_reason"}
+            "k8b_ibd_state", "k8b_shadow_missing_reason", "k8b_mode", "legacy_regime",
+            "k8b_live_applied"}
 
 
 def _df(closes):
@@ -61,6 +62,26 @@ def test_off_by_default_leaves_result_unchanged(monkeypatch):
     stripped = {k: v for k, v in shadow.items() if k not in K8B_KEYS}
     stripped["index_summary"] = {k: v for k, v in shadow["index_summary"].items() if k not in K8B_KEYS}
     assert stripped == off  # no existing key or value changes
+
+
+def test_live_uses_k8b_label_everywhere(monkeypatch):
+    sp, nd = _df(SERIES["strong_bull"]), _df(SERIES["sideways"])
+    monkeypatch.setenv("US_REGIME_K8B_MODE", "shadow")
+    legacy = _compute_us_regime(sp, nd, None)["market_regime"]
+    monkeypatch.setenv("US_REGIME_K8B_MODE", "live")
+    r = _compute_us_regime(sp, nd, None)
+    assert legacy != "sideways" and r["legacy_regime"] == legacy
+    for key in ("market_regime", "primary_trend_regime", "effective_entry_regime"):
+        assert r[key] == "sideways"
+    assert r["index_summary"]["effective_entry_regime"] == "sideways"
+    assert r["k8b_live_applied"] is True
+
+
+def test_live_falls_back_to_legacy_when_k8b_unknown(monkeypatch):
+    monkeypatch.setenv("US_REGIME_K8B_MODE", "live")
+    r = _compute_us_regime(_df(SERIES["strong_bull"]), None, None)
+    assert r["regime_k8b_shadow"] is None
+    assert r["market_regime"] == r["legacy_regime"] and r["k8b_live_applied"] is False
 
 
 def test_shadow_replays_market_pulse(monkeypatch):
