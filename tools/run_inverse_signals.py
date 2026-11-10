@@ -5,7 +5,11 @@
     INVERSE_SIGNALS_MODE=observe python tools/run_inverse_signals.py --market us   # 28 sector ETFs, synthetic -2x
 
 ``INVERSE_SIGNALS_MODE`` defaults to ``off``. Nothing schedules this; turning observe on is a
-separate, user-approved server step. There is no order path in any mode.
+separate, user-approved server step.
+
+Live lane (S5): ``INVERSE_LANE_LIVE_MARKETS=KR,US`` (default empty) runs the live cycle after the
+recorder in observe mode only: next-open reserved orders on every configured real account, one
+account slot (KR one position at a time, US three sectors). ``--dry-run`` never orders.
 """
 
 from __future__ import annotations
@@ -58,7 +62,41 @@ def main(argv=None) -> int:
               f"{t.exit_open} {t.exit_reason or ''} ret={t.ret}" + (f" {t.error}" if t.error else ""))
     for code, err in sorted(result.data_errors.items()):
         print(f"DATA  {code}: {err}")
+    if args.market.upper() in live_markets():
+        if not observe:
+            print("LIVE  skipped (dry-run never orders)")
+        else:
+            for line in run_live_lane(args.market.upper(), args.date, result.trades, store, events).actions:
+                print(f"LIVE  {line}")
     return 0
+
+
+def live_markets() -> set[str]:
+    return {m.strip().upper() for m in os.environ.get("INVERSE_LANE_LIVE_MARKETS", "").split(",") if m.strip()}
+
+
+def run_live_lane(market: str, day: date, trades, store, events):
+    from datetime import timedelta
+
+    from prism_inverse.adapters.kis_broker import brokers_for
+    from prism_inverse.adapters.kis_data import KisUsData
+    from prism_inverse.adapters.registry import load_us_inverse
+    from prism_inverse.app.live_cycle import kr_product_map, run_live, us_product_map
+    from prism_inverse.domain.lane import KR_LANE, US_LANE
+    from prism_inverse.domain.models import Instrument
+    from prism_inverse.ports import Unavailable, Unsupported
+
+    if market == "KR":
+        return run_live("KR", day, trades, kr_product_map(), KR_LANE, brokers_for("KR"), store, events)
+
+    def last_close(product):
+        try:
+            bars = KisUsData().daily_bars(Instrument("US", product.code, "etf", product.exchange), day - timedelta(days=14), day)
+        except (Unavailable, Unsupported):
+            return None
+        return bars[-1].close if bars else None
+
+    return run_live("US", day, trades, us_product_map(load_us_inverse()), US_LANE, brokers_for("US"), store, events, last_close)
 
 
 if __name__ == "__main__":

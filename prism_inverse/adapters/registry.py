@@ -6,6 +6,7 @@ import json
 from datetime import date
 from pathlib import Path
 
+from prism_inverse.domain.lane import Product
 from prism_inverse.domain.models import EtfSpec, Instrument
 
 DEFAULT_PATH = Path(__file__).resolve().parents[1] / "registry" / "etfs.json"
@@ -21,6 +22,16 @@ def load_kr_sectors(path: Path = KR_SECTORS_PATH) -> tuple[list[str], str]:
 def load_us_sectors(path: Path = DEFAULT_PATH.with_name("us_sectors.json")) -> dict[str, str]:
     """ticker -> KIS exchange code for the US sector signal recorder."""
     return dict(json.loads(Path(path).read_text(encoding="utf-8"))["sectors"])
+
+
+def load_us_inverse(path: Path = DEFAULT_PATH.with_name("us_sectors.json")) -> dict[str, Product]:
+    """sector ticker -> real inverse product the live lane orders (S5). Sectors without one are never ordered."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    out = {t: Product(code, int(mult), exchange) for t, (code, exchange, mult) in data["inverse"].items()}
+    unknown = set(out) - set(data["sectors"])
+    if unknown:
+        raise ValueError(f"inverse products for sectors outside the universe: {sorted(unknown)}")
+    return out
 
 
 def load_registry(path: Path = DEFAULT_PATH) -> list[EtfSpec]:

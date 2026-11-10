@@ -345,7 +345,7 @@ def test_schema_v1_db_upgrades_in_place(tmp_path):
                          " policy_version TEXT, config_hash TEXT, started_at TEXT, finished_at TEXT, status TEXT,"
                          " error TEXT); INSERT INTO inv_runs (run_id) VALUES ('old');")
     store = SqliteStore(path)
-    assert SCHEMA_VERSION == 2 and store.db.execute("SELECT version FROM schema_version").fetchall() == [(2,)]
+    assert SCHEMA_VERSION == 3 and store.db.execute("SELECT version FROM schema_version").fetchall() == [(3,)]
     assert store.db.execute("SELECT run_id FROM inv_runs").fetchall() == [("old",)]
     store.save_virtual_trade(_trade())
     assert store.active_virtual_trades() == [_trade()]
