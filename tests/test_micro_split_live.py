@@ -694,3 +694,13 @@ def test_regular_entry_ignores_the_bull_full_size(live_on, monkeypatch):
     monkeypatch.setenv("REENTRY_V3_FIRST_SIZE_FACTOR", "0.5")
     _, cash, scenario = _prepared()
     assert cash == 777_700 and "reentry_size" not in scenario["micro_split"]
+
+
+@pytest.mark.parametrize("flag,market,factor", [("KR", "KR", "1"), ("KR", "US", "0.5"), ("kr,us", "US", "1"),
+                                                ("true", "US", "1"), ("false", "KR", "0.5")])
+def test_reentry_bull_full_size_market_list(monkeypatch, flag, market, factor):
+    # 2026-11-10 user decision: US bull re-entries back to the half size, KR keeps the full B3 initial.
+    monkeypatch.setenv("REENTRY_V3_BULL_FULL_SIZE", flag)
+    monkeypatch.setenv("REENTRY_V3_FIRST_SIZE_FACTOR", "0.5")
+    scenario = {"reentry": {"version": "reentry_v3"}, "_deterministic_market_regime": "strong_bull"}
+    assert live.reentry_first_size("0.7777", scenario, market)["factor"] == factor

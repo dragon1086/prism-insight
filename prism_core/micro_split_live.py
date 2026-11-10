@@ -197,22 +197,30 @@ def conviction_tilt(base, *, market, buy_score, trigger_type):
 # Re-entry first size (2026-11-08, user decision after H-1106-reentry-shrink): a LIVE re-entry starts
 # at REENTRY_V3_FIRST_SIZE_FACTOR x the B3 initial; adds still come from the add_plan rails.
 REENTRY_SIZE_REASON = "REENTRY_FIRST_SIZE"
-# H-1109 LIVE (2026-11-09, user decision): a re-entry in a bull regime keeps the full B3 initial (KR and US);
+# H-1109 LIVE (2026-11-09, user decision): a re-entry in a bull regime keeps the full B3 initial;
 # sideways, bear and MISSING regimes keep the REENTRY_V3_FIRST_SIZE_FACTOR size.
+# 2026-11-10 (user decision): the switch also takes a market list ("KR") - US bull re-entries lost under
+# both the current and the K8b regime, so US goes back to the factor. "true" still means KR and US.
 REENTRY_BULL_SIZE_REASON = "REENTRY_BULL_FULL_SIZE"
 
 
-def reentry_first_size(base, scenario):
+def _bull_full_size_market(market):
+    raw = os.getenv("REENTRY_V3_BULL_FULL_SIZE", "false").strip()
+    if raw.lower() in {"1", "true", "yes", "on"}:
+        return True
+    return str(market).upper() in {m.strip().upper() for m in raw.split(",") if m.strip()}
+
+
+def reentry_first_size(base, scenario, market=None):
     """{"base", "sized", "factor", "reason"} for a re-entry scenario when the factor is below 1, else None.
 
-    With REENTRY_V3_BULL_FULL_SIZE on, a bull-regime re-entry records factor 1 (the full B3 initial).
+    With REENTRY_V3_BULL_FULL_SIZE on for the market, a bull-regime re-entry records factor 1 (the full B3 initial).
     """
     meta = (scenario or {}).get("reentry") if isinstance(scenario, dict) else None
     if not isinstance(meta, dict) or not meta.get("version"):
         return None
     regime = scenario.get("_deterministic_market_regime")
-    if (os.getenv("REENTRY_V3_BULL_FULL_SIZE", "false").strip().lower() in {"1", "true", "yes", "on"}
-            and regime in _BULL):
+    if _bull_full_size_market(market) and regime in _BULL:
         base = _dec(base)
         return {"base": str(base), "sized": str(base), "factor": "1", "reason": REENTRY_BULL_SIZE_REASON,
                 "regime": regime}
@@ -371,7 +379,7 @@ def prepare_entry(agent, *, market, ticker, current_price, scenario, decision_re
                           stop_loss=scenario.get("stop_loss"), decision_ref=decision_ref)
         tilt = conviction_tilt(plan["initial_nominal"], market=market, buy_score=scenario.get("buy_score"),
                                trigger_type=trigger_type)
-        size = None if tilt else reentry_first_size(plan["initial_nominal"], scenario)
+        size = None if tilt else reentry_first_size(plan["initial_nominal"], scenario, market)
         initial = tilt["tilted"] if tilt else (size["sized"] if size else plan["initial_nominal"])
         cash = scaled_cash(unit, initial, market)
         updated = dict(scenario)
