@@ -1,0 +1,7 @@
+{
+ "_note": "US sector ETF universe of the S15~S18 research (tasks/research-20261109/inverse-s3/s18_payoff.py). Value = KIS exchange code, checked per ticker with the KIS price query on 2026-11-10 (the lane never guesses an exchange). Virtual trades are judged as synthetic daily-reset -2x on the ETF itself.",
+ "sectors": {"FDN": "AMS", "GDX": "AMS", "IBB": "NAS", "IGV": "AMS", "ITA": "AMS", "ITB": "AMS", "IYR": "AMS", "IYT": "AMS",
+             "KBE": "AMS", "KRE": "AMS", "OIH": "AMS", "SMH": "NAS", "SOXX": "NAS", "TAN": "AMS", "XBI": "AMS", "XHB": "AMS",
+             "XLB": "AMS", "XLE": "AMS", "XLF": "AMS", "XLI": "AMS", "XLK": "AMS", "XLP": "AMS", "XLU": "AMS", "XLV": "AMS",
+             "XLY": "AMS", "XME": "AMS", "XOP": "AMS", "XRT": "AMS"}
+}
