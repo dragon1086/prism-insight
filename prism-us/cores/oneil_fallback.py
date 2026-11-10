@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Tuple
 import json
+import os
 
 
 # ── 튜닝 상수 (O'Neil 교범 기준) ───────────────────────────────
@@ -39,6 +40,12 @@ TRAIL_DROP_WEAK = 0.95          # 약세/횡보: 고점 대비 -5% (더 타이�
 TRAIL_DROP_UNKNOWN = 0.90       # regime 불명/stale: 고점 대비 -10% (불확실 시 과매도 방지)
 BULL_REGIMES = {"parabolic", "strong_bull", "moderate_bull"}
 WEAK_REGIMES = {"sideways", "moderate_bear", "strong_bear"}
+# 2026-11-09 H-1109-tight-nonbull (sell-levers v7, 사용자 승인): 매수 시점 국면이 횡보·약세였던
+# 포지션은 트레일링을 일찍(+3%) 켜고 좁게(강세 -6%, 횡보·약세 -4%) 둔다. 매수 시점 국면이
+# 강세·불명이면 위 기본값 그대로. 되돌림 = SELL_TIGHT_NONBULL_ENABLED=false.
+TIGHT_ACTIVATION_PCT = 3.0
+TIGHT_DROP_BULL = 0.94
+TIGHT_DROP_WEAK = 0.96
 # TIER3 목표가 자동익절 '보류' 조건 — 레짐은 약세/횡보인데 개별 종목만 강할 때.
 # regime 은 지수(S&P500/KOSPI) 기준이라, 시장과 무관하게 치고 나가는 주도주를
 # 상승 초입에 잘라내는 문제가 있었다(2026-07-29 INCY: 목표가 도달 당일 +11%
@@ -59,6 +66,43 @@ class SellInputs:
     primary_support: float = 0.0        # key_levels.primary_support (선택)
     regime_is_live: bool = False        # True 면 trailing 밴드를 신뢰, False(=stale)면 보수적
     ma_50: float = 0.0                  # 개별종목 50일선(주입 시에만 TIER1.5 작동, 0이면 dormant)
+    entry_regime: str = ""              # 매수 시점 시스템 국면(scenario.market_condition) — 트레일링 폭 선택용
+
+
+def tight_nonbull_markets() -> set:
+    """스위치 값: 시장 목록("KR", "KR,US") 또는 true(둘 다). 2026-11-10 사용자 결정으로 KR만 켬."""
+    raw = os.getenv("SELL_TIGHT_NONBULL_ENABLED", "").strip()
+    if raw.lower() in {"1", "true", "yes", "on"}:
+        return {"KR", "US"}
+    return {m.strip().upper() for m in raw.split(",")} & {"KR", "US"}
+
+
+def tight_nonbull_enabled() -> bool:
+    return bool(tight_nonbull_markets())
+
+
+def entry_regime_of(scenario, market=None) -> str:
+    """매수 시점 국면 토큰(scenario JSON 문자열 또는 dict). 그 시장에 스위치가 꺼져 있거나(market 없음 포함) 값이 없으면 ''."""
+    if str(market or "").upper() not in tight_nonbull_markets():
+        return ""
+    if isinstance(scenario, str):
+        try:
+            scenario = json.loads(scenario)
+        except Exception:
+            return ""
+    return str((scenario or {}).get("market_condition") or "") if isinstance(scenario, dict) else ""
+
+
+def trail_params(live_regime: str, regime_is_live: bool, entry_regime: str = "") -> Tuple[float, float]:
+    """TIER2 트레일링의 (활성화 %, 고점 대비 배수). 매도 규칙·AI 지시문·사실값이 모두 이 값을 쓴다."""
+    tight = tight_nonbull_enabled() and str(entry_regime or "").strip().lower() in WEAK_REGIMES
+    if not regime_is_live:
+        drop = TRAIL_DROP_UNKNOWN                     # stale/불명 → 보수적(-10%)
+    elif _normalize_regime(live_regime) in BULL_REGIMES:
+        drop = TIGHT_DROP_BULL if tight else TRAIL_DROP_BULL
+    else:
+        drop = TIGHT_DROP_WEAK if tight else TRAIL_DROP_WEAK
+    return (TIGHT_ACTIVATION_PCT if tight else TRAIL_ACTIVATION_PCT), drop
 
 
 def _normalize_regime(raw: str) -> str:
@@ -106,15 +150,10 @@ def evaluate_oneil_sell(inp: SellInputs) -> Tuple[bool, str]:
     if inp.ma_50 and inp.ma_50 > 0 and profit < 0 and cp <= inp.ma_50 * (1.0 - STOP_WICK_BUFFER):
         return True, f"TIER1.5_MA50: below 50MA({inp.ma_50:.4f}) while losing ({profit:.2f}%)"
 
-    # ── TIER 2: 트레일링 스톱 (승자 보호, +5% 활성화 이후만) ───
-    activated = peak >= bp * (1.0 + TRAIL_ACTIVATION_PCT / 100.0)
+    # ── TIER 2: 트레일링 스톱 (승자 보호, +5% 활성화 이후만; 횡보·약세 매수분은 trail_params) ───
+    act_pct, drop = trail_params(regime, inp.regime_is_live, inp.entry_regime)
+    activated = peak >= bp * (1.0 + act_pct / 100.0)
     if activated:
-        if not inp.regime_is_live:
-            drop = TRAIL_DROP_UNKNOWN                 # stale/불명 → 보수적(-10%)
-        elif regime in BULL_REGIMES:
-            drop = TRAIL_DROP_BULL                    # live 강세 → -8%
-        else:
-            drop = TRAIL_DROP_WEAK                    # live 약세/횡보 → -5%
         # 트레일링도 종가 기준 → 동일 wick 버퍼로 '명확한' 이탈만 매도
         trail_line = peak * drop * (1.0 - STOP_WICK_BUFFER)
         if cp <= trail_line:
@@ -160,7 +199,7 @@ def evaluate_tier1_hardstop(inp: SellInputs) -> Tuple[bool, str]:
 
 # ── 호출측 어댑터 (stock_data dict → SellInputs) ────────────────
 def from_stock_data(stock_data: dict, live_regime: Optional[str] = None,
-                    ma_50: Optional[float] = None) -> SellInputs:
+                    ma_50: Optional[float] = None, market: Optional[str] = None) -> SellInputs:
     """KR/US 의 stock_data dict 에서 SellInputs 추출.
     scenario 는 JSON 문자열 또는 dict 둘 다 허용.
 
@@ -199,6 +238,7 @@ def from_stock_data(stock_data: dict, live_regime: Optional[str] = None,
         primary_support=_f(key_levels.get("primary_support", 0)),
         regime_is_live=is_live,
         ma_50=_f(ma_50),
+        entry_regime=entry_regime_of(scen, market),
     )
 
 

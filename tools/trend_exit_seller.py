@@ -572,7 +572,7 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                "sold": 0, "shadow": 0, "skipped": 0, "pyramided_skipped": 0,
                "gated": 0, "runner_held": 0, "entry_below_ma50": 0,
                "entry_day_ma50": 0}
-    from cores.oneil_fallback import SellInputs, evaluate_oneil_sell
+    from cores.oneil_fallback import SellInputs, entry_regime_of, evaluate_oneil_sell
     from prism_core import runner_hold, runner_hold_live
     from prism_core.loop_row_split import (
         group_rows_by_account,
@@ -668,6 +668,7 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                                 market_condition=str(regime["value"] or ""),
                                 regime_is_live=bool(regime["value"]),
                                 ma_50=ma_50,
+                                entry_regime=entry_regime_of(h.get("scenario"), market),
                             )
                             should_sell, reason = evaluate_oneil_sell(inp)
                             if should_sell and reason.startswith("TIER1.5_MA50") and on_entry_session(market, h):
