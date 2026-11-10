@@ -1612,6 +1612,14 @@ class USStockTrackingAgent:
                         _neg_equity_f2_block, ticker, getattr(self, "language", "ko")), timeout=30)
                 except asyncio.TimeoutError:
                     logger.warning(f"[NEG_EQUITY_F2] {ticker} facts timed out; shared F2 rule applies")
+            # F1/F2 for financials without an operating income line (None for everyone else -> byte-identical prompts).
+            from prism_core import us_financial_f_gate as _fin_gate
+            financial_facts = None
+            if ticker:
+                try:
+                    financial_facts = await asyncio.wait_for(asyncio.to_thread(_fin_gate.facts_for, ticker), timeout=30)
+                except asyncio.TimeoutError:
+                    logger.warning(f"[FINANCIAL_F_GATE] {ticker} facts timed out; shared F1/F2 rules apply")
 
             # Build trigger info section
             trigger_info_section = ""
@@ -1651,6 +1659,7 @@ class USStockTrackingAgent:
             prompt_message += add_plan_buy_block(self, market="US", ticker=ticker,
                                                  language=getattr(self, "language", "ko"))
             prompt_message += neg_equity_block
+            prompt_message += _fin_gate.prompt_block(financial_facts, getattr(self, "language", "ko"))
             # Official SEC filings: do not enter a stock under a control tender offer or delisting.
             from prism_core.corporate_filings import official_event_block_async
             prompt_message += await official_event_block_async(
@@ -1791,6 +1800,8 @@ class USStockTrackingAgent:
                     scenario_json["_deterministic_trend_facts"] = trend_facts
                 if decision_facts:
                     scenario_json["_decision_input_facts"] = decision_facts
+                if financial_facts:
+                    scenario_json["_sector_profile"] = _fin_gate.stamp(financial_facts)
                 # Persist the experience-based score adjustment alongside the scenario.
                 # It rides inside the scenario JSON, stored in us_stock_holdings.scenario and
                 # copied to us_trading_history.scenario on sell — giving the weekly influence
