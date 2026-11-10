@@ -13,7 +13,7 @@ so the US rule uses the standard public proxies:
 - F2 (asset managers, brokers, insurers, exchanges): total debt / equity < 200%, the shared F2 number on
   interest-bearing debt as the report's leverage appendix already computes it.
 
-Like ``negative_equity_f2`` the block is computed from yfinance at BUY time and appended to the per-report
+Like ``negative_equity_f2`` the block is computed from yfinance statements at BUY time (the caller passes the module) and appended to the per-report
 message only for these issuers; every other prompt stays byte-identical. ``PRISM_US_FINANCIAL_F_GATE=off``
 disables it (the shared rules then apply and such issuers keep failing F1 as before).
 """
@@ -62,10 +62,12 @@ def _recent_quarters(frame, name, count=2):
     return out[:count]
 
 
-def compute(ticker, yf_module=None):
-    """Facts for a financial issuer without an operating income line, else None."""
-    if yf_module is None:
-        import yfinance as yf_module
+def compute(ticker, yf_module):
+    """Facts for a financial issuer without an operating income line, else None.
+
+    ``yf_module`` is the yfinance module passed by the caller (the US tracking agent is on the direct-import
+    allowlist, tests/test_yfinance_import_allowlist.py; this module must not import it).
+    """
     tk = yf_module.Ticker(ticker)
     income = tk.quarterly_income_stmt
     if income is None or getattr(income, "empty", True) or _row(income, OPERATING_INCOME_ROWS) is not None:
@@ -165,7 +167,7 @@ def prompt_block(facts, language="ko"):
         "the trend gate and R/R rules are unchanged.\n")
 
 
-def facts_for(ticker, yf_module=None):
+def facts_for(ticker, yf_module):
     """Facts for ``ticker`` (None when disabled, not a financial without operating income, or data fails)."""
     if not enabled() or not ticker:
         return None

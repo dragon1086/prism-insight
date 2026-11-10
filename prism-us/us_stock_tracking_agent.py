@@ -1617,7 +1617,9 @@ class USStockTrackingAgent:
             financial_facts = None
             if ticker:
                 try:
-                    financial_facts = await asyncio.wait_for(asyncio.to_thread(_fin_gate.facts_for, ticker), timeout=30)
+                    import yfinance as _yf  # this file is on the direct-import allowlist; the gate module is not
+                    financial_facts = await asyncio.wait_for(
+                        asyncio.to_thread(_fin_gate.facts_for, ticker, _yf), timeout=30)
                 except asyncio.TimeoutError:
                     logger.warning(f"[FINANCIAL_F_GATE] {ticker} facts timed out; shared F1/F2 rules apply")
 
