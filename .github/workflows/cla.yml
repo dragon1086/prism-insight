@@ -1,6 +1,8 @@
 name: CLA Assistant
 
 on:
+  pull_request:
+    types: [opened, reopened, synchronize]
   issue_comment:
     types: [created]
   pull_request_target:
@@ -16,16 +18,21 @@ permissions:
 jobs:
   cla:
     name: CLA
-    if: ${{ github.repository == 'dragon1086/prism-insight' }}
+    # Same-repository PRs are trusted; never grant this fallback to forks.
+    if: >-
+      ${{ github.repository == 'dragon1086/prism-insight' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
 
     steps:
       - name: Check contributor agreement
         if: |
           (
-            github.event_name == 'pull_request_target' &&
+            (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') &&
             (
               github.event.action == 'opened' ||
+              github.event.action == 'reopened' ||
               github.event.action == 'synchronize' ||
               (github.event.action == 'closed' && github.event.pull_request.merged == true)
             )
