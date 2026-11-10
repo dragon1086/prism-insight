@@ -339,8 +339,9 @@ will break merely because the primary trend or higher frames favor the position.
 Use flexible near, intermediate and extension TP allocation rather than
 fixed USDT distances. Set structural invalidation first; price-risk R is the
 absolute entry-to-hard-stop distance, not account risk or a leveraged return.
-Use host entry_geometry target_distance_R and single_target_ratio as numeric
-references; final candidate receipts price the actual rounded TP allocations,
+Use entry_geometry price-R diagnostics and plan_math entry/split bounds.
+Their prices are arithmetic references; choose market-supported setups.
+The final candidate receipts price the actual rounded TP allocations,
 remaining stop exposure and costs. A single target ratio is not a ladder ratio.
 BOUNDED MA10-to-MA35: favor achievable net profit before the original cap;
 never invent a trend extension to satisfy the host payoff floor.
