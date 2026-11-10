@@ -58,7 +58,9 @@ async def test_bull_system_regime_keeps_the_wide_band(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_unavailable_regime_falls_back_to_step_zero(monkeypatch, tmp_path):
     prompt = await _captured_prompt(monkeypatch, tmp_path, None, context=None)
-    assert "시스템 국면을 계산하지 못했습니다" in prompt and "0단계 기준으로 직접 판단" in prompt
+    # 2026-11-11 prompt diet (audit M4/X4, user decision): no AI self-judged regime; only the code fallback.
+    assert "시스템 국면을 계산하지 못했습니다" in prompt and "국면을 직접 판단하지 마세요" in prompt
+    assert "0단계" not in prompt
     # 2026-10-19: without a live regime the exit code trails at x0.90; the AI must not raise the stop to a trailing level.
     assert "최고가 × 0.90" in prompt and "trailing 수준으로 올리지 마세요" in prompt
     assert "× 0.92" not in prompt.split("### 종목 기본 정보")[0] and "× 0.95" not in prompt.split("### 종목 기본 정보")[0]

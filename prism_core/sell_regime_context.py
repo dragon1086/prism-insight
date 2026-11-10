@@ -17,10 +17,11 @@ def kr_live_regime_block(regime, context=None, language="ko", entry_regime=""):
     """Return the prompt block; regime None means the system value is unavailable."""
     ko = language == "ko"
     if not regime:
+        # 2026-11-11 prompt diet (M4/X4): no AI self-judged regime; the code fallback (x0.90, no stop raise) applies.
         return ("### 현재 시장 국면 (시스템 계산 불가)\n"
-                "시스템 국면을 계산하지 못했습니다. 0단계 기준으로 직접 판단하세요.\n" if ko else
+                "시스템 국면을 계산하지 못했습니다. 국면을 직접 판단하지 마세요.\n" if ko else
                 "### Current Market Regime (system value unavailable)\n"
-                "The system regime could not be computed. Judge it yourself using Step 0.\n") + trailing_band_line(None, language, entry_regime)
+                "The system regime could not be computed. Do not judge the regime yourself.\n") + trailing_band_line(None, language, entry_regime)
     bull = regime in BULL_REGIMES
     summary = (context or {}).get("index_summary") or {}
     facts = []
@@ -35,12 +36,12 @@ def kr_live_regime_block(regime, context=None, language="ko", entry_regime=""):
         mode = "A) 강세장 모드" if bull else "B) 약세장/횡보장 모드"
         return (f"### 현재 시장 국면 (시스템 실시간 계산 — 우선 적용)\n"
                 f"{_KO_LABELS.get(regime, regime)}\n{facts}"
-                f"0단계 시장 환경은 이 값을 그대로 따르고 {mode}를 적용하세요. 매수 시점 시나리오의 시장 상황보다 우선합니다.\n"
+                f"시장 국면은 이 값을 그대로 따르고 {mode}를 적용하세요. 매수 시점 시나리오의 시장 상황보다 우선합니다.\n"
                 + trailing_band_line(regime, language, entry_regime))
     mode = "A) bull-market mode" if bull else "B) bear/sideways mode"
     return (f"### Current Market Regime (LIVE, system-computed — authoritative)\n"
             f"{regime}\n{facts}"
-            f"Use this value for Step 0 and apply {mode}; it overrides the buy-time scenario.\n"
+            f"Use this value as the market regime and apply {mode}; it overrides the buy-time scenario.\n"
             + trailing_band_line(regime, language, entry_regime))
 
 

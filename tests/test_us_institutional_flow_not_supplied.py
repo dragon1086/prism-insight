@@ -23,11 +23,15 @@ def _buy(market, language):
 
 @pytest.mark.parametrize("language", ["ko", "en"])
 def test_us_buy_prompt_marks_all_three_institutional_conditions_as_not_supplied(language):
+    # 2026-11-11 prompt diet (audit X1): the three placeholders are shortened; Step 3 item 2, Step 4 and the
+    # compound reason still say the data is absent and never scores/fires.
     text = _buy("US", language)
-    note = "일별 기관 순매매 자료가 제공되지 않아" if language == "ko" else "Daily institutional flow is not supplied"
-    never = "이 조건은 발동하지 않습니다" if language == "ko" else "this condition never fires"
-    assert text.count(note) == 2 and text.count(never) == 1
-    assert ("언급하지 마십시오" if language == "ko" else "Do not mention it") in text
+    if language == "ko":
+        assert text.count("자료가 없어 평가하지 않음") == 2 and text.count("기관 자료가 없어 미국은 발동하지 않음") == 1
+        assert "'기관 순매수 미확인'처럼 쓰지 마십시오" in text
+    else:
+        assert text.count("not supplied for US stocks") == 2 and text.count("this never fires for US stocks") == 1
+        assert "Do not mention it" in text
 
 
 @pytest.mark.parametrize("language", ["ko", "en"])

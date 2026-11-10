@@ -438,18 +438,18 @@ def test_buy_prompt_block_states_the_frame_and_what_it_supersedes(live_on):
     assert "되돌릴 수 없습니다" not in ko and "올인/올아웃" not in ko and "parabolic" not in ko
     assert "이번 매수는 초분할(최초 비중 + 증액 시나리오)이고 매도는 기존대로 전량입니다(시스템 제약 4)" in ko
     assert "effective_score ≥ 5" in ko and "손익비 ≥ 현재 국면 floor" in ko
-    assert "미진입 단독 사유 1(지지선이 -10% 이하)은 이번 진입에 적용하지 않습니다" in ko
+    # 2026-11-11 prompt diet (audit M1): the shared BUY prompt no longer has the "-10% support" reason, so the
+    # frame no longer carves out an exception for it.
+    assert "단독 사유 1" not in ko and "지지선이 -10% 이하" not in ko
     assert "현재가 +3% 이내이면 그 저항은 목표가 아니라 증액 조건" in ko and "횡보·약세" in ko
     en = live.buy_prompt_block("US", "en")
     assert "scout entry" in en and "(system constraint 4)" in en and "within +3% of the current" in en
     assert "re-caught only when the re-entry rule fires" in en
     assert "cannot be recovered" not in en and "all-in/all-out" not in en and "parabolic" not in en
-    assert "Standalone no-entry reason 1" in en and "effective_score >= 5" in en
-    # 2026-10-04: the 7-holdings "buy_score >= 6 only" portfolio rule keeps precedence over the floor of 5.
-    assert "보유 종목이 7개 이상이면 '6점 이상만 진입' 규칙은 그대로 적용됩니다" in ko
-    assert "7개 이상일 때의 6점 규칙은 예외로 유지" in ko
-    assert "With 7 or more holdings, the 'only buy_score >= 6' rule still applies" in en
-    assert "the 6-point rule for 7 or more holdings stays as an exception" in en
+    assert "no-entry reason 1" not in en and "effective_score >= 5" in en
+    # 2026-11-11 prompt diet (audit M7, user decision): the LLM-only 7-holdings "buy_score >= 6" rule is gone
+    # from the shared prompt and from this frame.
+    assert "7개 이상" not in ko and "7 or more holdings" not in en
     assert live.buy_prompt_block("US", "ko") == ko  # US Korean prompt gets the same block
 
 
