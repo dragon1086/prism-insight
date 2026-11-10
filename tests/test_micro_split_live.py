@@ -704,3 +704,26 @@ def test_reentry_bull_full_size_market_list(monkeypatch, flag, market, factor):
     monkeypatch.setenv("REENTRY_V3_FIRST_SIZE_FACTOR", "0.5")
     scenario = {"reentry": {"version": "reentry_v3"}, "_deterministic_market_regime": "strong_bull"}
     assert live.reentry_first_size("0.7777", scenario, market)["factor"] == factor
+
+
+@pytest.mark.parametrize("regime,age,early_late,late_bear", [
+    ("strong_bull", 5, "0", "0"), ("moderate_bull", 20, "0", "0"), ("strong_bull", 21, "1", "0.5"),
+    ("sideways", None, "0.5", "0.5"), ("strong_bear", None, "0.5", "1")])
+def test_regime_size_shadow_k8b_age_arms(live_on, monkeypatch, regime, age, early_late, late_bear):
+    monkeypatch.setenv("REENTRY_REGIME_SIZE_SHADOW", "true")
+    monkeypatch.setenv("REENTRY_V3_FIRST_SIZE_FACTOR", "0.5")
+    scenario = {"stop_loss": 9300, "reentry": {"version": "reentry_v3", "k8b": {"label": regime, "bull_age": age}},
+                "_deterministic_market_regime": regime}
+    _, cash, scenario = live.prepare_entry(_agent(), market="KR", ticker="005930", current_price=10000, scenario=scenario,
+                                           decision_ref="reentry_v3:x", account={"buy_amount_krw": 1_000_000})
+    arms = scenario["micro_split"]["reentry_regime_shadow"]["arms"]
+    assert cash == 388_800                                            # the order keeps the live factor
+    assert arms["early0_late1_else05"]["factor"] == early_late and arms["early0_late05_bear1"]["factor"] == late_bear
+
+
+def test_regime_size_shadow_bull_without_k8b_age_keeps_age_arms_missing(live_on, monkeypatch):
+    monkeypatch.setenv("REENTRY_REGIME_SIZE_SHADOW", "true")
+    _, _, scenario = _reentry_prepared("0.5", monkeypatch, regime="strong_bull")
+    shadow = scenario["micro_split"]["reentry_regime_shadow"]
+    assert shadow["k8b_bull_age"] is None and "early0_late1_else05" not in shadow["arms"]
+    assert shadow["arms"]["bull1_else05"]["factor"] == "1"            # the older arms are unchanged

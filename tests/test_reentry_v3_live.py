@@ -1044,3 +1044,21 @@ def test_ma50_gate_off_for_us_and_by_default(monkeypatch):
     assert not LIVE.below_ma50("KR", item)
     monkeypatch.setenv("REENTRY_V3_MA50_GATE_MARKETS", "KR")
     assert LIVE.below_ma50("KR", item) and not LIVE.below_ma50("US", item)
+
+
+# ---------------------------------------------------------------- H-1110 US K8b early-bull gate
+def test_k8b_early_bull_gate_blocks_us_in_the_first_20_bull_sessions(tmp_path, monkeypatch, live_on):
+    monkeypatch.setenv("REENTRY_V3_K8B_EARLY_BULL_MARKETS", "US")
+    early = dict(_item(1), k8b={"label": "strong_bull", "bull_age": 5, "asof": "2026-10-06"})
+    late = dict(_item(2), k8b={"label": "moderate_bull", "bull_age": 21, "asof": "2026-10-06"})
+    side = dict(_item(3), k8b={"label": "sideways", "bull_age": 0, "asof": "2026-10-06"})
+    missing = _item(4)
+    items = {i["event_id"]: i for i in (early, late, side, missing)}
+    to_submit, skipped = LIVE.plan("US", DAY, [_record(n) for n in (1, 2, 3, 4)], items, [], US_1350)
+    assert [e["event_id"] for e in to_submit] == ["ev2", "ev3"]      # daily cap 2 still applies after the gate
+    assert [(e["event_id"], e["reason"]) for e in skipped] == [("ev1", "k8b_early_bull"), ("ev4", "daily_cap")]
+    assert LIVE.REASON_STATUS["k8b_early_bull"] == "SKIPPED_K8B_EARLY_BULL"
+    assert not LIVE.k8b_early_bull("KR", early)                       # market list
+    monkeypatch.delenv("REENTRY_V3_K8B_EARLY_BULL_MARKETS")
+    assert not LIVE.k8b_early_bull("US", early)                       # default off
+    assert LIVE.build_scenario(early, _record(1), "US")["reentry"]["k8b"]["bull_age"] == 5

@@ -59,7 +59,9 @@ SUBPROCESS_TIMEOUT = 600
 # Status of an outcome reason (the rest is BOUGHT / NOT_BOUGHT / ERROR).
 REASON_STATUS = {"deadline": "SKIPPED_DEADLINE", "no_micro_plan": "SKIPPED_NO_MICRO_PLAN",
                  "outside_band": "SKIPPED_BAND", "entry_lock_busy": "SKIPPED_LOCK", "no_target": "SKIPPED_NO_TARGET",
-                 "below_ma50": "SKIPPED_BELOW_MA50"}
+                 "below_ma50": "SKIPPED_BELOW_MA50", "k8b_early_bull": "SKIPPED_K8B_EARLY_BULL"}
+# H-1110 (2026-11-10, user decision, US): no re-entry during the first sessions of a K8b bull label.
+K8B_EARLY_BULL_SESSIONS = 20
 
 
 def _flag(name, default):
@@ -95,6 +97,19 @@ def below_ma50(market, item):
     ma50 = item.get("ma50")
     return (str(market).upper() in ma50_gate_markets() and isinstance(ma50, (int, float))
             and item.get("decision_price") is not None and item["decision_price"] < ma50)
+
+
+def k8b_early_bull_markets():
+    return {m.strip().upper() for m in os.getenv("REENTRY_V3_K8B_EARLY_BULL_MARKETS", "").split(",") if m.strip()}
+
+
+def k8b_early_bull(market, item):
+    """True when the market's gate is on and the prior-session K8b label has been bull for 1..20 sessions.
+
+    No K8b value (older inputs, index history unavailable) never blocks: MISSING is not a failure."""
+    age = (item.get("k8b") or {}).get("bull_age")
+    return (str(market).upper() in k8b_early_bull_markets() and isinstance(age, int)
+            and 1 <= age <= K8B_EARLY_BULL_SESSIONS)
 
 
 def deterministic_enabled():
@@ -223,6 +238,7 @@ def build_scenario(item, record, market):
     scenario["_decision_id"] = f"reentry_v3:{item['event_id']}"
     # Observation only: lets the ledger point this position back to the original decision.
     scenario["reentry"]["origin_decision_id"] = (item.get("original") or {}).get("decision_id")
+    scenario["reentry"]["k8b"] = item.get("k8b")      # prior-session K8b label and bull age (US), for the size record
     return scenario
 
 
@@ -396,6 +412,8 @@ def plan(market, decision_day, records, items, journal, now):
             reason = "no_target"
         elif below_ma50(market, item):
             reason = "below_ma50"        # before the daily cap so a blocked signal never uses a slot
+        elif k8b_early_bull(market, item):
+            reason = "k8b_early_bull"
         elif len(to_submit) >= remaining:
             reason = "daily_cap"
         elif not in_safe_window(market, now):

@@ -1398,26 +1398,9 @@ def _compute_us_swing_state(
 # --- K8b regime label (SHADOW only, H-1110-us-regime-v3) ----------------------
 # Research: tasks/research-20261110/us-regime-v3/k8b.py. Recorded next to the
 # production regime; never replaces it. US_REGIME_K8B_MODE=off|shadow (default off).
-_K8B_ORDER = ("strong_bear", "moderate_bear", "sideways", "moderate_bull", "strong_bull")
-_K8B_MIN_SESSIONS = 252
-
-
-def _k8b_index_label(closes: np.ndarray, ibd_uptrend: bool) -> str:
-    """K8b stage for the last close (caller guarantees >= 252 closes)."""
-    cur = closes[-1]
-    window = closes[-_K8B_MIN_SESSIONS:]
-    p = int(np.argmax(window))
-    peak = window[p]
-    if cur <= peak * 0.8 and cur < window[p:].min() * 1.2:
-        return "strong_bear"
-    ma50, ma200 = closes[-50:].mean(), closes[-200:].mean()
-    # Dow higher high: max close of last 25 sessions > max of the 25 before.
-    up = closes[-25:].max() > closes[-50:-25].max() and cur > ma50
-    if cur / peak - 1 <= -0.10 and not up:
-        return "moderate_bear"
-    if up and ma50 > ma200 and ibd_uptrend:
-        return "strong_bull"
-    return "moderate_bull" if up else "sideways"
+from prism_core.us_regime_k8b import K8B_MIN_SESSIONS as _K8B_MIN_SESSIONS  # noqa: E402
+from prism_core.us_regime_k8b import K8B_ORDER as _K8B_ORDER  # noqa: E402
+from prism_core.us_regime_k8b import index_label as _k8b_index_label  # noqa: E402
 
 
 def _k8b_ibd_state(sp500_df, sp_close: str, nasdaq_df, nd_close: str) -> str:
