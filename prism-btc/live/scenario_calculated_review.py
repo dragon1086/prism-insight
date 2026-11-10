@@ -337,6 +337,75 @@ def _joint_exit_paths(plan, targets, quantity, basis, minimum, fees, *, confirme
     return result
 
 
+def _kept_exit_paths(context):
+    """Value reported live quotas, never reapply old fractions after partial exits."""
+    from live.scenario_fee_projection import fee_only_projection
+    try:
+        if (not context.get('scenario_id') or context.get('accounting_status')!='confirmed'
+                or context.get('protection_ok') is not True or context.get('management_quarantine')
+                or context.get('pending_entries')!=[]):
+            return None
+        now,at=map(_decimal,(context['now'],context['account_captured_at']))
+        if not 0<=now-at<=120:return None
+        side=context['side'];sign=1 if side=='LONG' else -1
+        if side not in ('LONG','SHORT'):return None
+        lots=context['positions'];reported=context['target_status']
+        if not isinstance(lots,list) or not 0<len(lots)<=20 or not isinstance(reported,list) or len(reported)>100:return None
+        quantity=notional=Decimal(0)
+        for lot in lots:
+            price,qty=map(_decimal,(lot['price'],lot['quantity']))
+            if min(price,qty)<=0:return None
+            quantity+=qty;notional+=price*qty
+        basis=notional/quantity
+        mark,stop=map(_decimal,(context['mark_price'],context['previous_hard_stop']))
+        if min(mark,stop)<=0 or sign*(mark-stop)<=0:return None
+        targets=[];seen=set()
+        for row in reported:
+            if row.get('status')=='TERMINAL':continue
+            if row.get('status')!='LIVE' or row.get('kind') not in ('tp','partial_sl'):return None
+            key=(row['intent_id'],row['target_id'])
+            if any(not isinstance(v,str) or not v for v in key) or key in seen:return None
+            seen.add(key)
+            price,qty=(Decimal(str(row[k])) for k in ('price','remaining_quantity'))
+            if not all(v.is_finite() and v>0 for v in (price,qty)):return None
+            favorable=sign*(price-mark)
+            if (row['kind']=='tp' and favorable<=0) or (row['kind']=='partial_sl' and favorable>=0):return None
+            targets.append(dict(kind='take_profits' if row['kind']=='tp' else 'partial_stops',
+                id=':'.join(key),price=float(price),quantity=float(qty)))
+        def fees(price,qty):
+            return fee_only_projection(side=side,entry_price=float(basis),exit_price=float(price),
+                quantity=float(qty),evidence=context.get('observed_execution_fee_evidence'),
+                now=float(now),new_entry=False)
+        plan=dict(side=side,hard_stop=float(stop))
+        # Existing partially filled orders can have leaves below the new-order minimum.
+        joint=_joint_exit_paths(plan,targets,quantity,basis,Decimal(0),fees,
+            confirmed=True,recorded_net=context.get('recorded_scenario_net'))
+        return dict(version=1,quantity=float(quantity),joint_exit_paths=joint,
+            source='BROKER_REPORTED_LIVE_LEAVES_NOT_PLAN_FRACTIONS',
+            account_captured_at=float(at),future_fills_confirmed=False)
+    except (KeyError,TypeError,ValueError,ArithmeticError,OverflowError):
+        return None
+
+
+def _project_kept_exit_paths(projected,context):
+    from live.scenario_model_input import restore_model_input,project_model_input
+    try:
+        logical=restore_model_input(projected);target=logical['contract_context']
+        keys=('scenario_id','positions','pending_entries','accounting_status','protection_ok',
+              'management_quarantine','now','account_captured_at','side','mark_price',
+              'previous_hard_stop','target_status','recorded_scenario_net','observed_execution_fee_evidence')
+        if 'existing_exit_paths'in target or any(target.get(k)!=context.get(k) for k in keys):return projected
+        view=_kept_exit_paths(target)
+        if view is None or len(_encoded(view).encode())>2000:return projected
+        original=deepcopy(logical);target['existing_exit_paths']=view
+        candidate,_=project_model_input(logical,allow_gap_rescue=True)
+        if len(_encoded(candidate).encode())>100000:return projected
+        restored=restore_model_input(candidate);restored['contract_context'].pop('existing_exit_paths',None)
+        return candidate if restored==original else projected
+    except (KeyError,TypeError,ValueError,ArithmeticError,OverflowError):
+        return projected
+
+
 def _gross_projection(plan, context, *, lots=None,
                       assumption="HYPOTHETICAL_ALL_ENTRIES_FILL_AT_LIMIT_NO_PRIOR_EXITS",
                       holding_paths=False):
@@ -733,7 +802,7 @@ def _model_payload(snapshot, context, response_contract, *, calculated_candidate
             projected = project_entry_geometry(projected, source, context)
         projected = _project_initial_entry_progress(projected, context)
         from live.scenario_position_flow import project_holding_management_input
-        return project_holding_management_input(projected, context)
+        return _project_kept_exit_paths(project_holding_management_input(projected, context), context)
     result = project(snapshot)
     frame = snapshot.get('timeframes', {}).get('30m', {})
     if (context.get('scenario_id') is None and not context.get('positions')
@@ -1121,6 +1190,9 @@ def research_review(snapshot, context, response_contract, *, generate, record,
             system += EXPLANATION_PROMPT
         if phase == 'selection':
             system = _flat_selection_prompt(system, frozen_context)
+            if _kept_exit_paths(frozen_context) is not None:
+                system = system.replace('For WAIT compare existing\nrunner_economics current-Mark/full-stop diagnostics; it has no invented TP path.',
+                    'For unchanged WAIT, existing_exit_paths applies the same version3 arithmetic\nto reported LIVE remaining quotas, not current_plan fractions. Absence means UNKNOWN.')
         request = dict(system_prompt=system, user_prompt=prompt,
             model=scenario_llm.MODEL, reasoning_effort=scenario_llm.EFFORT,
             fast_tier=False, timeout=scenario_llm.TIMEOUT_SECONDS - (now - started),

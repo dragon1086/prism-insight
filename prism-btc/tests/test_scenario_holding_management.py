@@ -20,7 +20,7 @@ def inputs(side='LONG'):
 def test_directional_references_and_existing_restoration_bounds(side):
     s,c,t=inputs(side);before=deepcopy((s,c,t));v=holding_management_view(s,c,t);fast,slow=v['rows']
     assert v['status']=='AVAILABLE' and v['cost_only_exit_estimate_positive'] is True
-    assert fast['candidate_stop']==(110. if side=='LONG' else 90.) and fast['requires_stop_revision'] is False
+    assert fast['candidate_stop']==(105. if side=='LONG' else 95.) and fast['requires_stop_revision'] is False
     assert slow['candidate_stop']==c['stop_policy']['initial_hard_stop'] and slow['requires_stop_revision'] is True
     assert v['fee_only_net_if_flatten']==pytest.approx((c['mark_price']-100)*(1 if side=='LONG' else -1)-.1-c['mark_price']*.00055)
     assert (s,c,t)==before
@@ -32,6 +32,24 @@ def test_no_stop_loosened_without_existing_permission(side):
     v=holding_management_view(s,c,t)
     assert v['rows'][1]['candidate_stop']==c['previous_hard_stop']
     assert v['rows'][1]['requires_stop_revision'] is False
+
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_profit_ratchet_requires_positive_net_at_stop_not_only_at_mark(side):
+    s,c,t=inputs(side)
+    c['mark_price']=105. if side=='LONG' else 95.
+    v=holding_management_view(s,c,t);row=v['rows'][0]
+    assert v['fee_only_net_if_flatten']>0 and row['favorable_price_progress_atr']==.5
+    assert row['ratchet_reference_active'] is False
+    assert row['candidate_stop']==c['previous_hard_stop']
+
+
+@pytest.mark.parametrize('recorded,ready',[(.055,False),(2.,True),(None,None)])
+def test_stop_activation_includes_recorded_net_and_strict_zero_boundary(recorded,ready):
+    s,c,t=inputs();c.update(mark_price=110.,recorded_scenario_net=recorded)
+    row=holding_management_view(s,c,t)['rows'][0]
+    assert row['ratchet_reference_active'] is ready
+    assert row['candidate_stop']==(100. if ready else c['previous_hard_stop'])
 
 
 def test_missing_recorded_net_fee_or_atr_never_becomes_known_zero():
@@ -158,3 +176,12 @@ def test_legacy_proposer_uses_the_same_scoped_holding_policy():
     assert '100-300 USDT' not in captured[0]['system_prompt']
     base=SYSTEM_PROMPT+MA_STRUCTURE_PROMPT+FLAT_ENTRY_PROMPT
     assert holding_management_instructions(base,{**c,'scenario_id':None})==base
+
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_reaction_reference_does_not_tighten_inside_one_atr_of_entry_noise(side):
+    s,c,t=inputs(side);c['mark_price']=107.5 if side=='LONG'else 92.5
+    row=holding_management_view(s,c,t)['rows'][0]
+    assert row['buffer_atr']==1. and row['favorable_price_progress_atr']==.75
+    assert row['ratchet_reference_active']is False
+    assert row['candidate_stop']==c['previous_hard_stop']
