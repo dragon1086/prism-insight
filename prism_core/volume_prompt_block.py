@@ -4,7 +4,9 @@
 BUY keeps the deterministic lower-bound exception (momentum signal 1) and the
 "preserve momentum conditions / add no entry gate" closing line; SELL has neither
 (no momentum count or entry gate exists there) and keeps only the priority guard.
-Wording is byte-identical to the previous copies; no rule changed.
+BUY wording is byte-identical to the previous copies. SELL drops only the BUY-only sentence
+("preserve momentum conditions / add no score bonus, penalty, threshold or entry gate"),
+which had no object in SELL; no rule changed.
 """
 
 _KO = {
