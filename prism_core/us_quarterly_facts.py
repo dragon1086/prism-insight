@@ -17,6 +17,7 @@ ROWS = {
     "net_income": ("Net Income Common Stockholders", "Net Income"),
     "diluted_eps": ("Diluted EPS",),
 }
+MONEY = ("revenue", "operating_income", "net_income")
 
 
 def _number(value):
@@ -30,7 +31,10 @@ def _number(value):
 def quarterly_rows(q_income) -> list[dict]:
     """Up to the latest MAX_QUARTERS reported quarters, oldest first, from yfinance quarterly_income_stmt.
 
-    Quarters with no value in any tracked row are dropped. Returns [] when nothing is usable.
+    Quarters with no value in any tracked row are dropped. A quarter whose column carries no revenue, operating
+    income or net income (yfinance sometimes returns such an EPS/share-count-only column, e.g. AMZN 2026-06-30 on
+    2026-11-04) is kept as ``reported=False`` so the table can say the source did not report it instead of showing
+    N/A cells that the BUY gate reads as "unverifiable". Returns [] when nothing is usable.
     """
     if q_income is None or getattr(q_income, "empty", True):
         return []
@@ -41,9 +45,18 @@ def quarterly_rows(q_income) -> list[dict]:
             label = next((name for name in labels if name in q_income.index), None)
             out[key] = _number(q_income.at[label, column]) if label else None
         if any(out[key] is not None for key in ROWS):
+            out["reported"] = any(out[key] is not None for key in MONEY)
             rows.append(out)
     rows.sort(key=lambda row: row["period"])
-    return rows[-MAX_QUARTERS:]
+    reported = [row for row in rows if row["reported"]]
+    if not reported:
+        return []
+    oldest = reported[-MAX_QUARTERS:][0]["period"]
+    return [row for row in rows if row["period"] >= oldest]
+
+
+def reported_rows(rows):
+    return [row for row in rows if row.get("reported", True)]
 
 
 def _money(value):
@@ -86,6 +99,7 @@ def quarterly_eps_summary(rows, *, asof=None):
                   asof=asof or datetime.now(timezone.utc).isoformat(timespec="seconds"))
     if rows is None:
         return quarterly_eps(None, None, reason="not_collected", **common)
+    rows = reported_rows(rows)
     if not rows:
         return quarterly_eps(None, None, reason="no_reported_quarter", **common)
     latest = rows[-1]
@@ -106,6 +120,8 @@ def _change(prior, now, ko):
 
 def render_us_quarterly_facts(rows: list[dict], language: str = "ko") -> str:
     """Markdown table + deterministic lines (latest two quarters' operating income, YoY). "" without rows."""
+    unreported = [row["period"] for row in rows if not row.get("reported", True)]
+    rows = reported_rows(rows)
     if not rows:
         return ""
     ko = language == "ko"
@@ -121,6 +137,13 @@ def render_us_quarterly_facts(rows: list[dict], language: str = "ko") -> str:
     for row in rows:
         lines.append(f"| {row['period']} | {_money(row['revenue'])} | {_money(row['operating_income'])} | "
                      f"{_money(row['net_income'])} | {_eps(row['diluted_eps'])} |")
+    if unreported:
+        periods = ", ".join(unreported)
+        lines.append(f"- {periods} 분기는 자료 공급원의 분기 손익계산서에 매출·영업이익·순이익이 없어 표에서 제외했습니다"
+                     "(공급원 미보고 분기이며 적자가 아닙니다). 아래 '최근 2개 분기'는 보고된 분기 기준입니다." if ko else
+                     f"- Quarter(s) {periods} carry no revenue, operating income or net income in the source's quarterly "
+                     "income statement and are left out of the table (not reported by the source; not a loss). "
+                     "'Latest two quarters' below means the latest two reported quarters.")
     last_two = rows[-2:]
     if all(row["operating_income"] is None for row in rows):
         lines.append("- 이 회사의 분기 손익계산서에는 영업이익 항목이 없습니다(금융업 등 손익 구조). 영업이익 기준은 "
