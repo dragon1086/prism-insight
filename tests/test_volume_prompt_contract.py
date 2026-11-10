@@ -74,14 +74,17 @@ def test_volume_reference_is_not_mixed_or_fabricated(prompts):
 
 
 def test_volume_interpretation_cannot_add_scores_or_override_protection(prompts):
+    # 2026-11-11 prompt diet (audit D7/X8): one shared block (prism_core/volume_prompt_block.py); the
+    # momentum/trigger/entry-gate sentence is BUY-only, SELL keeps only the priority guard.
     _, language, buy, sell = prompts
-    for text in (buy, sell):
-        if language == "ko":
-            assert "별도 가점·감점·임계값·진입 차단 조건을 추가하지" in text
-            assert "법인 이벤트·손절·트레일링 우선순위를 변경하거나 지연하지" in text
-        else:
-            assert "add no score bonus, penalty, threshold or entry gate" in text
-            assert "Do not override or delay corporate-event, stop-loss or trailing-stop priority" in text
+    gate = ("별도 가점·감점·임계값·진입 차단 조건을 추가하지" if language == "ko"
+            else "add no score bonus, penalty, threshold or entry gate")
+    priority = ("법인 이벤트·손절·트레일링 우선순위를 변경하거나 지연하지" if language == "ko"
+                else "Do not override or delay corporate-event, stop-loss or trailing-stop priority")
+    assert gate in buy and gate not in sell
+    assert priority in buy and priority in sell
+    lower_bound = "예외(하한 판정)" if language == "ko" else "Exception (lower bound)"
+    assert lower_bound in buy and lower_bound not in sell
     assert ("20일 평균 대비 200%" if language == "ko" else "200% of 20-day average") in buy
     assert "0.92" in sell and "0.95" in sell
     assert '"should_sell"' in sell and '"portfolio_adjustment"' in sell

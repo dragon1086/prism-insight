@@ -2532,7 +2532,7 @@ class USStockTrackingAgent:
             live_regime_block = (
                 live_regime_summary
                 if live_regime_summary
-                else "unavailable — verify via yahoo_finance (^GSPC 20MA, ^VIX)"
+                else "unavailable (the system could not compute it this cycle)"
             )
             # Same trailing band as the automatic exit, which trails on _live_regime_cache
             # (KR carries it in kr_live_regime_block).
@@ -2552,7 +2552,7 @@ Please make a sell/hold decision for the following US stock holding.
 - Current Price: ${current_price:,.2f}
 - Target Price: ${target_price:,.2f} (initial scenario: ${initial_target_price:,.2f})
 - Stop Loss: ${stop_loss:,.2f} (initial scenario: ${initial_stop_loss:,.2f})
-- Highest Price Since Entry: ${highest_price:,.2f}{' (⚠️ First tracking - verify the peak from the session after entry via get_historical_stock_prices. Leave out the entry-day high, which may predate the buy; if bought this session, use this value as is)' if highest_price_initialized else ''}
+- Highest Price Since Entry: ${highest_price:,.2f}{' (First tracking: this is the system-stored peak. Leave out the entry-day high, which may predate the buy; do not re-check the peak with tools, use this value as is)' if highest_price_initialized else ''}
 - Trailing Stop Adjustment Threshold: {trailing_stop_threshold_pct:.1f}% (only adjust stop-loss if new value is at least this much higher)
 - Return: {profit_rate:.2f}%
 - Holding Period: {days_passed} days
@@ -2569,7 +2569,7 @@ Please make a sell/hold decision for the following US stock holding.
 
 ### Task:
 Use yahoo_finance and sqlite tools to check latest data, then decide whether to sell or continue holding.
-**Market regime**: Treat the "Current Market Regime (LIVE)" above as the authoritative market environment for step-0 분석 (강세장/약세장 판단). It is system-computed from S&P500/VIX this cycle; prefer it over the stored buy-time scenario. Only if it shows "unavailable", fall back to fetching ^GSPC/^VIX via yahoo_finance yourself.
+**Market regime**: Treat the "Current Market Regime (LIVE)" above as the authoritative market environment (bull → A mode, otherwise B mode). It is system-computed from S&P500/VIX this cycle; prefer it over the stored buy-time scenario. If it shows "unavailable", do not judge the regime yourself: the automatic exit trails at peak × 0.90 and you must not raise the stop to a trailing level today.
 **Important**: If stop loss/target price adjustment is needed, return it via portfolio_adjustment JSON only. Do NOT directly UPDATE the DB.
 """
             # System-computed facts (trailing line, stop-raise eligibility, tier-3 conditions, sessions held,

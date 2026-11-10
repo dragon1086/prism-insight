@@ -77,20 +77,12 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         → Do NOT make entry decisions based purely on PER/PBR comparisons. Verify fundamentals via C·A,
         confirm momentum via N·S·I, validate trend via L·M.
 
-        ## Market Regime Classification (5 levels)
+        ## Market Regime Classification
 
         A) The provided deterministic `market_regime` is authoritative. Copy its exact enum into
            the scenario; do not rename or reclassify it from prose. `swing_state`, when present,
            is descriptive context and does not replace the execution regime.
-        B) Only when the deterministic value is explicitly unavailable, derive from KOSPI 20-day data
-           (kospi_kosdaq-get_index_ohlcv):
-           - **strong_bull**:    KOSPI > 20d MA AND last 2 weeks ≥ +5%
-           - **moderate_bull**:  KOSPI > 20d MA AND positive trend
-           - **sideways**:       KOSPI ≈ 20d MA, mixed signals
-           - **moderate_bear**:  KOSPI < 20d MA AND negative trend
-           - **strong_bear**:    KOSPI < 20d MA AND last 2 weeks ≤ -5%
-
-        Anti-optimism guardrail: if KOSPI < 20d MA AND 2-week change < -2%, regime CANNOT be classified as bull.
+        B) When the deterministic value is unavailable the system blocks that entry. Never derive the regime from index data yourself.
 
         ## Step 1 — Fundamental Gate (mandatory)
 
@@ -104,7 +96,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         | F1 Profitability        | Operating profit positive in latest 2 quarters (or clear turnaround signal) | 2-1 |
         | F2 Balance sheet        | Debt ratio < 200% OR ≤ industry average | 2-1 |
         | F3 Growth               | ROE ≥ 5% OR 2-year revenue growth ≥ 10%   | 2-1 |
-        | F4 Business clarity     | Business model and revenue drivers (main products, customers, segments) identifiable, no sourced evidence of structural competitive decline (an unconfirmed edge is not a fail) | 2-2, 5 |
+        | F4 Business clarity     | Business model and revenue drivers identifiable, no sourced evidence of structural competitive decline (criteria: EVIDENCE_RECONCILIATION) | 2-2, 5 |
 
         Passing the gate = quality baseline established → matrix below is applied with confidence.
 
@@ -208,32 +200,15 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         Trigger-type credit:
         - "Macro Sector Leader" trigger → +1 extra confirmation (sector leader)
-        - "Contrarian Value Stock" trigger → no extra credit; F1~F4 must all pass and decline must be cyclical, not structural
+        - "Contrarian Value Stock" trigger → no extra credit. Consider entry only when F1~F4 all pass and the decline is temporary (sentiment / sector rotation), spelling out the rebound scenario in rationale; a structural decline (earnings deterioration / loss of competitive edge) → No Entry
 
         **Macro Sector Leader trigger — analysis points:**
         - Stock identified by macro analysis as the representative of a leading sector
         - Even if short-term momentum signals are weak, weigh the medium-term tailwind from the sector
         - Verify in report 2-2 that this stock is actually a sector leader (market share, growth)
 
-        **Contrarian Value Stock trigger — analysis points:**
-        - Stock has fallen sharply from recent highs but fundamentals appear sound
-        - **Critical**: classify the decline as temporary (sentiment / sector rotation) vs structural
-          (earnings deterioration / loss of competitive edge) using the report
-        - Structural decline → No Entry
-        - Temporary decline → Enter only if F1~F4 all pass; spell out the rebound scenario in rationale
-        - Weight report 2-1 financial-health items (debt ratio, op margin, cash flow) heavily
-
-        ## Portfolio Analysis Guide
-
-        Query stock_holdings (filter by account_id='primary' when column exists):
-        - Current number of holdings (max 10 slots)
-        - Sector distribution (over-concentration check)
-        - Investment-period distribution (short / medium / long ratio)
-        - Portfolio average return
-
         ## Portfolio Constraints
 
-        - 7+ holdings → only consider buy_score ≥ 6 regardless of regime
         - 2+ holdings in the same sector → must justify additional sector concentration in rationale
         - max_portfolio_size: decide it (range 6~10) from the system market regime (market_regime) and the Market Pulse distribution-day line in the input. The system compares it with the slot-weighted usage, not the number of holdings (non-micro-split holdings count as 1 slot; see the 'slot-weighted usage' line in the portfolio status), and blocks new buys when usage reaches it.
         - Multi-account (v2.9.0+): query stock_holdings filtered by `account_id = 'primary'` (or no filter
@@ -242,14 +217,13 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         ## No Entry Justification
 
         **Standalone (any one is sufficient):**
-        1. Stop loss support is at -10% or worse (cannot place a usable stop)
-        2. PER ≥ 2.5× industry average (extreme overvaluation)
-        3. Fundamental Gate fail in sideways / bear regime
-        4. Direct victim of a "high" severity risk event (cite event + impact path)
-        5. effective_score < min_score (the micro-split appendix's minimum when that appendix is present; otherwise the matrix value for the current regime)
+        1. PER ≥ 2.5× industry average (extreme overvaluation)
+        2. Fundamental Gate fail in sideways / bear regime
+        3. Direct victim of a "high" severity risk event (cite event + impact path)
+        4. effective_score < min_score (the micro-split appendix's minimum when that appendix is present; otherwise the matrix value for the current regime)
 
         **Compound (BOTH required):**
-        6. (RSI ≥ 85 OR 20d-MA deviation ≥ +25%) AND (foreign + institutional net selling ≥ 5 sessions)
+        5. (RSI ≥ 85 OR 20d-MA deviation ≥ +25%) AND (foreign + institutional net selling ≥ 5 sessions)
 
         **Prohibited single reasons:** "overheating concern", "inflection signal", "needs more confirmation",
         "short-term correction risk", "wait and see is safer". These are vague-hedge expressions that defer a
@@ -262,8 +236,8 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - **9~10**: All 4 fundamental checks strong + 3+ momentum signals + clear trend (above a rising 50-day MA)
         - **7~8**: F1~F4 pass + 2+ momentum signals + Step 1.5/1.6 gates pass
         - **5~6**: F1~F4 pass + 1 momentum signal + Step 1.5/1.6 gates pass (conditional zone)
-        - **3~4**: F1~F4 pass + zero momentum signals (a no-entry zone because the matrix momentum condition fails), or F1~F4 pass but the stock is a no-entry under the Step 1.5 trend gate or the Step 1.6 repeat stop-out gate. A gated stock never scores above 4 however strong its fundamentals or momentum, and the trend gate alone does not push it down to 1~2. When the Step 1.5 exception (the current price has reclaimed the 50-day MA, T1_hit=False) holds, the gate counts as passed and the score is assigned normally.
-        - **1~2**: Fundamental Gate fails, or clear negative factor (e.g. standalone no-entry reasons 1, 2 or 4). Exception: a stock on the Step 1 bull-regime compensation path (one F check fails, the rationale gives concrete compensating evidence, and rejection_reason is null) is scored by the momentum and gate bands instead, capped at 6 (conditional zone). Without compensating evidence, or with two or more fails, it scores 1~2.
+        - **3~4**: F1~F4 pass + zero momentum signals (a no-entry zone because the matrix momentum condition fails), or F1~F4 pass but the stock is a no-entry under the Step 1.5 trend gate or the Step 1.6 repeat stop-out gate. A gated stock never scores above 4 however strong its fundamentals or momentum, and the trend gate alone does not push it down to 1~2. When the Step 1.5 exception (T1_hit=False) holds, the gate counts as passed.
+        - **1~2**: Fundamental Gate fails, or clear negative factor (e.g. standalone no-entry reasons 1 or 3). Exception: a stock on the Step 1 bull-regime compensation path (one F check fails, the rationale gives concrete compensating evidence, and rejection_reason is null) is scored by the momentum and gate bands instead, capped at 6 (conditional zone). Without compensating evidence, or with two or more fails, it scores 1~2.
 
         R/R, stop-width and target shortfalls are about price location: do not fold them into the score; state them in rejection_reason only.
 
@@ -277,7 +251,6 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         ## Stop Loss Construction
 
         - Choose the tighter of: matrix max stop OR primary support from report 1-1.
-        - If primary support is beyond -10% from current price → No Entry (standalone reason 1).
         - Stop must NOT be set wider than matrix max stop just to "give room".
         - **primary_support sanity check (mandatory)**: if the derived expected_loss_pct is below 50% of the matrix max stop, the primary support is too close to the entry price. In that case:
           1. Prefer secondary_support from report 1-1; if that is also too close,
@@ -315,14 +288,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         ## Tool Usage
 
-        ### Volume Interpretation
-        - Compare the same stock's volume with its source, session date, session coverage, reference window, capture time and finality. Do not treat previous-day or 5-day-average ratios as 20-day-average ratios.
-        - For a 20-day average comparison, obtain 20 completed sessions preceding the evaluated bar plus the analysis bars. Expand the query range for market holidays; leave insufficient history or unfinished bars unknown and never invent values or condition satisfaction. Do not directly compare intraday or extended-hours volume with full regular-session volume.
-        - Exception (lower bound): the 'volume' line in the individual trend facts is computed deterministically against the 20 completed sessions preceding each bar; cite its ratios first. Even for today's unfinished bar, if cumulative intraday volume already reaches 200% of the completed 20-session average, it cannot fall before the close, so count momentum signal 1 ('today') as met. Below 200%, do not count it as met, but do not cite it as weak volume either because the session is still open. Never quote only completed sessions while omitting today's heavy volume.
-        - In an established uptrend, a low-volume pullback holding support with narrowing declines may be a normal correction. If support breaks, do not use declining volume as a reason to hold or buy.
-        - Do not reject a valid high-volume breakout holding its breakout level merely because it is near a high. After a sharp rise, assess chasing risk when increased volume accompanies a failed breakout and falling prices.
-        - A low-volume new high or new low alone does not establish a buy, sell or rebound. Never infer institutional accumulation or distribution from volume alone.
-        - This guidance interprets existing volume evidence. Preserve existing momentum conditions and trigger credits; add no score bonus, penalty, threshold or entry gate. Do not override or delay corporate-event, stop-loss or trailing-stop priority.
+        {volume_interpretation_block}
 
         - `time-get_current_time`: call FIRST. Use the returned date as the end date for ALL kospi_kosdaq queries.
         - `kospi_kosdaq-get_stock_ohlcv` / `get_stock_trading_volume` / `get_index_ohlcv`: market and stock data.
@@ -349,7 +315,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
           Unqueried evidence is not evidence that data exists nowhere. UNKNOWN is an evidence status,
           not a new automatic pass/fail or rejection gate. Keep existing schema, F1–F4 criteria, scoring,
           regime matrix and independent gates unchanged; do not invent evidence to complete a field.
-        - `sqlite`: run `describe_table` first; filter holdings by `account_id = 'primary'` when column exists.
+        - `sqlite`: run `describe_table` first.
 
         ### EVIDENCE_RECONCILIATION
         - Before finalizing, reconcile each fundamental_check result with the whole report, injected facts and
@@ -374,15 +340,13 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
           mere presence, a severity = "high" risk event or an "additional confirmation needed" reason; reflect it only inside the
           existing F1–F4, stop-loss or standalone no-entry criteria it directly changes. Filing facts that threaten the company's
           continuity (non-clean audit opinion, going-concern doubt, trading halt, listing-eligibility review) may be handled under
-          existing standalone reason 4. A missing chapter or table is NOT_IN_INPUT, never a gate.
+          existing standalone reason 3. A missing chapter or table is NOT_IN_INPUT, never a gate.
 
         ## Time-of-day Data Reliability
 
         - **Morning session (09:30~10:30 KST)**: today's volume/candle is in-progress. Do NOT make assertions
           like "today's volume is weak". Use prior-day confirmed data; today is reference only.
-          Exceptions already set above: Step 1.5 T1/T2 use the facts block's current price at any hour, and
-          cumulative intraday volume already at ≥200% of the completed 20-session average counts as momentum
-          signal 1 ('today') met (lower-bound rule).
+          Exception: the Step 1.5 T1/T2 check and the volume lower-bound rule (Volume Interpretation) use the current price and cumulative intraday volume as set above.
         - **Afternoon (including 14:50+ KST)**: time alone does not establish finality. Use today's
           close/volume as final only with explicit source confirmation for that trading date. Otherwise
           label observed data intraday, or BAR_FINALITY_UNKNOWN if finality is unavailable; do not call
@@ -444,13 +408,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
                     "secondary_resistance": Number,
                     "volume_baseline": "Normal volume baseline (string)"
                 },
-                "sell_triggers": [
-                    "Take-profit milestone: hitting target / major resistance is a milestone, NOT a sell trigger in any regime. Keep holding while the trend persists; the trailing stop activates once the peak is +5% above entry (peak × 0.92, -8%, in parabolic/strong_bull/moderate_bull; peak × 0.95, -5%, in sideways/moderate_bear/strong_bear; peak × 0.90, -10%, when the live regime is unavailable)",
-                    "Trend weakness (ALL three, closing basis): (1) 3 consecutive lower daily closes, (2) volume at or above average, (3) close below the 20d MA — exit fully only when all three hold",
-                    "Hard stop (intraday): the intraday hard stop exits fully as soon as the live price is at or below stop_loss × 0.995 (0.5% wick buffer). It does not wait for the close; a brief touch inside the buffer is NOT a sell reason",
-                    "O'Neil absolute rule: a live-price loss of 7% or more from entry triggers automatic full exit, no exceptions",
-                    "Time review (NOT a trigger): N trading days elapsed is a trend-review checkpoint, not an auto-sell trigger. Only consider exit if both close and volume confirm clear range-bound drift"
-                ],
+                "sell_triggers": ["replaced by the system SELL policy template (do not write your own)"],
                 "hold_conditions": [
                     "Hold condition 1",
                     "Hold condition 2",
@@ -492,20 +450,12 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         → 단순 PER/PBR 비교만으로 진입 결정을 내리지 마십시오. C·A로 펀더멘털을 검증하고, N·S·I로 모멘텀을, L·M으로 추세를 확인하십시오.
 
-        ## 시장 체제 진단 (5단계)
+        ## 시장 체제 진단
 
         A) 제공된 결정론적 `market_regime`이 유일한 실행 기준입니다. enum을 그대로 scenario에
            복사하고 설명 문구를 보고 다시 이름 붙이거나 재분류하지 마십시오. `swing_state`가 있으면
            보조 설명일 뿐 실행 regime을 대체하지 않습니다.
-        B) 결정론적 값이 명시적으로 없을 때만 KOSPI 20일 데이터
-           (kospi_kosdaq-get_index_ohlcv)로 직접 판단하십시오:
-           - **strong_bull**:    KOSPI > 20일선 AND 최근 2주 +5% 이상
-           - **moderate_bull**:  KOSPI > 20일선 AND 양의 추세
-           - **sideways**:       KOSPI ≈ 20일선, 혼재 신호
-           - **moderate_bear**:  KOSPI < 20일선 AND 음의 추세
-           - **strong_bear**:    KOSPI < 20일선 AND 최근 2주 -5% 이상
-
-        낙관 편향 차단: KOSPI < 20일선 AND 2주 변화율 < -2% 이면 강세장으로 분류 불가.
+        B) 결정론적 값이 없으면 시스템이 그 진입을 막습니다. 지수 데이터로 국면을 직접 판단하지 마십시오.
 
         ## 1단계 — 펀더멘털 게이트 (필수)
 
@@ -518,7 +468,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         | F1 수익성        | 최근 2개 분기 영업이익 흑자 (또는 흑자 전환 신호 명확) | 2-1 |
         | F2 재무 건전성   | 부채비율 < 200% OR 업종 평균 이하 | 2-1 |
         | F3 성장성        | ROE ≥ 5% OR 최근 2년 매출 성장 ≥ 10% | 2-1 |
-        | F4 사업 명확성   | 사업 모델·매출원(주요 제품·고객·부문)이 식별되고 구조적 경쟁력 훼손의 출처 근거가 없음 (경쟁우위 미확인은 미달 아님) | 2-2·5 |
+        | F4 사업 명확성   | 사업 모델·매출원이 식별되고 구조적 경쟁력 훼손의 출처 근거가 없음 (판정 기준은 EVIDENCE_RECONCILIATION) | 2-2·5 |
 
         게이트 통과 = 종목 품질 베이스라인 확보 → 아래 매트릭스를 자신감 있게 적용하십시오.
 
@@ -611,31 +561,15 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         트리거 유형 자동 가산:
         - "매크로 섹터 리더" 트리거 → 추가 확인 +1 (섹터 주도)
-        - "역발상 가치주" 트리거 → 자동 가산 없음. F1~F4 펀더 게이트 모두 통과 + 하락 원인이 일시적(시장 센티먼트/섹터 로테이션)일 때만 진입 검토. 하락이 구조적(실적 악화/경쟁력 상실)이면 미진입.
+        - "역발상 가치주" 트리거 → 자동 가산 없음. F1~F4 펀더 게이트 모두 통과 + 하락 원인이 일시적(시장 센티먼트/섹터 로테이션)일 때만 반등 시나리오를 rationale에 명시한 뒤 진입 검토. 하락이 구조적(실적 악화/경쟁력 상실)이면 미진입.
 
         **매크로 섹터 리더 트리거 분석 포인트:**
         - 거시경제 분석에서 주도 섹터로 식별된 업종의 대표주
         - 단기 모멘텀이 약해도 섹터 순풍에 의한 중기 상승 가능성을 적극 고려하십시오
         - 보고서 '2-2. 기업 개요 분석'에서 시장점유율/성장성 기준 섹터 리더 여부 검증
 
-        **역발상 가치주 트리거 분석 포인트:**
-        - 최근 고점 대비 큰 폭 하락했지만 펀더멘털이 건전한 종목
-        - **핵심 판단**: 하락 원인이 일시적(시장 센티먼트, 섹터 로테이션)인지 구조적(실적 악화, 경쟁력 상실)인지 보고서에서 반드시 확인
-        - 구조적 문제 → 미진입
-        - 일시적 하락 + F1~F4 통과 → 반등 시나리오를 rationale에 명시한 뒤 진입 검토
-        - 보고서 '2-1. 기업 현황 분석'의 부채비율, 영업이익률, 현금흐름을 비중 있게 검토
-
-        ## 포트폴리오 분석 가이드
-
-        stock_holdings 테이블(account_id='primary' 필터)에서 다음을 확인하십시오:
-        - 현재 보유 종목 수 (최대 10슬롯)
-        - 산업군 분포 (특정 섹터 과다 노출 여부)
-        - 투자 기간 분포 (단기 / 중기 / 장기 비율)
-        - 포트폴리오 평균 수익률
-
         ## 포트폴리오 제약
 
-        - 보유 종목 7개 이상 → 시장 체제와 무관하게 buy_score 6점 이상만 고려
         - 동일 산업군 2개 이상 보유 → rationale에 sector concentration 사유 명시 필수
         - max_portfolio_size: 입력에 주어진 시스템 시장 국면(market_regime)과 개별 추세 팩트의 Market Pulse 분산일 줄을 근거로 6~10 사이로 정하십시오. 시스템은 이 값을 보유 종목 수가 아니라 실제 사용 비중(슬롯 가중 합, 초분할이 아닌 종목은 1슬롯)과 비교해 신규 매수를 막습니다(보유 현황의 '실제 사용 비중' 줄).
         - 다중 계좌 환경(v2.9.0+): stock_holdings를 `account_id = 'primary'` 필터로 조회 (해당 컬럼이 없으면 필터 생략). max_portfolio_size는 primary 계좌 슬롯 수 기준입니다.
@@ -643,14 +577,13 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         ## 미진입 사유
 
         **단독 사유 (한 가지만 충족해도 미진입):**
-        1. 손절 지지선이 -10% 이하 (사용 가능한 손절 설정 불가)
-        2. PER ≥ 업종 평균 2.5배 (극단적 고평가)
-        3. 펀더 게이트 미달 + 시장 체제가 sideways/bear
-        4. severity = "high" 리스크 이벤트의 직접 피해 종목 (이벤트명 + 영향 경로 명시 필수)
-        5. effective_score < min_score (초분할 진입 기준 부록이 있으면 그 최소 점수, 없으면 매트릭스의 현재 regime 값)
+        1. PER ≥ 업종 평균 2.5배 (극단적 고평가)
+        2. 펀더 게이트 미달 + 시장 체제가 sideways/bear
+        3. severity = "high" 리스크 이벤트의 직접 피해 종목 (이벤트명 + 영향 경로 명시 필수)
+        4. effective_score < min_score (초분할 진입 기준 부록이 있으면 그 최소 점수, 없으면 매트릭스의 현재 regime 값)
 
         **복합 사유 (둘 다 충족 시):**
-        6. (RSI ≥ 85 OR 20일선 괴리율 ≥ +25%) AND (외국인 + 기관 5거래일+ 순매도)
+        5. (RSI ≥ 85 OR 20일선 괴리율 ≥ +25%) AND (외국인 + 기관 5거래일+ 순매도)
 
         **단독 사유로 사용 금지된 표현:** "과열 우려", "변곡 신호", "추가 확인 필요", "단기 조정 가능성", "관망이 안전".
         이 표현들은 막연한 회피이며 지금 내려야 할 판단을 미루는 말이므로 rejection_reason으로 사용할 수 없습니다.
@@ -662,8 +595,8 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - **9~10점**: 펀더 4개 모두 강함 + 모멘텀 3개+ 신호 + 추세 명확 (상승하는 50일선 위)
         - **7~8점**: F1~F4 통과 + 모멘텀 2개+ 신호 + 1.5·1.6단계 게이트 통과
         - **5~6점**: F1~F4 통과 + 모멘텀 1개 신호 + 1.5·1.6단계 게이트 통과 (조건부 진입 영역)
-        - **3~4점**: F1~F4 통과 + 모멘텀 신호 0개(매트릭스 모멘텀 조건 미달이라 미진입 영역), 또는 F1~F4는 통과했지만 1.5단계 추세 게이트·1.6단계 상습 손절 게이트에 걸려 미진입하는 종목. 게이트에 걸린 종목은 펀더·모멘텀이 강해도 4점을 넘지 않고, 추세 게이트 하나만으로 1~2점까지 내리지 않습니다. 1.5단계 예외(현재가의 50일선 회복, T1_hit=False)가 성립하면 게이트 통과로 보고 정상 산정합니다.
-        - **1~2점**: 펀더 게이트 미달 또는 명확한 부정 요소 (미진입 단독 사유 1·2·4 해당 등). 단, 1단계의 강세 국면 보완 경로(F 1개 미달 + rationale의 구체적 보완 근거 + rejection_reason null)에 해당하면 1~2점이 아니라 모멘텀·게이트 기준대로 산정하되 최대 6점(조건부 진입 영역)으로 둡니다. 보완 근거가 없거나 2개 이상 미달이면 1~2점입니다.
+        - **3~4점**: F1~F4 통과 + 모멘텀 신호 0개(매트릭스 모멘텀 조건 미달이라 미진입 영역), 또는 F1~F4는 통과했지만 1.5단계 추세 게이트·1.6단계 상습 손절 게이트에 걸려 미진입하는 종목. 게이트에 걸린 종목은 펀더·모멘텀이 강해도 4점을 넘지 않고, 추세 게이트 하나만으로 1~2점까지 내리지 않습니다. 1.5단계 예외(T1_hit=False)가 성립하면 게이트 통과입니다.
+        - **1~2점**: 펀더 게이트 미달 또는 명확한 부정 요소 (미진입 단독 사유 1·3 해당 등). 단, 1단계의 강세 국면 보완 경로(F 1개 미달 + rationale의 구체적 보완 근거 + rejection_reason null)에 해당하면 1~2점이 아니라 모멘텀·게이트 기준대로 산정하되 최대 6점(조건부 진입 영역)으로 둡니다. 보완 근거가 없거나 2개 이상 미달이면 1~2점입니다.
 
         손익비·손절폭·목표가 미달은 가격 위치의 문제이므로 점수에 반영하지 않고 rejection_reason에만 적습니다.
 
@@ -677,7 +610,6 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         ## 손절가 설정
 
         - 매트릭스 최대 손절폭과 보고서 1-1의 주요 지지선 중 더 가까운(타이트한) 값을 채택하십시오.
-        - 주요 지지선이 현재가 대비 -10% 이상 떨어져 있으면 미진입 (단독 사유 1).
         - "여유를 주려고" 매트릭스 최대 손절폭보다 넓게 설정하지 마십시오.
         - **primary_support 검증 (필수)**: 산출된 expected_loss_pct가 매트릭스 최대 손절폭의 50% 미만이면, 1차 지지선이 진입가 너무 가까이 있는 상태입니다. 이때는:
           1. 보고서 1-1의 secondary_support를 우선 검토하고, 그것도 너무 가까우면
@@ -715,14 +647,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         ## 도구 사용
 
-        ### 거래량 해석 기준
-        - 동일 종목의 거래량을 출처·기준 거래일·세션 범위·비교 기간·수집 시각·확정 여부와 함께 확인하십시오. 전일 대비와 5일 평균 대비 비율을 20일 평균 대비로 해석하지 마십시오.
-        - 20일 평균 비교에는 비교 대상 봉 이전의 확정된 20거래일과 분석 대상 봉을 확보하십시오. 휴장일을 고려해 조회 범위를 늘리고, 이력 부족·미완성봉은 미확정으로 남기며 수치나 충족 여부를 만들어내지 마십시오. 장중·시간외 거래량을 정규장 전체 거래량과 직접 비교하지 마십시오.
-        - 예외(하한 판정): 개별 추세 팩트의 '거래량' 줄은 해당 봉 이전 확정 20거래일 평균 대비로 결정론적으로 계산한 값이므로 거래량 비율은 이 줄을 우선 인용하십시오. 미완성 당일봉이라도 장중 누적 거래량이 이미 확정 20거래일 평균의 200% 이상이면 거래량은 마감까지 줄지 않으므로 모멘텀 신호 1의 '당일' 조건을 충족한 것으로 셉니다. 200% 미만이면 충족으로 세지 않되 마감 전 값이므로 거래량 부진의 근거로도 쓰지 마십시오. 확정 세션만 인용하면서 당일 대량 거래를 생략하지 마십시오.
-        - 기존 상승 추세에서 지지선을 유지하고 하락 폭이 축소되는 저거래량 조정은 정상 눌림일 수 있습니다. 지지선이 무너지면 거래량 감소를 보유·매수 근거로 삼지 마십시오.
-        - 거래량 증가를 동반하고 돌파 가격을 유지하는 정상 돌파를 고점 부근이라는 이유만으로 배제하지 마십시오. 급등 후 거래량 증가에도 돌파에 실패하고 가격이 밀리면 추격 위험을 검토하십시오.
-        - 거래량이 감소한 신고가·신저가만으로 매수·매도·반등을 확정하지 마십시오. 거래량만으로 기관 매집이나 분배를 단정하지 마십시오.
-        - 이 지침은 기존 거래량 근거의 해석을 보완합니다. 기존 모멘텀 조건·트리거 가산은 유지하고, 별도 가점·감점·임계값·진입 차단 조건을 추가하지 마십시오. 법인 이벤트·손절·트레일링 우선순위를 변경하거나 지연하지 마십시오.
+        {volume_interpretation_block}
 
         - `time-get_current_time`: 가장 먼저 호출하십시오. 반환된 날짜를 모든 kospi_kosdaq 조회의 종료일로 사용합니다.
         - `kospi_kosdaq-get_stock_ohlcv` / `get_stock_trading_volume` / `get_index_ohlcv`: 시장/종목 데이터.
@@ -748,7 +673,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
           조회하지 않은 것을 어디에도 데이터가 없다고 표현하지 마십시오. UNKNOWN은 근거 상태이지
           새로운 자동 통과·실패·미진입 게이트가 아닙니다. 기존 스키마, F1–F4 기준, 점수, 시장별
           매트릭스와 독립 게이트를 유지하고 필드를 채우기 위해 근거를 만들어내지 마십시오.
-        - `sqlite`: `describe_table` 먼저 실행하고, account_id 컬럼이 있으면 `account_id = 'primary'`로 필터링하십시오.
+        - `sqlite`: `describe_table` 먼저 실행하십시오.
 
         ### EVIDENCE_RECONCILIATION
         - 최종 응답 전에 전체 보고서·주입 팩트·반환된 도구 결과와 각 fundamental_check 판정을 대조하십시오. F4_business_clarity와 rationale에는
@@ -764,14 +689,13 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
           이 자료로 새로운 미진입 사유·감점·점수 기준을 만들지 마십시오. 차입 만기·보증·우발채무·소송·희석 가능성처럼
           공시에 서술된 일반적 위험은 그 존재만으로 severity = "high" 리스크 이벤트나 "추가 확인 필요" 사유가 되지 않으며,
           기존 F1–F4·손절·미진입 단독 사유의 판정을 직접 바꿀 때만 해당 기준 안에서 반영합니다. 감사의견 비적정·계속기업
-          불확실성·거래정지·상장적격성 심사처럼 존속 자체를 위협하는 공시 사실은 기존 단독 사유 4로 다룰 수 있습니다.
+          불확실성·거래정지·상장적격성 심사처럼 존속 자체를 위협하는 공시 사실은 기존 단독 사유 3으로 다룰 수 있습니다.
           해당 장이나 표가 없으면 NOT_IN_INPUT일 뿐 게이트가 아닙니다.
 
         ## 시간대별 데이터 신뢰도
 
         - **오전장 (09:30~10:30 KST)**: 당일 거래량/캔들은 미완성입니다. "오늘 거래량이 약하다" 같은 확정 판단은 금지하십시오. 전일 종가/거래량 기준으로 분석하고, 당일 데이터는 추세 변화 참고용으로만 사용합니다.
-          예외(위에서 이미 정한 규칙): 1.5단계 T1·T2는 시간대와 관계없이 개별 추세 팩트의 현재가로 판정하고, 장중 누적 거래량이
-          이미 확정 20거래일 평균의 200% 이상이면 모멘텀 신호 1의 '당일' 조건을 충족한 것으로 셉니다(하한 판정).
+          예외: 1.5단계 T1·T2 판정과 거래량 하한 판정(거래량 해석 기준)은 위 규칙대로 현재가·장중 누적 거래량을 씁니다.
         - **오후 장 (14:50+ KST 포함)**: 시각만으로 데이터 확정을 판단하지 마십시오. 해당 거래일의
           확정 여부를 출처가 명시적으로 확인한 경우에만 당일 종가·거래량을 확정값으로 사용하십시오.
           그 외에는 장중 관측값으로, 확정 여부를 알 수 없으면 BAR_FINALITY_UNKNOWN으로 표시하고
@@ -833,13 +757,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
                     "secondary_resistance": 숫자,
                     "volume_baseline": "평소 거래량 기준 (문자열 가능)"
                 },
-                "sell_triggers": [
-                    "익절 마일스톤: 목표가·주요 저항선 도달은 어떤 국면에서도 매도 트리거가 아닙니다. 추세 지속 시 보유하고, 고점이 매수가 대비 +5% 이상이 된 뒤부터 trailing stop이 켜집니다(parabolic/strong_bull/moderate_bull은 고점 × 0.92(-8%), sideways/moderate_bear/strong_bear는 고점 × 0.95(-5%), 국면 확인 불가 시 고점 × 0.90(-10%))",
-                    "추세 약화 (3개 모두 충족, 종가 기준): ① 3거래일 연속 종가 하락 ② 거래량 평균 이상 동반 ③ 20일선 아래 마감 — 셋 모두 충족할 때만 전량 매도",
-                    "하드 스탑(장중): 현재가가 stop_loss×0.995(0.5% 꼬리 버퍼) 이하가 되면 장중 하드스탑이 즉시 전량 매도. 종가 마감을 기다리지 않으며, 버퍼 안의 일시 터치만으로는 매도하지 않음",
-                    "오닐 절대 룰: 장중 현재가 기준 매수가 대비 -7% 이상 손실 도달 시 무조건 전량 매도",
-                    "시간 점검 (트리거 아님): 보유 N거래일 경과는 자동 매도 트리거가 아니라 추세 점검 시점일 뿐. 박스권 횡보가 종가·거래량 모두에서 명확히 확인될 때에만 매도 검토"
-                ],
+                "sell_triggers": ["시스템이 매도 정책 템플릿으로 대체합니다 (직접 쓰지 마십시오)"],
                 "hold_conditions": [
                     "보유 지속 조건 1",
                     "보유 지속 조건 2",
@@ -851,6 +769,8 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         """
 
     instruction = instruction.replace("{sector_constraint}", sector_constraint)
+    from prism_core.volume_prompt_block import install_volume_block
+    instruction = install_volume_block(instruction, language, "buy", indent=" " * 8)
     instruction += buy_scenario_prompt_contract(language)
     from prism_core.kr_flow_evidence import kr_flow_interpretation_contract
     instruction += kr_flow_interpretation_contract(language)
@@ -903,19 +823,10 @@ def create_sell_decision_agent(language: str = "ko"):
         - Decline duration and decreasing volume alone do not establish a trend reversal or sell. Check support and the composite conditions below.
         - Whether the stock could be re-bought later is not a reason to sell or to hold. Decide on the rules below and the current trend only (the system separately watches stopped-out stocks for a re-entry signal).
 
-        ### Step 0: Assess Market Environment (Top Priority Analysis)
+        ### Market Regime
 
-        When the user message carries the system-computed market regime, use it and skip the self-check below.
-        Run the self-check only when that regime is missing or could not be computed.
-
-        **Self-check (only without the system regime):**
-        1. Check KOSPI/KOSDAQ recent 20 days data with get_index_ohlcv
-        2. Is it rising above 20-day moving average?
-        3. Are foreigners/institutions net buying with get_stock_trading_volume?
-        4. Is individual stock volume above average?
-
-        → **Bull market**: 2 or more of above 4 are Yes
-        → **Bear/Sideways market**: Conditions not met
+        Use the user message's 'Current Market Regime' block (the system-computed market regime) as given and never judge the regime yourself. A bull regime (parabolic/strong_bull/moderate_bull) means A) Bull Market Mode; anything else means B) Bear/Sideways Mode.
+        When the system regime is unavailable, the automatic exit trails wider at peak × 0.90 (-10%); on such a day do not raise stop_loss to a trailing level.
 
         ### Priority 0: Core Principles for Sell Judgement (MUST follow)
 
@@ -950,8 +861,8 @@ def create_sell_decision_agent(language: str = "ko"):
         - The system trailing stop (off the post-entry peak) is confirmed by the afternoon review's price and the **pre-close automatic check** (between 15:10 and 15:25 KST). An intraday low that briefly touches the trailing stop (intraday wick) is NEVER a sell reason on its own.
         - The afternoon review (around 14:46 KST) treats the current price as today's close and today's volume so far as today's volume, as the afternoon screening does. For close-based judgements (Tier 2 trailing, Tier 3 trend weakness) use the 'System-computed facts' block as given; in the afternoon it includes today's bar at the current price.
         - The morning review never sells on a trailing breach: a line raised by today's peak must not be compared with yesterday's close (LLY 2026-10-30).
-- But a stop you raise through portfolio_adjustment (new_stop_loss) is executed by the intraday hard stop above. Raising stop_loss to the trailing level makes that level sell on an intraday wick.
-        - When you read daily bars with tools, today's unfinished bar is not a completed bar; the only stand-in for today's close is the afternoon review's current price.
+        - But a stop you raise through portfolio_adjustment (new_stop_loss) is executed by the intraday hard stop above. Raising stop_loss to the trailing level makes that level sell on an intraday wick.
+        - When you read daily bars with tools, today's unfinished bar is not a completed bar; do not call a pre-close capture read with tools a confirmed close. The only stand-in for today's close is the afternoon review's current price.
 
         **Core-2) Interpret buy-scenario take-profit conditions as milestones:**
         - In stock_holdings.scenario.trading_scenarios.sell_triggers, phrases like "sell when target reached" or "take profit 1: target/resistance reached" are **milestones, not automatic sell orders**.
@@ -963,7 +874,6 @@ def create_sell_decision_agent(language: str = "ko"):
         **Core-3) Trailing-stop activation:**
         - Trailing stop activates ONLY after highest_price since entry ≥ entry_price × 1.05.
         - Before activation (peak still under entry +5%), keep the initial stop_loss from the buy scenario; do NOT switch to a trailing stop.
-        - This prevents the post-entry noise from pushing the trailing stop below the entry price and losing its protective function.
         - If the per-stock trailing line (current-regime block, system-computed facts) differs from these defaults (+5%, × 0.92/× 0.95), it is this position's automatic exit rule; follow it (a position bought in a sideways/bear regime may show +3%, × 0.94/× 0.96).
 
         **Core-4) Sell-signal priority (single source of truth):**
@@ -976,19 +886,13 @@ def create_sell_decision_agent(language: str = "ko"):
 
         ### Sell Decision Priority (Cut Losses Short, Let Profits Run!)
 
-        **Priority 1: Risk Management (Stop Loss)**
-        - Stop loss reached: Immediate full exit in principle
-        - **Absolute NO EXCEPTION Rule**: Loss of 7% or more = AUTOMATIC SELL by the intraday hard stop (no exceptions, no grace period)
+        **Priority 1: Risk Management (Stop Loss)** — the stop_loss and the -7% hard stop are already executed intraday by the system (Core-1, Core-4 Tier 1). The positions you judge are the ones that have not reached them.
 
         **Priority 2: Profit Taking - Market-Adaptive Strategy**
 
         **A) Bull Market Mode → Trend Priority (Maximize Profit)**
-        - Target is minimum baseline, keep holding if trend alive
-        - Trailing Stop: **-8%** from peak (peak × 0.92, ignore noise)
-        - Sell only when **clear trend weakness**:
-          * Core-4 Tier 3: 3 consecutive daily-closing declines after the entry session + volume above its 20-day average + close below 20d MA — ALL three required
-          * Foreign/institutional net selling is supporting context, not a substitute for the composite conditions
-          * A close below major support (20-day MA) is part of the composite, not a standalone trend sell trigger
+        - The target is only a milestone (Core-2); keep holding while the trend is alive
+        - Sell condition: Core-4 Tier 3 only (all three trend-weakness conditions). Foreign/institutional net selling is supporting context, and a close below major support (20-day MA) is part of the composite, not a standalone sell trigger
 
         **⭐ Trailing Stop Management**
         1. The system provides highest_price (peak since entry) in the prompt — use it directly, no need to query separately. Compute the trailing stop from this value only: the automatic exit uses the same stored peak, even if a tool shows a higher intraday high.
@@ -1003,72 +907,16 @@ def create_sell_decision_agent(language: str = "ko"):
         → Peak stays 12,000, fall to 11,500 → trailing stop 11,040, same as the current stop 11,040 → adjust NO
         → Afternoon review price 10,900 (counts as today's close, below the trailing stop 11,040) → should_sell: true
 
-        Trailing Stop %: Bull market peak × 0.92 (-8%), Bear/Sideways peak × 0.95 (-5%)
-        When the system regime is unavailable, the automatic exit trails wider at peak × 0.90 (-10%); on such a day do not raise stop_loss to a trailing level.
-
-        **⚠️ Important**: new_stop_loss must NEVER exceed current price. In the afternoon review, if the current price (counts as today's close) is below the trailing stop, set should_sell: true. In the morning review, if only the current price is below it, do not raise stop_loss above the current price; leave it to the afternoon review and the pre-close automatic check.
-        **🔒 Never lower the stop**: do not submit a new_stop_loss below the current stop_loss. Lowering the stop is not allowed for any reason.
+        **⚠️ Important**: new_stop_loss must NEVER exceed current price. In the morning review, if only the current price is below the trailing stop, do not raise stop_loss above the current price; leave it to the afternoon review and the pre-close automatic check.
 
         **B) Bear/Sideways Mode → Secure Profit (Defensive)**
-        - Reaching the target is not a sell reason; raise the stop (trailing) to protect the gain instead.
-        - Trailing Stop: **-5%** from peak (peak × 0.95)
-        - Sell conditions: trailing stop breached (reaching the target alone is not a sell condition; no fixed time or profit % limit)
+        - Sell condition: trailing-stop breach only (Core-3, Core-4 Tier 2). No fixed time or profit % limit
 
-        **Priority 3: Time Management**
-        - Short-term (~1 month): reaching the target is not a sell reason; hold while the trend is alive and protect the gain with the trailing stop
-        - Mid-term (1~3 months): Apply A (bull) or B (bear/sideways) mode based on market
-        - Long-term (3 months~): Check fundamental changes
-        - Near investment period expiry: a trend-review checkpoint, not an automatic exit (sell only on the stop, trailing or trend-weakening conditions)
-
-        ### ⚠️ Current Time Check & Data Reliability
-        **Use time-get_current_time tool to check current time first (Korea KST)**
-
-        **During morning session (09:30~10:30):**
-        - Today's volume/price changes are **incomplete forming data**
-        - ❌ Prohibited: "Today volume plunged", "Today sharp fall/rise" etc. confirmed judgments
-        - ✅ Recommended: Grasp trend with previous day or recent days confirmed data
-        - Today's sharp moves are "ongoing movement" reference only, not confirmed sell basis
-        - Especially for stop/profit decisions, compare with previous day close
-
-        **During afternoon session (including 14:50+):**
-        - The current price counts as today's close and today's volume so far as today's volume (the same assumption as the afternoon screening).
-        - For closing-price decisions use today's bar in the 'System-computed facts' block. Do not call a pre-close capture read with tools a confirmed close.
-
-        **Core Principle:**
-        Morning review: closing-price decisions use completed sessions. Afternoon review: today's price stands in for today's close.
-
-        ### Analysis Elements
-
-        **Basic Return Info:**
-        - Compare current return vs target return
-        - Loss size vs acceptable loss limit
-        - Performance evaluation vs investment period
-
-        **Technical Analysis:**
-        - Recent price trend analysis (up/down/sideways)
-        - Volume change pattern analysis
-        - Position near support/resistance
-        - Current position in box range (downside risk vs upside potential)
-        - Momentum indicators (up/down acceleration)
-
-        **Market Environment Analysis:**
-        - Overall market situation (bull/bear/neutral)
-        - Market volatility level
-
-        **Portfolio Perspective (Refer to the attached current portfolio status):**
-        - Weight and risk level within the overall portfolio
-        - Rebalancing necessity considering market conditions and portfolio status
-        - Thoroughly analyze sector concentration by examining industry distribution (If mistakenly assuming all holdings are concentrated in the same sector, re-query the stock_holdings table using the sqlite tool to accurately reassess sector concentration)
+        **Priority 3: Time Management** — short/mid/long-term labels and the investment period expiry are trend-review checkpoints, never sell reasons (Core-4). Sell only on the stop, trailing or trend-weakening conditions.
 
         ### Tool Usage Guide
 
-        ### Volume Interpretation
-        - Compare the same stock's volume with its source, session date, session coverage, reference window, capture time and finality. Do not treat previous-day or 5-day-average ratios as 20-day-average ratios.
-        - For a 20-day average comparison, obtain 20 completed sessions preceding the evaluated bar plus the analysis bars. Expand the query range for market holidays; leave insufficient history or unfinished bars unknown and never invent values or condition satisfaction. Do not directly compare intraday or extended-hours volume with full regular-session volume.
-        - In an established uptrend, a low-volume pullback holding support with narrowing declines may be a normal correction. If support breaks, do not use declining volume as a reason to hold or buy.
-        - Do not reject a valid high-volume breakout holding its breakout level merely because it is near a high. After a sharp rise, assess chasing risk when increased volume accompanies a failed breakout and falling prices.
-        - A low-volume new high or new low alone does not establish a buy, sell or rebound. Never infer institutional accumulation or distribution from volume alone.
-        - This guidance interprets existing volume evidence. Preserve existing momentum conditions and trigger credits; add no score bonus, penalty, threshold or entry gate. Do not override or delay corporate-event, stop-loss or trailing-stop priority.
+        {volume_interpretation_block}
 
         **time-get_current_time:** Get current time — **call this FIRST before any kospi_kosdaq query**. Use the returned date as the end date for all OHLCV/volume queries. Never assume or guess the current date.
 
@@ -1082,14 +930,6 @@ def create_sell_decision_agent(language: str = "ko"):
         0. **IMPORTANT**: Before querying any table, ALWAYS run `describe_table` first to check the actual column names. NEVER guess column names — use only columns that exist in the schema.
         1. Current portfolio overall status
         2. Current stock trading info
-        3. **⚠️ DO NOT directly UPDATE**: Never directly UPDATE target_price or stop_loss in stock_holdings table. If adjustment is needed, return it ONLY via portfolio_adjustment in your JSON response.
-
-        **Prudent Adjustment Principle:**
-        - Portfolio adjustment harms investment principle consistency, do only when truly necessary
-        - Avoid adjustments for simple short-term volatility or noise
-        - Adjust only with clear basis like fundamental changes, market structure changes
-
-        **Important**: Must check latest data with tools before comprehensive judgment.
 
         ### Response Format
 
@@ -1106,7 +946,7 @@ def create_sell_decision_agent(language: str = "ko"):
             },
             "portfolio_adjustment": {
                 "needed": true or false,
-                "reason": "Specific reason for adjustment (very prudent judgment)",
+                "reason": "Specific reason for adjustment",
                 "new_target_price": 85000 (number, no comma) or null,
                 "new_stop_loss": 70000 (number, no comma) or null,
                 "urgency": "high/medium/low - adjustment urgency"
@@ -1114,9 +954,9 @@ def create_sell_decision_agent(language: str = "ko"):
         }
 
         **portfolio_adjustment Writing Guide:**
-        - **Very prudent judgment**: Frequent adjustments harm investment principles, do only when truly necessary
-        - needed=true conditions: Market environment upheaval, stock fundamentals change, technical structure change, or the trailing-stop conditions above are met
-        - new_target_price: 85000 (pure number, no comma) if adjustment needed, else null
+        - **Very prudent judgment**: Frequent adjustments harm investment principles, do only when truly necessary; never adjust on simple short-term volatility or noise
+        - needed=true condition: the stop-raise conditions in Trailing Stop Management above are met
+        - new_target_price: a compatibility field. The target never triggers a sell, so it is normally null (when used, 85000 as a pure number, no comma)
         - new_stop_loss: 70000 (pure number, no comma) if adjustment needed, else null
         - urgency: high(immediate), medium(within days), low(reference)
         - **Principle**: If current strategy still valid, set needed=false
@@ -1140,19 +980,10 @@ def create_sell_decision_agent(language: str = "ko"):
         - 하락 일수와 거래량 감소만으로 추세 전환이나 매도를 판단하지 마십시오. 지지 유지 여부와 아래 복합 조건을 확인하십시오.
         - 나중에 다시 살 수 있는지는 매도·보유 근거가 아닙니다. 아래 규칙과 현재 추세로만 판단하십시오(손절로 판 종목은 시스템이 재진입 신호를 따로 감시합니다).
 
-        ### 0단계: 시장 환경 파악 (최우선 분석)
+        ### 시장 국면
 
-        사용자 메시지에 시스템이 계산한 시장 국면이 있으면 그 값을 쓰고 아래 자체 점검은 하지 마십시오.
-        시스템 국면이 없거나 계산하지 못했을 때만 아래 4가지로 직접 판단하십시오.
-
-        **자체 점검 (시스템 국면이 없을 때만):**
-        1. get_index_ohlcv로 KOSPI/KOSDAQ 최근 20일 데이터 확인
-        2. 20일 이동평균선 위에서 상승 중인가?
-        3. get_stock_trading_volume으로 외국인/기관 순매수 중인가?
-        4. 개별 종목 거래량이 평균 이상인가?
-
-        → **강세장 판단**: 위 4개 중 2개 이상 Yes
-        → **약세장/횡보장**: 위 조건 미충족
+        사용자 메시지의 '현재 시장 국면' 블록(시스템이 계산한 시장 국면)을 그대로 쓰고 국면을 직접 판단하지 마십시오. 강세(parabolic/strong_bull/moderate_bull)면 A) 강세장 모드, 그 외는 B) 약세장/횡보장 모드입니다.
+        시스템 국면을 계산하지 못한 날에는 자동 청산이 고점 × 0.90(-10%)으로 넓게 잡습니다. 이날은 손절선을 trailing 수준으로 올리지 마십시오.
 
         ### 0순위: 매도 판단의 핵심 원칙 (반드시 준수)
 
@@ -1170,7 +1001,6 @@ def create_sell_decision_agent(language: str = "ko"):
           상폐 전 청산하지 않으면 비상장 전환으로 자금이 묶인다. 이는 '루머'가 아니라 확정 이벤트다.**
         - **보류(보유)는 오직 회사가 부인했거나 '인수설/합병설' 수준의 미확인 단일 추측 기사뿐일 때만.**
           공식 발표된 공개매수·자진상폐를 "최종 상폐일 미확정"이라는 이유로 미루지 말 것 — 그건 이미 확정 사유다.
-          (단순 추측만 있으면 "이벤트 의심(미확정)"으로 기록하고 보유.)
         - **법인이벤트가 아닌 것(매도 사유 아님):** 회사의 자기주식 공개매수·자사주 매입, 회사채 매입, 제3자의 소량 공개매수
           (발행주식 일부만 사겠다는 보도자료성 제안, 공식 공시 없음). 주가를 공개매수가에 묶거나 상장폐지로 이어지지 않으므로
           기록만 하고 아래 기술적 판단을 계속하십시오.
@@ -1184,8 +1014,8 @@ def create_sell_decision_agent(language: str = "ko"):
         - 시스템의 trailing stop(진입 후 최고가 기준)은 오후 판단 시점 가격과 **장 마감 직전 자동 점검**(15:10~15:25 KST) 가격으로 확인해 실행됩니다. 장중 저가가 trailing stop을 일시적으로 터치(intraday wick)한 것만으로는 매도하지 마십시오.
         - 오후 판단(14:46 KST경)은 오후 스크리닝과 같이 지금 가격을 오늘 종가로, 지금까지의 거래량을 오늘 거래량으로 간주합니다. 종가가 필요한 판단(2단계 trailing, 3단계 추세 약화)은 '시스템 계산 사실' 블록 값을 그대로 쓰십시오. 오후 판단에서 그 블록은 오늘 봉을 현재가로 넣어 계산합니다.
         - 오전 판단에서는 trailing 이탈로 매도하지 마십시오. 오늘 고점이 반영된 라인을 전일 종가와 비교하면 안 됩니다(LLY 2026-10-30).
-- 단, portfolio_adjustment로 올린 손절가(new_stop_loss)는 위 장중 하드스탑이 그대로 실행합니다. trailing 수준을 손절가로 올리면 그 수준은 장중 꼬리에도 매도됩니다.
-        - 도구로 일봉을 직접 볼 때 아직 끝나지 않은 오늘 봉은 확정 일봉이 아닙니다. 오늘 종가 대용은 오후 판단의 현재가 하나뿐입니다.
+        - 단, portfolio_adjustment로 올린 손절가(new_stop_loss)는 위 장중 하드스탑이 그대로 실행합니다. trailing 수준을 손절가로 올리면 그 수준은 장중 꼬리에도 매도됩니다.
+        - 도구로 일봉을 직접 볼 때 아직 끝나지 않은 오늘 봉은 확정 일봉이 아니며, 도구에서 읽은 마감 전 수집값을 확정 종가라고 부르지는 마십시오. 오늘 종가 대용은 오후 판단의 현재가 하나뿐입니다.
 
         **핵심-2) 매수 시나리오의 익절 조건은 마일스톤으로 해석:**
         - 보유 종목의 stock_holdings.scenario.trading_scenarios.sell_triggers 중 "목표가 도달 시 매도", "익절 조건 1: 목표가/저항선 도달" 등의 문구는 **자동 매도 명령이 아니라 1차 마일스톤**입니다.
@@ -1197,7 +1027,6 @@ def create_sell_decision_agent(language: str = "ko"):
         **핵심-3) trailing stop 활성화 조건:**
         - 진입 후 고점(highest_price) ≥ 진입가 × 1.05를 충족한 이후에만 trailing stop이 활성화됩니다.
         - 활성화 전(고점이 진입가 +5% 미만)에는 매수 시 설정된 초기 stop_loss를 유지하며 trailing stop으로 변경하지 않습니다.
-        - 이는 진입 직후 작은 변동으로 trailing stop이 진입가 아래로 내려가서 보호 기능을 잃는 현상을 방지합니다.
         - 종목별 입력의 트레일링 줄(현재 시장 국면 블록·시스템 계산 사실)이 위 기본값(+5%, × 0.92/× 0.95)과 다르면 그것이 이 종목의 자동 청산 기준이므로 그 값을 따르십시오(매수 시점 국면이 횡보·약세인 종목은 +3%, × 0.94/× 0.96일 수 있습니다).
 
         **핵심-4) 매도 신호 우선순위 (single source of truth):**
@@ -1210,19 +1039,13 @@ def create_sell_decision_agent(language: str = "ko"):
 
         ### 매도 결정 우선순위 (손실은 짧게, 수익은 길게!)
 
-        **1순위: 리스크 관리 (손절)**
-        - 손절가 도달: 원칙적 즉시 전량 매도
-        - **절대 예외 없는 규칙**: 손실 -7% 이상 = 장중 하드스탑 자동 매도 (예외·유예 없음)
+        **1순위: 리스크 관리 (손절)** — 손절가·-7% 하드스탑은 시스템이 장중에 이미 실행합니다(핵심-1·핵심-4 1단계). 당신이 판단하는 종목은 아직 거기에 닿지 않은 종목입니다.
 
         **2순위: 수익 실현 (익절) - 시장 환경별 차별화 전략**
 
         **A) 강세장 모드 → 추세 우선 (수익 극대화)**
-        - 목표가는 최소 기준일뿐, 추세 살아있으면 계속 보유
-        - Trailing Stop: 고점 대비 **-8%** (고점 × 0.92, 노이즈 무시)
-        - 매도 조건: **명확한 추세 약화 시에만**
-          * 핵심-4의 3단계: 매수 후 3거래일 연속 종가 하락 + 20일 평균 이상 거래량 + 20일선 종가 이탈을 모두 충족
-          * 외국인/기관 동반 순매도 전환은 보조 정황이며, 위 복합 조건을 대체하지 않음
-          * 주요 지지선(20일선) 이탈은 위 복합 조건의 일부이며, 단독 추세 매도 조건이 아님
+        - 목표가는 마일스톤일 뿐(핵심-2), 추세 살아있으면 계속 보유
+        - 매도 조건: 핵심-4의 3단계(추세 약화 3개 모두 충족)뿐. 외국인/기관 동반 순매도 전환은 보조 정황이고, 주요 지지선(20일선) 이탈은 복합 조건의 일부일 뿐 단독 매도 조건이 아님
 
         **⭐ Trailing Stop 관리**
         1. 시스템이 진입 후 최고가(highest_price)를 프롬프트에 제공합니다 — 직접 조회 불필요. trailing stop은 이 값으로만 계산하십시오. 자동 청산도 같은 저장 고점을 쓰므로, 도구에서 더 높은 장중 고가를 보더라도 이 값을 씁니다.
@@ -1237,72 +1060,16 @@ def create_sell_decision_agent(language: str = "ko"):
         → 고점 12,000원 유지 후 하락 11,500원 → trailing stop 11,040원, 현재 손절가 11,040원과 동일 → 조정 X
         → 오후 판단 현재가 10,900원 (오늘 종가로 간주, trailing stop 11,040원 아래) → should_sell: true
 
-        Trailing Stop %: 강세장 고점 × 0.92 (-8%), 약세장 고점 × 0.95 (-5%)
-        시스템 국면을 계산하지 못한 날에는 자동 청산이 고점 × 0.90(-10%)으로 넓게 잡습니다. 이날은 손절선을 trailing 수준으로 올리지 마십시오.
-
-        **⚠️ 중요**: new_stop_loss는 절대 현재가를 초과하면 안 됩니다. 오후 판단에서 현재가(오늘 종가로 간주)가 trailing stop 아래면 should_sell: true로 매도하십시오. 오전 판단에서 현재가만 아래면 손절가를 현재가 위로 올리지 말고 오후 판단과 장 마감 직전 자동 점검에 맡기십시오.
-        **🔒 손절가 하향 절대 금지**: new_stop_loss가 현재 stop_loss보다 낮은 값이면 제출하지 마세요. 어떤 이유로도 손절가를 내리는 것은 허용되지 않습니다.
+        **⚠️ 중요**: new_stop_loss는 절대 현재가를 초과하면 안 됩니다. 오전 판단에서 현재가만 trailing stop 아래면 손절가를 현재가 위로 올리지 말고 오후 판단과 장 마감 직전 자동 점검에 맡기십시오.
 
         **B) 약세장/횡보장 모드 → 수익 확보 (방어적)**
-        - 목표가 도달은 매도 사유가 아닙니다. 대신 손절선을 올려(trailing) 이익을 지킵니다.
-        - Trailing Stop: 고점 대비 **-5%** (고점 × 0.95)
-        - 매도 조건: 트레일링스탑 이탈 (목표가 달성 자체는 매도 조건이 아님, 고정 관찰 기간·수익률 기준 없음)
+        - 매도 조건: trailing stop 이탈(핵심-3·핵심-4 2단계)뿐. 고정 관찰 기간·수익률 기준 없음
 
-        **3순위: 시간 관리**
-        - 단기(~1개월): 목표가 달성은 매도 사유가 아닙니다. 추세가 살아 있으면 보유하고 trailing stop으로 이익을 지킵니다
-        - 중기(1~3개월): 시장 환경에 따라 A(강세장) or B(약세장/횡보장) 모드 적용
-        - 장기(3개월~): 펀더멘털 변화 확인
-        - 투자 기간 만료 근접: 추세를 점검하는 시점일 뿐 자동 정리 사유가 아닙니다 (손절·trailing·추세 약화 조건으로만 매도)
-
-        ### ⚠️ 현재 시간 확인 및 데이터 신뢰도 판단
-        **time-get_current_time tool을 사용하여 현재 시간을 먼저 확인하세요 (한국시간 KST 기준)**
-
-        **오전장(09:30~10:30) 분석 시:**
-        - 당일 거래량/가격 변화는 **아직 형성 중인 미완성 데이터**
-        - ❌ 금지: "오늘 거래량 급감", "오늘 급락/급등" 등 당일 확정 판단
-        - ✅ 권장: 전일 또는 최근 수일간의 확정 데이터로 추세 파악
-        - 당일 급변동은 "진행 중인 움직임" 정도만 참고, 확정 매도 근거로 사용 금지
-        - 특히 손절/익절 판단 시 전일 종가 기준으로 비교
-
-        **오후 장(14:50 이후 포함) 분석 시:**
-        - 지금 가격을 오늘 종가로, 지금까지의 누적 거래량을 오늘 거래량으로 간주합니다(오후 스크리닝과 같은 가정).
-        - 종가 판단은 '시스템 계산 사실' 블록의 오늘 봉 값을 쓰십시오. 도구에서 읽은 마감 전 수집값을 확정 종가라고 부르지는 마십시오.
-
-        **핵심 원칙:**
-        오전 판단의 종가 판단은 확정 세션으로, 오후 판단은 오늘 가격을 오늘 종가로 간주해 합니다.
-
-        ### 분석 요소
-
-        **기본 수익률 정보:**
-        - 현재 수익률과 목표 수익률 비교
-        - 손실 규모와 허용 가능한 손실 한계
-        - 투자 기간 대비 성과 평가
-
-        **기술적 분석:**
-        - 최근 주가 추세 분석 (상승/하락/횡보)
-        - 거래량 변화 패턴 분석
-        - 지지선/저항선 근처 위치 확인
-        - 박스권 내 현재 위치 (하락 리스크 vs 상승 여력)
-        - 모멘텀 지표 (상승/하락 가속도)
-
-        **시장 환경 분석:**
-        - 전체 시장 상황 (강세장/약세장/중립)
-        - 시장 변동성 수준
-
-        **포트폴리오 관점(첨부한 현재 포트폴리오 상황을 참고):**
-        - 전체 포트폴리오 내 비중과 위험도
-        - 시장상황과 포트폴리오 상황을 고려한 리밸런싱 필요성
-        - 섹터 편중 현황인 산업군 분포를 면밀히 파악 (모든 보유 종목이 같은 섹터에 편중되어있다고 착각할 경우, sqlite tool로 stock_holdings 테이블을 다시 참고하여 섹터 편중 현황 재파악)
+        **3순위: 시간 관리** — 단기·중기·장기 구분과 투자 기간 만료는 추세를 점검하는 시점일 뿐 매도 사유가 아닙니다(핵심-4). 매도는 손절·trailing·추세 약화 조건으로만 합니다.
 
         ### 도구 사용 지침
 
-        ### 거래량 해석 기준
-        - 동일 종목의 거래량을 출처·기준 거래일·세션 범위·비교 기간·수집 시각·확정 여부와 함께 확인하십시오. 전일 대비와 5일 평균 대비 비율을 20일 평균 대비로 해석하지 마십시오.
-        - 20일 평균 비교에는 비교 대상 봉 이전의 확정된 20거래일과 분석 대상 봉을 확보하십시오. 휴장일을 고려해 조회 범위를 늘리고, 이력 부족·미완성봉은 미확정으로 남기며 수치나 충족 여부를 만들어내지 마십시오. 장중·시간외 거래량을 정규장 전체 거래량과 직접 비교하지 마십시오.
-        - 기존 상승 추세에서 지지선을 유지하고 하락 폭이 축소되는 저거래량 조정은 정상 눌림일 수 있습니다. 지지선이 무너지면 거래량 감소를 보유·매수 근거로 삼지 마십시오.
-        - 거래량 증가를 동반하고 돌파 가격을 유지하는 정상 돌파를 고점 부근이라는 이유만으로 배제하지 마십시오. 급등 후 거래량 증가에도 돌파에 실패하고 가격이 밀리면 추격 위험을 검토하십시오.
-        - 거래량이 감소한 신고가·신저가만으로 매수·매도·반등을 확정하지 마십시오. 거래량만으로 기관 매집이나 분배를 단정하지 마십시오.
-        - 이 지침은 기존 거래량 근거의 해석을 보완합니다. 기존 모멘텀 조건·트리거 가산은 유지하고, 별도 가점·감점·임계값·진입 차단 조건을 추가하지 마십시오. 법인 이벤트·손절·트레일링 우선순위를 변경하거나 지연하지 마십시오.
+        {volume_interpretation_block}
 
         **time-get_current_time:** 현재 시간 획득 — **kospi_kosdaq 조회 전 반드시 먼저 호출하세요**. 반환된 날짜를 모든 OHLCV/거래량 조회의 종료일(end date)로 사용하세요. 현재 날짜를 임의로 가정하거나 추측하지 마세요.
 
@@ -1315,15 +1082,7 @@ def create_sell_decision_agent(language: str = "ko"):
         **sqlite tool로 확인:**
         0. **중요**: 테이블 조회 전 반드시 `describe_table`로 실제 컬럼명을 확인하세요. 컬럼명을 추측하지 말고, 스키마에 존재하는 컬럼만 사용하세요.
         1. 현재 포트폴리오 전체 현황 (stock_holdings 테이블 참고)
-        2. 현재 종목의 매매 정보 (참고사항 : stock_holdings테이블의 scenario 컬럼에 있는 json데이터 내에서 target_price와 stop_loss는 최초 진입시 설정한 목표가와 손절가임)
-        3. **⚠️ DB 직접 수정 금지**: stock_holdings 테이블의 target_price, stop_loss를 직접 UPDATE하지 마세요. 조정이 필요하면 반드시 응답 JSON의 portfolio_adjustment로만 전달하세요.
-
-        **신중한 조정 원칙:**
-        - 포트폴리오 조정은 투자 원칙과 일관성을 해치므로 정말 필요할 때만 수행
-        - 단순 단기 변동이나 노이즈로 인한 조정은 지양
-        - 펀더멘털 변화, 시장 구조 변화 등 명확한 근거가 있을 때만 조정
-
-        **중요**: 반드시 도구를 활용하여 최신 데이터를 확인한 후 종합적으로 판단하세요.
+        2. 현재 종목의 매매 정보
 
         ### 응답 형식
 
@@ -1340,7 +1099,7 @@ def create_sell_decision_agent(language: str = "ko"):
             },
             "portfolio_adjustment": {
                 "needed": true 또는 false,
-                "reason": "조정이 필요한 구체적 이유 (매우 신중하게 판단)",
+                "reason": "조정이 필요한 구체적 이유",
                 "new_target_price": 85000 (숫자, 쉼표 없이) 또는 null,
                 "new_stop_loss": 70000 (숫자, 쉼표 없이) 또는 null,
                 "urgency": "high/medium/low - 조정의 긴급도"
@@ -1348,9 +1107,9 @@ def create_sell_decision_agent(language: str = "ko"):
         }
 
         **portfolio_adjustment 작성 가이드:**
-        - **매우 신중하게 판단**: 잦은 조정은 투자 원칙을 해치므로 정말 필요할 때만
-        - needed=true 조건: 시장 환경 급변, 종목 펀더멘털 변화, 기술적 구조 변화, 또는 trailing stop 조건(위 규칙) 충족 시
-        - new_target_price: 조정이 필요하면 85000 (순수 숫자, 쉼표 없이), 아니면 null
+        - **매우 신중하게 판단**: 잦은 조정은 투자 원칙을 해치므로 정말 필요할 때만. 단순 단기 변동이나 노이즈로 조정하지 마십시오
+        - needed=true 조건: 위 Trailing Stop 관리의 손절가 상향 조건 충족 시
+        - new_target_price: 호환용 필드입니다. 목표가로는 매도하지 않으므로 보통 null (쓸 때는 85000처럼 순수 숫자, 쉼표 없이)
         - new_stop_loss: 조정이 필요하면 70000 (순수 숫자, 쉼표 없이), 아니면 null
         - urgency: high(즉시), medium(며칠 내), low(참고용)
         - **원칙**: 현재 전략이 여전히 유효하다면 needed=false로 설정
@@ -1358,6 +1117,8 @@ def create_sell_decision_agent(language: str = "ko"):
         - **🔒 손절가 래칫 원칙**: new_stop_loss는 반드시 현재 stop_loss보다 높아야 합니다. 현재 손절가보다 낮은 new_stop_loss는 어떤 이유로도 제출 불가. 손절가는 오직 상향만 가능합니다.
         """
 
+    from prism_core.volume_prompt_block import install_volume_block
+    instruction = install_volume_block(instruction, language, "sell", indent=" " * 8)
     return Agent(
         name="sell_decision_agent",
         instruction=(instruction + sell_scenario_authority_contract(language)

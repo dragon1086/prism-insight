@@ -154,8 +154,9 @@ def test_sell_prompts_count_tier3_only_after_the_entry():
         src = (ROOT / path).read_text(encoding="utf-8")
         assert "all three declining closes are bars after the entry session (the afternoon review counts today's bar; 3+ sessions held)" in src
         assert "하락한 3거래일이 모두 매수일 이후의 일봉일 때만 셉니다(오후 판단은 오늘 봉 포함, 보유 3거래일 이상)" in src
-        assert "Core-4 Tier 3: 3 consecutive daily-closing declines after the entry session" in src
-        assert "핵심-4의 3단계: 매수 후 3거래일 연속 종가 하락" in src
+        # 2026-11-11 prompt diet (audit D3): the bull-mode bullet points to Core-4 Tier 3 instead of restating it.
+        assert "Sell condition: Core-4 Tier 3 only (all three trend-weakness conditions)" in src
+        assert "매도 조건: 핵심-4의 3단계(추세 약화 3개 모두 충족)뿐" in src
     assert F.TREND_DOWN_CLOSES == 3
 
 

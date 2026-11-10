@@ -101,14 +101,14 @@ def test_buy_prompt_reconciles_evidence_without_new_gate(market, language):
 - When the analysis runs after US market close (KST morning), use the most recent settled session.''')]
         )
         # 2026-10-02 reviewed F4 row (same wording as KR): reverse it to keep the legacy hashes.
+        # 2026-11-11 prompt diet (audit D10): the cell now points to EVIDENCE_RECONCILIATION for the criteria.
         replacements += (
-            [("| F4 사업 명확성   | 사업 모델·매출원(주요 제품·고객·부문)이 식별되고 구조적 경쟁력 훼손의 출처 근거가 없음 "
-              "(경쟁우위 미확인은 미달 아님) | 2-2·5 |",
+            [("| F4 사업 명확성   | 사업 모델·매출원이 식별되고 구조적 경쟁력 훼손의 출처 근거가 없음 "
+              "(판정 기준은 EVIDENCE_RECONCILIATION) | 2-2·5 |",
               "| F4 사업 명확성   | 사업 모델 + 경쟁우위가 보고서에서 식별됨 | 2-2 |")]
             if language == "ko" else
-            [("| F4 Business clarity     | Business model and revenue drivers (main products, customers, segments) "
-              "identifiable, no sourced evidence of structural competitive decline (an unconfirmed edge is not a "
-              "fail) | 2-2, 5 |",
+            [("| F4 Business clarity     | Business model and revenue drivers identifiable, no sourced evidence of "
+              "structural competitive decline (criteria: EVIDENCE_RECONCILIATION) | 2-2, 5 |",
               "| F4 Business clarity     | Business model + competitive edge identifiable in report | 2-2 |")]
         )
         for current, previous in replacements:
@@ -138,11 +138,18 @@ def test_buy_prompt_reconciles_evidence_without_new_gate(market, language):
             # opening-hour exceptions, exit-code trailing bands and SELL Tier 3 in sell_triggers.
             # 2026-10-19 reviewed: rules hash only — max_portfolio_size from the system regime / Market Pulse line,
             # compared with slot-weighted usage (PR-C). JSON unchanged.
+            # 2026-11-11 prompt diet (tasks/research-20261110/prompt-diet/AUDIT_ko.md, user-approved): rules + JSON —
+            # regime self-classification (X2), portfolio guide (X6), contrarian analysis points (D13), "-10% support"
+            # reason (M1, reasons renumbered 1-5), "7+ holdings" rule (M7), F4 cell shortened (D10), Step 1.5
+            # exception / account_id filter / opening-hour restatements (D11, D9, D8), US "no institutional data"
+            # lines shortened (X1), JSON sell_triggers example replaced by the template pointer (X3). The volume
+            # block is now the shared prism_core/volume_prompt_block.py (D7). Thresholds, matrix, stop, R/R and
+            # score bands unchanged.
             # Unrelated execution rules retain their original hashes.
-            "ko": ("a6fe9387273b8ff4a6eec0f155444ed66acc3c6aa78cbef98c81f0dd4413ac62",
-                   "f618a904c4187d696f1672b09684d848907bc3f0792fe5f339ca3a66b4b141e9"),
-            "en": ("e449b3acf2c9c6ebb6f7675be09e57a7555115bb436a40d2a15f0172bc9cfa5e",
-                   "7523cb8013327a159e57f607e06a3fb20501efdf3fb1e530d00c442fae770dbc"),
+            "ko": ("87657f9649752b5af0e140a78169b7b4120d9143fe596f4048937a4f09021140",
+                   "9291ce97845869954085d203671f4143c4a39cd7b298068a61df1f3b7563776b"),
+            "en": ("c24382acbc34c5133bd63eef90425b93022db62970ca5d82afbf1133c63f9e46",
+                   "1b62084a777eb7669479149da781e36f2b3042bec0ca193139513c195aa1d017"),
         }
         tool_heading = "## 도구 사용" if language == "ko" else "## Tool Usage"
         json_heading = "## JSON 응답 형식" if language == "ko" else "## JSON Response Format"

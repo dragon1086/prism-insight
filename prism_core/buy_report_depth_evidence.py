@@ -38,11 +38,11 @@ _LEADER = {
            "| L — Leader | Leadership position within sector | 2-2 Overview, 4 Market "
            "(+ '경쟁사 비교 분석' competitor table, if present) |"),
 }
-_F4_KO_ROW = ("| F4 사업 명확성   | 사업 모델·매출원(주요 제품·고객·부문)이 식별되고 구조적 경쟁력 훼손의 출처 근거가 없음 "
-              "(경쟁우위 미확인은 미달 아님) | 2-2·5")
-_F4_EN_ROW = ("| F4 Business clarity     | Business model and revenue drivers (main products, customers, segments) "
-              "identifiable, no sourced evidence of structural competitive decline (an unconfirmed edge is not a "
-              "fail) | 2-2, 5")
+# 2026-11-11 prompt diet (audit D10): the F4 cell now points to EVIDENCE_RECONCILIATION for the criteria.
+_F4_KO_ROW = ("| F4 사업 명확성   | 사업 모델·매출원이 식별되고 구조적 경쟁력 훼손의 출처 근거가 없음 "
+              "(판정 기준은 EVIDENCE_RECONCILIATION) | 2-2·5")
+_F4_EN_ROW = ("| F4 Business clarity     | Business model and revenue drivers identifiable, no sourced evidence of "
+              "structural competitive decline (criteria: EVIDENCE_RECONCILIATION) | 2-2, 5")
 _F4 = {
     "ko": (_F4_KO_ROW + " |", _F4_KO_ROW + " (+ 경쟁사 비교 분석) |"),
     "en": (_F4_EN_ROW + " |", _F4_EN_ROW + " (+ 경쟁사 비교 분석) |"),

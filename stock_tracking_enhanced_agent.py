@@ -1820,7 +1820,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 - 현재가: {current_price:,.0f}원
                 - 목표가: {target_price:,.0f}원 (최초 시나리오: {initial_target_price:,.0f}원)
                 - 손절가: {stop_loss:,.0f}원 (최초 시나리오: {initial_stop_loss:,.0f}원)
-                - 진입 후 최고가: {highest_price:,.0f}원{' (⚠️ 첫 추적 - get_stock_ohlcv로 진입 다음 거래일부터의 고가를 확인하세요. 진입일 봉 고가는 매수 전에 찍혔을 수 있어 넣지 않으며, 오늘 산 종목이면 이 값을 그대로 쓰세요)' if highest_price_initialized else ''}
+                - 진입 후 최고가: {highest_price:,.0f}원{' (첫 추적: 시스템 저장 고점입니다. 진입일 봉 고가는 매수 전에 찍혔을 수 있어 넣지 않으며, 도구로 고점을 다시 확인하지 말고 이 값을 그대로 쓰세요)' if highest_price_initialized else ''}
                 - 트레일링 스탑 조정 임계값: {trailing_stop_threshold_pct:.1f}% (이 값 이상 상향 시만 손절가 조정 가능)
                 - 수익률: {profit_rate:.2f}%
                 - 보유기간: {days_passed}일
@@ -1851,7 +1851,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 - Current Price: {current_price:,.0f} KRW
                 - Target Price: {target_price:,.0f} KRW (initial scenario: {initial_target_price:,.0f} KRW)
                 - Stop Loss: {stop_loss:,.0f} KRW (initial scenario: {initial_stop_loss:,.0f} KRW)
-                - Highest Price Since Entry: {highest_price:,.0f} KRW{' (⚠️ First tracking - verify the peak from the session after entry via get_stock_ohlcv. Leave out the entry-day high, which may predate the buy; if bought today, use this value as is)' if highest_price_initialized else ''}
+                - Highest Price Since Entry: {highest_price:,.0f} KRW{' (First tracking: this is the system-stored peak. Leave out the entry-day high, which may predate the buy; do not re-check the peak with tools, use this value as is)' if highest_price_initialized else ''}
                 - Trailing Stop Adjustment Threshold: {trailing_stop_threshold_pct:.1f}% (adjust the stop only if the new value is at least this much higher)
                 - Return: {profit_rate:.2f}%
                 - Holding Period: {days_passed} days

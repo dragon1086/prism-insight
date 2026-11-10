@@ -38,18 +38,20 @@ def test_us_can_slim_framework_present_en():
 
 # --- US-specific market regime (S&P 500 + VIX) ----------------------------
 
+# 2026-11-11 prompt diet (audit X2): the LLM never classifies the regime itself (the computed regime is
+# authoritative and the buy gate blocks a missing one), so the S&P 500 / VIX self-classification is gone.
 def test_us_regime_uses_sp500_vix_ko():
     agent = create_us_trading_scenario_agent(language="ko")
-    assert "S&P 500 (^GSPC)" in agent.instruction
-    assert "VIX < 18" in agent.instruction
-    assert "VIX > 25" in agent.instruction
+    assert "VIX < 18" not in agent.instruction
+    assert "VIX > 25" not in agent.instruction
+    assert "지수 데이터로 국면을 직접 판단하지 마십시오" in agent.instruction
 
 
 def test_us_regime_uses_sp500_vix_en():
     agent = create_us_trading_scenario_agent(language="en")
-    assert "S&P 500 (^GSPC)" in agent.instruction
-    assert "VIX < 18" in agent.instruction
-    assert "VIX > 25" in agent.instruction
+    assert "VIX < 18" not in agent.instruction
+    assert "VIX > 25" not in agent.instruction
+    assert "Never derive the regime from index data yourself" in agent.instruction
 
 
 # --- Fundamental gate -----------------------------------------------------
@@ -220,34 +222,34 @@ def test_us_macro_sector_leader_detail_present_en():
     assert "weigh the medium-term tailwind from the sector" in agent.instruction
 
 
+# 2026-11-11 prompt diet (audit D13): the contrarian "analysis points" block restated the trigger line.
 def test_us_contrarian_value_detail_present_ko():
     agent = create_us_trading_scenario_agent(language="ko")
     # 2026-10-19: trigger renamed to the real US trigger name "Contrarian Value Pick" (us_trigger_batch.py).
-    assert "**Contrarian Value Pick 트리거 분석 포인트:**" in agent.instruction
-    assert "구조적(실적 악화, 경쟁력 상실)" in agent.instruction
+    assert "**Contrarian Value Pick 트리거 분석 포인트:**" not in agent.instruction
+    assert "구조적(실적 악화/경쟁력 상실)이면 미진입" in agent.instruction
 
 
 def test_us_contrarian_value_detail_present_en():
     agent = create_us_trading_scenario_agent(language="en")
-    assert "**Contrarian Value Pick trigger — analysis points:**" in agent.instruction
+    assert "**Contrarian Value Pick trigger — analysis points:**" not in agent.instruction
     assert "earnings deterioration / loss of competitive edge" in agent.instruction
 
 
+# 2026-11-11 prompt diet (audit X6 / M7): the portfolio guide duplicated the user message; the LLM-only
+# "7+ holdings -> buy_score >= 6" rule is dropped (user decision).
 def test_us_portfolio_analysis_guide_present_ko():
     agent = create_us_trading_scenario_agent(language="ko")
-    assert "## 포트폴리오 분석 가이드" in agent.instruction
+    assert "## 포트폴리오 분석 가이드" not in agent.instruction
     assert "us_stock_holdings 테이블" in agent.instruction
-    for item in ("현재 보유 종목 수", "산업군 분포", "투자 기간 분포", "포트폴리오 평균 수익률"):
-        assert item in agent.instruction
+    assert "보유 종목 7개 이상" not in agent.instruction
 
 
 def test_us_portfolio_analysis_guide_present_en():
     agent = create_us_trading_scenario_agent(language="en")
-    assert "## Portfolio Analysis Guide" in agent.instruction
+    assert "## Portfolio Analysis Guide" not in agent.instruction
     assert "us_stock_holdings" in agent.instruction
-    for item in ("Current number of holdings", "Sector distribution",
-                 "Investment-period distribution", "Portfolio average return"):
-        assert item in agent.instruction
+    assert "7+ holdings" not in agent.instruction
 
 
 def test_us_perplexity_detail_present_ko():
