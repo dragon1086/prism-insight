@@ -130,6 +130,9 @@ def test_sell_factory_matches_reviewed_volume_prompt():
     # 2026-10-30 reviewed (user decision after LLY was sold on yesterday's close against a line from today's peak): the
     # afternoon review's price counts as today's close (as the afternoon screening assumes) for Tier 2 trailing and
     # Tier 3, using the facts block's today bar; the morning review never sells on a trailing breach. KR/US x ko/en.
+    # 2026-11-09 reviewed (user decision, H-1109-tight-nonbull): Core-3 adds one line deferring to the per-stock trailing
+    # line when it differs from the defaults (a position bought in a sideways/bear regime may arm at +3%, x0.94/x0.96;
+    # cores/oneil_fallback.trail_params). Defaults and every other rule unchanged. KR/US x ko/en.
     source = SOURCE.read_text(encoding="utf-8")
     node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "create_sell_decision_agent")
-    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "59d653910e76ae04344081ff69b17213b379786ed8eab88eeeaaa528f570e5dc"
+    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "ecbfc0116e74cfeaa1295c240f67ad677e2ce171a389f78ebf5343e03c707105"

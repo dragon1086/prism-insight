@@ -1016,3 +1016,31 @@ def test_a_signal_without_a_buy_target_is_skipped_not_an_order_error(tmp_path, l
     _, results = _process(tmp_path, [_record()], {"ev1": item}, executor)
     assert [(r["reason"], r["status"]) for r in results] == [("no_target", "SKIPPED_NO_TARGET")]
     assert executor.calls == []
+
+
+# ---------------------------------------------------------------- H-1110 KR 50-day line gate
+def test_ma50_with_price_uses_the_decision_price_as_today_close():
+    bars = [{"close": 100.0}] * 49
+    assert LIVE.ma50_with_price(bars, 150.0) == 101.0
+    assert LIVE.ma50_with_price(bars[:48], 150.0) is None           # short history stays MISSING
+    assert LIVE.ma50_with_price(bars[:48] + [{"close": None}], 150.0) is None
+
+
+def test_ma50_gate_blocks_kr_below_the_line_before_the_daily_cap(tmp_path, monkeypatch, live_on):
+    monkeypatch.setenv("REENTRY_V3_MA50_GATE_MARKETS", "KR")
+    below = dict(_item(1), ma50=12500.0)                           # decision price 12150 < 12500
+    above = dict(_item(2), ma50=12000.0)
+    missing = _item(3)                                             # older inputs without the value
+    items = {i["event_id"]: i for i in (below, above, missing)}
+    to_submit, skipped = LIVE.plan("KR", DAY, [_record(1), _record(2), _record(3)], items, [], KR_1400)
+    assert [e["event_id"] for e in to_submit] == ["ev2", "ev3"]     # the blocked signal used no cap slot
+    assert [(e["event_id"], e["reason"]) for e in skipped] == [("ev1", "below_ma50")]
+    assert LIVE.REASON_STATUS["below_ma50"] == "SKIPPED_BELOW_MA50"
+
+
+def test_ma50_gate_off_for_us_and_by_default(monkeypatch):
+    item = dict(_item(1), ma50=12500.0)
+    monkeypatch.delenv("REENTRY_V3_MA50_GATE_MARKETS", raising=False)
+    assert not LIVE.below_ma50("KR", item)
+    monkeypatch.setenv("REENTRY_V3_MA50_GATE_MARKETS", "KR")
+    assert LIVE.below_ma50("KR", item) and not LIVE.below_ma50("US", item)

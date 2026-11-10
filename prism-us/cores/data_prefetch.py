@@ -1395,6 +1395,93 @@ def _compute_us_swing_state(
     }
 
 
+# --- K8b regime label (SHADOW only, H-1110-us-regime-v3) ----------------------
+# Research: tasks/research-20261110/us-regime-v3/k8b.py. Recorded next to the
+# production regime; never replaces it. US_REGIME_K8B_MODE=off|shadow (default off).
+_K8B_ORDER = ("strong_bear", "moderate_bear", "sideways", "moderate_bull", "strong_bull")
+_K8B_MIN_SESSIONS = 252
+
+
+def _k8b_index_label(closes: np.ndarray, ibd_uptrend: bool) -> str:
+    """K8b stage for the last close (caller guarantees >= 252 closes)."""
+    cur = closes[-1]
+    window = closes[-_K8B_MIN_SESSIONS:]
+    p = int(np.argmax(window))
+    peak = window[p]
+    if cur <= peak * 0.8 and cur < window[p:].min() * 1.2:
+        return "strong_bear"
+    ma50, ma200 = closes[-50:].mean(), closes[-200:].mean()
+    # Dow higher high: max close of last 25 sessions > max of the 25 before.
+    up = closes[-25:].max() > closes[-50:-25].max() and cur > ma50
+    if cur / peak - 1 <= -0.10 and not up:
+        return "moderate_bear"
+    if up and ma50 > ma200 and ibd_uptrend:
+        return "strong_bull"
+    return "moderate_bull" if up else "sideways"
+
+
+def _k8b_ibd_state(sp500_df, sp_close: str, nasdaq_df, nd_close: str) -> str:
+    """Combined US Market Pulse state, replayed like research labels.py (C1)."""
+    import sys as _sys
+    rp = _sys.modules.get("prism_root_regime_policy")
+    if rp is None:
+        path = Path(__file__).resolve().parents[2] / "cores" / "regime_policy.py"
+        spec = importlib.util.spec_from_file_location("prism_root_regime_policy", path)
+        rp = importlib.util.module_from_spec(spec)
+        _sys.modules[spec.name] = rp  # register before exec (frozen dataclass, py3.14)
+        spec.loader.exec_module(rp)
+    mp = rp._load_root_cores("market_pulse")
+
+    def bars(df, col):
+        vol = next((c for c in ("Volume", "volume") if c in df.columns), None)
+        return rp._df_to_bars(df.dropna(subset=[col]), col, vol, mp.DailyBar)
+
+    combined, _ = rp.combined_us_states(
+        bars(sp500_df, sp_close), bars(nasdaq_df, nd_close), mp.MarketPulse
+    )
+    return combined[-1]
+
+
+def _compute_us_regime_k8b_shadow(sp500_df, sp_close: str, nasdaq_df) -> dict:
+    """K8b shadow fields. Missing data stays None with a reason, never a stage."""
+    out = {
+        "regime_k8b_shadow": None,
+        "regime_k8b_shadow_sp": None,
+        "regime_k8b_shadow_ndx": None,
+        "k8b_ibd_state": None,
+        "k8b_shadow_missing_reason": None,
+    }
+    try:
+        if nasdaq_df is None or nasdaq_df.empty:
+            out["k8b_shadow_missing_reason"] = "nasdaq_missing"
+            return out
+        nasdaq_df = nasdaq_df.sort_index()
+        nd_close = next((c for c in ("Close", "close", "Adj Close") if c in nasdaq_df.columns), None)
+        if nd_close is None:
+            out["k8b_shadow_missing_reason"] = "nasdaq_close_missing"
+            return out
+        sp = sp500_df[sp_close].dropna().to_numpy(float)
+        nd = nasdaq_df[nd_close].dropna().to_numpy(float)
+        if len(sp) < _K8B_MIN_SESSIONS or len(nd) < _K8B_MIN_SESSIONS:
+            out["k8b_shadow_missing_reason"] = (
+                f"history_short: sp={len(sp)} ndx={len(nd)} < {_K8B_MIN_SESSIONS}"
+            )
+            return out
+        try:
+            out["k8b_ibd_state"] = _k8b_ibd_state(sp500_df, sp_close, nasdaq_df, nd_close)
+        except Exception as e:  # unknown IBD state caps the label at moderate_bull
+            out["k8b_shadow_missing_reason"] = f"ibd_state_unavailable: {e}"
+        ibd_up = out["k8b_ibd_state"] == "UPTREND"
+        sp_label, nd_label = _k8b_index_label(sp, ibd_up), _k8b_index_label(nd, ibd_up)
+        out["regime_k8b_shadow_sp"], out["regime_k8b_shadow_ndx"] = sp_label, nd_label
+        out["regime_k8b_shadow"] = min(sp_label, nd_label, key=_K8B_ORDER.index)
+    except Exception as e:
+        logger.warning(f"[regime] US K8b shadow failed: {e}")
+        out.update(regime_k8b_shadow=None, regime_k8b_shadow_sp=None,
+                   regime_k8b_shadow_ndx=None, k8b_shadow_missing_reason=f"error: {e}")
+    return out
+
+
 def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, vix_df: pd.DataFrame = None) -> dict:
     """Compute US market regime programmatically from index data.
 
@@ -1598,7 +1685,21 @@ def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, v
     index_summary["primary_trend_regime"] = regime
     index_summary["effective_entry_regime"] = regime
 
+    k8b = {}
+    k8b_mode = _os.environ.get("US_REGIME_K8B_MODE", "off").strip().lower()
+    if k8b_mode in ("shadow", "live"):
+        k8b = _compute_us_regime_k8b_shadow(sp500_df, close_col, nasdaq_df)
+        k8b["k8b_mode"] = k8b_mode
+        k8b["legacy_regime"] = regime
+        if k8b_mode == "live" and k8b.get("regime_k8b_shadow"):
+            regime = k8b["regime_k8b_shadow"]
+        k8b["k8b_live_applied"] = k8b_mode == "live" and regime == k8b.get("regime_k8b_shadow")
+        index_summary.update(k8b)  # index_summary rides into market.regime_snapshot
+        index_summary["primary_trend_regime"] = regime
+        index_summary["effective_entry_regime"] = regime
+
     return {
+        **k8b,
         "market_regime": regime,
         "primary_trend_regime": regime,
         "effective_entry_regime": regime,
