@@ -596,7 +596,7 @@ def _mark_pace(snapshot, active, context, now, marks):
         return dict(status='MISSING')
 
 
-HOLDING_REFERENCES = [('REACTION', '30m', 1800000, .5), ('TREND', '1h', 3600000, 1.)]
+HOLDING_REFERENCES = [('REACTION', '30m', 1800000, 1.), ('TREND', '1h', 3600000, 1.)]
 HOLDING_VIEW_MAX_BYTES = 1800
 
 
