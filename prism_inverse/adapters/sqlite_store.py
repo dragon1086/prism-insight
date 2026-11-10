@@ -49,18 +49,18 @@ CREATE TABLE IF NOT EXISTS inv_virtual_trades (
   exit_date TEXT, exit_open REAL, exit_reason TEXT, ret REAL, status TEXT, error TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS inv_live_positions (
   position_id TEXT PRIMARY KEY, account TEXT, market TEXT, trade_id TEXT, family TEXT, product TEXT, status TEXT,
-  qty INTEGER, entry_price REAL, opened TEXT, filled TEXT, order_no TEXT, exit_reason TEXT, exit_order_no TEXT,
-  closed TEXT, error TEXT, updated_at TEXT);
+  qty INTEGER, entry_price REAL, opened TEXT, filled TEXT, order_no TEXT, exit_reason TEXT, exit_ordered TEXT,
+  exit_order_no TEXT, closed TEXT, error TEXT, updated_at TEXT);
 """
 _TRADE_COLS = [f.name for f in fields(VirtualTrade)]
 _LIVE_COLS = [f.name for f in fields(LivePosition)]
-_LIVE_SELECT = ("SELECT position_id, account, market, trade_id, family, product, status, qty, entry_price, opened, filled, order_no, exit_reason, exit_order_no, closed, error "
+_LIVE_SELECT = ("SELECT position_id, account, market, trade_id, family, product, status, qty, entry_price, opened, filled, order_no, exit_reason, exit_ordered, exit_order_no, closed, error "
                 "FROM inv_live_positions WHERE market=? AND status NOT IN (?, ?) ORDER BY opened, position_id")
-_LIVE_UPSERT = ("INSERT OR REPLACE INTO inv_live_positions (position_id, account, market, trade_id, family, product, status, qty, entry_price, opened, filled, order_no, exit_reason, exit_order_no, closed, error, updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+_LIVE_UPSERT = ("INSERT OR REPLACE INTO inv_live_positions (position_id, account, market, trade_id, family, product, status, qty, entry_price, opened, filled, order_no, exit_reason, exit_ordered, exit_order_no, closed, error, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
 if _LIVE_SELECT.split("SELECT ", 1)[1].split(" FROM")[0].split(", ") != _LIVE_COLS:
     raise RuntimeError("inv_live_positions SQL columns differ from LivePosition fields")
-_LIVE_DATE_COLS = {"opened", "filled", "closed"}
+_LIVE_DATE_COLS = {"opened", "filled", "exit_ordered", "closed"}
 # Fixed SQL text (no string building at execute time); the check below keeps it in step with VirtualTrade.
 _TRADE_SELECT = ("SELECT trade_id, family, etf, underlying, signal_date, atr, status, entry_date, entry_open, entry_underlying, stop, target, exit_signal_date, exit_date, exit_open, exit_reason, ret, error "
                  "FROM inv_virtual_trades WHERE status != ? ORDER BY signal_date")

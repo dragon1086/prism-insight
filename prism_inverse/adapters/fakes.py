@@ -42,6 +42,36 @@ class FakeLongLane:
         return self._tickers
 
 
+class FakeBroker:
+    """Records orders; fills whatever ``holdings`` says. ``reject`` products answer every buy with a refusal."""
+
+    def __init__(self, name: str = "acct", slot_amount: float = 1_200_000, reject: frozenset = frozenset()):
+        self.name, self.slot_amount, self.reject = name, slot_amount, reject
+        self.orders: list[tuple] = []
+        self.holdings: dict[str, tuple[int, Optional[float]]] = {}
+        self.unavailable = False
+
+    def buy_next_open(self, product, amount, exchange, ref_price):
+        self.orders.append(("BUY", product, amount, exchange, ref_price))
+        if product in self.reject:
+            return _Order(False, None, "deposit rule: leveraged ETP not allowed")
+        return _Order(True, f"B{len(self.orders)}", "ok")
+
+    def sell_next_open(self, product, qty, exchange):
+        self.orders.append(("SELL", product, qty, exchange))
+        return _Order(True, f"S{len(self.orders)}", "ok")
+
+    def holding(self, product):
+        if self.unavailable:
+            raise Unavailable("balance query failed")
+        return self.holdings.get(product)
+
+
+class _Order:
+    def __init__(self, ok, order_no, message):
+        self.ok, self.order_no, self.message = ok, order_no, message
+
+
 class FakeEvents:
     def __init__(self):
         self.events: list[tuple[str, dict]] = []

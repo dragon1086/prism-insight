@@ -51,6 +51,7 @@ class LivePosition:
     filled: Optional[date] = None
     order_no: Optional[str] = None
     exit_reason: Optional[str] = None
+    exit_ordered: Optional[date] = None   # sell order day; a fill is only judged on a later day
     exit_order_no: Optional[str] = None
     closed: Optional[date] = None
     error: Optional[str] = None
