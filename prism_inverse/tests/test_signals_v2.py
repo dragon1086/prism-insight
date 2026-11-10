@@ -62,12 +62,69 @@ def test_kq_x10_fires_only_on_the_first_close_below_the_10_day_line():
     assert S.kq_x10({"c": [10.0, 9.0], "ma10": [None, 9.5]}) == []  # unknown line the day before
 
 
-def test_kq_x10_virtual_trade_times_out_after_10_sessions():
+def test_virtual_trade_times_out_after_10_sessions():
     cal = _days(15)
-    und = {d: _bar(d, 100, 100) for d in cal[1:]}
+    und = {d: _bar(d, 100, 99) for d in cal[1:]}                  # a little in favour: no stop, target, trail or no-progress exit
     etf = {d: _bar(d, 5000, 5000) for d in cal[1:]}
     t = advance(VirtualTrade("KQ_X10-x", "KQ_X10", "251340", "229200", D0, atr=1.0), cal, etf, und)
     assert (t.exit_reason, t.exit_signal_date, t.exit_date) == ("TIME", cal[10], cal[11])
+
+
+# ---------------------------------------------------------------- S17/S18 crash switch, failed rally, switched re-break
+
+
+def test_latch_and_crash_switch():
+    assert S.latch([False, True, False, False, True], [False, False, False, True, False]) == [False, True, True, False, True]
+    a = {"c": [100.0, 96.0, 97.0, 99.0, 101.0], "hi20": [100.0] * 5, "atr": [1.0] * 5, "ma20": [100.0] * 5}
+    assert S.crash_switch(a) == [False, True, True, True, False]  # on at 4 ATR under the high, off on the close above MA20
+    a["hi20"][1] = None
+    assert S.crash_switch(a) == [False, False, True, True, False]  # unknown high never switches on (day 2 does, at 3 ATR)
+
+
+def test_kq_fr_fires_on_the_first_close_under_ma5_after_a_two_atr_rally():
+    c = [100.0, 94.0, 93.0, 95.5, 96.0, 94.0, 93.0, 95.0, 96.0, 94.0]
+    a = {"c": c, "hi20": [100.0] * 10, "atr": [1.0] * 10, "ma20": [100.0] * 10,
+         "ma5": [99.0, 99.0, 99.0, 95.0, 95.0, 95.0, 95.0, 95.0, 95.0, 95.0]}
+    # low 93 at 2; 95.5 >= 93 + 2 rallies; 94 < ma5 after 96 >= ma5 at 4 -> fire 5; low resets to 94 and 96 at 8 rallies -> fire 9
+    assert S.kq_fr(a) == [5, 9]
+    a["ma20"] = [90.0] * 10                                        # switch off from day 1: nothing can fire
+    assert S.kq_fr(a) == []
+
+
+def test_switched_second_breaks_keeps_only_breaks_while_the_switch_is_on():
+    c = [100.0, 95.0, 105.0, 95.0, 105.0, 95.0]
+    a = {"c": c, "ma50": [100.0] * 6, "peak": [130.0] * 6, "atr": [10.0] * 6}
+    assert S.switched_second_breaks(a, [True] * 6) == [3, 5]
+    assert S.switched_second_breaks(a, [True, True, True, False, True, True]) == [5]
+
+
+def test_virtual_no_progress_trail_and_breakeven_exits():
+    cal = _days(12)
+    etf = {d: _bar(d, 5000, 5000) for d in cal}
+    und = {d: _bar(d, 100, 100) for d in cal}                     # flat: still at entry on session 3 -> no progress
+    t = advance(_trade(), cal, etf, und)
+    assert (t.exit_reason, t.exit_signal_date) == ("NOPROG", cal[3])
+    closes = [100, 99, 98.5, 98, 97.5, 100.2, 100]               # low 97.5 (2.5 ATR in favour) moved the stop to entry
+    und = {d: _bar(d, 100, c) for d, c in zip(cal[1:], closes)}
+    t = advance(_trade(), cal, etf, und)
+    assert (t.exit_reason, t.exit_signal_date) == ("STOP", cal[6])
+    closes[5:] = [99.9, 99.8]                                     # under the moved stop: still open
+    und = {d: _bar(d, 100, c) for d, c in zip(cal[1:], closes)}
+    assert advance(_trade(), cal, etf, und).status == OPEN
+    from prism_inverse.domain.virtual import Rules
+    und = {d: _bar(d, 100, c) for d, c in zip(cal[1:], [100, 99, 98, 99.1])}   # low 98 + 1 ATR trail = 99
+    t = advance(_trade(), cal, etf, und, Rules(stop_atr=5, target_atr=9, max_held=20, trail_atr=1))
+    assert (t.exit_reason, t.exit_signal_date) == ("TRAIL", cal[4])
+
+
+def test_synthetic_two_x_return_is_daily_reset_on_the_underlying():
+    from prism_inverse.domain.virtual import US_RULES
+    cal = _days(5)
+    und = {cal[1]: _bar(cal[1], 100, 98), cal[2]: _bar(cal[2], 98, 95), cal[3]: _bar(cal[3], 95, 96), cal[4]: _bar(cal[4], 95.5, 96)}
+    t = advance(VirtualTrade("US_2BR_XLK-x", "US_2BR_XLK", "XLK", "XLK", D0, atr=1.0), cal, und, und, US_RULES)
+    assert (t.status, t.exit_reason, t.exit_signal_date, t.exit_date, t.exit_open) == (CLOSED, "TARGET", cal[2], cal[3], 95)
+    assert t.ret == pytest.approx((1 - 2 * (98 / 100 - 1)) * (1 - 2 * (95 / 98 - 1)) * (1 - 2 * (95 / 95 - 1)) - 1 - 0.0015)
+    assert (t.stop, t.target) == (102, 97)
 
 
 # ---------------------------------------------------------------- sector panel
@@ -143,7 +200,7 @@ def test_virtual_stop_with_pending_next_open_fills():
     assert t.status == PENDING_ENTRY and t.error is None       # next open not known yet
     t = advance(t, cal[:2], etf, und)
     assert (t.status, t.entry_date, t.entry_open, t.entry_underlying) == (OPEN, cal[1], 5000, 100)
-    assert (t.stop, t.target) == (102, 97)
+    assert (t.stop, t.target) == (101.5, 97)
     t = advance(t, cal[:3], etf, und)
     assert (t.status, t.exit_signal_date, t.exit_reason) == (PENDING_EXIT, cal[2], "STOP")
     t = advance(t, cal, etf, und)
@@ -158,9 +215,9 @@ def test_virtual_target_and_time_exits():
     und[cal[3]] = _bar(cal[3], 100, 97)
     t = advance(_trade(), cal, etf, und)
     assert (t.status, t.exit_signal_date, t.exit_reason, t.exit_date) == (CLOSED, cal[3], "TARGET", cal[4])
-    und[cal[3]] = _bar(cal[3], 100, 100)
+    und = {d: _bar(d, 100, 99) for d in cal[1:]}
     t = advance(_trade(), cal, etf, und)
-    assert (t.exit_reason, t.exit_signal_date, t.exit_date) == ("TIME", cal[20], cal[21])  # 20th held session
+    assert (t.exit_reason, t.exit_signal_date, t.exit_date) == ("TIME", cal[10], cal[11])  # 10th held session
 
 
 def test_missing_bar_keeps_trade_pending_and_never_skips_a_day():
@@ -194,7 +251,7 @@ def _market(n_extra=0):
     n = fire + 1 + n_extra
     rng = random.Random(3)
     series = {"229200": bars(kq[:n]), "069500": bars([100.0] * n), "251340": bars([5000.0 + i for i in range(n)]),
-              "114800": bars([4000.0] * n)}
+              "114800": bars([4000.0] * n), "091160": bars([100.0] * n), "252670": bars([3000.0] * n)}
     for g in SECTORS:
         series[g] = bars(_walk(rng, n, -0.002))  # falling sectors: no leader, so no driver
     return series, series["229200"][fire].day
@@ -210,7 +267,7 @@ def test_recorder_fires_queues_and_fills_next_open(tmp_path):
     r = C.run_signals(fire_day, SECTORS, "069500", FakeMarketData(series), store, events, mode="observe")
     status, inputs, error = r.days["KQ_F1"]
     assert status == C.FIRED and error is None and inputs["virtual"] == f"QUEUED:KQ_F1-{fire_day}"
-    assert {f for f, (s, _, _) in r.days.items() if s == C.NOT_FIRED} == {"KQ_DRIVER", "K200_DRIVER", "KQ_X10"}
+    assert {f for f, (s, _, _) in r.days.items() if s == C.NOT_FIRED} == {"KQ_DRIVER", "K200_DRIVER", "KQ_X10", "KQ_FR", "K200_SEMI"}
     [t] = store.active_virtual_trades()
     assert t.status == PENDING_ENTRY and t.atr == inputs["atr"]
     again = C.run_signals(fire_day, SECTORS, "069500", FakeMarketData(series), store, events, mode="observe")
@@ -221,13 +278,51 @@ def test_recorder_fires_queues_and_fills_next_open(tmp_path):
     C.run_signals(nxt, SECTORS, "069500", FakeMarketData(series), store, events, mode="observe")
     [t] = [x for x in store.active_virtual_trades() if x.family == "KQ_F1"]  # KQ_X10 keeps its own trade
     assert (t.status, t.entry_date, t.entry_open) == (OPEN, nxt, series["251340"][-1].open)
-    assert t.entry_underlying == series["229200"][-1].open and t.stop == pytest.approx(t.entry_underlying + 2 * t.atr)
+    assert t.entry_underlying == series["229200"][-1].open and t.stop == pytest.approx(t.entry_underlying + 1.5 * t.atr)
     kinds = [e for e, _ in events.events]
-    assert kinds.count("inverse.signal_evaluated") == 12 and kinds.count("inverse.virtual_entry") == 1
+    assert kinds.count("inverse.signal_evaluated") == 18 and kinds.count("inverse.virtual_entry") == 1
     tids = {f["trace_id"] for e, f in events.events if f["attributes"].get("family") == "KQ_F1" or e != "inverse.signal_evaluated"}
     assert len(tids) == 2  # signal day and the trade share one trace; the next day's evaluation has its own
     rows = store.db.execute("SELECT family, status, inputs_json FROM inv_signal_days").fetchall()
-    assert len(rows) == 12 and json.loads(rows[0][2])["underlying"] == "229200"
+    assert len(rows) == 18 and json.loads(rows[0][2])["underlying"] == "229200"
+
+
+def _fr_closes():
+    """Crash to 150 (switch on), a 12-point rally that fails under the 5-day line, then the _us_closes tail."""
+    up = [100 + 100 * i / 149 for i in range(150)]
+    return up + [200 - 5 * (i + 1) for i in range(10)] + [150, 152, 154, 156, 158, 160, 162, 161, 157, 155, 158, 161, 163, 160, 156] \
+        + [150 + 2 * (i + 1) for i in range(20)] + [190 - 6 * (i + 1) for i in range(25)]
+
+
+def _us_closes():
+    """Peak 200, crash to 150 (switch on, first break), rally over the 50-day line (switch off), fast slide (switch on, re-break)."""
+    up = [100 + 100 * i / 149 for i in range(150)]
+    return up + [200 - 5 * (i + 1) for i in range(10)] + [150 + 2 * (i + 1) for i in range(20)] + [190 - 6 * (i + 1) for i in range(25)]
+
+
+def test_us_recorder_fires_per_sector_and_judges_synthetic_two_x(tmp_path):
+    kq = _us_closes()
+    a = S.ind(*_ohlc(bars(kq, spread=0.001)))
+    fire = next(i for i in S.switched_second_breaks(a, S.crash_switch(a)))
+    n = fire + 1
+    series = {"XLK": bars(kq[:n], spread=0.001), "XLE": bars([100.0] * n)}
+    day = series["XLK"][-1].day
+    store, events = SqliteStore(tmp_path / "lane.sqlite"), FakeEvents()
+    r = C.run_us_signals(day, {"XLK": "AMS", "XLE": "AMS"}, FakeMarketData(series), store, events, mode="observe")
+    assert r.days["US_2BR_XLK"][0] == C.FIRED and r.days["US_2BR_XLK"][1]["switch"] is True
+    assert r.days["US_2BR_XLE"][0] == C.NOT_FIRED and r.days["US_2BR_XLE"][1]["switch"] is False
+    [t] = store.active_virtual_trades()
+    assert (t.family, t.etf, t.underlying, t.status) == ("US_2BR_XLK", "XLK", "XLK", PENDING_ENTRY)
+    assert {f["market"] for _, f in events.events} == {"US"}
+    # the KR run leaves the US book alone (no bars for it, so no MISSING error is written)
+    kr = C.run_signals(day, SECTORS, "069500", FakeMarketData(_market()[0]), store, FakeEvents(), mode="observe")
+    assert kr.trades == [] and store.active_virtual_trades()[0].error is None
+    # one more session: fill at the open, judged as -2x on XLK itself
+    nxt = bars(kq[:n + 1], spread=0.001)[-1]
+    series["XLK"].append(nxt); series["XLE"].append(_bar(nxt.day, 100, 100))
+    C.run_us_signals(nxt.day, {"XLK": "AMS", "XLE": "AMS"}, FakeMarketData(series), store, FakeEvents(), mode="observe")
+    [t] = store.active_virtual_trades()
+    assert (t.status, t.entry_open, t.entry_underlying, t.stop) == (OPEN, nxt.open, nxt.open, pytest.approx(nxt.open + 2 * t.atr))
 
 
 def test_unavailable_or_stale_input_is_missing_not_not_fired():
@@ -260,14 +355,21 @@ def test_schema_v1_db_upgrades_in_place(tmp_path):
     assert store.db.execute("SELECT status, ret FROM inv_virtual_trades").fetchall() == [("CLOSED", 0.02)]
 
 
-def test_runner_off_by_default_and_kr_only(monkeypatch, capsys):
+def test_runner_off_by_default_and_never_live(monkeypatch, capsys):
     from tools import run_inverse_signals as R
 
     monkeypatch.delenv("INVERSE_SIGNALS_MODE", raising=False)
     assert R.main(["--market", "kr"]) == 0 and "off" in capsys.readouterr().out
+    assert R.main(["--market", "us"]) == 0 and "off" in capsys.readouterr().out
     monkeypatch.setenv("INVERSE_SIGNALS_MODE", "live")
-    assert R.main(["--market", "kr"]) == 2
-    assert R.main(["--market", "us", "--dry-run"]) == 0 and "unsupported market" in capsys.readouterr().out
+    assert R.main(["--market", "kr"]) == 2 and R.main(["--market", "us"]) == 2
+
+
+def test_us_sector_registry_matches_research_list():
+    from prism_inverse.adapters.registry import load_us_sectors
+
+    sectors = load_us_sectors()
+    assert len(sectors) == 28 and set(sectors.values()) == {"AMS", "NAS"} and sectors["SMH"] == "NAS"
 
 
 def test_kis_kr_data_spaces_calls():
@@ -318,12 +420,12 @@ def _nan(xs):
     return np.array([np.nan if x is None else x for x in xs], float)
 
 
-def _choppy(rng, n, start=100.0):
+def _choppy(rng, n, start=100.0, vol=0.015):
     out, x, drift = [], start, 0.0
     for i in range(n):
         if i % 60 == 0:
             drift = rng.choice((0.006, -0.006, 0.002, -0.003))
-        x *= 1 + drift + rng.gauss(0, 0.015)
+        x *= 1 + drift + rng.gauss(0, vol)
         out.append(x)
     return out
 
@@ -346,8 +448,41 @@ def test_parity_with_research_on_synthetic_panel():
     ra = dict(c=x.Close.to_numpy(), atr=tr.rolling(20).mean().to_numpy(), ma50=x.Close.rolling(50).mean().to_numpy(),
               peak=x.Close.rolling(120, min_periods=60).max().to_numpy())
     ra["ma10"] = x.Close.rolling(10).mean().to_numpy()
-    for k in ("atr", "ma10", "ma50", "peak"):
+    ra["ma5"], ra["ma20"] = (x.Close.rolling(q).mean().to_numpy() for q in (5, 20))
+    ra["hi20"] = x.Close.rolling(20).max().to_numpy()
+    for k in ("atr", "ma5", "ma10", "ma20", "ma50", "hi20", "peak"):
         np.testing.assert_allclose(_nan(mine[k]), ra[k], rtol=1e-12, equal_nan=True)
+    # s17_wait.events: 'A3' switch, '2Br' and 'FR_2_5' entries
+    cl, at = x.Close, pd.Series(ra["atr"])
+    on = ((cl.rolling(20).max() - cl) >= 3 * at).fillna(False).to_numpy()
+    sw, s = np.zeros(n, bool), False
+    for i in range(n):
+        s = (not (cl[i] > ra["ma20"][i])) if s else bool(on[i]); sw[i] = s
+    assert S.crash_switch(mine) == sw.tolist() and sw.any()
+    rc, rm, rp, rt = ra["c"], ra["ma50"], ra["peak"], ra["atr"]
+    ref_2br = [i for i in _research_second_breaks(rc, rm, rp, lambda i: rc[i] < rm[i] and np.isfinite(rp[i]) and rc[i] <= rp[i] - 3 * rt[i],
+                                                   rearm=True) if sw[i]]
+    assert [i for i in S.switched_second_breaks(mine, sw.tolist()) if i < n - 1] == ref_2br and ref_2br
+    fired = 0
+    for closes in (_choppy(random.Random(5), n), _fr_closes()):       # random noise rarely rallies 2 ATR inside a switch
+        o, h, l, c = _ohlc(bars(closes, spread=0.001))
+        n = len(c)
+        mine = S.ind(o, h, l, c)
+        rc, rt, ma5, m20 = (_nan(mine[k]) for k in ("c", "atr", "ma5", "ma20"))
+        hi = pd.Series(rc).rolling(20).max().to_numpy()
+        sw, s = np.zeros(n, bool), False
+        for i in range(n):
+            s = (not (rc[i] > m20[i])) if s else bool((hi[i] - rc[i]) >= 3 * rt[i]); sw[i] = s
+        ref_fr, L, rallied = [], None, False
+        for i in range(n):
+            if not sw[i]: L, rallied = None, False; continue
+            if L is None or rc[i] < L: L, rallied = rc[i], False
+            elif np.isfinite(rt[i]) and rc[i] >= L + 2 * rt[i]: rallied = True
+            if rallied and rc[i] < ma5[i] and rc[i - 1] >= ma5[i - 1]: ref_fr.append(i); rallied = False; L = rc[i]
+        assert S.kq_fr(mine) == ref_fr
+        fired += len(ref_fr)
+    assert fired
+    n, mine = len(kq_c), S.ind(*_ohlc(kq))                           # back to the panel series
     below = x.Close.to_numpy() < ra["ma10"]
     ref_x10 = [i for i in np.where(below & ~np.r_[False, below[:-1]])[0] if i >= 10]  # s11 research rule after warm-up
     assert S.kq_x10(mine) == ref_x10 and ref_x10

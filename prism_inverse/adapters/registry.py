@@ -18,6 +18,11 @@ def load_kr_sectors(path: Path = KR_SECTORS_PATH) -> tuple[list[str], str]:
     return list(data["sectors"]), data["benchmark"]
 
 
+def load_us_sectors(path: Path = DEFAULT_PATH.with_name("us_sectors.json")) -> dict[str, str]:
+    """ticker -> KIS exchange code for the US sector signal recorder."""
+    return dict(json.loads(Path(path).read_text(encoding="utf-8"))["sectors"])
+
+
 def load_registry(path: Path = DEFAULT_PATH) -> list[EtfSpec]:
     rows = json.loads(Path(path).read_text(encoding="utf-8"))["etfs"]
     specs = []
