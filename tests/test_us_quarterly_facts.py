@@ -30,10 +30,38 @@ AES = statement({  # 2026-10 values (USD); EPS missing for 2025-12 as yfinance r
 }, ["2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30", "2025-06-30", "2025-03-31"])
 
 
-def test_rows_are_oldest_first_and_keep_eps_only_quarters():
+def test_rows_are_oldest_first_and_cut_to_five_reported_quarters():
     rows = quarterly_rows(AES)
     assert [r["period"] for r in rows] == ["2025-06-30", "2025-09-30", "2025-12-31", "2026-03-31", "2026-06-30"]
     assert rows[-1]["operating_income"] == 630e6 and rows[2]["diluted_eps"] is None
+    assert all(r["reported"] for r in rows)
+
+
+# yfinance on 2026-11-04 returned AMZN's 2026-06-30 column with only EPS and share counts; the table then showed N/A
+# cells and "확인 불가", and the BUY agent rejected a profitable company as F1 unverifiable (AMZN 11/05).
+AMZN = statement({
+    "Total Revenue": [201944e6, float("nan"), 181519e6, 213386e6, 180169e6, 167702e6],
+    "Operating Income": [28076e6, float("nan"), 23852e6, 24977e6, 17422e6, 19171e6],
+    "Net Income Common Stockholders": [20685e6, float("nan"), 30255e6, 21192e6, 21187e6, 18164e6],
+    "Diluted EPS": [1.89, 5.75, 2.78, 1.95, 1.95, 1.68],
+}, ["2026-09-30", "2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30", "2025-06-30"])
+
+
+def test_eps_only_quarter_is_unreported_not_na():
+    rows = quarterly_rows(AMZN)
+    assert [(r["period"], r["reported"]) for r in rows] == [
+        ("2025-06-30", True), ("2025-09-30", True), ("2025-12-31", True), ("2026-03-31", True),
+        ("2026-06-30", False), ("2026-09-30", True)]
+    text = render_us_quarterly_facts(rows, "ko")
+    assert "| 2026-06-30 |" not in text and "N/A" not in text and "확인 불가" not in text
+    assert "2026-06-30 분기는 자료 공급원의 분기 손익계산서에 매출·영업이익·순이익이 없어 표에서 제외" in text
+    assert "2026-03-31 23,852.0 (흑자) / 2026-09-30 28,076.0 (흑자) → 두 분기 모두 영업흑자" in text
+    assert "최근 분기 2026-09-30 vs 전년 동기 2025-09-30" in text
+    en = render_us_quarterly_facts(rows, "en")
+    assert "not reported by the source" in en and "operating profit in both quarters" in en
+    from prism_core.us_quarterly_facts import quarterly_eps_summary
+    summary = quarterly_eps_summary(rows, asof="2026-11-04T00:00:00+00:00")
+    assert "2026-09-30" in str(summary) and "5.75" not in str(summary)
 
 
 def test_korean_table_states_latest_two_quarters_operating_profit_and_yoy():
