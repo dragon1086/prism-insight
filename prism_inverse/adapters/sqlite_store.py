@@ -14,10 +14,12 @@ from pathlib import Path
 from dataclasses import asdict, fields
 from typing import Optional
 
+from prism_inverse.domain.lane import LivePosition
+from prism_inverse.domain.lane import CLOSED as LIVE_CLOSED, REJECTED as LIVE_REJECTED
 from prism_inverse.domain.models import Decision, EtfSnapshot, EtfSpec, LeaderState, Position
 from prism_inverse.domain.virtual import CLOSED, VirtualTrade
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3  # v3 (S5): inv_live_positions, the real positions that mirror virtual trades
 DEFAULT_PATH = Path(__file__).resolve().parents[2] / "runtime" / "inverse_lane.sqlite"
 
 _SCHEMA = """
@@ -45,8 +47,20 @@ CREATE TABLE IF NOT EXISTS inv_virtual_trades (
   trade_id TEXT PRIMARY KEY, family TEXT, etf TEXT, underlying TEXT, signal_date TEXT, entry_date TEXT,
   entry_open REAL, entry_underlying REAL, atr REAL, stop REAL, target REAL, exit_signal_date TEXT,
   exit_date TEXT, exit_open REAL, exit_reason TEXT, ret REAL, status TEXT, error TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS inv_live_positions (
+  position_id TEXT PRIMARY KEY, account TEXT, market TEXT, trade_id TEXT, family TEXT, product TEXT, status TEXT,
+  qty INTEGER, entry_price REAL, opened TEXT, filled TEXT, order_no TEXT, exit_reason TEXT, exit_ordered TEXT,
+  exit_order_no TEXT, closed TEXT, error TEXT, updated_at TEXT);
 """
 _TRADE_COLS = [f.name for f in fields(VirtualTrade)]
+_LIVE_COLS = [f.name for f in fields(LivePosition)]
+_LIVE_SELECT = ("SELECT position_id, account, market, trade_id, family, product, status, qty, entry_price, opened, filled, order_no, exit_reason, exit_ordered, exit_order_no, closed, error "
+                "FROM inv_live_positions WHERE market=? AND status NOT IN (?, ?) ORDER BY opened, position_id")
+_LIVE_UPSERT = ("INSERT OR REPLACE INTO inv_live_positions (position_id, account, market, trade_id, family, product, status, qty, entry_price, opened, filled, order_no, exit_reason, exit_ordered, exit_order_no, closed, error, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+if _LIVE_SELECT.split("SELECT ", 1)[1].split(" FROM")[0].split(", ") != _LIVE_COLS:
+    raise RuntimeError("inv_live_positions SQL columns differ from LivePosition fields")
+_LIVE_DATE_COLS = {"opened", "filled", "exit_ordered", "closed"}
 # Fixed SQL text (no string building at execute time); the check below keeps it in step with VirtualTrade.
 _TRADE_SELECT = ("SELECT trade_id, family, etf, underlying, signal_date, atr, status, entry_date, entry_open, entry_underlying, stop, target, exit_signal_date, exit_date, exit_open, exit_reason, ret, error "
                  "FROM inv_virtual_trades WHERE status != ? ORDER BY signal_date")
@@ -142,6 +156,15 @@ class SqliteStore:
 
     def add_virtual_trade(self, t: VirtualTrade) -> bool:
         return self.save_virtual_trade(t, _TRADE_INSERT)
+
+    def live_positions(self, market: str) -> list[LivePosition]:
+        rows = self.db.execute(_LIVE_SELECT, (market, LIVE_CLOSED, LIVE_REJECTED)).fetchall()
+        return [LivePosition(**{k: date.fromisoformat(v) if k in _LIVE_DATE_COLS and v else v
+                                for k, v in zip(_LIVE_COLS, r)}) for r in rows]
+
+    def save_live_position(self, p: LivePosition) -> None:
+        row = {k: v.isoformat() if isinstance(v, date) else v for k, v in asdict(p).items()}
+        self._exec(_LIVE_UPSERT, (*(row[k] for k in _LIVE_COLS), _now()))
 
 
 def _now() -> str:

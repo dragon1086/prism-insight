@@ -63,6 +63,28 @@ class SignalStore(Protocol):
         """Insert a new trade; False (and no change) when the trade_id already exists."""
 
 
+class OrderResult(Protocol):
+    ok: bool
+    order_no: Optional[str]
+    message: str
+
+
+class Broker(Protocol):
+    """One account. Every order is a next-open (reserved) order placed after the close."""
+    name: str
+    slot_amount: float   # the account's configured one-slot amount (KRW for KR, USD for US)
+
+    def buy_next_open(self, product: str, amount: float, exchange: Optional[str], ref_price: Optional[float]) -> OrderResult: ...
+    def sell_next_open(self, product: str, qty: int, exchange: Optional[str]) -> OrderResult: ...
+    def holding(self, product: str) -> Optional[tuple[int, Optional[float]]]:
+        """(qty, average price) of the product in this account, None when not held. Raises Unavailable."""
+
+
+class LiveStore(Protocol):
+    def live_positions(self, market: str) -> list: ...
+    def save_live_position(self, pos) -> None: ...
+
+
 class EventSink(Protocol):
     def emit(self, event_type: str, **fields) -> None:
         """Must never raise: observability cannot block a decision."""
