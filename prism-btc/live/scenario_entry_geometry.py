@@ -57,13 +57,14 @@ def _plan_math(view,context):
             minimum=loss/(a+loss) if a>=0 else None
             rounded=lambda v,mode:float(v.quantize(Decimal('.000001'),rounding=mode))if v is not None else None
             result.append([ni,fi,rounded(maximum,ROUND_FLOOR),rounded(minimum,ROUND_CEILING),
-                _entry_bound(far,float((a+b)/2),context),_entry_bound(far,float(b),context),None])
+                _entry_bound(far,float((a+b)/2),context),_entry_bound(far,float(b),context),
+                rounded((1+k)*loss/(b+loss),ROUND_CEILING)if b>=k*loss else None])
         except (KeyError,TypeError,ValueError,ArithmeticError,OverflowError):
             continue
     by_side={side:[r for r in result if view['rows'][r[0]if r[0]is not None else r[1]][0]==side]for side in ['LONG','SHORT']}
     paired=[by_side[side][i]for i in range(max((len(v)for v in by_side.values()),default=0))for side in ['LONG','SHORT']if i<len(by_side[side])]
     return dict(minimum_ratio=context['entry_economics']['minimum_ratio'],columns=['near_row','far_row','near_tp_fraction_max','tp1_stop_breakeven_min_fraction','worst_entry_half_split','worst_entry_far_only','far_tp_fraction_min_with_runner'],rows=paired,
-        meaning='Continuous 1BTC TP fractions, fixed SL/targets, not orders or observed levels. near=null means one target+SL runner. LONG bounds ceilings; SHORT floors. Null=unavailable/infeasible. TP1 protection is optional, not a gate. Actual sizing/ticks/buffers/expiry/fills need validation.')
+        meaning='Continuous 1BTC TP fractions, fixed SL/targets, not orders or observed levels. near=null means one target. Far+runner assumes near=0. LONG bounds ceilings; SHORT floors. Null=unavailable/infeasible. TP1 protection is optional, not a gate. Actual sizing/ticks/buffers/expiry/fills need validation.')
 
 
 def build(snapshot, context, structure):

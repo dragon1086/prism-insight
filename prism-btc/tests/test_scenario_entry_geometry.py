@@ -185,6 +185,9 @@ def test_plan_math_solves_entry_bounds_against_host_economics_in_both_directions
             assert result(half_entry-direction*.01,.5)['ratio']<1.2
         if far_entry is not None:
             assert result(far_entry+direction*.01,0.)['ratio']>1.2
+        if runner_fraction is not None:
+            gain=runner_fraction*far['reward_per_btc']-(1-runner_fraction)*far['loss_per_btc']
+            assert gain/far['loss_per_btc']>=1.2-1e-9
         if maximum is not None:
             gain=maximum*near['reward_per_btc']+(1-maximum)*far['reward_per_btc']
             assert gain/far['loss_per_btc']>=1.2-1e-9
