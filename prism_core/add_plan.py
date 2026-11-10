@@ -454,7 +454,9 @@ def _average_volume(daily):
 
 
 def _volume_pace(evidence, bars, phase, daily):
-    if phase == "CLOSE":
+    # A provisional close (judged before the close, b3_ae_worker.CLOSE_LEAD) has only part of the day's
+    # volume, so it is paced like intraday against the same elapsed time.
+    if phase == "CLOSE" and not (evidence.get("today_daily") or {}).get("provisional"):
         average, today = _average_volume(daily), evidence.get("today_daily")
         return None if average is None or not today else Decimal(str(today["volume"])) / average
     prior = evidence.get("prior_cumulative") or {}
@@ -668,9 +670,9 @@ def evaluate_plan(plan, state, evidence, *, now):
 
     ``state``: allocation, legs (micro_split legs), initial_entry, initial_stop,
     current_stop, fee_rate, entry_session (date), blocked (reason or None).
-    ``evidence``: phase INTRADAY|CLOSE, session_date, open_at, price (quote, or the
-    official close at CLOSE), today_bars (5m OHLCV), daily (completed sessions
-    before today), today_daily (CLOSE only), prior_cumulative (matched volume).
+    ``evidence``: phase INTRADAY|CLOSE, session_date, open_at, price (quote; at CLOSE the
+    close, or the latest price for a provisional close just before it), today_bars (5m OHLCV), daily (completed sessions
+    before today), today_daily (CLOSE only; ``provisional`` before the close), prior_cumulative (matched volume).
     """
     current = _time(now)
 

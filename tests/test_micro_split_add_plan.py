@@ -791,3 +791,40 @@ def test_chase_limit_is_raised_to_the_floor_and_capped():
     assert P.evaluate_plan(plan, _state(), _evidence(closes=(10450, 10525), price=10525), now=_now())["action"] == "ADD"
     assert P.evaluate_plan(plan, _state(), _evidence(closes=(10450, 10570), price=10570),
                            now=_now())["reasons"]["breakout_1"] == "CHASE_LIMIT"
+
+
+# ------------------------------------------- close confirmation before the close (2026-11-10)
+
+def test_provisional_close_paces_volume_against_the_same_elapsed_time():
+    """Judged at 15:20 the day's volume is partial, so the pace uses the matched cumulative volume."""
+    from prism_core.b3_ae_worker import provisional_daily
+    plan, _ = _plan(_scenario(target=0.70, price_above=10800), _scenario("b2", target=0.70, price_above=12000))
+    base = _evidence(phase="CLOSE", price=10850, closes=(10820, 10850))   # 12 bars x volume 10 = 120 so far
+    today = provisional_daily(base["today_bars"], 10850, SESSION, base["open_at"])
+    assert today["close"] == 10850 and today["volume"] == 120 and today["provisional"]
+    paced = dict(base, today_daily=today,
+                 prior_cumulative={"end_at": base["today_bars"][-1]["end_at"], "samples": [75] * 20})
+    decision = P.evaluate_plan(plan, _added_today(), paced, now=_now(420))
+    assert decision["action"] == "ADD" and decision["acceleration"]["volume_pace"] == 1.6
+    # Without the matched curve the partial volume is never read as a full day's multiple.
+    unpaced = P.evaluate_plan(plan, _added_today(), dict(base, today_daily=today), now=_now(420))
+    assert unpaced["acceleration"]["reason"] == "VOLUME_PACE_UNAVAILABLE"
+
+
+def test_provisional_close_needs_the_opening_bar_and_a_price():
+    from prism_core.b3_ae_worker import provisional_daily
+    bars = _evidence()["today_bars"]
+    assert provisional_daily(bars[1:], 10460, SESSION, _iso(OPEN)) is None
+    assert provisional_daily(bars, None, SESSION, _iso(OPEN)) is None
+    assert provisional_daily(bars, 10460, SESSION, _iso(OPEN))["open"] == 10000
+
+
+@pytest.mark.parametrize("market, close_at, inside, outside", [
+    ("KR", datetime(2026, 10, 5, 15, 30, tzinfo=SEOUL), [(15, 20, 0), (15, 27, 59)], [(15, 19, 59), (15, 28, 0), (16, 0, 0)]),
+    ("US", datetime(2026, 10, 5, 16, 0, tzinfo=NY), [(15, 45, 0), (15, 57, 59)], [(15, 44, 59), (15, 58, 0), (16, 15, 0)]),
+])
+def test_close_confirmation_window_is_before_the_close(market, close_at, inside, outside):
+    from prism_core.b3_ae_worker import in_close_window
+    at = lambda h, m, s: close_at.replace(hour=h, minute=m, second=s)  # noqa: E731
+    assert all(in_close_window(market, at(*t), close_at) for t in inside)
+    assert not any(in_close_window(market, at(*t), close_at) for t in outside)

@@ -4,7 +4,7 @@ Each tick: reconcile campaigns whose legacy row is gone (close with the recorded
 strategy exit), then, within two minutes after a completed 5-minute boundary,
 assemble current evidence and let the v3-ae policy book a virtual (SHADOW) add.
 For micro-split LIVE campaigns it also evaluates the holding's scenario-based
-``add_plan`` (5-minute closes in session, daily-close confirmations once after the
+``add_plan`` (5-minute closes in session, daily-close confirmations once just before the
 close) and hands a qualified add to the injected LIVE executor; the fixed ladder
 never orders. Any missing input leaves the campaign waiting.
 """
@@ -42,6 +42,32 @@ _LOOP_SQL = ("SELECT submitted_ts FROM loop_a_inflight_orders WHERE ticker=? AND
 _BREACH_SQL = "SELECT last_breach_date FROM loop_b_position_state WHERE ticker=? AND market=?"
 DB_LOCAL = ZoneInfo("Asia/Seoul")  # legacy rows store server-local (KST) timestamps for both markets
 EVALUATION_WINDOW = timedelta(seconds=90)  # live-capture clock allows 120 s incl. fetch
+# Daily-close confirmations (user decision 2026-11-10): judged once shortly before the close with the
+# latest price as today's close (the afternoon price counts as the close) and ordered in session, so KR
+# buys at market into the 15:20-15:30 closing auction and subscribers follow the same day. Before, they
+# waited for the final daily bar (KR 16:00, US 16:15 NY) and became next-day reserved orders.
+CLOSE_LEAD = {"KR": timedelta(minutes=10), "US": timedelta(minutes=15)}
+CLOSE_CUTOFF = timedelta(minutes=2)  # leave time for the order to reach the session
+
+
+def in_close_window(market, moment, close_at):
+    """True from CLOSE_LEAD before the session close until CLOSE_CUTOFF before it."""
+    return close_at - CLOSE_LEAD[market] <= moment < close_at - CLOSE_CUTOFF
+
+
+def provisional_daily(bars, price, trade_date, open_at):
+    """Today's daily bar before the close: completed 5m bars plus the latest price as the close.
+
+    None unless the first bar starts at the open (an unknown open stays unknown). ``volume`` is
+    only so far; the add plan judges its pace against the same elapsed time (``prior_cumulative``).
+    """
+    if not bars or _time(bars[0]["start_at"]) != _time(open_at) or not price:
+        return None
+    return dict(date=trade_date, open=bars[0]["open"], high=max(max(b["high"] for b in bars), price),
+                low=min(min(b["low"] for b in bars), price), close=price,
+                volume=sum(b["volume"] for b in bars), provisional=True)
+
+
 # Conditions held but a code safety rail blocked the add (recorded once per plan/session/scenario).
 RAIL_BLOCKS = frozenset({"RISK_LIMIT", "CHASE_LIMIT", "PYRAMID_STEP", "STEP_TOO_LARGE"})
 
@@ -397,14 +423,12 @@ def kr_providers():
         return K.quote(source, plan["symbol"])
 
     def close_ready(moment):
-        """Today's session date once its daily bar is final and reserved orders are accepted (16:00-23:30)."""
+        """Today's session date in the close-confirmation window (15:20-15:28 KST, see CLOSE_LEAD)."""
         try:
             today = calendar(moment)["sessions"][-1]
         except ValueError:
             return None
-        local = moment.astimezone(K.SEOUL)
-        ready = _time(today["close_at"]) + timedelta(minutes=30) <= moment and local.hour * 60 + local.minute < 1410
-        return today["trade_date"] if ready else None
+        return today["trade_date"] if in_close_window("KR", moment, _time(today["close_at"])) else None
 
     def add_inputs(symbol, now, phase, plan, pace_above=None):
         """Add-plan evidence: completed KIS daily bars, today's 5m bars, quote, matched volume pace.
@@ -424,12 +448,6 @@ def kr_providers():
         out = dict(status="OK", phase=phase, session_date=today["trade_date"], open_at=today["open_at"],
                    close_at=today["close_at"],
                    daily=[b for b in daily[("add_daily", symbol)] if b["date"] < today["trade_date"]])
-        if phase == "CLOSE":
-            bars = [b for b in K.daily_bars(source, symbol, today["trade_date"], today["trade_date"])
-                    if b["date"] == today["trade_date"]]
-            if not bars:
-                return dict(status="MISSING", reason="CLOSE_BAR_UNAVAILABLE")
-            return dict(out, today_daily=bars[-1], price=bars[-1]["close"])
         opened, cutoff = _time(today["open_at"]), min(moment, _time(today["close_at"]))
         day = moment.astimezone(K.SEOUL).date()
         rows = K.five_minute_bars(K.minute_rows(source, symbol, moment), day, corporate_action_today=False)
@@ -440,13 +458,18 @@ def kr_providers():
             and _time(b["provider_timestamp"]) + timedelta(minutes=5) <= cutoff]
         out["price"] = K.quote(source, symbol)["price"]
         accelerating = pace_above is not None and float(out["price"] or 0) >= pace_above
-        if out["today_bars"] and (add_plan.needs_intraday_pace(plan) or accelerating):
+        if out["today_bars"] and (phase == "CLOSE" or add_plan.needs_intraday_pace(plan) or accelerating):
             if ("add_curves", symbol) not in daily:
                 daily[("add_curves", symbol)] = K.prior_minute_volumes(source, symbol, sessions[:-1])
             end = out["today_bars"][-1]["end_at"]
             elapsed = (_time(end) - opened).total_seconds() / 60
             out["prior_cumulative"] = dict(end_at=end, samples=[
                 sum(v for m, v in curve if m < elapsed) for curve in daily[("add_curves", symbol)]])
+        if phase == "CLOSE":
+            out["today_daily"] = provisional_daily(out["today_bars"], out["price"], today["trade_date"],
+                                                   today["open_at"])
+            if out["today_daily"] is None:
+                return dict(status="MISSING", reason="CLOSE_BAR_UNAVAILABLE")
         return out
 
     return dict(session_open=session_open, intraday=intraday, quote=quote, market=market,
@@ -504,12 +527,11 @@ def us_providers():
         return local.isoformat(), row["market_open"].to_pydatetime(), row["market_close"].to_pydatetime()
 
     def close_ready(moment):
-        """Today's session date once its daily bar is final (16:15-20:00 New York)."""
+        """Today's session date in the close-confirmation window (15:45-15:58 New York, see CLOSE_LEAD)."""
         today = schedule(moment)
         if today is None:
             return None
-        ready = today[2] + timedelta(minutes=15) <= moment and moment.astimezone(NY).hour < 20
-        return today[0] if ready else None
+        return today[0] if in_close_window("US", moment, today[2]) else None
 
     def _rows(symbol, interval, start, end):
         response = fetch(dict(market="US", ticker=symbol, interval=interval, start=start.isoformat(),
@@ -551,12 +573,6 @@ def us_providers():
         prior = plan_cache[key]
         out = dict(status="OK", phase=phase, session_date=trade_date, open_at=opened.isoformat(),
                    close_at=closed.isoformat(), daily=prior["daily"])
-        if phase == "CLOSE":
-            bars = [_bar(r, date=trade_date) for r in _rows(symbol, "1d", opened - timedelta(days=1), moment)
-                    if _time(r["provider_timestamp"]).astimezone(NY).date().isoformat() == trade_date]
-            if not bars:
-                return dict(status="MISSING", reason="CLOSE_BAR_UNAVAILABLE")
-            return dict(out, today_daily=bars[-1], price=bars[-1]["close"])
         step, cutoff = timedelta(minutes=5), min(moment, closed)
         out["today_bars"] = [_bar(r, start_at=r["provider_timestamp"],
                                   end_at=(_time(r["provider_timestamp"]) + step).isoformat())
@@ -568,7 +584,8 @@ def us_providers():
             return dict(status="MISSING", reason="QUOTE_UNAVAILABLE")
         out["price"] = price
         accelerating = pace_above is not None and float(price) >= pace_above
-        if out["today_bars"] and (add_plan.needs_intraday_pace(plan) or accelerating) and len(prior["daily"]) >= 20:
+        if (out["today_bars"] and (phase == "CLOSE" or add_plan.needs_intraday_pace(plan) or accelerating)
+                and len(prior["daily"]) >= 20):
             if prior["minutes"] is None:
                 first = datetime.combine(date.fromisoformat(prior["daily"][-20]["date"]), opened.astimezone(NY).timetz())
                 prior["minutes"] = _rows(symbol, "5m", first.astimezone(timezone.utc), opened)
@@ -584,6 +601,10 @@ def us_providers():
                     samples[day] += row["volume"]
             out["prior_cumulative"] = dict(end_at=out["today_bars"][-1]["end_at"], samples=[
                 samples[b["date"]] for b in prior["daily"][-20:] if b["date"] in samples])
+        if phase == "CLOSE":
+            out["today_daily"] = provisional_daily(out["today_bars"], price, trade_date, opened.isoformat())
+            if out["today_daily"] is None:
+                return dict(status="MISSING", reason="CLOSE_BAR_UNAVAILABLE")
         return out
 
     return dict(session_open=lambda moment: regular_session(moment.isoformat()), intraday=intraday,
