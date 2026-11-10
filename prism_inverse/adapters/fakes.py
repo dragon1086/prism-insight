@@ -100,3 +100,9 @@ class MemoryStore:
 
     def add_virtual_trade(self, t):
         return self.virtual.setdefault(t.trade_id, t) is t
+
+    def live_positions(self, market):
+        return [p for p in getattr(self, "live", {}).values() if p.market == market and p.status not in ("CLOSED", "REJECTED")]
+
+    def save_live_position(self, p):
+        self.__dict__.setdefault("live", {})[p.position_id] = p
