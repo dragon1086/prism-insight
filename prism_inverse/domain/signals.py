@@ -1,8 +1,9 @@
-"""KR inverse-index signals (S4 KQ_F1, S6 driver sector, S11 KQ_X10), ported from the research engine.
+"""Inverse signals (S4 KQ_F1, S6 driver sector, S11 KQ_X10, S17/S18 crash switch), ported from the research engine.
 
-Source: tasks/research-20261109/inverse-s3/s4_track.py (``ind``, ``second_breaks``) and
-s6_driver.py (``group_frame``, KR driver selection). Daily series aligned to one calendar,
-oldest first; ``None`` is pandas' NaN (unknown), so every comparison with it is False.
+Source: tasks/research-20261109/inverse-s3/s4_track.py (``ind``, ``second_breaks``),
+s6_driver.py (``group_frame``, KR driver selection) and s17_wait.py (``latch``, ``events``).
+Daily series aligned to one calendar, oldest first; ``None`` is pandas' NaN (unknown), so every
+comparison with it is False.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from typing import Callable, Optional, Sequence
 
 Series = Sequence[Optional[float]]
 
-FAMILIES = ("KQ_F1", "KQ_DRIVER", "K200_DRIVER", "KQ_X10")
+FAMILIES = ("KQ_F1", "KQ_DRIVER", "K200_DRIVER", "KQ_X10", "KQ_FR", "K200_SEMI")
 WINDOW, EPISODE = 100, 120          # re-break must come within 100 sessions; episode ends after 120
 LEADER_GAIN, LEADER_RANK, LEADER_LOOKBACK = 0.15, 2 / 3, 120
 CORR_WINDOW, CORR_MIN = 60, 48
@@ -46,7 +47,8 @@ def ind(o: Series, h: Series, l: Series, c: Series) -> dict:
         if i and c[i - 1] is not None:
             parts += [abs(h[i] - c[i - 1]), abs(l[i] - c[i - 1])]
         tr.append(max(parts))
-    return {"o": list(o), "c": list(c), "atr": rolling_mean(tr, 20), "ma10": rolling_mean(c, 10), "ma50": rolling_mean(c, 50),
+    return {"o": list(o), "c": list(c), "atr": rolling_mean(tr, 20), "ma5": rolling_mean(c, 5), "ma10": rolling_mean(c, 10),
+            "ma20": rolling_mean(c, 20), "ma50": rolling_mean(c, 50), "hi20": rolling_max(c, 20, 20),
             "peak": rolling_max(c, 120, 60)}
 
 
@@ -78,11 +80,55 @@ def second_breaks(c: Series, ma: Series, pk: Series, ok_break: Callable[[int], b
     return out
 
 
-def kq_f1(a: dict) -> list[int]:
-    """KOSDAQ index second break: break = below MA50 and at least 3 ATR under the 120-day peak."""
+def _crash_break(a: dict) -> Callable[[int], bool]:
+    """Break = below MA50 and at least 3 ATR under the 120-day peak (S4)."""
     c, ma, pk, at = a["c"], a["ma50"], a["peak"], a["atr"]
-    return second_breaks(c, ma, pk, lambda i: _lt(c[i], ma[i]) and pk[i] is not None and at[i] is not None
-                         and c[i] <= pk[i] - 3 * at[i])
+    return lambda i: _lt(c[i], ma[i]) and pk[i] is not None and at[i] is not None and c[i] <= pk[i] - 3 * at[i]
+
+
+def kq_f1(a: dict) -> list[int]:
+    """KOSDAQ index second break (no switch, no re-arm)."""
+    return second_breaks(a["c"], a["ma50"], a["peak"], _crash_break(a))
+
+
+def latch(on: Sequence[bool], off: Sequence[bool]) -> list[bool]:
+    """s17_wait.latch: once ``on``, stays on until ``off``."""
+    out, s = [], False
+    for o, f in zip(on, off):
+        s = (not f) if s else bool(o)
+        out.append(s)
+    return out
+
+
+def crash_switch(a: dict) -> list[bool]:
+    """S17 'A3' switch: on when the close is 3 ATR or more under the 20-day high, off on a close above MA20."""
+    c, hi, at, m20 = a["c"], a["hi20"], a["atr"], a["ma20"]
+    on = [None not in (c[i], hi[i], at[i]) and hi[i] - c[i] >= 3 * at[i] for i in range(len(c))]
+    return latch(on, [_lt(m20[i], c[i]) for i in range(len(c))])
+
+
+def switched_second_breaks(a: dict, sw: Sequence[bool]) -> list[int]:
+    """S17 '2Br': re-armed second breaks (S4 rule) that happen while the switch is on."""
+    return [i for i in second_breaks(a["c"], a["ma50"], a["peak"], _crash_break(a), rearm=True) if sw[i]]
+
+
+def kq_fr(a: dict, rally_atr: float = 2.0) -> list[int]:
+    """S17 'FR_2_5' on the KOSDAQ: inside the crash switch, after a rally of 2 ATR off the switch low,
+    the first close back under the 5-day line. The low resets on each fire."""
+    c, at, ma, sw = a["c"], a["atr"], a["ma5"], crash_switch(a)
+    out, low, rallied = [], None, False
+    for i in range(len(c)):
+        if not sw[i] or c[i] is None:
+            low, rallied = None, False
+            continue
+        if low is None or c[i] < low:
+            low, rallied = c[i], False
+        elif at[i] is not None and c[i] >= low + rally_atr * at[i]:
+            rallied = True
+        if rallied and _lt(c[i], ma[i]) and i and c[i - 1] is not None and ma[i - 1] is not None and c[i - 1] >= ma[i - 1]:
+            out.append(i)
+            rallied, low = False, c[i]
+    return out
 
 
 def kq_x10(a: dict) -> list[int]:
