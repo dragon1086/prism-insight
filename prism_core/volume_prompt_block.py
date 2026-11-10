@@ -76,5 +76,6 @@ def volume_interpretation_block(language: str, role: str, indent: str = "") -> s
 
 
 def install_volume_block(instruction: str, language: str, role: str, indent: str = "") -> str:
-    assert instruction.count(PLACEHOLDER) == 1, "volume block placeholder must appear exactly once"
+    if instruction.count(PLACEHOLDER) != 1:   # a prompt without exactly one slot is a build error, not a runtime case
+        raise ValueError("volume block placeholder must appear exactly once")
     return instruction.replace(PLACEHOLDER, volume_interpretation_block(language, role, indent))
