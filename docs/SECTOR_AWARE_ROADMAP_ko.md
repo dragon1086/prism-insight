@@ -182,3 +182,5 @@ db-server에서 종목당 한 번 실제 수집하며 DART 원응답을 모두 �
    20세션 손익비를 일반 진입과 비교. 임계값(5%·200%)은 사전 등록 값이며 결과를 본 뒤 조정하지 않는다.
 6. **결론**: 구현·테스트(`tests/test_us_financial_f_gate.py`). 기본값 켜짐(사용자 지시로 적용), 끄기 = `.env`에 `PRISM_US_FINANCIAL_F_GATE=off`.
    배포 확인과 첫 금융사 BUY 판단 관측은 따로 기록한다.
+   - 배포: 2026-11-11 03:30 KST db-server `3a072015`(PR #1350, ff-only), 서버 테스트 8건 통과, 스모크 BMO=(bank, F1 통과, F2 통과)·AAPL=블록 없음. `.env`에 off 스위치 없음(켜짐).
+     첫 정기 실행(금융사 후보의 BUY 판단에 `[SECTOR_BUY][US]` 로그·`_sector_profile` 스탬프) 미관측.
