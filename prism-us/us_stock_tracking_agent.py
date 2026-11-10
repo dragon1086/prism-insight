@@ -2538,7 +2538,7 @@ class USStockTrackingAgent:
             # (KR carries it in kr_live_regime_block).
             from prism_core.sell_regime_context import trailing_band_line
             live_regime_block += "\n" + trailing_band_line(
-                getattr(self, "_live_regime_cache", None), "en", _oneil_entry_regime(stock_data.get("scenario"))).rstrip()
+                getattr(self, "_live_regime_cache", None), "en", _oneil_entry_regime(stock_data.get("scenario"), "US")).rstrip()
 
             prompt_message = f"""
 Please make a sell/hold decision for the following US stock holding.

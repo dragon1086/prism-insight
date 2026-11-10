@@ -177,7 +177,7 @@ def prompt_block(*, market, language, stock_data, highest_price, threshold_pct, 
         t = trailing_state(buy_price=stock_data.get("buy_price"), highest_price=highest_price,
                            stop_loss=stock_data.get("stop_loss"), current_price=stock_data.get("current_price"),
                            regime=regime, threshold_pct=threshold_pct, last_close=last_close,
-                           entry_regime=entry_regime_of(stock_data.get("scenario")))
+                           entry_regime=entry_regime_of(stock_data.get("scenario"), market))
         if t is None:
             lines.append("- 트레일링: 확인 불가" if ko else "- Trailing stop: unknown")
         elif not t["activated"]:

@@ -1805,7 +1805,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             live_regime = getattr(self, "_live_regime_cache", None)
             live_regime_block = kr_live_regime_block(
                 live_regime, getattr(self, "_live_market_context", None), self.language,
-                entry_regime_of(stock_data.get("scenario")))
+                entry_regime_of(stock_data.get("scenario"), "KR"))
             logger.info(f"[sell] {ticker} AI sell regime input: {live_regime or 'unavailable'}")
 
             # Prepare prompt based on language (Korean text preserved for language == "ko" blocks)
@@ -2071,7 +2071,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
         try:
             from cores.oneil_fallback import evaluate_oneil_sell, from_stock_data
             should_sell, reason = evaluate_oneil_sell(
-                from_stock_data(stock_data, live_regime=getattr(self, "_live_regime_cache", None)))
+                from_stock_data(stock_data, live_regime=getattr(self, "_live_regime_cache", None), market="KR"))
             logger.info(f"{stock_data.get('ticker', '')} O'Neil rule-based sell (AI fallback): "
                         f"{'Sell' if should_sell else 'Hold'} | {reason}")
             return should_sell, reason

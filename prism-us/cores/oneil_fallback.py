@@ -69,12 +69,22 @@ class SellInputs:
     entry_regime: str = ""              # 매수 시점 시스템 국면(scenario.market_condition) — 트레일링 폭 선택용
 
 
+def tight_nonbull_markets() -> set:
+    """스위치 값: 시장 목록("KR", "KR,US") 또는 true(둘 다). 2026-11-10 사용자 결정으로 KR만 켬."""
+    raw = os.getenv("SELL_TIGHT_NONBULL_ENABLED", "").strip()
+    if raw.lower() in {"1", "true", "yes", "on"}:
+        return {"KR", "US"}
+    return {m.strip().upper() for m in raw.split(",")} & {"KR", "US"}
+
+
 def tight_nonbull_enabled() -> bool:
-    return os.getenv("SELL_TIGHT_NONBULL_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    return bool(tight_nonbull_markets())
 
 
-def entry_regime_of(scenario) -> str:
-    """매수 시점 국면 토큰(scenario JSON 문자열 또는 dict), 없으면 ''."""
+def entry_regime_of(scenario, market=None) -> str:
+    """매수 시점 국면 토큰(scenario JSON 문자열 또는 dict). 그 시장에 스위치가 꺼져 있거나(market 없음 포함) 값이 없으면 ''."""
+    if str(market or "").upper() not in tight_nonbull_markets():
+        return ""
     if isinstance(scenario, str):
         try:
             scenario = json.loads(scenario)
@@ -189,7 +199,7 @@ def evaluate_tier1_hardstop(inp: SellInputs) -> Tuple[bool, str]:
 
 # ── 호출측 어댑터 (stock_data dict → SellInputs) ────────────────
 def from_stock_data(stock_data: dict, live_regime: Optional[str] = None,
-                    ma_50: Optional[float] = None) -> SellInputs:
+                    ma_50: Optional[float] = None, market: Optional[str] = None) -> SellInputs:
     """KR/US 의 stock_data dict 에서 SellInputs 추출.
     scenario 는 JSON 문자열 또는 dict 둘 다 허용.
 
@@ -228,7 +238,7 @@ def from_stock_data(stock_data: dict, live_regime: Optional[str] = None,
         primary_support=_f(key_levels.get("primary_support", 0)),
         regime_is_live=is_live,
         ma_50=_f(ma_50),
-        entry_regime=entry_regime_of(scen),
+        entry_regime=entry_regime_of(scen, market),
     )
 
 

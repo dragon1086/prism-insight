@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from cores.oneil_fallback import SellInputs, evaluate_oneil_sell, from_stock_data, trail_params
+from cores.oneil_fallback import SellInputs, entry_regime_of, evaluate_oneil_sell, from_stock_data, trail_params
 from prism_core import sell_facts as F
 from prism_core.sell_regime_context import kr_live_regime_block, trailing_band_line
 
@@ -47,8 +47,16 @@ def test_exit_rule_sells_nonbull_entry_only(on):
 def test_from_stock_data_reads_buy_time_regime(on):
     inp = from_stock_data({"buy_price": 100, "current_price": 99.3,
                            "scenario": json.dumps({"market_condition": "strong_bear", "highest_price": 104})},
-                          live_regime="sideways")
+                          live_regime="sideways", market="KR")
     assert inp.entry_regime == "strong_bear" and evaluate_oneil_sell(inp)[0]
+
+
+@pytest.mark.parametrize("flag,market,expected", [("KR", "KR", "sideways"), ("KR", "US", ""), ("kr,us", "US", "sideways"),
+                                                  ("true", "US", "sideways"), ("", "KR", ""), ("KR", None, "")])
+def test_switch_is_a_market_list(monkeypatch, flag, market, expected):
+    # 2026-11-10 user decision: KR only; a market the switch does not list keeps the current rule
+    monkeypatch.setenv("SELL_TIGHT_NONBULL_ENABLED", flag)
+    assert entry_regime_of({"market_condition": "sideways"}, market) == expected
 
 
 def test_prompt_line_and_facts_match_exit_rule(on):
@@ -57,5 +65,5 @@ def test_prompt_line_and_facts_match_exit_rule(on):
     assert "× 0.94" in trailing_band_line("strong_bull", "en", "moderate_bear")
     assert "× 0.95" in kr_live_regime_block("sideways", None, "ko", "moderate_bull")
     t = F.trailing_state(buy_price=100, highest_price=104, stop_loss=93, current_price=101, regime="sideways",
-                         threshold_pct=1.5, last_close=101, entry_regime="sideways")
+                         threshold_pct=1.5, last_close=101, entry_regime=entry_regime_of('{"market_condition": "sideways"}', "KR"))
     assert t["activated"] and t["drop"] == 0.96 and t["activation_pct"] == 3.0

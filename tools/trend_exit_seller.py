@@ -497,8 +497,14 @@ def _compute_live_regime(market: str) -> Optional[str]:
             from cores.data_prefetch import _compute_us_regime
             from prism_core.us_market_data import daily_history
             end = _now().date()
-            sp = daily_history("^GSPC", end - timedelta(days=365), end)
-            computed = _compute_us_regime(sp)
+            # 400 days + NASDAQ: the K8b regime needs ~252 sessions of both indexes, same as the batch.
+            sp = daily_history("^GSPC", end - timedelta(days=400), end)
+            try:
+                ndx = daily_history("^IXIC", end - timedelta(days=400), end)
+            except Exception as e:
+                logger.warning("[US] NASDAQ history for live regime failed: %s", e)
+                ndx = None
+            computed = _compute_us_regime(sp, ndx)
         else:
             from cores import market_data as stock
             from cores.data_prefetch import _compute_kr_regime
@@ -662,7 +668,7 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                                 market_condition=str(regime["value"] or ""),
                                 regime_is_live=bool(regime["value"]),
                                 ma_50=ma_50,
-                                entry_regime=entry_regime_of(h.get("scenario")),
+                                entry_regime=entry_regime_of(h.get("scenario"), market),
                             )
                             should_sell, reason = evaluate_oneil_sell(inp)
                             if should_sell and reason.startswith("TIER1.5_MA50") and on_entry_session(market, h):
