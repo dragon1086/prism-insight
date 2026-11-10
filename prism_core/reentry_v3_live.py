@@ -58,7 +58,8 @@ APPROVE = {"진입", "enter", "entry"}
 SUBPROCESS_TIMEOUT = 600
 # Status of an outcome reason (the rest is BOUGHT / NOT_BOUGHT / ERROR).
 REASON_STATUS = {"deadline": "SKIPPED_DEADLINE", "no_micro_plan": "SKIPPED_NO_MICRO_PLAN",
-                 "outside_band": "SKIPPED_BAND", "entry_lock_busy": "SKIPPED_LOCK", "no_target": "SKIPPED_NO_TARGET"}
+                 "outside_band": "SKIPPED_BAND", "entry_lock_busy": "SKIPPED_LOCK", "no_target": "SKIPPED_NO_TARGET",
+                 "below_ma50": "SKIPPED_BELOW_MA50"}
 
 
 def _flag(name, default):
@@ -72,6 +73,28 @@ def live_markets():
 def live_enabled(market):
     """Kill switch: REENTRY_V3_LIVE_ENABLED=true (default false) and the market in REENTRY_V3_LIVE_MARKETS."""
     return _flag("REENTRY_V3_LIVE_ENABLED", "false") and str(market).upper() in live_markets()
+
+
+def ma50_gate_markets():
+    """H-1110-reentry-trend-gate LIVE (2026-11-10, user decision, KR only): no re-entry below the 50-day line."""
+    return {m.strip().upper() for m in os.getenv("REENTRY_V3_MA50_GATE_MARKETS", "").split(",") if m.strip()}
+
+
+def ma50_with_price(bars, price):
+    """50-day average with the decision price as today's close (the research gate), or None (MISSING)."""
+    closes = [b.get("close") for b in (bars or [])[-49:]]
+    if len(closes) < 49 or not price or not all(isinstance(c, (int, float)) and c > 0 for c in closes):
+        return None
+    return round((sum(closes) + price) / 50, 6)
+
+
+def below_ma50(market, item):
+    """True when the market's gate is on and the frozen decision price is under its 50-day line.
+
+    An item without the value (older inputs, short history) is not blocked: MISSING is not a failure."""
+    ma50 = item.get("ma50")
+    return (str(market).upper() in ma50_gate_markets() and isinstance(ma50, (int, float))
+            and item.get("decision_price") is not None and item["decision_price"] < ma50)
 
 
 def deterministic_enabled():
@@ -371,6 +394,8 @@ def plan(market, decision_day, records, items, journal, now):
             # A shakeout reclaim fires without a BUY target (target_rule "unsupported"); the BUY scenario
             # contract and the final R/R gate need one, so it never buys (SPOT 2026-10-30 raised instead).
             reason = "no_target"
+        elif below_ma50(market, item):
+            reason = "below_ma50"        # before the daily cap so a blocked signal never uses a slot
         elif len(to_submit) >= remaining:
             reason = "daily_cap"
         elif not in_safe_window(market, now):
