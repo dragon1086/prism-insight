@@ -242,6 +242,10 @@ _BULL = {"parabolic", "strong_bull", "moderate_bull"}
 _BEAR = {"moderate_bear", "strong_bear"}
 REGIME_SHADOW_ARMS = {"bull1_else0": {"bull": "1", "sideways": "0", "bear": "0"},
                       "bull1_else05": {"bull": "1", "sideways": "0.5", "bear": "0.5"}}
+# 2026-11-10 (H-1110, US): arms that split bull by K8b bull age (early = first 20 sessions). The early-bull
+# block itself is LIVE in reentry_v3_live.plan; these record what the later bull / bear sizes would be.
+K8B_AGE_ARMS = {"early0_late1_else05": {"early": "0", "late": "1", "sideways": "0.5", "bear": "0.5"},
+                "early0_late05_bear1": {"early": "0", "late": "0.5", "sideways": "0.5", "bear": "1"}}
 
 
 def regime_size_shadow(base, scenario, reentry_size=None):
@@ -261,10 +265,14 @@ def regime_size_shadow(base, scenario, reentry_size=None):
     out = {"id": REGIME_SHADOW_ID, "regime": regime, "bucket": bucket or "MISSING", "base": str(base),
            "applied_factor": (reentry_size or {}).get("factor", "1"),
            "applied": (reentry_size or {}).get("sized", str(base))}
+    sized = lambda f: str((base * Decimal(f)).quantize(Decimal("0.0001"), rounding=ROUND_DOWN).normalize())  # noqa: E731
     if bucket:
-        out["arms"] = {name: {"factor": f[bucket],
-                              "sized": str((base * Decimal(f[bucket])).quantize(Decimal("0.0001"), rounding=ROUND_DOWN).normalize())}
-                       for name, f in REGIME_SHADOW_ARMS.items()}
+        out["arms"] = {name: {"factor": f[bucket], "sized": sized(f[bucket])} for name, f in REGIME_SHADOW_ARMS.items()}
+        age = (meta.get("k8b") or {}).get("bull_age")
+        cell = bucket if bucket != "bull" else None if not isinstance(age, int) else "early" if age <= 20 else "late"
+        out["k8b_bull_age"] = age
+        if cell:                             # bull without a K8b age stays MISSING for the age arms
+            out["arms"].update({name: {"factor": f[cell], "sized": sized(f[cell])} for name, f in K8B_AGE_ARMS.items()})
     return out
 
 

@@ -355,6 +355,7 @@ def freeze_inputs(market, watch, decision, frames, completed, reports_root, arch
                      "shakeout_window_sessions": C.SHAKEOUT_WINDOW, "windows": decision["windows"]},
         "rule_ids": ledger["rule_ids"], "allocation": alloc, "atr14": round(atr, 6) if atr else None,
         "ma50": LIVE.ma50_with_price(bars, decision["decision_price"]),
+        "k8b": frames.get("__k8b"),
         "gates": {"G1_step16": C.g1_blocked(set(watch.get("stop_dates") or [])
                                             | {d for c in ledger["campaigns"].values()
                                                for d in c["virtual_stop_dates"]}

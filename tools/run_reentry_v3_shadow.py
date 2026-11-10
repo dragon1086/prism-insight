@@ -74,7 +74,37 @@ def collect(market, tickers, completed, cache_dir=KR_CACHE_DIR):
         return out
     out = collectors.collect_us(tickers, completed)
     out["__regime_rows"] = next(iter((out.get("__benchmark_rows") or {}).values()), [])   # SPY (S&P 500 proxy)
+    out["__k8b"] = us_k8b(completed)
     return out
+
+
+def us_k8b(completed):
+    """Prior-session K8b label and bull age from ^GSPC/^IXIC (yfinance 2y) + the combined Market Pulse replay.
+
+    Bars after ``completed`` (a forming intraday bar) are dropped. Any failure returns None (MISSING)."""
+    try:
+        from cores import regime_policy as rp
+        from prism_core.us_regime_k8b import bull_age
+        mp = rp._load_root_cores("market_pulse")
+        sp = [b for b in rp._fetch_us_bars(mp.DailyBar) if b.date <= completed]
+        nd = [b for b in rp._fetch_us_nasdaq_bars(mp.DailyBar) if b.date <= completed]
+        states, _ = rp.combined_us_states(sp, nd, mp.MarketPulse)
+        nd_by_date, latest, aligned = {b.date: b.close for b in nd}, None, []
+        nd_dates = sorted(nd_by_date)
+        j = 0
+        for b in sp:                     # NASDAQ close on or before each S&P session (research k8b.py ffill)
+            while j < len(nd_dates) and nd_dates[j] <= b.date:
+                latest = nd_by_date[nd_dates[j]]
+                j += 1
+            aligned.append(latest)
+        if None in aligned:
+            raise ValueError("nasdaq history starts after the S&P history")
+        out = bull_age([b.close for b in sp], aligned, states)
+        out["asof"] = sp[-1].date if sp else None
+        return out
+    except Exception as error:  # noqa: BLE001 - the regime stays explicitly missing
+        log.info("US K8b label unavailable for the re-entry gate (%s: %s)", type(error).__name__, str(error)[:120])
+        return None
 
 
 def decision_day(market, now=None):
