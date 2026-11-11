@@ -19,6 +19,23 @@ MAX_BYTES = 1_048_576
 MIN_RETRY_SECONDS = 5
 
 
+def usage_counts(value):
+    """Four bounded counters only; never persist attribution or account data."""
+    if not isinstance(value, dict):
+        return None
+    def count(v):
+        return v if type(v) is int and 0 <= v < 2**53 else None
+    details = value.get('input_tokens_details')
+    output_details = value.get('output_tokens_details')
+    result = dict(input_tokens=count(value.get('input_tokens')), output_tokens=count(value.get('output_tokens')),
+        cached_input_tokens=count(value.get('cached_input_tokens', details.get('cached_tokens') if isinstance(details,dict) else None)),
+        reasoning_tokens=count(value.get('reasoning_tokens', output_details.get('reasoning_tokens') if isinstance(output_details,dict) else None)))
+    for subset,total in [('cached_input_tokens','input_tokens'),('reasoning_tokens','output_tokens')]:
+        if result[subset] is not None and (result[total] is None or result[subset] > result[total]):
+            result[subset] = None
+    return result if any(v is not None for v in result.values()) else None
+
+
 class ScenarioOAuthTimeout(ValueError):
     """Safe timeout category for sealed review evidence."""
 
@@ -165,7 +182,8 @@ def generate_scenario(*, system_prompt, user_prompt, model, reasoning_effort,
                 texts.append(block["text"])
         if not texts:
             raise ValueError("model_text_missing")
-        return SimpleNamespace(text="".join(texts))
+        usage = usage_counts(result.get('usage'))
+        return SimpleNamespace(text="".join(texts), **({'usage':usage} if usage is not None else {}))
     except HTTPError as exc:
         reason = safe_failure_reason('http_' + str(exc.code))
         raise ValueError('scenario_oauth_failed:' + (reason or 'connection')) from None

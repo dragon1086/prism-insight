@@ -84,7 +84,11 @@ def record_review(review, snapshot, context, contract, *, generate, record, cloc
             if not isinstance(response.text, str):
                 raise ValueError("review_tape_nontext_response")
             operation["text"] = response.text
-            return SimpleNamespace(text=response.text)
+            from live.scenario_oauth import usage_counts
+            usage = usage_counts(getattr(response,'usage',None))
+            if usage is not None:
+                operation['usage'] = usage
+            return SimpleNamespace(text=response.text, **({'usage':usage} if usage is not None else {}))
         except Exception as exc:
             operation["error"] = _error(exc)
             raise
@@ -168,7 +172,8 @@ def replay_review(envelope, review, snapshot, context, contract, *, bindings=Non
             mismatches.append("calls")
             raise TapeMismatch("review_tape_call_limit")
         try:
-            return SimpleNamespace(text=take("generate", "request", request)["text"])
+            operation = take("generate", "request", request)
+            return SimpleNamespace(text=operation['text'], **({'usage':deepcopy(operation['usage'])} if 'usage' in operation else {}))
         finally:
             if operation_complete is not None:
                 operation_complete("generate_return")
