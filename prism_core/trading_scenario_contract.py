@@ -190,7 +190,7 @@ def buy_scenario_prompt_contract(language: str = 'ko') -> str:
   target and dependent risk fields, not a synthetic price. Preserve all existing entry gates.
 - Map each BUY conclusion to report section, supplied evidence ID (if any) and source asof.
   Separate actual results from forecasts/guidance; ownership and volume proxies are not net buys.
-- sell_triggers must use the supplied policy template. Do not add highest-close 7%
+- sell_triggers: leave the placeholder; the system installs the SELL policy template. Do not add highest-close 7%
   trailing, 5-day MA full exits, or convert a report's partial-exit idea into a rule.
   BUY prose cannot override the existing live SELL policy or adjustment rules.
 '''
@@ -216,7 +216,7 @@ def buy_scenario_prompt_contract(language: str = 'ko') -> str:
   종속 손익비 필드는 null로 두세요. 기존 진입 기준은 모두 유지합니다.
 - BUY 판단마다 보고서 절·제공된 근거 ID(있을 때)·자료 기준일을 연결하세요.
   실제 실적과 전망·가이던스를 구분하고 기관 보유량·거래량 대용치를 순매수로 읽지 마세요.
-- sell_triggers는 제공된 정책 템플릿을 따르세요. 최고 종가 대비 7% trailing이나 5일선
+- sell_triggers는 자리표시자만 두세요. 시스템이 매도 정책 템플릿을 설치합니다. 최고 종가 대비 7% trailing이나 5일선
   단독 전량매도 규칙을 추가하거나 보고서의 부분축소 아이디어를 전량매도 규칙으로
   바꾸지 마세요. 매수 자유서술은 기존 매도·손절 조정 규율보다 우선하지 않습니다.
 '''
