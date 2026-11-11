@@ -517,6 +517,22 @@ def test_model_error_requires_safe_reason_code():
         render_notice(dict(kind='MODEL_ERROR',timestamp=1000,reason_code='raw exception'))
 
 
+@pytest.mark.parametrize('detail,text', [('http_429','요청 제한'),('http_401','인증'),
+    ('http_502','일시적인 오류'),('timeout','제한을 초과'),('incomplete','완성된 응답'),
+    ('connection','연결하지 못'),('invalid_response','응답 형식')])
+def test_transport_notice_explains_safe_failure_without_inventing_exchange_problem(detail,text):
+    result=render_notice(dict(kind='MODEL_ERROR',timestamp=1000,reason_code='llm_call_failed',
+        transport_reason=detail,details='secret upstream text'))
+    assert text in result and 'LLM 판단 오류' in result and 'secret'not in result
+    assert '주문 변경은 적용하지 않습니다' in result and '별도 확인 대상' in result
+
+
+def test_untrusted_transport_detail_is_never_rendered():
+    result=render_notice(dict(kind='MODEL_ERROR',timestamp=1000,reason_code='llm_call_failed',
+        transport_reason='http_429 secret'))
+    assert 'secret'not in result and '요청 제한'not in result
+
+
 def test_input_failure_notice_does_not_invent_an_llm_response():
     out = render_notice(dict(kind='MODEL_ERROR',timestamp=1000,
                             reason_code='llm_input_preparation_failed',failure_code='input_size',

@@ -207,12 +207,15 @@ def notify_runtime_status(conn,result,*,clock=time.time):
         model_validated=result.get("status")=="wait" or (
             result.get("status")=="intent_pending" and result.get("reason")=="awaiting_exact_evidence")
         if model_failed and (not model_row or not model_row[2]):
+            from live.scenario_oauth import safe_failure_reason
             identity="model-error-"+uuid.uuid4().hex
             stamp=clock()
             enqueue(conn,identity,{"kind":"MODEL_ERROR","timestamp":stamp,
                 "reason_code":"calculated_review_failed" if review_failed else result["reason"],
                 "failure_code": "input_size" if result.get("reason") == "llm_input_preparation_failed"
-                    and result.get("failure_code") == "input_size" else None})
+                    and result.get("failure_code") == "input_size" else None,
+                "transport_reason": safe_failure_reason(result.get('failure_detail'))
+                    if result.get('reason') == 'llm_call_failed' else None})
             conn.execute("INSERT OR REPLACE INTO llm_scenario_model_incident VALUES(1,?,?,1)",(identity,stamp))
         elif model_validated and model_row and model_row[2]:
             enqueue(conn,model_row[0]+"-resolved",{"kind":"MODEL_RECOVERED","timestamp":clock(),

@@ -937,6 +937,10 @@ class ScenarioRuntime:
                             and all(op.get("kind") == "clock" for op in review_envelope.get("operations", []))):
                         # Preserve the failed tape; no request/generator was reached.
                         raise ScenarioModelError("input_size")
+                    from live.scenario_review_guard import failed_model_call
+                    model_failure = failed_model_call(failed)
+                    if model_failure is not None:
+                        raise ValueError(model_failure)
                     raise ValueError("review_tape_incomplete")
                 from live.scenario_review_storage import review_text
                 from utils.btc_review_event_references import read_event
@@ -1329,6 +1333,13 @@ class ScenarioRuntime:
                 review_detail = _fresh_safety_detail(review_code)
                 if isinstance(exc, TapeMismatch):
                     outcome["failure_code"] = "review_tape_failure"
+                elif review_code == 'review_model_call_failed' or review_code.startswith('review_model_call_failed:'):
+                    from live.scenario_oauth import safe_failure_reason
+                    outcome['reason'] = 'llm_call_failed'
+                    outcome['failure_code'] = 'model_transport_failure'
+                    detail = safe_failure_reason(review_code.partition(':')[2])
+                    if detail is not None:
+                        outcome['failure_detail'] = detail
                 elif review_detail is not None:
                     outcome["failure_code"] = "fresh_safety_rejection"
                     outcome["failure_detail"] = review_detail

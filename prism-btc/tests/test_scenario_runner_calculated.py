@@ -64,7 +64,7 @@ def test_protection_has_no_calculated_or_legacy_model(tmp_path, monkeypatch):
     assert result["status"] == "protection_checked" and result["model_called"] is False
 
 
-@pytest.mark.parametrize("failure", [False, True])
+@pytest.mark.parametrize("failure", [False, True, 'http_429', 'incomplete'])
 def test_operational_row_factory_records_real_review_without_legacy_fallback(tmp_path, monkeypatch, failure):
     from live import scenario_oauth
     now = 1800000000.
@@ -84,6 +84,8 @@ def test_operational_row_factory_records_real_review_without_legacy_fallback(tmp
         assert request["retry_transport"] is False
         assert 0 < request["timeout"] <= 75
         assert conn.execute("SELECT COUNT(*) FROM llm_scenario_review_events").fetchone()[0] > 0
+        if isinstance(failure,str):
+            raise ValueError('scenario_oauth_failed:'+failure)
         if failure:
             raise TimeoutError("fixture transport failure")
         return SimpleNamespace(text=json.dumps(dict(wait_proposal=wire(captured, "WAIT"),
@@ -104,6 +106,18 @@ def test_operational_row_factory_records_real_review_without_legacy_fallback(tmp
             snapshot=lambda: dict(valid=True, as_of_ms=now * 1000),
             proposal=lambda *a: pytest.fail("legacy fallback"))
         assert outcome["status"] == ("blocked" if failure else "wait"), outcome
+        if failure:
+            assert outcome['reason']=='llm_call_failed'
+            assert outcome['failure_code']=='model_transport_failure'
+            if isinstance(failure,str):
+                assert outcome['failure_detail']==failure
+            runner.notify_runtime_status(conn,outcome,clock=lambda:now)
+            notice=conn.execute("SELECT body FROM llm_scenario_outbox WHERE kind='MODEL_ERROR'").fetchone()[0]
+            assert 'LLM 판단 오류'in notice and 'fixture transport failure'not in notice
+            if failure=='http_429':
+                assert '요청 제한'in notice
+            elif failure=='incomplete':
+                assert '완성된 응답'in notice
         assert len(requests) == 1
         assert broker.executed == []
         envelope = json.loads(read_tape(conn.execute("SELECT body FROM llm_scenario_review_tapes").fetchone()[0], conn, conn.execute("SELECT slot FROM llm_scenario_review_tapes").fetchone()[0], decode_legacy=review_text))

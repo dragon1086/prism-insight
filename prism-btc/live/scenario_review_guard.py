@@ -69,6 +69,22 @@ def guard_rejected_review(snapshot, context, response_contract, envelope, *, bin
                 execution_authorized=False)
 
 
+def failed_model_call(outcome):
+    """Classify a failed transcript without changing its no-order disposition."""
+    from live.scenario_oauth import safe_failure_reason
+    error = outcome.get('error')
+    message = error.get('message') if isinstance(error, dict) else None
+    if outcome.get('status') != 'FAILED' or not isinstance(message, str):
+        return None
+    if message == 'research_model_call_failed':
+        return 'review_model_call_failed'
+    if message.startswith('research_model_call_failed:'):
+        detail = safe_failure_reason(message[len('research_model_call_failed:'):])
+        if detail is not None:
+            return 'review_model_call_failed:' + detail
+    return None
+
+
 def guard_review(snapshot, original_context, response_contract, envelope, fresh_context,
                  *, bindings=None, research_mode="legacy"):
     """Replay exact evidence, then reprice the original wire once on fresh facts.
@@ -83,6 +99,9 @@ def guard_review(snapshot, original_context, response_contract, envelope, fresh_
     outcome = replay_review(envelope, review, snapshot, original_context,
                             response_contract, bindings=bindings)
     if outcome.get("status") != "COMPLETE":
+        model_failure = failed_model_call(outcome)
+        if model_failure is not None:
+            raise ValueError(model_failure)
         raise ValueError("review_guard_incomplete_review")
     result = outcome["result"]
     selected = result["selected"]

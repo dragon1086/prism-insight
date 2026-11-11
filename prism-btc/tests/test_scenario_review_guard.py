@@ -65,6 +65,23 @@ def check(args, fresh=None):
                         bindings={"code": "test"})
 
 
+@pytest.mark.parametrize('message,detail', [('scenario_oauth_failed:http_429',':http_429'),
+    ('scenario_oauth_failed:incomplete',':incomplete'), ('scenario_oauth_failed',''),
+    ('scenario_oauth_failed:http_429 secret','')])
+def test_failed_model_calls_remain_distinct_through_sealed_replay(message, detail):
+    ctx=context();snapshot=dict(valid=True,as_of_ms=1000000);contract=response_contract(ctx)
+    events=[]
+    def generate(**request):
+        raise ValueError(message)
+    tape=record_review(research_review,snapshot,ctx,contract,generate=generate,
+        record=events.append,clock=lambda:1000,bindings={'code':'test'})
+    assert tape['outcome']['status']=='FAILED'
+    with pytest.raises(ValueError) as exc:
+        guard_review(snapshot,ctx,contract,tape,dict(ctx,now=1001,account_captured_at=1001),bindings={'code':'test'})
+    assert str(exc.value)=='review_model_call_failed'+detail
+    assert events[-1].get('failure_detail')==(detail[1:] if detail else None)
+
+
 def test_exact_replayed_open_is_fresh_checked_not_authorized(monkeypatch):
     from live import scenario_review_guard as module
     args = taped()

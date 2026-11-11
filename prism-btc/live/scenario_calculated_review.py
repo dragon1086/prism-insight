@@ -1206,11 +1206,17 @@ def research_review(snapshot, context, response_contract, *, generate, record,
         # No retry, fallback model or logical repair on any failure.
         try:
             result = generate(**deepcopy(request))
-        except Exception:
-            record(deepcopy(dict(kind="MODEL_ERROR", phase=phase, code="model_call_failed",
+        except Exception as exc:
+            from live.scenario_oauth import safe_failure_reason
+            message = str(exc)
+            detail = safe_failure_reason(message[len('scenario_oauth_failed:'):]) if message.startswith('scenario_oauth_failed:') else None
+            error_event = dict(kind="MODEL_ERROR", phase=phase, code="model_call_failed",
                 request_sha256=request_hash, prepared_request_sha256=request_hash, actual_request=request,
-                actual_request_sha256=actual_request_hash, elapsed_seconds=clock() - actual_started)))
-            raise ValueError("research_model_call_failed") from None
+                actual_request_sha256=actual_request_hash, elapsed_seconds=clock() - actual_started)
+            if detail is not None:
+                error_event['failure_detail'] = detail
+            record(deepcopy(error_event))
+            raise ValueError("research_model_call_failed" + (':' + detail if detail else '')) from None
         record(deepcopy(dict(kind="MODEL_RAW", phase=phase, request_sha256=request_hash,
                              prepared_request_sha256=request_hash,
                              actual_request=request, actual_request_sha256=actual_request_hash,
