@@ -134,3 +134,15 @@ def test_runner_live_flag_never_orders_in_dry_run_or_off(monkeypatch, capsys):
     monkeypatch.setattr("prism_inverse.adapters.kis_data.KisKrData.daily_bars", lambda self, inst, s, e: [])
     monkeypatch.setattr("prism_inverse.adapters.kis_data.KisKrData.__init__", lambda self, **k: None)
     assert R.main(["--market", "kr", "--dry-run"]) == 0 and "LIVE  skipped" in capsys.readouterr().out
+
+
+def test_default_session_date_is_the_market_zone_date():
+    from datetime import datetime, timezone
+
+    from tools.run_inverse_signals import default_date
+
+    at_0710_kst = datetime(2026, 11, 10, 22, 10, tzinfo=timezone.utc)      # 2026-11-11 07:10 KST, the US cron slot
+    assert default_date("kr", at_0710_kst) == date(2026, 11, 11)
+    assert default_date("us", at_0710_kst) == date(2026, 11, 10)          # the US session that just closed
+    at_1710_kst = datetime(2026, 11, 11, 8, 10, tzinfo=timezone.utc)
+    assert default_date("kr", at_1710_kst) == date(2026, 11, 11) and default_date("us", at_1710_kst) == date(2026, 11, 11)
