@@ -106,6 +106,8 @@ def test_actual_review_rejects_entry_but_preserves_early_30m_expansion(tmp_path,
                 plan['entries'][0].pop('quantity')
                 plan['entries'][0]['allocation_fraction'] = .01
             result = dict(wait_proposal=wire(ctx, 'WAIT'), candidates=[plan], no_candidate_reason='')
+            if request['response_schema']['properties']['candidates']['maxItems']==0:
+                result.update(candidates=[],no_candidate_reason='host entry restriction')
         return SimpleNamespace(text=json.dumps(result))
     r.calculated_review_propose = make_calculated_review_proposer(generate=generate, clock=lambda:r.test_clock[0], research_mode=mode)
     outcome = r.tick()
@@ -278,3 +280,32 @@ def test_final_pure_validation_cannot_carry_entry_permission_across_half_hour(tm
     assert result['reason'] == 'entry_convergence_stale'
     assert not broker.executed
     assert r.conn.execute('SELECT count(*) FROM llm_scenario_intents').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('first',[False,True,None])
+def test_flat_blocked_observation_skips_only_after_explicit_initial_model_review(tmp_path,first):
+    r,broker,calls=runtime(tmp_path,empty=True)
+    original=r._context
+    def context(state,**kwargs):
+        c=original(state,**kwargs);c['recovery']=dict(first_observation=first);return c
+    r._context=context;r.convergence_entry_enabled=True
+    r.snapshot=lambda:snapshot(r.test_clock[0])
+    before=r.state();r._context(before);r._save(before)
+    before=r.state();out=r.tick()
+    if first is False:
+        assert out['status']=='observation_only'and out['model_called']is False
+        assert calls==[]and broker.executed==[]and r.state()==before
+        assert r.conn.execute('SELECT snapshot,context FROM llm_scenario_decisions').fetchone()==(None,None)
+        assert r.conn.execute('SELECT COUNT(*)FROM llm_scenario_review_tapes').fetchone()[0]==0
+        from live.scenario_runner import notify_runtime_status
+        notify_runtime_status(r.conn,dict(status='blocked',reason='llm_call_failed'),clock=lambda:r.test_clock[0])
+        notify_runtime_status(r.conn,out,clock=lambda:r.test_clock[0])
+        assert r.conn.execute('SELECT active FROM llm_scenario_model_incident').fetchone()[0]==1
+        assert r.conn.execute("SELECT COUNT(*)FROM llm_scenario_outbox WHERE kind='MODEL_RECOVERED'").fetchone()[0]==0
+        r.test_clock[0]+=300;broker.ctx['account_captured_at']=r.test_clock[0]
+        r.snapshot=lambda:snapshot(r.test_clock[0],m30=1)
+        resumed=r.tick();assert resumed['status']=='wait'and len(calls)==1
+    else:
+        assert out['status']=='wait'and len(calls)==1
+        assert calls[0]['response_schema']['properties']['candidates']['maxItems']==0
+    assert broker.executed==[]

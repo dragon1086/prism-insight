@@ -874,6 +874,16 @@ class ScenarioRuntime:
                 if self.convergence_entry_enabled:
                     from core.scenario_convergence import entry_convergence
                     ctx['entry_convergence'] = entry_convergence(snap)
+                    if (self.calculated_review_enabled and ctx.get('scenario_id') is None
+                            and ctx.get('positions') == [] and ctx.get('pending_entries') == []
+                            and ctx.get('accounting_status') == 'confirmed'
+                            and ctx['entry_convergence']['status'] == 'BLOCKED'
+                            and (ctx.get('recovery') or {}).get('first_observation') is False):
+                        # No entry is legal under the existing gate; do not ask a model to invent one.
+                        return dict(status='observation_only', reason='entry_convergence_restricted',
+                                    model_called=False, market_observation_only=True,
+                                    market_observation_status='observed', verified_flat=True,
+                                    observed_at_ms=int(captured*1000))
                 if (self.calculated_review_enabled and 'single' not in self.research_review_mode
                         and ctx.get('scenario_id') is not None and ctx.get('positions')):
                     from live.scenario_explanation import prepare_source
