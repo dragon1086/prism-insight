@@ -17,21 +17,31 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("PRISM_DISABLE_SIGNAL_PUBLISH", "1")
 
 KIS_MIN_INTERVAL = 0.4  # seconds between KIS calls
+SESSION_TZ = {"kr": "Asia/Seoul", "us": "America/New_York"}
+
+
+def default_date(market: str, now: datetime | None = None) -> date:
+    """The session the run judges: today's date in the market's own zone. At 07:10 KST the US
+    session that just closed is still 'yesterday' in New York (the 11/11 first run recorded
+    28 MISSING for that reason), and this holds on a server in any time zone."""
+    return (now or datetime.now(timezone.utc)).astimezone(ZoneInfo(SESSION_TZ[market])).date()
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--market", choices=("kr", "us"), required=True)
-    ap.add_argument("--date", type=date.fromisoformat, default=date.today())
+    ap.add_argument("--date", type=date.fromisoformat, default=None, help="session date; default: today in the market's zone")
     ap.add_argument("--dry-run", action="store_true", help="compute and print; write nothing")
     args = ap.parse_args(argv)
+    args.date = args.date or default_date(args.market)
 
     mode = "dry-run" if args.dry_run else os.environ.get("INVERSE_SIGNALS_MODE", "off").strip().lower()
     if mode == "off":
