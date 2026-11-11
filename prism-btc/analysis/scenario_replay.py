@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from copy import deepcopy
 from contextlib import contextmanager
 import hashlib
 import json
@@ -41,6 +42,9 @@ from live.shared_entry_coordinator import mutation_lock
 
 ROOT=Path(__file__).resolve().parents[2]
 POLICY_PROFILES = {
+    "deployed-main-v3": {"recovery_enabled": True, "automatic_normalization_enabled": True,
+        "entry_contract_enabled": True, "entry_goal_enabled": True, "pending_renewal_enabled": True,
+        "convergence_entry_enabled": True},
     "current-live-v2": {"recovery_enabled": True, "automatic_normalization_enabled": True},
     "legacy-no-recovery": {"recovery_enabled": False, "automatic_normalization_enabled": False},
     "single-pass-economic-v4": {"recovery_enabled": True, "automatic_normalization_enabled": True},
@@ -212,9 +216,26 @@ def network_boundary(mode,endpoint=None):
     finally:active[0]=False
 
 
+def validated_fee_seed(seed, start_ms):
+    from live.scenario_fee_projection import verified_taker_rate
+    if seed is None:
+        return None
+    if (not isinstance(seed, dict) or set(seed)!={'observed_at','evidence','source_sha256','provenance'}
+            or seed['provenance']!='OBSERVED_HISTORICAL_ACCOUNT_CONTEXT'
+            or type(seed['observed_at']) not in (int,float) or not math.isfinite(seed['observed_at'])
+            or not 0<seed['observed_at']<=start_ms/1000
+            or not isinstance(seed['source_sha256'],str) or len(seed['source_sha256'])!=64
+            or any(c not in '0123456789abcdef' for c in seed['source_sha256'])
+            or len(json.dumps(seed,allow_nan=False).encode())>8192):
+        raise ValueError('initial_fee_seed_invalid')
+    verified_taker_rate(seed['evidence'],seed['observed_at'])
+    verified_taker_rate(seed['evidence'],start_ms/1000)
+    return deepcopy(seed)
+
+
 def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy_profile="current-live-v2",
                  initial_state="fresh-unblocked", *, observed_manifest=None,
-                 market_input_mode="historical", allow_input_gaps=False):
+                 market_input_mode="historical", allow_input_gaps=False, initial_fee_context=None):
     if policy_profile not in POLICY_PROFILES:
         raise ValueError("explicit_replay_policy_profile_required")
     if initial_state not in {"fresh-unblocked","recovery-stage0"}:
@@ -225,6 +246,9 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
         raise ValueError("observed_input_contract_required")
     if observed_manifest is not None and market_input_mode not in {"observed", "reconstructed_at_observed_schedule"}:
         raise ValueError("explicit_observed_input_mode_required")
+    if initial_fee_context is not None and policy_profile!='deployed-main-v3':
+        raise ValueError('initial_fee_seed_requires_explicit_profile')
+    fee_seed=validated_fee_seed(initial_fee_context,bundle['start_ms'])
     package=ROOT/"prism-btc"
     sources={str(p.relative_to(package)):hashlib.sha256(p.read_bytes()).hexdigest()
              for p in sorted(package.rglob("*.py")) if "tests" not in p.relative_to(package).parts}
@@ -248,7 +272,7 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
         latencies=dict(entry=5000,market=5000,cancel=2000,amend=2000,model="measured_and_taped_ms"),
         decision_interval_ms=300000,protection_interval_ms=60000,
         terminal_policy="NO_FORCED_CLOSE_MARK_OPEN_POSITION",liquidity="previous_minute_volume_shared_across_four_path_points")
-    if policy_profile == "economic-reject-goal-v2":
+    if policy_profile in {"economic-reject-goal-v2", "deployed-main-v3"}:
         contract["context_contracts"].update(entry_contract_version=2, pending_renewal_version=1, entry_convergence_version=1)
     if policy_profile in ECONOMIC_PROFILES:
         import inspect
@@ -260,7 +284,7 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
             phase_contracts={"profile":policy_profile,
                 "schema_builder_sha256":hashlib.sha256(inspect.getsource(response_schema).encode()).hexdigest(),
                 "SINGLE_PASS":hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest()})
-        if policy_profile == "economic-reject-goal-v2":
+        if policy_profile in {"economic-reject-goal-v2", "deployed-main-v3"}:
             contract["identity_scheme"] = "EXACT_REPLAY_UUID5_CALLSITE_PID0_V2"
         if policy_profile in REVIEW_PROFILES:
             from live.scenario_calculated_review import DRAFT_PROMPT, SELECT_PROMPT, research_review
@@ -310,6 +334,10 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
             clock="OBSERVED_AVAILABILITY_BEFORE_SIMULATED_CONTEXT",
             account_source="INDEPENDENT_SIMULATED_ACCOUNT_ONLY"),
             replay_scope="HYBRID_OBSERVED_INPUT_ASSUMED_EXECUTION")
+    if policy_profile=='deployed-main-v3':
+        contract['broker_flags']={'entry_economics_enabled':True}
+        contract['initial_fee_context']=fee_seed
+        contract['fee_seed_scope']='OBSERVED_RATE_ASSUMPTION_PSEUDONYMOUS_OFFLINE_UID_NO_TRADES_OR_PNL'
     return contract
 
 
@@ -526,7 +554,7 @@ def run_replay(bundle,market,output,**kwargs):
         sys.path.append(str(ROOT))
     from observability.events import suppress_events
     with suppress_events(), replay_identity_scope(economic=kwargs.get("policy_profile", "") in ECONOMIC_PROFILES,
-                               stable_process_id=kwargs.get("policy_profile") == "economic-reject-goal-v2"):
+                               stable_process_id=kwargs.get("policy_profile") in {"economic-reject-goal-v2", "deployed-main-v3"}):
         return _run_replay(bundle,market,output,**kwargs)
 
 
@@ -534,8 +562,11 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
                initial_equity=10000.,policy=None,model_generator=None,max_decisions=288,
                policy_profile="current-live-v2",initial_state="fresh-unblocked",clock_monotonic=None,
                observed_packet=None,observed_packet_sha256=None,market_input_mode="historical",
-               allow_input_gaps=False,before_http=None,failure_callback=None):
+               allow_input_gaps=False,before_http=None,failure_callback=None,
+               before_decision=None,initial_fee_context=None):
     """No production paths accepted; fresh DB per run and explicit data provenance."""
+    if before_decision is not None and (not callable(before_decision) or mode=='frozen'):
+        raise ValueError('external_decision_wait_requires_fresh_or_fixture')
     if mode not in {"fresh","frozen","fixture"} or path not in {"OHLC","OLHC"}:
         raise ValueError("explicit_replay_mode_required")
     if mode=="fixture" and policy is None and not (policy_profile in ECONOMIC_PROFILES and model_generator is not None):
@@ -582,7 +613,7 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
         if origin not in {"fixture","luna"}:raise ValueError("unknown_decision_origin")
     contract=contract_for(bundle,path,cost_multiplier,initial_equity,origin,policy_profile,initial_state,
         observed_manifest=observed.manifest() if observed is not None else None,
-        market_input_mode=market_input_mode,allow_input_gaps=allow_input_gaps)
+        market_input_mode=market_input_mode,allow_input_gaps=allow_input_gaps,initial_fee_context=initial_fee_context)
     output=Path(output).resolve()
     if output.exists():raise ValueError("never_overwrite_replay")
     if any(p in output.parts for p in ("state","logs","trading")):
@@ -603,7 +634,16 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
         funding_events=bundle["funding"],config=Config(path=path,**cost))
     if type(session) is not OfflineBybitSession or session.simulation is not True:
         raise ValueError("offline_exchange_required")
-    broker=ScenarioDemoBroker(conn,session=session,expected_main_uid="42",clock=session.clock,execution_enabled=True)
+    broker=ScenarioDemoBroker(conn,session=session,expected_main_uid="42",clock=session.clock,execution_enabled=True,
+        entry_economics_enabled=policy_profile=='deployed-main-v3')
+    seed=contract.get('initial_fee_context')
+    if seed is not None:
+        # Observed rate only: no execution, balance, settlement or prior-loss seed.
+        body=dict(version=1,main_uid="42",environment="demo",endpoint=session.endpoint,
+            symbol="BTCUSDT",captured_at=seed['observed_at'],evidence=seed['evidence'])
+        conn.execute('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)',
+            ('review_fee_sidecar_v1',seed['observed_at'],json.dumps(body,sort_keys=True,allow_nan=False)))
+        conn.commit()
     driver=Driver(bundle,market,session,path,broker,conn)
     driver.strict_protection = economic_profile
     clock = (EconomicClock(driver,tape,monotonic=clock_monotonic or time.monotonic)
@@ -642,6 +682,8 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
             release = at if schedule is None else schedule[i]["available_at_ms"]
             if not at <= release < min(at+300000,end):
                 raise ValueError("observed_release_outside_decision_window")
+            if before_decision is not None:
+                before_decision(dict(index=i,at_ms=at,policy_profile=policy_profile))
             driver.advance_to(release)
             if schedule is not None and schedule[i]["status"] == "MISSING":
                 statuses["INPUT_GAP"] += 1
