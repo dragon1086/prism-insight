@@ -337,15 +337,21 @@ against retaining exposure for a supported break; neither early profit-taking
 nor a distant all-size TP is mandatory. Do not assume an intervening obstacle
 will break merely because the primary trend or higher frames favor the position.
 Use flexible near, intermediate and extension TP allocation rather than
-indiscriminately shortening the final target. Consider a first partial profit
-100-300 USDT away only when evidenced structure and cost room support it;
-100-200 USDT of favorable movement is NOT automatically net profit. Compare
-later partial profit around 500 USDT and a residual runner around 800-1000 USDT
-or farther when continuation supports it. These are illustrative choices, not
-mandatory distances, minimum spacing or a requirement to exit at every tier.
-These are absolute BTC price differences, not account profit, percentages or
-10x-leveraged returns. Measure from proposed entry for OPEN and verified position
-average entry for holdings, never reset the distance from each new current mark.
+fixed USDT distances. Set structural invalidation first; price-risk R is the
+absolute entry-to-hard-stop distance, not account risk or a leveraged return.
+Use entry_geometry price-R diagnostics and plan_math entry/split bounds.
+Their prices are arithmetic references; choose market-supported setups.
+The final candidate receipts price the actual rounded TP allocations,
+remaining stop exposure and costs. A single target ratio is not a ladder ratio.
+BOUNDED MA10-to-MA35: favor achievable net profit before the original cap;
+never invent a trend extension to satisfy the host payoff floor.
+OUTSIDE TREND: compare a smaller reaction-zone exit with meaningful participation
+at a further evidenced objective. A final dust lot does not preserve a trend.
+A priced later TP can retain exposure; an unpriced runner has no assumed profit.
+If nearby obstacles leave no grounded allocation passing the host economics,
+improve the evidenced entry or WAIT; never stretch TP or squeeze SL to pass.
+Measure from proposed entry for OPEN and verified position average entry for
+holdings; never reset the distance from each new current mark.
 For LONG profitable objectives are above entry; for SHORT they are below entry.
 Choose the structural invalidation SL first, then let host risk sizing calculate
 quantity within the existing budget. Do not tighten SL merely to enlarge a bet;
@@ -368,7 +374,7 @@ This is not a forced allocation or runner: full priced exits remain valid when
 grounded, and a protected unpriced remainder has no assumed profit.
 Nearby material resistance for LONG or support for SHORT takes precedence over
 the distance baseline: place the first partial target closer when appropriate.
-500 USDT is a reference, not a minimum profit distance. Inspect intervening
+Use structure and volatility for distance. Inspect intervening
 round-number zones along with supplied price reactions and support/resistance;
 roundness alone does not prove support or resistance. A nearer evidenced obstacle
 takes priority over waiting for the baseline distance, including for an inherited

@@ -17,7 +17,7 @@ def test_user_approved_flexible_management_prompt_version_is_pinned():
     from live.scenario_llm import FLAT_ENTRY_PROMPT
     # 2026-11-07: purpose-specific framing; host gates and TP allocation unchanged.
     expected = {
-        'SYSTEM_PROMPT': '7e9c462ad7c099be16e272ee11491f5e178f329a55cffddca287339eee9ef067',
+        'SYSTEM_PROMPT': 'd66ed4a49e5ffcfd875051b5cbf4300d30c20ebd9935aef8ee7b75c4727a27f7',
         'MA_STRUCTURE_PROMPT': '82859463405921af991331e9d9dde51bd5a72a5c0294feecea6f2b52af578615',
         'FLAT_ENTRY_PROMPT': '93e1062f240495b0c476a35f561e21afddab054749d287a2d196121070e657c4',
     }

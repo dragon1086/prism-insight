@@ -178,6 +178,13 @@ def test_legacy_proposer_uses_the_same_scoped_holding_policy():
     assert holding_management_instructions(base,{**c,'scenario_id':None})==base
 
 
+def test_entry_redesign_keeps_confirmed_holding_prompt_identical():
+    import hashlib
+    _,c,_=inputs()
+    text=holding_management_instructions(SYSTEM_PROMPT+MA_STRUCTURE_PROMPT,c)
+    assert hashlib.sha256(text.encode()).hexdigest()=='5569c9efb734a2cd494607671d0b5f6a90e143904118fdd2ad491d89fef06bf1'
+
+
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_reaction_reference_does_not_tighten_inside_one_atr_of_entry_noise(side):
     s,c,t=inputs(side);c['mark_price']=107.5 if side=='LONG'else 92.5

@@ -153,3 +153,81 @@ def test_unknown_fees_and_unconfirmed_atr_do_not_turn_into_zero():
 def test_expired_original_entry_deadline_is_not_extended():
     s,c,t=inputs();c.update(entry_contract_version=2,input_captured_at=9890.)
     assert build(s,c,t)['entry_deadline_seconds_remaining']==0
+
+
+def test_price_R_is_host_computed_and_not_net_or_ladder_payoff():
+    s,c,t=inputs()
+    for row in rows(build(s,c,t)):
+        price_R=abs(row['target_level']-row['worst_entry_bound'])/abs(row['worst_entry_bound']-row['stop_level'])
+        assert row['target_distance_R']==pytest.approx(price_R,abs=0.000001)
+        assert row['single_target_ratio']<price_R
+
+
+@pytest.mark.parametrize('known_fee',[True,False])
+def test_plan_math_solves_entry_bounds_against_host_economics_in_both_directions(known_fee):
+    from live.scenario_entry_geometry import _entry_bound
+    from live.scenario_calculated_review import _gross_projection
+    from live.scenario_entry_economics import assess
+    s,c,t=inputs();c.update(quantity_step=.000001,minimum_quantity=.000001)
+    if not known_fee:c.pop('observed_execution_fee_evidence')
+    v=build(s,c,t);assert v.get('plan_math',{}).get('rows')
+    for item in v['plan_math']['rows']:
+        ni,fi,maximum,minimum,half_entry,far_entry,runner_fraction=item
+        near,far=rows(v)[ni if ni is not None else fi],rows(v)[fi]
+        def result(entry,first_fraction):
+            p=dict(action='OPEN',side=far['side'],hard_stop=far['stop_level'],entries=[dict(price=entry,quantity=1.)],
+                take_profits=[dict(id='n',price=near['target_level'],fraction=first_fraction),dict(id='f',price=far['target_level'],fraction=1-first_fraction)],partial_stops=[])
+            return assess(p,c,_gross_projection(p,c))
+        # Step inside the continuous bound; the final integer-lot host gate still decides.
+        direction=-1 if far['side']=='LONG'else 1
+        if half_entry is not None:
+            assert result(half_entry+direction*.01,.5)['ratio']>1.2
+            assert result(half_entry-direction*.01,.5)['ratio']<1.2
+        if far_entry is not None:
+            assert result(far_entry+direction*.01,0.)['ratio']>1.2
+        if runner_fraction is not None:
+            gain=runner_fraction*far['reward_per_btc']-(1-runner_fraction)*far['loss_per_btc']
+            assert gain/far['loss_per_btc']>=1.2-1e-9
+        if maximum is not None:
+            gain=maximum*near['reward_per_btc']+(1-maximum)*far['reward_per_btc']
+            assert gain/far['loss_per_btc']>=1.2-1e-9
+        if minimum is not None:
+            first_then_stop=minimum*near['reward_per_btc']-(1-minimum)*far['loss_per_btc']
+            assert first_then_stop>=-1e-9
+
+
+def test_solved_price_is_not_reported_as_an_observed_level_or_order():
+    s,c,t=inputs();v=build(s,c,t);m=v['plan_math']
+    assert 'not orders or observed levels'in m['meaning']
+    assert 'Actual sizing'in m['meaning'] and 'optional, not a gate'in m['meaning']
+    assert all('action'not in row for row in rows(v))
+
+
+def test_optional_plan_math_is_omitted_before_existing_geometry_is_lost(monkeypatch):
+    import live.scenario_entry_geometry as geometry
+    s,c,t=inputs();full=build(s,c,t);base=deepcopy(full);base.pop('plan_math')
+    monkeypatch.setattr(geometry,'MAX_BYTES',len(json.dumps(base,ensure_ascii=False).encode())+2)
+    v=build(s,c,t)
+    assert v==base and v['status']=='AVAILABLE'
+
+
+def test_single_observed_target_also_has_entry_and_runner_fraction_math():
+    s,c,t=inputs();p=t['primary']['30m']['points'][0]
+    t['primary']['30m']['points']=[dict(p,high=110,low=90,ma10=95,ma35=100)]
+    v=build(s,c,t);single=[x for x in v['plan_math']['rows']if x[0]is None]
+    assert single
+    for _,fi,_,_,_,entry,fraction in single:
+        row=rows(v)[fi]
+        if fraction is not None:
+            reward=fraction*row['reward_per_btc']-(1-fraction)*row['loss_per_btc']
+            assert reward/row['loss_per_btc']>=1.2-1e-9
+
+
+def test_confirmed_macro_target_does_not_disappear_when_near_primary_extreme_exists():
+    s,c,t=inputs();t['levels']['4h.ma10']=dict(price=125.,is_confirmed=True,as_of_ms=9000000)
+    v=build(s,c,t);longs=[r for r in rows(v)if r['side']=='LONG']
+    assert any(r['target_level']==125. and r['target_ref']=='MA:4h.ma10'for r in longs)
+    assert any(r['target_level']==105. for r in longs)
+    assert {r['side']for r in rows(v)}=={'LONG','SHORT'}
+    t['levels']['4h.ma10']['is_confirmed']=False
+    assert all(r['target_level']!=125. for r in rows(build(s,c,t)))

@@ -16,6 +16,7 @@ ALLOCATION_PROFILES = {
     "allocation-calculated-economic-v1": "allocation-calculated",
 }
 REJECTION_PROFILES = {
+    "deployed-main-v3": "economic-reject-calculated-v1",
     "economic-reject-single-v1": "economic-reject-single-v1",
     "economic-reject-calculated-v1": "economic-reject-calculated-v1",
     "economic-reject-goal-v2": "economic-reject-calculated-v1",
