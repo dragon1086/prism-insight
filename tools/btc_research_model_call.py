@@ -105,7 +105,8 @@ def _required_window_seconds(phase, timeout):
     return minimum
 
 
-def _runtime_readiness(phase, timeout, *, _clock=time.time, _run=subprocess.run, _environ=None):
+def _runtime_readiness(phase, timeout, *, _clock=time.time, _run=subprocess.run, _environ=None,
+                       _monotonic=time.monotonic):
     """Check real clock and the pinned server; injected dependencies are for unit tests only."""
     if _environ is None:
         _environ = os.environ
@@ -116,10 +117,12 @@ def _runtime_readiness(phase, timeout, *, _clock=time.time, _run=subprocess.run,
     if not isinstance(cron, str) or not re.fullmatch(r'[0-9a-f]{64}', cron):
         raise RuntimeReadinessError('expected_crontab_hash_missing_or_invalid')
     minimum = _required_window_seconds(phase, timeout)
-    before = _clock()
-    if type(before) not in (int, float) or not math.isfinite(before):
+    remote_clock = _environ.get('PRISM_BTC_RESEARCH_CLOCK_POLICY') == 'REMOTE_BOUNDED_V1'
+    mono_before = _monotonic() if remote_clock else None
+    before = _clock() if not remote_clock else None
+    if not remote_clock and (type(before) not in (int, float) or not math.isfinite(before)):
         raise RuntimeReadinessError('invalid_local_clock')
-    if 300 - before % 300 < minimum:
+    if not remote_clock and 300 - before % 300 < minimum:
         raise RuntimeReadinessError('scheduled_tick_near')
     try:
         result = _run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'LogLevel=ERROR',
@@ -140,10 +143,10 @@ def _runtime_readiness(phase, timeout, *, _clock=time.time, _run=subprocess.run,
             or any(type(facts[k]) is not bool for k in ('head_ok', 'cron_ok', 'schedule_ok', 'idle'))
             or type(facts['checked_at']) not in (int, float) or not math.isfinite(facts['checked_at'])):
         raise RuntimeReadinessError('remote_response_invalid')
-    after = _clock()
-    if type(after) not in (int, float) or not math.isfinite(after) or after < before or int(after // 300) != int(before // 300):
+    after = _clock() if not remote_clock else None
+    if not remote_clock and (type(after) not in (int, float) or not math.isfinite(after) or after < before or int(after // 300) != int(before // 300)):
         raise RuntimeReadinessError('local_clock_changed')
-    if not before - 2 <= facts['checked_at'] <= after + 2:
+    if not remote_clock and not before - 2 <= facts['checked_at'] <= after + 2:
         raise RuntimeReadinessError('remote_clock_skew')
     if not facts['head_ok']:
         raise RuntimeReadinessError('server_head_changed')
@@ -153,6 +156,21 @@ def _runtime_readiness(phase, timeout, *, _clock=time.time, _run=subprocess.run,
         raise RuntimeReadinessError('unsupported_decision_schedule')
     if not facts['idle']:
         raise RuntimeReadinessError('decision_running')
+    if remote_clock:
+        checked = _monotonic()
+        if any(type(v)not in(int,float)or not math.isfinite(v)for v in (checked,mono_before)):
+            raise RuntimeReadinessError('remote_clock_roundtrip_invalid')
+        elapsed = checked - mono_before
+        if not math.isfinite(elapsed) or not 0 <= elapsed <= 8 or facts['checked_at'] < 1577836800:
+            raise RuntimeReadinessError('remote_clock_roundtrip_invalid')
+        remaining = 300 - facts['checked_at'] % 300 - elapsed
+        if remaining < minimum:
+            raise RuntimeReadinessError('scheduled_tick_near')
+        return dict(status='PASSED', phase=phase, expected_head=head, crontab_sha256=cron,
+                    checked_at=facts['checked_at'], remote_checked_at=facts['checked_at'],
+                    minimum_seconds=minimum, checked_monotonic=checked, roundtrip_seconds=elapsed,
+                    remaining_seconds_lower_bound=remaining, clock_policy='REMOTE_BOUNDED_V1',
+                    **{k:facts[k]for k in ('head_ok','cron_ok','schedule_ok','idle')})
     if 300 - after % 300 < minimum or 300 - facts['checked_at'] % 300 < minimum:
         raise RuntimeReadinessError('scheduled_tick_near')
     return dict(status='PASSED', phase=phase, expected_head=head, crontab_sha256=cron,
@@ -161,7 +179,27 @@ def _runtime_readiness(phase, timeout, *, _clock=time.time, _run=subprocess.run,
                 head_ok=True, cron_ok=True, schedule_ok=True, idle=True)
 
 
-def _readiness_still_safe(proof, phase, timeout, *, _clock=time.time):
+def _readiness_still_safe(proof, phase, timeout, *, _clock=time.time, _monotonic=time.monotonic):
+    if isinstance(proof, dict) and proof.get('clock_policy') == 'REMOTE_BOUNDED_V1':
+        numeric=('checked_at','remote_checked_at','checked_monotonic','roundtrip_seconds','remaining_seconds_lower_bound')
+        if (proof.get('status')!='PASSED' or proof.get('phase')!=phase
+                or any(proof.get(k)is not True for k in ('head_ok','cron_ok','schedule_ok','idle'))
+                or not isinstance(proof.get('expected_head'),str) or not re.fullmatch(r'[0-9a-f]{40}',proof['expected_head'])
+                or not isinstance(proof.get('crontab_sha256'),str) or not re.fullmatch(r'[0-9a-f]{64}',proof['crontab_sha256'])
+                or any(type(proof.get(k))not in(int,float)or not math.isfinite(proof[k])for k in numeric)
+                or type(proof.get('minimum_seconds'))is not int
+                or not _required_window_seconds(phase,timeout)<=proof['minimum_seconds']<=225
+                or proof['checked_at']!=proof['remote_checked_at'] or proof['checked_at']<1577836800
+                or not 0<=proof['roundtrip_seconds']<=8
+                or proof['remaining_seconds_lower_bound']!=300-proof['checked_at']%300-proof['roundtrip_seconds']):
+            raise RuntimeReadinessError('invalid_readiness_proof')
+        now=_monotonic()
+        if type(now)not in(int,float)or not math.isfinite(now):
+            raise RuntimeReadinessError('schedule_changed_after_check')
+        age=now-proof['checked_monotonic']
+        if not math.isfinite(age) or not 0<=age<=8 or proof['remaining_seconds_lower_bound']-age<proof['minimum_seconds']:
+            raise RuntimeReadinessError('schedule_changed_after_check')
+        return
     if (not isinstance(proof, dict) or proof.get('status') != 'PASSED'
             or any(proof.get(key) is not True for key in ('head_ok', 'cron_ok', 'schedule_ok', 'idle'))
             or proof.get('phase') != phase
