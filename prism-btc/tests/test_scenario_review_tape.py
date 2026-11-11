@@ -31,7 +31,7 @@ def wire(ctx, side=None):
         chase=dict(max_bps=0, max_reprices=0) if side else None)
 
 
-def recorded(*, empty=False, fail_second=False, fail_record=False):
+def recorded(*, empty=False, fail_second=False, fail_record=False, usage=None):
     ctx = context()
     snapshot = dict(valid=True, as_of_ms=1000000)
     contract = response_contract(ctx)
@@ -49,7 +49,7 @@ def recorded(*, empty=False, fail_second=False, fail_record=False):
             bundle = json.loads(request["user_prompt"])["calculated_candidates"]
             chosen = bundle["candidates"][0]
             result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale="계산 확인")
-        return SimpleNamespace(text=json.dumps(result))
+        return SimpleNamespace(text=json.dumps(result), **({'usage':usage} if usage is not None else {}))
 
     def record(event):
         events.append(deepcopy(event))
@@ -211,3 +211,13 @@ def test_sanitized_oauth_timeout_category_replays_without_leaking_transport():
     assert any(op.get('error') == {'type': 'ScenarioOAuthTimeout', 'message': 'scenario_oauth_failed'}
                for op in tape['operations'])
     assert replay_review(tape, review, {}, {}, {}) == tape['outcome']
+
+
+def test_usage_counters_roundtrip_without_response_bodies_or_double_counting():
+    data=recorded(empty=True,usage=dict(input_tokens=100,output_tokens=20,
+        input_tokens_details=dict(cached_tokens=60),output_tokens_details=dict(reasoning_tokens=10),secret='not retained'))
+    e=data[0];op=next(o for o in e['operations']if o['kind']=='generate')
+    assert op['usage']==dict(input_tokens=100,output_tokens=20,cached_input_tokens=60,reasoning_tokens=10)
+    event=next(o['event']for o in e['operations']if o['kind']=='record'and o['event']['kind']=='MODEL_RAW')
+    assert event['usage']==op['usage']and 'secret'not in json.dumps(op['usage'])
+    assert replay(data)==e['outcome']

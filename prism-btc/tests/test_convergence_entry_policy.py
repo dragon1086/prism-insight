@@ -283,29 +283,49 @@ def test_final_pure_validation_cannot_carry_entry_permission_across_half_hour(tm
 
 
 @pytest.mark.parametrize('first',[False,True,None])
-def test_flat_blocked_observation_skips_only_after_explicit_initial_model_review(tmp_path,first):
+def test_flat_blocked_context_flag_alone_cannot_skip_initial_model_review(tmp_path,first):
     r,broker,calls=runtime(tmp_path,empty=True)
     original=r._context
     def context(state,**kwargs):
         c=original(state,**kwargs);c['recovery']=dict(first_observation=first);return c
     r._context=context;r.convergence_entry_enabled=True
     r.snapshot=lambda:snapshot(r.test_clock[0])
-    before=r.state();r._context(before);r._save(before)
-    before=r.state();out=r.tick()
-    if first is False:
-        assert out['status']=='observation_only'and out['model_called']is False
-        assert calls==[]and broker.executed==[]and r.state()==before
-        assert r.conn.execute('SELECT snapshot,context FROM llm_scenario_decisions').fetchone()==(None,None)
-        assert r.conn.execute('SELECT COUNT(*)FROM llm_scenario_review_tapes').fetchone()[0]==0
-        from live.scenario_runner import notify_runtime_status
-        notify_runtime_status(r.conn,dict(status='blocked',reason='llm_call_failed'),clock=lambda:r.test_clock[0])
-        notify_runtime_status(r.conn,out,clock=lambda:r.test_clock[0])
-        assert r.conn.execute('SELECT active FROM llm_scenario_model_incident').fetchone()[0]==1
-        assert r.conn.execute("SELECT COUNT(*)FROM llm_scenario_outbox WHERE kind='MODEL_RECOVERED'").fetchone()[0]==0
-        r.test_clock[0]+=300;broker.ctx['account_captured_at']=r.test_clock[0]
-        r.snapshot=lambda:snapshot(r.test_clock[0],m30=1)
-        resumed=r.tick();assert resumed['status']=='wait'and len(calls)==1
-    else:
-        assert out['status']=='wait'and len(calls)==1
-        assert calls[0]['response_schema']['properties']['candidates']['maxItems']==0
+    out=r.tick()
+    assert out['status']=='wait'and len(calls)==1
+    assert calls[0]['response_schema']['properties']['candidates']['maxItems']==0
     assert broker.executed==[]
+
+
+@pytest.mark.parametrize('automatic',[False,True])
+def test_real_recovery_sequence_observes_without_model_and_resumes_on_expansion(tmp_path,automatic):
+    from tests.test_scenario_review_runtime import observing_runtime
+    from live.scenario_runner import notify_runtime_status
+    r,broker,calls,_=observing_runtime(tmp_path,empty=True)
+    r.automatic_normalization_enabled=automatic
+    r.convergence_entry_enabled=True
+    def market(change=-1):
+        value=snapshot(r.test_clock[0],m30=change)
+        for frame in value['timeframes'].values():
+            frame['confirmed']=dict(frame['ma_path']['confirmed_points'][-1],close=100,high=102,low=98,open=100)
+        return value
+    r.snapshot=market
+    first=r.tick()
+    assert first['status']=='wait'and len(calls)==1, first
+    baseline=r.state()['recovery']
+    assert baseline['baseline_input_id']and baseline['baseline_slot']==int(r.test_clock[0]//300)
+    r.test_clock[0]+=300;broker.ctx['account_captured_at']=r.test_clock[0]
+    # prepare_input adds recovery.first_observation later; the early gate must use durable state.
+    assert 'recovery'not in r._context(r.state())
+    before=r.state();out=r.tick()
+    assert out['status']=='observation_only'and out['model_called']is False
+    assert len(calls)==1 and broker.executed==[] and r.state()==before
+    assert r.conn.execute('SELECT snapshot,context FROM llm_scenario_decisions ORDER BY slot DESC LIMIT 1').fetchone()==(None,None)
+    assert r.conn.execute('SELECT COUNT(*)FROM llm_scenario_review_tapes').fetchone()[0]==1
+    notify_runtime_status(r.conn,dict(status='blocked',reason='llm_call_failed'),clock=lambda:r.test_clock[0])
+    notify_runtime_status(r.conn,out,clock=lambda:r.test_clock[0])
+    assert r.conn.execute('SELECT active FROM llm_scenario_model_incident').fetchone()[0]==1
+    assert r.conn.execute("SELECT COUNT(*)FROM llm_scenario_outbox WHERE kind='MODEL_RECOVERED'").fetchone()[0]==0
+    r.test_clock[0]+=300;broker.ctx['account_captured_at']=r.test_clock[0]
+    r.snapshot=lambda:market(1)
+    resumed=r.tick()
+    assert resumed['status']=='wait'and len(calls)==2 and broker.executed==[]

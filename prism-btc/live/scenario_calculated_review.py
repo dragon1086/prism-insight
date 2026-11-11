@@ -1220,10 +1220,13 @@ def research_review(snapshot, context, response_contract, *, generate, record,
                 error_event['failure_detail'] = detail
             record(deepcopy(error_event))
             raise ValueError("research_model_call_failed" + (':' + detail if detail else '')) from None
+        from live.scenario_oauth import usage_counts
+        usage = usage_counts(getattr(result,'usage',None))
         record(deepcopy(dict(kind="MODEL_RAW", phase=phase, request_sha256=request_hash,
                              prepared_request_sha256=request_hash,
                              actual_request=request, actual_request_sha256=actual_request_hash,
-                             raw=result.text, elapsed_seconds=clock() - actual_started)))
+                             raw=result.text, elapsed_seconds=clock() - actual_started,
+                             **({'usage':usage} if usage is not None else {}))))
         fresh()
         parsed = scenario_llm.parse_proposal(result.text)
         if not model_matches(parsed, output_schema, frozen_context):

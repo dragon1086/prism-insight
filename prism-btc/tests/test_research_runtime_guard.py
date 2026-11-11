@@ -35,6 +35,50 @@ def runner(*, head=True, cron=True, schedule=True, idle=True, remote=BASE + 10.2
     return run, calls
 
 
+def remote_proof(*, remote=BASE+10.2, elapsed=.4, **flags):
+    run,_=runner(remote=remote,**flags)
+    return transport._runtime_readiness('DRAFT',75,_clock=lambda:pytest.fail('local UTC is not the cron clock'),
+        _monotonic=clock(100.,100.+elapsed),_run=run,
+        _environ=dict(ENV,PRISM_BTC_RESEARCH_CLOCK_POLICY='REMOTE_BOUNDED_V1'))
+
+
+def test_remote_clock_keeps_head_cron_idle_and_conservative_deadline_without_local_skew():
+    proof=remote_proof()
+    assert proof['remaining_seconds_lower_bound']==300-(BASE+10.2)%300-.4
+    transport._readiness_still_safe(proof,'DRAFT',75,_monotonic=lambda:101.)
+
+
+@pytest.mark.parametrize('flags,reason', [({'head':False},'server_head_changed'),
+    ({'cron':False},'crontab_changed'),({'schedule':False},'unsupported_decision_schedule'),
+    ({'idle':False},'decision_running')])
+def test_remote_clock_never_bypasses_other_guards(flags,reason):
+    with pytest.raises(transport.RuntimeReadinessError,match=reason):remote_proof(**flags)
+
+
+@pytest.mark.parametrize('elapsed', [-.1,8.1,float('nan')])
+def test_remote_clock_rejects_unbounded_or_backward_roundtrip(elapsed):
+    with pytest.raises(transport.RuntimeReadinessError,match='remote_clock_roundtrip_invalid'):
+        remote_proof(elapsed=elapsed)
+
+
+def test_remote_clock_subtracts_roundtrip_and_dispatch_delay_at_boundary():
+    with pytest.raises(transport.RuntimeReadinessError,match='scheduled_tick_near'):
+        remote_proof(remote=BASE+109.,elapsed=2.)
+    proof=remote_proof(remote=BASE+109.,elapsed=.4)
+    with pytest.raises(transport.RuntimeReadinessError,match='schedule_changed_after_check'):
+        transport._readiness_still_safe(proof,'DRAFT',75,_monotonic=lambda:101.1)
+
+
+def test_remote_proof_tampering_and_old_dispatch_are_rejected():
+    proof=remote_proof()
+    for key,value in [('roundtrip_seconds',0.),('idle',False),('minimum_seconds',100),('checked_at',1.)]:
+        bad=dict(proof,**{key:value})
+        with pytest.raises(transport.RuntimeReadinessError,match='invalid_readiness_proof'):
+            transport._readiness_still_safe(bad,'DRAFT',75,_monotonic=lambda:101.)
+    with pytest.raises(transport.RuntimeReadinessError,match='schedule_changed_after_check'):
+        transport._readiness_still_safe(proof,'DRAFT',75,_monotonic=lambda:109.)
+
+
 @pytest.mark.parametrize('phase,minimum', [('DRAFT', 190), ('SELECT', 100), ('SINGLE', 100)])
 def test_real_gate_checks_remote_and_both_clocks(phase, minimum):
     run, calls = runner()

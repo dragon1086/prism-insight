@@ -455,3 +455,15 @@ def test_other_transport_error_does_not_claim_timeout():
             reasoning_effort='high', fast_tier=False, timeout=75, open_url=open_url,
             response_schema={'type': 'object'})
     assert type(exc.value) is ValueError
+
+
+def test_usage_fields_are_small_safe_counters_and_missing_is_not_zero(monkeypatch):
+    from live.scenario_oauth import usage_counts
+    assert usage_counts(None)is None
+    v=usage_counts(dict(input_tokens=100,output_tokens=20,input_tokens_details=dict(cached_tokens=101),
+        output_tokens_details=dict(reasoning_tokens=True),account='secret'))
+    assert v==dict(input_tokens=100,output_tokens=20,cached_input_tokens=None,reasoning_tokens=None)
+    monkeypatch.delenv('PRISM_BTC_SCENARIO_OAUTH_URL',raising=False)
+    body=result();body['usage']=dict(input_tokens=100,output_tokens=20,input_tokens_details=dict(cached_tokens=0),output_tokens_details=dict(reasoning_tokens=10))
+    response=call(lambda *a,**kw:Response(body),retry_transport=False)
+    assert response.usage==dict(input_tokens=100,output_tokens=20,cached_input_tokens=0,reasoning_tokens=10)
