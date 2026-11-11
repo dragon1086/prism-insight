@@ -530,6 +530,25 @@ def render_notice(event: dict) -> str:
                   "calculated_review_failed":"후보 생성·검산·최종 선택 과정이 정상 완료되지 않았습니다."}.get(event.get("reason_code"))
         if reason is None:
             raise ValueError("model_error_reason_required")
+        if event.get('reason_code') == 'llm_call_failed':
+            from live.scenario_oauth import safe_failure_reason
+            detail = safe_failure_reason(event.get('transport_reason'))
+            if detail in {'authentication', 'http_401', 'http_403'}:
+                reason = 'AI 인증 확인에 실패했습니다.'
+            elif detail in {'rate_limited', 'http_429'}:
+                reason = 'AI 서비스의 요청 제한에 걸렸습니다.'
+            elif detail == 'timeout':
+                reason = 'AI 응답 시간이 제한을 초과했습니다.'
+            elif detail == 'connection':
+                reason = 'AI 응답 경로에 연결하지 못했습니다.'
+            elif detail == 'incomplete':
+                reason = 'AI 서비스가 완성된 응답을 반환하지 못했습니다.'
+            elif detail == 'model_mismatch':
+                reason = '요청한 AI 모델과 다른 응답이어서 적용하지 않았습니다.'
+            elif detail == 'invalid_response':
+                reason = 'AI 응답 형식 검증에 실패했습니다.'
+            elif detail == 'upstream_error' or (detail and detail.startswith('http_5')):
+                reason = 'AI 응답 경로에서 일시적인 오류가 발생했습니다.'
         input_failure = event.get("reason_code") == "llm_input_preparation_failed"
         if event.get("reason_code") == "calculated_review_failed":
             lines[0] = "⚠️ BTC 데모 판단 처리 오류 · 이번 판단 미반영"

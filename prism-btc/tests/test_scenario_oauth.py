@@ -253,6 +253,40 @@ def call(open_url,**kw):
         response_schema={'type':'object','properties':{},'required':[], 'additionalProperties':False},**kw)
 
 
+@pytest.mark.parametrize('status', [400, 401, 429, 502, 503])
+def test_no_retry_transport_failure_retains_only_safe_http_status(monkeypatch, status):
+    monkeypatch.delenv('PRISM_BTC_SCENARIO_OAUTH_URL', raising=False)
+    calls=[]
+    def open_url(*args, **kwargs):
+        calls.append(1)
+        raise http_error(status, 'secret upstream account text')
+    with pytest.raises(ValueError) as exc:
+        call(open_url, retry_transport=False)
+    assert str(exc.value)==f'scenario_oauth_failed:http_{status}'
+    assert calls==[1]
+
+
+@pytest.mark.parametrize('code,reason', [('server_error','upstream_error'),
+    ('usage_limit_reached','rate_limited'), ('unknown secret text','incomplete')])
+def test_http_200_failed_response_is_distinct_from_schema_failure(monkeypatch, code, reason):
+    monkeypatch.delenv('PRISM_BTC_SCENARIO_OAUTH_URL', raising=False)
+    body=dict(status='failed', error=dict(code=code,message='secret provider details'))
+    with pytest.raises(ValueError) as exc:
+        call(lambda *args,**kwargs:Response(body),retry_transport=False)
+    assert str(exc.value)=='scenario_oauth_failed:'+reason
+
+
+def test_connection_and_timeout_do_not_include_exception_text(monkeypatch):
+    from urllib.error import URLError
+    monkeypatch.delenv('PRISM_BTC_SCENARIO_OAUTH_URL', raising=False)
+    for error,reason in [(URLError('secret address'),'connection'), (TimeoutError('secret'),'timeout')]:
+        def open_url(*args,**kwargs):
+            raise error
+        with pytest.raises(ValueError) as exc:
+            call(open_url,retry_transport=False)
+        assert str(exc.value)=='scenario_oauth_failed:'+reason
+
+
 class Response:
     status=200
     def __init__(self,result): self.result=result
@@ -404,7 +438,7 @@ def test_timeout_type_is_preserved_without_transport_details(wrapped):
     error = TimeoutError('sensitive transport details')
     def open_url(*args, **kwargs):
         raise URLError(error) if wrapped else error
-    with pytest.raises(ValueError, match='^scenario_oauth_failed$') as exc:
+    with pytest.raises(ValueError, match='^scenario_oauth_failed:timeout$') as exc:
         generate_scenario(system_prompt='test', user_prompt='test', model='gpt-6-luna',
             reasoning_effort='high', fast_tier=False, timeout=75, open_url=open_url,
             response_schema={'type': 'object'})
@@ -416,7 +450,7 @@ def test_other_transport_error_does_not_claim_timeout():
     from urllib.error import URLError
     def open_url(*args, **kwargs):
         raise URLError('sensitive connection failure')
-    with pytest.raises(ValueError, match='^scenario_oauth_failed$') as exc:
+    with pytest.raises(ValueError, match='^scenario_oauth_failed:connection$') as exc:
         generate_scenario(system_prompt='test', user_prompt='test', model='gpt-6-luna',
             reasoning_effort='high', fast_tier=False, timeout=75, open_url=open_url,
             response_schema={'type': 'object'})
