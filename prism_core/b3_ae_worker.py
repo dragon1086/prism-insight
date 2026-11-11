@@ -63,6 +63,7 @@ def provisional_daily(bars, price, trade_date, open_at):
     """
     if not bars or _time(bars[0]["start_at"]) != _time(open_at) or not price:
         return None
+    price = float(price)  # the KR quote provider returns the price as a string
     return dict(date=trade_date, open=bars[0]["open"], high=max(max(b["high"] for b in bars), price),
                 low=min(min(b["low"] for b in bars), price), close=price,
                 volume=sum(b["volume"] for b in bars), provisional=True)

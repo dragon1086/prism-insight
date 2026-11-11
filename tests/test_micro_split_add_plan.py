@@ -817,6 +817,8 @@ def test_provisional_close_needs_the_opening_bar_and_a_price():
     assert provisional_daily(bars[1:], 10460, SESSION, _iso(OPEN)) is None
     assert provisional_daily(bars, None, SESSION, _iso(OPEN)) is None
     assert provisional_daily(bars, 10460, SESSION, _iso(OPEN))["open"] == 10000
+    kr_quote = provisional_daily(bars, "10460", SESSION, _iso(OPEN))  # KR quote price is a string
+    assert kr_quote["close"] == 10460.0 and kr_quote["high"] >= kr_quote["close"] >= kr_quote["low"]
 
 
 @pytest.mark.parametrize("market, close_at, inside, outside", [
