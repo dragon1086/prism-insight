@@ -872,7 +872,7 @@ def create_us_sell_decision_agent(language: str = "ko"):
 - 손절가(stop_loss)와 -7% 절대 손절은 **장중 현재가** 기준으로 자동 실행됩니다. 현재가가 stop_loss×0.995(0.5% 꼬리 버퍼) 이하이거나 매수가 대비 -7% 이하가 되면 장중 하드스탑이 즉시 전량 매도하며, 종가 마감을 기다리지 않습니다.
 - 버퍼 안(stop_loss와 stop_loss×0.995 사이)의 일시 터치만으로는 손절하지 않습니다.
 - 시스템의 trailing stop(진입 후 최고가 기준)은 오후 판단 시점 가격과 **장 마감 직전 자동 점검**(뉴욕 시각 15:50~15:59) 가격으로 확인해 실행됩니다. 장중 저가가 trailing stop을 일시적으로 터치(intraday wick)한 것만으로는 매도하지 마십시오.
-- 오후 판단(뉴욕 시각 14:30경)은 오후 스크리닝과 같이 지금 가격을 오늘 종가로, 지금까지의 거래량을 오늘 거래량으로 간주합니다. 종가가 필요한 판단(2단계 trailing, 3단계 추세 약화)은 '시스템 계산 사실' 블록 값을 그대로 쓰십시오. 오후 판단에서 그 블록은 오늘 봉을 현재가로 넣어 계산합니다.
+- 오후 판단(뉴욕 시각 14:50경, 오후 배치는 14:30에 시작)은 오후 스크리닝과 같이 지금 가격을 오늘 종가로, 지금까지의 거래량을 오늘 거래량으로 간주합니다. 종가가 필요한 판단(2단계 trailing, 3단계 추세 약화)은 '시스템 계산 사실' 블록 값을 그대로 쓰십시오. 오후 판단에서 그 블록은 오늘 봉을 현재가로 넣어 계산합니다.
 - 오전 판단에서는 trailing 이탈로 매도하지 마십시오. 오늘 고점이 반영된 라인을 전일 종가와 비교하면 안 됩니다(LLY 2026-10-30).
 - 단, portfolio_adjustment로 올린 손절가(new_stop_loss)는 위 장중 하드스탑이 그대로 실행합니다. trailing 수준을 손절가로 올리면 그 수준은 장중 꼬리에도 매도됩니다.
 - 도구로 일봉을 직접 볼 때 정규장·조기폐장 종료 전의 오늘 봉은 확정 일봉이 아니며, 도구에서 읽은 마감 전 수집 캐시를 확정 종가라고 부르지는 마십시오. 오늘 종가 대용은 오후 판단의 현재가 하나뿐입니다.
@@ -1025,7 +1025,7 @@ When the system regime is unavailable, the automatic exit trails wider at peak �
 - stop_loss and the absolute -7% stop are executed automatically on the **live intraday price**: once the price is at or below stop_loss × 0.995 (0.5% wick buffer) or 7% or more below entry, the intraday hard stop exits fully without waiting for the close.
 - A brief touch inside the buffer (between stop_loss and stop_loss × 0.995) is not a stop-loss on its own.
 - The system trailing stop (off the post-entry peak) is confirmed by the afternoon review's price and the **pre-close automatic check** (between 15:50 and 15:59 New York time). An intraday low that briefly touches the trailing stop (intraday wick) is NEVER a sell reason on its own.
-- The afternoon review (around 14:30 New York time) treats the current price as today's close and today's volume so far as today's volume, as the afternoon screening does. For close-based judgements (Tier 2 trailing, Tier 3 trend weakness) use the 'System-computed facts' block as given; in the afternoon it includes today's bar at the current price.
+- The afternoon review (around 14:50 New York time; the afternoon batch starts at 14:30) treats the current price as today's close and today's volume so far as today's volume, as the afternoon screening does. For close-based judgements (Tier 2 trailing, Tier 3 trend weakness) use the 'System-computed facts' block as given; in the afternoon it includes today's bar at the current price.
 - The morning review never sells on a trailing breach: a line raised by today's peak must not be compared with yesterday's close (LLY 2026-10-30).
 - But a stop you raise through portfolio_adjustment (new_stop_loss) is executed by the intraday hard stop above. Raising stop_loss to the trailing level makes that level sell on an intraday wick.
 - When you read daily bars with tools, today's bar before the regular or early close is not a completed bar; do not

@@ -146,6 +146,8 @@ def test_sell_factory_matches_reviewed_volume_prompt():
     # DB-update lines removed (D1-D6, D14, D15, D17, X5, X7), ko-only lines dropped (M10), Core-1 indentation (S5);
     # the volume block is the shared prism_core/volume_prompt_block.py without the BUY-only closing sentence (D7, X8).
     # Bands, hard stop, MA50 exit, Tier 3 and every threshold unchanged. KR/US x ko/en.
+    # 2026-11-11 reviewed (audit M9): the afternoon-review time states the actual AI sell-review time
+    # (KR ~15:00 KST, US ~14:50 ET, ledger 2026-10-28..11-10) with the batch start as a note; wording only.
     source = SOURCE.read_text(encoding="utf-8")
     node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "create_sell_decision_agent")
-    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "23437f0fcb20734514374f05b3abdfe2f641a7d9a36a1b8b48a1a03ccd362f0e"
+    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "5b789fe37a0d5ee236827aeeda357420788d59cde9b8b2786f09b20df7798562"

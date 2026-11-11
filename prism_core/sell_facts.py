@@ -20,7 +20,7 @@ from prism_core import runner_hold as R
 TREND_DOWN_CLOSES = 3      # tier 3: three consecutive lower daily closes
 VOLUME_WINDOW = 20         # tier 3: volume against the prior 20-session average
 MA_WINDOW = 20             # tier 3: close below the 20-day MA
-AFTERNOON_FROM = time(14, 0)  # exchange-local; the afternoon AI sell review runs after it (KR ~14:46, US ~14:50 ET)
+AFTERNOON_FROM = time(14, 0)  # exchange-local; the afternoon AI sell review runs after it (KR ~15:00 KST, US ~14:50 ET; batches start 14:46 / 14:30)
 
 
 def enabled():
