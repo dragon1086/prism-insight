@@ -878,7 +878,13 @@ class ScenarioRuntime:
                             and ctx.get('positions') == [] and ctx.get('pending_entries') == []
                             and ctx.get('accounting_status') == 'confirmed'
                             and ctx['entry_convergence']['status'] == 'BLOCKED'
-                            and (ctx.get('recovery') or {}).get('first_observation') is False):
+                            and ctx.get('recovery_observing') is True
+                            and isinstance(current.get('recovery', {}).get('baseline'), dict)
+                            and bool(current['recovery']['baseline'])
+                            and isinstance(current['recovery'].get('baseline_input_id'), str)
+                            and bool(current['recovery']['baseline_input_id'])
+                            and type(current['recovery'].get('baseline_slot')) is int
+                            and current['recovery']['baseline_slot'] < slot):
                         # No entry is legal under the existing gate; do not ask a model to invent one.
                         return dict(status='observation_only', reason='entry_convergence_restricted',
                                     model_called=False, market_observation_only=True,
