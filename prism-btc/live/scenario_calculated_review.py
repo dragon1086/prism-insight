@@ -1167,7 +1167,10 @@ def research_review(snapshot, context, response_contract, *, generate, record,
         wait_schema["properties"][field]["maxItems"] = 0
     candidate_schema = deepcopy(schema)
     candidate_schema["properties"]["action"]["enum"] = [a for a in candidate_schema['properties']['action']['enum'] if a != 'WAIT']
-    wait_only = schema["properties"]["action"]["enum"] == ["WAIT"]
+    convergence_wait = (frozen_context.get('scenario_id') is None
+        and frozen_context.get('positions') == [] and frozen_context.get('pending_entries') == []
+        and (frozen_context.get('entry_convergence') or {}).get('status') == 'BLOCKED')
+    wait_only = schema["properties"]["action"]["enum"] == ["WAIT"] or convergence_wait
     first_observation = (frozen_context.get("recovery") or {}).get("first_observation") is True
     draft_schema = _object(dict(wait_proposal=wait_schema,
         candidates=dict(type="array", maxItems=0 if wait_only or first_observation else 2,
