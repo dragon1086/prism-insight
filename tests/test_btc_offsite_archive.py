@@ -105,6 +105,21 @@ def test_commit_scan_rejects_expired_outer_deadline(tmp_path):
         archive.referenced_commits(raw, deadline=0)
 
 
+@pytest.mark.parametrize('elapsed,passes', [(700, True), (1201, False)])
+def test_large_scan_budget_is_finite_and_allows_more_than_ten_minutes(tmp_path,monkeypatch,elapsed,passes):
+    raw=tmp_path/'snapshot.sqlite'
+    with sqlite3.connect(raw)as db:
+        db.execute('CREATE TABLE llm_scenario_audit_manifests(body TEXT)')
+        db.execute('INSERT INTO llm_scenario_audit_manifests VALUES(?)',
+                   (json.dumps({'git_revision':'a'*40}),))
+    initial=iter([0])
+    monkeypatch.setattr(archive.time,'monotonic',lambda:next(initial,elapsed))
+    if passes:
+        assert archive.referenced_commits(raw)[0]==['a'*40]
+    else:
+        with pytest.raises(TimeoutError,match='commit_scan_deadline'):archive.referenced_commits(raw)
+
+
 def test_scan_does_not_classify_deadline_interruption_as_malformed(tmp_path, monkeypatch):
     raw = tmp_path / 'snapshot.sqlite'
     with sqlite3.connect(raw) as db:
