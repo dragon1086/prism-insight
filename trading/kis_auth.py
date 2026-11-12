@@ -826,8 +826,8 @@ class CrossPlatformFileLock:
 
 
 # ============== Retry Logic for Token Request ==============
-TOKEN_ISSUE_RATE_LIMIT_CODE = "EGW00133"
-TOKEN_ISSUE_RATE_LIMIT_WAIT = 61  # seconds; the limit window is one minute
+KIS_ISSUE_LIMIT_ERROR = "EGW00133"
+KIS_ISSUE_LIMIT_WAIT = 61  # seconds; the limit window is one minute
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=2, min=5, max=60),
@@ -855,10 +855,10 @@ def _request_token_with_retry(url: str, params: dict, headers: dict) -> dict:
         # KIS issues one token per app key per minute. The file lock covers this host only; another
         # host with the same key (app-server dashboard cron, 11:05) may have just issued, and KIS then
         # returns that same token to us once the minute has passed.
-        if res.status_code == 403 and TOKEN_ISSUE_RATE_LIMIT_CODE in res.text and not waited:
-            logging.warning(f"KIS token issue rate-limited ({TOKEN_ISSUE_RATE_LIMIT_CODE}); "
-                            f"retrying in {TOKEN_ISSUE_RATE_LIMIT_WAIT}s")
-            time.sleep(TOKEN_ISSUE_RATE_LIMIT_WAIT)
+        if res.status_code == 403 and KIS_ISSUE_LIMIT_ERROR in res.text and not waited:
+            logging.warning(f"KIS token issue rate-limited ({KIS_ISSUE_LIMIT_ERROR}); "
+                            f"retrying in {KIS_ISSUE_LIMIT_WAIT}s")
+            time.sleep(KIS_ISSUE_LIMIT_WAIT)
             continue
         break
 
@@ -1138,7 +1138,7 @@ def auth(
         # KIS allows one token issue per minute (EGW00133): serialize issuance across processes and
         # re-read, since a concurrent job (e.g. news titles at the same cron minute) may have just saved one.
         with CrossPlatformFileLock(os.path.join(config_root, ".token_issue.lock"),
-                                   timeout=TOKEN_ISSUE_RATE_LIMIT_WAIT + 30):
+                                   timeout=KIS_ISSUE_LIMIT_WAIT + 30):
             saved_token = read_token(account_key=account_key)
             if saved_token is None:
                 # No valid token - request new one

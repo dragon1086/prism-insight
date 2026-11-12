@@ -284,10 +284,10 @@ def test_token_request_waits_out_the_per_minute_issue_limit_once(monkeypatch):
     monkeypatch.setattr(ka.requests, "post", lambda *a, **k: responses.pop(0))
     monkeypatch.setattr(ka.time, "sleep", slept.append)
     assert ka._request_token_with_retry("https://kis/oauth2/tokenP", {}, {})["access_token"] == "peer-token"
-    assert slept == [ka.TOKEN_ISSUE_RATE_LIMIT_WAIT] and not responses
+    assert slept == [ka.KIS_ISSUE_LIMIT_WAIT] and not responses
 
     responses[:] = [Response(403, '{"error_code":"EGW00133"}')] * 2
     slept.clear()
     with pytest.raises(ka.TokenRequestError):  # still limited after the wait: fail, never loop
         ka._request_token_with_retry("https://kis/oauth2/tokenP", {}, {})
-    assert slept == [ka.TOKEN_ISSUE_RATE_LIMIT_WAIT] and not responses
+    assert slept == [ka.KIS_ISSUE_LIMIT_WAIT] and not responses
