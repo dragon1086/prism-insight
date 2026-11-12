@@ -75,7 +75,8 @@ class Broker(Protocol):
     slot_amount: float   # the account's configured one-slot amount (KRW for KR, USD for US)
 
     def buy_next_open(self, product: str, amount: float, exchange: Optional[str], ref_price: Optional[float]) -> OrderResult: ...
-    def sell_next_open(self, product: str, qty: int, exchange: Optional[str]) -> OrderResult: ...
+    def sell_next_open(self, product: str, qty: Optional[int], exchange: Optional[str]) -> OrderResult:
+        """``qty`` None sells the whole holding as the broker sees it now (splits never leave a remainder)."""
     def holding(self, product: str) -> Optional[tuple[int, Optional[float]]]:
         """(qty, average price) of the product in this account, None when not held. Raises Unavailable."""
 

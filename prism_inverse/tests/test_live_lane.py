@@ -56,7 +56,7 @@ def test_kr_live_follows_the_virtual_trade_from_order_to_close():
     t2 = _t("KQ_FR", D[0], status=PENDING_EXIT, exit_day=D[2], reason="STOP")
     r = run_live("KR", D[2], [t2], pm, KR_LANE, [b], store, events)
     (p,) = r.positions
-    assert p.status == ORDERED_SELL and p.exit_reason == "STOP" and b.orders[-1] == ("SELL", "251340", 300, None)
+    assert p.status == ORDERED_SELL and p.exit_reason == "STOP" and b.orders[-1] == ("SELL", "251340", None, None)
     # day 3: still held (sell not filled) -> sold again; day 4: gone -> CLOSED and the slot takes a new signal
     r = run_live("KR", D[3], [t2], pm, KR_LANE, [b], store, events)
     assert r.positions[0].status == ORDERED_SELL and b.orders[-1][0] == "SELL" and len(b.orders) == 3
@@ -87,6 +87,33 @@ def test_rejected_or_unfilled_buys_are_recorded_and_free_the_slot():
     r = run_live("KR", D[1], [_t("KQ_FR", D[0], status=OPEN)], pm, KR_LANE, [main], store, events)
     (p,) = [p for p in r.positions if p.account == "main"]
     assert p.status == ORDERED_BUY and p.error.startswith("HOLDING_UNAVAILABLE") and len(main.orders) == 1
+
+
+def test_only_validated_kr_families_order_and_a_stuck_position_times_out():
+    store, events, b = MemoryStore(), FakeEvents(), FakeBroker()
+    pm = kr_product_map()
+    assert set(pm) == {"KQ_X10", "KQ_FR", "K200_SEMI"}
+    # the record-only families (S4 KQ_F1, S6 drivers) fire -> no order
+    r = run_live("KR", D[0], [_t("KQ_F1", D[0]), _t("K200_DRIVER", D[0], "114800", "069500")], pm, KR_LANE, [b], store, events)
+    assert b.orders == [] and r.positions == []
+    # an OPEN position whose virtual trade is stuck on a missing bar: held until the timeout, then sold anyway
+    run_live("KR", D[0], [_t("KQ_FR", D[0])], pm, KR_LANE, [b], store, events)
+    b.holdings["251340"] = (300, 3990.0)
+    stuck = _t("KQ_FR", D[0], status=PENDING_ENTRY)                       # never advanced: MISSING_ENTRY_BAR every run
+    r = run_live("KR", D[1], [stuck], pm, KR_LANE, [b], store, events)
+    assert r.positions[0].status == OPEN and len(b.orders) == 1
+    late = D[1] + timedelta(days=KR_LANE.timeout_days)
+    r = run_live("KR", late, [stuck], pm, KR_LANE, [b], store, events)
+    (p,) = r.positions
+    assert (p.status, p.exit_reason, b.orders[-1][0]) == (ORDERED_SELL, "LIVE_TIMEOUT", "SELL")
+    # a lost trade (not in today's book) is also sold at the timeout, not before
+    run_live("KR", D[2], [_t("KQ_X10", D[2])], pm, KR_LANE, [FakeBroker("x")], store, events)
+    x = FakeBroker("x"); x.holdings["251340"] = (10, 4000.0)
+    for d in (D[3], D[4]):
+        r = run_live("KR", d, [], pm, KR_LANE, [x], store, events)
+        assert (r.positions[0].status, r.positions[0].error) == (OPEN, "MISSING_TRADE") and not x.orders
+    r = run_live("KR", D[3] + timedelta(days=KR_LANE.timeout_days), [], pm, KR_LANE, [x], store, events)
+    assert r.positions[0].exit_reason == "LIVE_TIMEOUT"
 
 
 def test_us_live_splits_the_slot_in_three_and_sizes_minus_three_x_at_two_thirds():

@@ -20,9 +20,10 @@ OCCUPYING = (ORDERED_BUY, OPEN, ORDERED_SELL)
 @dataclass(frozen=True)
 class LaneRules:
     slots: int
+    timeout_days: int      # calendar days after the fill when the position is sold even if its virtual trade is stuck
 
 
-KR_LANE, US_LANE = LaneRules(slots=1), LaneRules(slots=3)
+KR_LANE, US_LANE = LaneRules(slots=1, timeout_days=21), LaneRules(slots=3, timeout_days=35)   # virtual max hold 10 / 20 sessions
 
 
 @dataclass(frozen=True)

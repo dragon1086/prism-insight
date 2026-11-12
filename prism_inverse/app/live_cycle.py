@@ -7,10 +7,12 @@ order, like the research (entry and exit at the next session's open). Per accoun
    subscriber account's 2x deposit rule, or any broker refusal) and only recorded; a sell still
    held is placed again.
 2. Exit: when the mirrored virtual trade has an exit signal (STOP/TARGET/TIME/NOPROG/TRAIL), sell
-   the whole position at the next open.
+   the whole holding at the next open. A position whose virtual trade is stuck (missing bars, lost
+   trade) is sold anyway ``timeout_days`` after its fill (LIVE_TIMEOUT): never an open-ended hold.
 3. Entry: today's new virtual trades become buy candidates; ``plan_entries`` keeps the lane inside
    its slots (KR one at a time, US three sectors). Amount = slot amount / slots, scaled 2/3 for a
-   -3x product so exposure matches the -2x research.
+   -3x product so exposure matches the -2x research. Only families whose payoff was validated in
+   the one-slot study (S18/S19) order; the other KR recorders stay virtual.
 
 Nothing here runs unless ``INVERSE_LANE_LIVE_MARKETS`` names the market (tools/run_inverse_signals.py).
 """
@@ -30,10 +32,11 @@ from prism_inverse.ports import Broker, EventSink, LiveStore, Unavailable
 
 LIVE_VERSION = "inverse-live-v1"
 KR_PRODUCTS = {"251340": Product("251340", -1), "114800": Product("114800", -1), "252670": Product("252670", -2)}
+KR_LIVE_FAMILIES = ("KQ_X10", "KQ_FR", "K200_SEMI")   # the S18 three (payoff 2.51) the S19 one-slot design was sized on
 
 
 def kr_product_map() -> dict[str, Product]:
-    return {fam: KR_PRODUCTS[etf] for fam, (_, etf) in FAMILY_MAP.items()}
+    return {fam: KR_PRODUCTS[FAMILY_MAP[fam][1]] for fam in KR_LIVE_FAMILIES}
 
 
 def us_product_map(inverse: Mapping[str, Product]) -> dict[str, Product]:
@@ -84,14 +87,15 @@ def run_live(market: str, day: date, trades: Sequence[VirtualTrade], product_map
             if p.status not in (OPEN, ORDERED_SELL) or (p.status == ORDERED_SELL and p.exit_ordered == day):
                 continue
             t = by_id.get(p.trade_id)
-            if p.status == OPEN:
+            timed_out = p.filled is not None and (day - p.filled).days >= rules.timeout_days
+            if p.status == OPEN and not timed_out:
                 if t is None:
-                    save(replace(p, error="MISSING_TRADE"), "inverse.live_unreconciled")   # hold; never sell blind
+                    save(replace(p, error="MISSING_TRADE"), "inverse.live_unreconciled")   # hold until the timeout; never sell blind
                     continue
                 if t.exit_signal_date is None:
                     continue
-            reason = p.exit_reason or (t.exit_reason if t else None) or "UNKNOWN"
-            r = broker.sell_next_open(p.product, p.qty, product_map.get(p.family, Product(p.product, -1)).exchange)
+            reason = p.exit_reason or (t.exit_reason if t and t.exit_signal_date else None) or ("LIVE_TIMEOUT" if timed_out else "UNKNOWN")
+            r = broker.sell_next_open(p.product, None, product_map.get(p.family, Product(p.product, -1)).exchange)   # whole holding
             save(replace(p, status=ORDERED_SELL, exit_reason=reason, exit_ordered=day, exit_order_no=r.order_no if r.ok else p.exit_order_no,
                          error=None if r.ok else f"SELL_FAILED: {r.message}"), "inverse.live_order", side="SELL", ok=r.ok)
 
