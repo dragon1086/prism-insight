@@ -362,7 +362,8 @@ def test_standalone_receiver_recomputes_retention_index(payload, monkeypatch):
     manifest_path.write_text(json.dumps(altered))
     with pytest.raises(subprocess.CalledProcessError):
         archive.archive(repo, snapshot, path / 'unused-config')
-    assert (root / ack['archive'] / 'receipt.json').is_file()
+    # Replacement keeps the newest verified recovery point even when later uploads fail.
+    assert (root / backup_only['archive'] / 'receipt.json').is_file()
 
 
 def test_event_proof_status_cannot_claim_missing_or_unavailable_index(tmp_path):

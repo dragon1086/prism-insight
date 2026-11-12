@@ -1,6 +1,7 @@
 #!/bin/bash
 # On backup failure, preserve older backups; retention runs only after success.
 # Low-space recovery is an operator decision, not permission to delete the last good copy.
+# After local snapshot verification, remote replacement retains the last verified archive.
 set -euo pipefail
 umask 077
 
