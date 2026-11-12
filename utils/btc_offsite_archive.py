@@ -140,7 +140,7 @@ def ssh_archive(host, needed, *, stream=None, restore=None):
     if restore is not None:
         suffix = '\nprint(json.dumps(restore_archive(REMOTE_ROOT, ' + repr(restore) + ', REPLAY_ROOT)))\n'
     else:
-        suffix = ('\nprivate_root(REMOTE_ROOT); space(REMOTE_ROOT, ' + str(needed) + ', staging=True); print("READY")\n'
+        suffix = ('\nprepare_archive(REMOTE_ROOT, ' + str(needed) + '); print("READY")\n'
                   if stream is None else '\nprint(json.dumps(receive(sys.stdin.buffer, REMOTE_ROOT, ' + str(needed) + ')))\n')
     packed = base64.b85encode(zlib.compress((prelude + source).encode('utf-8'), 9)).decode('ascii')
     bootstrap = ("import base64,zlib;ns={'__name__':'offsite_receiver'};"
@@ -193,6 +193,84 @@ def space(root, needed, *, staging=False):
             usage += p.stat().st_size
     if usage + (0 if staging else needed) > CAP or shutil.disk_usage(root).free < RESERVE + needed:
         raise OSError('archive_space_limit')
+
+
+def _published_archive(directory):
+    """Only this receiver's immutable, private, completely published artifacts."""
+    required = set(FILES) | {'receipt.json'}
+    info = directory.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077
+            or {p.name for p in directory.iterdir()} != required):
+        raise ValueError('archive_retention_directory_invalid')
+    identities = {}
+    for name in required:
+        item = (directory / name).lstat()
+        if (not stat.S_ISREG(item.st_mode) or item.st_uid != os.getuid()
+                or item.st_mode & 0o077 or item.st_nlink != 1):
+            raise ValueError('archive_retention_file_invalid')
+        identities[name] = (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
+    if any(identities[name][2] > 4*1024**2 for name in ('receipt.json', FILES[1], FILES[3])):
+        raise ValueError('archive_retention_metadata_large')
+    receipt = json.loads((directory / 'receipt.json').read_text())
+    metadata = json.loads((directory / FILES[3]).read_text())
+    manifest = json.loads((directory / FILES[1]).read_text())
+    if not all(isinstance(value, dict) for value in (receipt, metadata, manifest)):
+        raise ValueError('archive_retention_receipt_invalid')
+    hashes = dict(zip(FILES, (receipt.get('compressed_sha256'), receipt.get('manifest_sha256'),
+                             receipt.get('bundle_sha256'), receipt.get('archive_metadata_sha256'))))
+    if (receipt.get('status') != 'VERIFIED'
+            or not isinstance(receipt.get('raw_sha256'), str)
+            or not re.fullmatch('[a-f0-9]{64}', receipt['raw_sha256'])
+            or any(not isinstance(h, str) or not re.fullmatch('[a-f0-9]{64}', h) for h in hashes.values())
+            or any(metadata.get('sha256', {}).get(name) != hashes[name] for name in FILES[:-1])
+            or manifest.get('compressed_sha256') != hashes[FILES[0]]
+            or manifest.get('compressed_bytes') != identities[FILES[0]][2]
+            or manifest.get('raw_sha256') != receipt.get('raw_sha256')
+            or digest(directory / FILES[1]) != hashes[FILES[1]]
+            or digest(directory / FILES[3]) != hashes[FILES[3]]):
+        raise ValueError('archive_retention_receipt_invalid')
+    return identities, hashes
+
+
+def prepare_archive(root, needed):
+    """The caller already verified a new local snapshot; retain the last good remote copy.
+
+    Keep one previous point while replacing it, hence two after successful upload.
+    Do not accumulate whole-database copies until verification scratch space runs out.
+    """
+    private_root(root)
+    if type(needed) is not int or not 0 <= needed <= 4*RAW_CAP:
+        raise ValueError('invalid_space_requirement')
+    lock_fd = os.open(root / '.receive.lock', os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    try:
+        lock = os.fstat(lock_fd)
+        if not stat.S_ISREG(lock.st_mode) or lock.st_uid != os.getuid() or lock.st_nlink != 1:
+            raise ValueError('unsafe_archive_lock')
+        os.fchmod(lock_fd, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if any(p.is_symlink() for p in root.rglob('*')):
+            raise ValueError('archive_symlink')
+        archives = sorted((p for p in root.iterdir() if re.fullmatch('archive-[a-f0-9]{32}', p.name)),
+                          key=lambda p: (p / 'receipt.json').lstat().st_mtime_ns)
+        if needed and len(archives) > 1:
+            checked = {p: _published_archive(p) for p in archives}
+            latest = archives[-1]
+            for name, expected in checked[latest][1].items():
+                if digest(latest / name) != expected:
+                    raise ValueError('archive_retention_latest_corrupt')
+            for directory in archives:
+                for name, identity in checked[directory][0].items():
+                    item = (directory / name).lstat()
+                    if identity != (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns):
+                        raise ValueError('archive_retention_changed')
+            for directory in archives[:-1]:
+                for name in checked[directory][0]:
+                    (directory / name).unlink()
+                directory.rmdir()
+            sync_dir(root)
+        space(root, needed, staging=True)
+    finally:
+        os.close(lock_fd)
 
 
 def _zero_bytes(chunk):
