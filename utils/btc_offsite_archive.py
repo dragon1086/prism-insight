@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import ipaddress
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -481,13 +482,15 @@ def referenced_commits(raw, *, deadline=None):
         elif isinstance(x, list):
             for value in x:
                 walk(value)
-    deadline = min(time.monotonic() + 600, deadline) if deadline is not None else time.monotonic() + 600
+    # Multi-GB histories exceed ten minutes; the caller's tighter deadline still wins.
+    deadline = min(time.monotonic() + 1200, deadline) if deadline is not None else time.monotonic() + 1200
     if time.monotonic() > deadline:
         raise TimeoutError('commit_scan_deadline')
     with closing(sqlite3.connect(raw.as_uri() + '?mode=ro', uri=True)) as db:
         db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
         # Only known evidence columns, not unrelated application secrets/settings.
         for table, queries in EVIDENCE_QUERIES.items():
+            logging.getLogger(__name__).info('archive_commit_scan_table=%s', table)
             cols = [r[0] for r in db.execute('SELECT name FROM pragma_table_info(?)', (table,))]
             if table == 'llm_scenario_audit_manifests':
                 coverage['manifest_table_present'] = bool(cols)
