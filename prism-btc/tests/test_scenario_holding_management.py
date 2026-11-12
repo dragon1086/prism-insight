@@ -185,3 +185,11 @@ def test_reaction_reference_does_not_tighten_inside_one_atr_of_entry_noise(side)
     assert row['buffer_atr']==1. and row['favorable_price_progress_atr']==.75
     assert row['ratchet_reference_active']is False
     assert row['candidate_stop']==c['previous_hard_stop']
+
+
+def test_confirmed_holding_prompt_preserves_pre_entry_cleanup_bytes():
+    import hashlib
+    context = dict(scenario_id='held', positions=[dict(price=100, quantity=1)],
+                   pending_entries=[], accounting_status='confirmed', protection_ok=True)
+    prompt = holding_management_instructions(SYSTEM_PROMPT + MA_STRUCTURE_PROMPT, context)
+    assert hashlib.sha256(prompt.encode()).hexdigest() == '5569c9efb734a2cd494607671d0b5f6a90e143904118fdd2ad491d89fef06bf1'
