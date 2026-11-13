@@ -791,3 +791,41 @@ def test_execute_add_fills_the_broker_holding_to_the_allocation(live_on, monkeyp
         assert row_ledger_quantity(stored) == int(unit * 0.5 // price) + int(expected // price)
     else:
         assert "order_cash" not in leg
+
+
+def test_a_rejected_add_leg_records_zero_shares(live_on, monkeypatch, tmp_path):
+    # 2026-11-14: a rejected add bought nothing; its leg must not count toward per-row exit shares.
+    from observability import events
+    from prism_core import execution_service
+    from prism_core.loop_row_split import row_ledger_quantity
+
+    class _Rejecting(_FakeTrading):
+        async def execute_buy(self, **kwargs):
+            _FakeTrading.calls.append(kwargs)
+            return {"success": False, "message": "insufficient funds", "intent_status": "FAILED"}
+
+    scenario = {"micro_split": live.entry_record(
+        plan={"initial_nominal": "0.5", "policy_version": "v3", "plan_hash": "h", "entry_reference": 10000},
+        unit_amount=1_000_000, market="KR", entered_at="t0")}
+    scenario["micro_split"]["add_plan"] = {"plan_hash": "ph", "status": "ACTIVE", "valid_for": "2026-10-05"}
+    conn = sqlite3.connect(tmp_path / "h.sqlite")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE stock_holdings (id INTEGER PRIMARY KEY, ticker TEXT, company_name TEXT, "
+                 "account_key TEXT, scenario TEXT, buy_price REAL, stop_loss REAL)")
+    conn.execute("INSERT INTO stock_holdings VALUES (7, 'ABC', 'Abc', 'acc', ?, 10000, 9300)", (json.dumps(scenario),))
+    conn.commit()
+    agent = SimpleNamespace(conn=conn, cursor=conn.cursor(), db_path=str(tmp_path / "h.sqlite"),
+                            account_configs=[{"account_key": "acc", "name": "primary"}],
+                            _set_active_account=lambda account: None, message_queue=[], _msg_types=[])
+    monkeypatch.setattr(events, "emit_event", lambda name, **kw: None)
+    monkeypatch.setattr(execution_service.ExecutionService, "domestic", _Rejecting, raising=False)
+    _FakeTrading.calls.clear()
+    meta = {"plan_hash": "ph", "scenario_id": "breakout_1", "scenario_type": "breakout", "session": "2026-10-05"}
+    asyncio.run(live.execute_add(agent, market="KR", now="t1", decision={
+        "target_allocation": "0.8", "price": 10000, "bar_end": "add-plan:2026-10-05:breakout_1", "add_plan": meta},
+        campaign={"position_id": "legacy:KR:7", "account_key": "acc", "symbol": "ABC", "campaign_id": "c1"}))
+
+    stored = json.loads(conn.execute("SELECT scenario FROM stock_holdings WHERE id=7").fetchone()[0])
+    assert _FakeTrading.calls and stored["micro_split"]["allocation"] == "0.8"   # strategy ledger keeps the add
+    assert stored["micro_split"]["legs"][-1]["order_cash"] == "0"
+    assert row_ledger_quantity(stored) == 50                                      # the entry's shares only

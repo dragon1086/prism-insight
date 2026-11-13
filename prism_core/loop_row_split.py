@@ -70,9 +70,10 @@ def split_sell_quantity(split: dict[str, Any], live_qty: int, row_id: Any = None
 # ── Per-row shares of micro-split pyramid rows (2026-11-08, PYRAMID_ROWS_MICRO_SPLIT_ENABLED) ──
 # Rows of different sizes cannot share floor(qty / N). A micro-split row's shares follow from its
 # strategy ledger: each leg ordered floor(scaled_cash(slot amount, leg allocation) / leg price)
-# shares (or floor(leg order_cash / price) for a fill-to-target add) (strict-budget limit orders, prism_core.micro_split_live). That is the ORDERED quantity;
-# a rejected or unfilled order makes it overstate, so a row never sells more than the broker
-# remainder left after every other row's ledger shares.
+# shares (strict-budget limit orders, prism_core.micro_split_live), or floor(leg order_cash /
+# price) when the add recorded what it ordered (fill-to-target; a rejected add records 0). That
+# is the ORDERED quantity; an unfilled order makes it overstate, and then the closing row still
+# sells its own shares (exit priority, see row_sell_quantity).
 _ROWS_SQL = {
     "KR": "SELECT id, scenario FROM stock_holdings WHERE ticker = ? AND account_key = ? ORDER BY id",
     "US": "SELECT id, scenario FROM us_stock_holdings WHERE ticker = ? AND account_key = ? ORDER BY id",
@@ -120,11 +121,15 @@ def row_sell_quantity(available: int, remaining_rows: int, scenario: Any,
     """(shares, reason, subscriber denominator, sell fraction) for closing ONE row of a (ticker, account).
 
     ``other_scenarios`` are the rows that stay open. No micro-split row involved: the legacy
-    floor(available / remaining_rows), denominator N, no fraction. Otherwise each row sells its
-    own ledger shares and never another row's: a known row sells min(own, available - others)
-    when every other row is known, min(own, available) when one is not; an unknown row sells the
-    residual available - others when all others are known, else nothing (fail safe; the last
-    row sweeps the remainder). The last row always sells the whole remainder.
+    floor(available / remaining_rows), denominator N, no fraction. Otherwise a known row sells
+    min(own ledger shares, available) and an unknown row sells the residual available - others
+    when all others are known, else nothing (the last row sweeps the remainder). The last row
+    always sells the whole remainder.
+
+    Exit priority (2026-11-14, user decision): when the ledger total exceeds the broker holding
+    (an unfilled or partly filled add), the closing row still sells its own ledger shares within
+    the holding (PYRAMID_ROW_LEDGER_OVER_BROKER); the rows left open absorb the shortfall. Before,
+    min(own, available - others) let an overstated open row zero a stop-loss exit.
 
     Subscribers sell holding // denominator. While other rows stay open the denominator is at
     least 2 and rounds up (ceil), so a mirror never sells another row's share; 0 shares gives
@@ -138,13 +143,14 @@ def row_sell_quantity(available: int, remaining_rows: int, scenario: Any,
         return available, "LAST_ROW_REMAINDER", 1, 1.0
     own = row_ledger_quantity(scenario)
     others = [row_ledger_quantity(s) for s in other_scenarios]
-    if None in others:
-        quantity, reason = ((0, "PYRAMID_ROW_QTY_UNKNOWN") if own is None
-                            else (min(own, available), "PYRAMID_ROW_LEDGER_QTY"))
+    if own is not None:
+        over = None not in others and own + sum(others) > available
+        quantity, reason = min(own, available), ("PYRAMID_ROW_LEDGER_OVER_BROKER" if over
+                                                 else "PYRAMID_ROW_LEDGER_QTY")
+    elif None in others:
+        quantity, reason = 0, "PYRAMID_ROW_QTY_UNKNOWN"
     else:
-        room = max(available - sum(others), 0)
-        quantity, reason = ((room, "PYRAMID_ROW_QTY_RESIDUAL") if own is None
-                            else (min(own, room), "PYRAMID_ROW_LEDGER_QTY"))
+        quantity, reason = max(available - sum(others), 0), "PYRAMID_ROW_QTY_RESIDUAL"
     if quantity <= 0:
         return 0, reason, 0, 0.0
     return quantity, reason, max(2, math.ceil(available / quantity)), round(quantity / available, 4)

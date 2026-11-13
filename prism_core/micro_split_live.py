@@ -670,10 +670,11 @@ _SCENARIO_SQL = {
 
 
 def record_add_order_cash(agent, *, market, row_id, bar_end, cash):
-    """Store a filled-to-target add's order notional on its leg (``order_cash``), before the order.
+    """Store what an add leg ordered (``order_cash``): a fill-to-target notional, or 0 when rejected.
 
     Per-row exit quantities (prism_core.loop_row_split) size a leg from its allocation delta; a
-    fill-to-target add orders more than that, so the leg keeps what it actually sized. Never raises.
+    fill-to-target add orders more than that and a rejected add nothing, so the leg keeps what it
+    actually ordered. Never raises.
     """
     conn = None
     try:
@@ -906,6 +907,8 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
             kwargs = {"stock_code": campaign["symbol"]} if market == "KR" else {"ticker": campaign["symbol"]}
             result = await trading.execute_buy(buy_amount=cash, limit_price=price, intent=intent,
                                                strict_budget=True, **kwargs)
+            if result.get("intent_status") == "FAILED":  # broker rejected: the leg bought nothing
+                record_add_order_cash(agent, market=market, row_id=row_id, bar_end=decision["bar_end"], cash=0)
     # One channel message per add: a secondary account's add of the same position sends no second notice.
     announce = campaign["account_key"] == (primary_account_key(agent) or campaign["account_key"])
     if announce:
