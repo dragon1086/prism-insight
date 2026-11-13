@@ -70,7 +70,7 @@ def split_sell_quantity(split: dict[str, Any], live_qty: int, row_id: Any = None
 # ── Per-row shares of micro-split pyramid rows (2026-11-08, PYRAMID_ROWS_MICRO_SPLIT_ENABLED) ──
 # Rows of different sizes cannot share floor(qty / N). A micro-split row's shares follow from its
 # strategy ledger: each leg ordered floor(scaled_cash(slot amount, leg allocation) / leg price)
-# shares (strict-budget limit orders, prism_core.micro_split_live). That is the ORDERED quantity;
+# shares (or floor(leg order_cash / price) for a fill-to-target add) (strict-budget limit orders, prism_core.micro_split_live). That is the ORDERED quantity;
 # a rejected or unfilled order makes it overstate, so a row never sells more than the broker
 # remainder left after every other row's ledger shares.
 _ROWS_SQL = {
@@ -103,8 +103,9 @@ def row_ledger_quantity(scenario: Any) -> int | None:
     try:
         total = 0
         for leg in block["legs"]:
-            try:
-                cash = scaled_cash(block["unit_amount"], leg["allocation"], block["market"])
+            try:  # a fill-to-target add (2026-11-14) records the notional it actually ordered
+                cash = (float(leg["order_cash"]) if "order_cash" in leg
+                        else scaled_cash(block["unit_amount"], leg["allocation"], block["market"]))
             except ValueError:
                 cash = 0  # below one currency unit: no order was placed
             # legs store prices as strings

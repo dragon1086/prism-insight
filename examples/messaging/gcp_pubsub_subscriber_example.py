@@ -515,9 +515,10 @@ def _stale_signal_age(publish_time, now: Optional[datetime] = None) -> Optional[
 # ============================================================
 # PRISM starts a micro-split position at 30-80% of one slot (BUY position_fraction) and adds up
 # to one slot when an add scenario is confirmed. Each add is published as type "ADD" with
-# delta_fraction (of one slot, same basis as position_fraction). We buy delta_fraction x our own
-# one-slot amount, only for a ticker we already hold, never above PRISM's new allocation or one
-# slot, and at most once per signal_id (claimed in a local ledger before any order).
+# delta_fraction (of one slot, same basis as position_fraction). We buy up to PRISM's new allocation
+# x our own one-slot amount (2026-11-14: the gap, not only the delta, so whole-share rounding of the
+# entry is made up), only for a ticker we already hold, never above that allocation, and at most
+# once per signal_id (claimed in a local ledger before any order).
 
 ADD_LEDGER_ENV = "SUBSCRIBER_ADD_LEDGER"
 _ALLOCATION_TOLERANCE = 0.011  # rounding slack between delta_fraction and after - before
@@ -593,11 +594,12 @@ def _ticker_target(signal: Dict[str, Any], row_after: float):
     return total, rows
 
 
-def plan_add_amount(*, unit_amount: float, delta_fraction: float, allocation_after: float,
+def plan_add_amount(*, unit_amount: float, allocation_after: float,
                     held_quantity: int, price: float, market: str = "KR", slot_rows: int = 1):
     """(order amount, None) or (0, reason) for an ADD.
 
-    amount = min(delta x slot, target - held value), where slot is our one-slot amount, target =
+    amount = target - held value (the gap, not only delta x slot: since 2026-11-14 an add also
+    makes up the whole-share rounding of earlier orders), where slot is our one-slot amount, target =
     min(allocation_after, slot_rows) x slot and the held value (whole ticker) is valued at the add
     price. allocation_after is the ticker total when PRISM holds pyramid rows (slot_rows > 1). A
     holding already at or above PRISM's new allocation (e.g. a legacy full-slot entry) buys nothing.
@@ -607,12 +609,9 @@ def plan_add_amount(*, unit_amount: float, delta_fraction: float, allocation_aft
         return 0, "one-slot amount or price unavailable"
     held_value = max(int(held_quantity or 0), 0) * price
     room = min(allocation_after, max(int(slot_rows), 1)) * slot - held_value
-    amount = min(delta_fraction * slot, room)
     if room < price:
         return 0, f"holding already at PRISM's allocation (held {held_value:,.2f} of target {allocation_after:.0%})"
-    if amount < price:
-        return 0, "add amount below one share"
-    amount = int(amount) if market != "US" else int(amount * 100) / 100
+    amount = int(room) if market != "US" else int(room * 100) / 100
     return amount, None
 
 
@@ -693,7 +692,7 @@ async def follow_add_signal(signal: Dict[str, Any], logger: logging.Logger, *, d
                 result = skip("not held here (an ADD never opens a new position)")
             else:
                 target, rows = _ticker_target(signal, fields["after"])
-                amount, why = plan_add_amount(unit_amount=trading.buy_amount, delta_fraction=fields["delta"],
+                amount, why = plan_add_amount(unit_amount=trading.buy_amount,
                                               allocation_after=target, held_quantity=held,
                                               price=fields["limit_price"], market=market, slot_rows=rows)
                 if not amount:

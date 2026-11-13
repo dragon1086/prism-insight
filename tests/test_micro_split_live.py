@@ -727,3 +727,67 @@ def test_regime_size_shadow_bull_without_k8b_age_keeps_age_arms_missing(live_on,
     shadow = scenario["micro_split"]["reentry_regime_shadow"]
     assert shadow["k8b_bull_age"] is None and "early0_late1_else05" not in shadow["arms"]
     assert shadow["arms"]["bull1_else05"]["factor"] == "1"            # the older arms are unchanged
+
+
+@pytest.mark.parametrize("market,table,unit,price,holding,expected", [
+    # 2026-11-14: the add fills the broker holding up to the new allocation (0.8 slot), never above.
+    ("KR", "stock_holdings", 1_000_000, 10200, ("HELD", 45), 341_000),   # 800,000 - 45 x 10,200
+    ("US", "us_stock_holdings", 1000, 102.0, 4, 392.0),                  # $800 - 4 x $102
+    ("KR", "stock_holdings", 1_000_000, 10200, ("HELD", 79), 0),         # already at target: no order
+    ("KR", "stock_holdings", 1_000_000, 10200, ("UNKNOWN", None), 300_000),  # unknown -> the delta
+    ("KR", "stock_holdings", 1_000_000, 10200, ("FLAT", 0), 300_000),        # never rebuild a flat holding
+    ("US", "us_stock_holdings", 1000, 102.0, 0, 300.0),                  # US 0 may be a failed query
+])
+def test_execute_add_fills_the_broker_holding_to_the_allocation(live_on, monkeypatch, tmp_path, market, table,
+                                                                 unit, price, holding, expected):
+    from observability import events
+    from prism_core import execution_service
+
+    class _Held(_FakeTrading):
+        if market == "KR":
+            def get_holding_quantity_checked(self, symbol):
+                return holding
+        else:
+            def get_holding_quantity(self, symbol):
+                return holding
+
+    scenario = {"micro_split": live.entry_record(
+        plan={"initial_nominal": "0.5", "policy_version": "v3", "plan_hash": "h", "entry_reference": price},
+        unit_amount=unit, market=market, entered_at="t0")}
+    scenario["micro_split"]["add_plan"] = {"plan_hash": "ph", "status": "ACTIVE", "valid_for": "2026-10-05"}
+    meta = {"plan_hash": "ph", "scenario_id": "breakout_1", "scenario_type": "breakout", "session": "2026-10-05"}
+    conn = sqlite3.connect(tmp_path / "h.sqlite")
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, ticker TEXT, company_name TEXT, "
+                 "account_key TEXT, scenario TEXT, buy_price REAL, stop_loss REAL)")
+    conn.execute(f"INSERT INTO {table} VALUES (7, 'ABC', 'Abc', 'acc', ?, ?, ?)", (json.dumps(scenario), price, 1))
+    conn.commit()
+    agent = SimpleNamespace(conn=conn, cursor=conn.cursor(), db_path=str(tmp_path / "h.sqlite"),
+                            account_configs=[{"account_key": "acc", "name": "primary"}],
+                            _set_active_account=lambda account: None, message_queue=[], _msg_types=[])
+    emitted = []
+    monkeypatch.setattr(events, "emit_event", lambda name, **kw: emitted.append((name, kw)))
+    monkeypatch.setattr(execution_service.ExecutionService, "domestic", _Held, raising=False)
+    monkeypatch.setattr(execution_service.ExecutionService, "us", _Held, raising=False)
+    _FakeTrading.calls.clear()
+    campaign = {"position_id": f"legacy:{market}:7", "account_key": "acc", "symbol": "ABC", "campaign_id": "c1"}
+
+    result = asyncio.run(live.execute_add(agent, market=market, campaign=campaign, now="t1", decision={
+        "target_allocation": "0.8", "price": price, "bar_end": "add-plan:2026-10-05:breakout_1", "add_plan": meta}))
+
+    assert result["status"] == "EXECUTED" and result["cash"] == expected
+    if expected:
+        assert _FakeTrading.calls[0]["buy_amount"] == expected
+    else:
+        assert _FakeTrading.calls == [] and result["broker"]["reason_code"] == "micro_split_add_below_one_share"
+    attributes = emitted[-1][1]["attributes"]
+    held = holding[1] if market == "KR" else holding
+    assert attributes["cash_basis"] == ("fill_to_target" if held else "delta")
+    stored = json.loads(conn.execute(f"SELECT scenario FROM {table} WHERE id=7").fetchone()[0])
+    leg = stored["micro_split"]["legs"][-1]
+    from prism_core.loop_row_split import row_ledger_quantity
+    if held:  # per-row exit quantities count the shares the add actually sized
+        assert leg["order_cash"] == str(expected)
+        assert row_ledger_quantity(stored) == int(unit * 0.5 // price) + int(expected // price)
+    else:
+        assert "order_cash" not in leg
