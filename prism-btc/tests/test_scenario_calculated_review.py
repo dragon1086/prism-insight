@@ -710,3 +710,16 @@ def test_valid_holding_cancel_only_wait_keeps_current_protection_and_metadata():
     assert result["executable"] is False and result["orders_submitted"] == 0
     assert ctx["previous_hard_stop"] == original["previous_hard_stop"]
     assert ctx["positions"] == original["positions"]
+
+
+def test_incomplete_diagnostics_reach_error_ledger_without_partial_output():
+    from live.scenario_oauth import ScenarioOAuthIncomplete
+    c=context();events=[]
+    def fail(**request):
+        raise ScenarioOAuthIncomplete('incomplete',dict(status='incomplete',incomplete_details={'reason':'max_output_tokens'},
+            error={'message':'SENSITIVE_OUTPUT_7401'},output=[{'text':'SENSITIVE_OUTPUT_7401'}]))
+    with pytest.raises(ValueError,match='research_model_call_failed:incomplete'):
+        research_review(dict(valid=True,as_of_ms=1000000),c,response_contract(c),generate=fail,record=events.append,clock=lambda:1000)
+    error=next(e for e in events if e['kind']=='MODEL_ERROR')
+    assert error['response_summary']['incomplete_reason']=='max_output_tokens'
+    assert 'SENSITIVE_OUTPUT_7401' not in json.dumps(events)

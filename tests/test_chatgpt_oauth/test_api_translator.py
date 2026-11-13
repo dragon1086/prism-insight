@@ -275,3 +275,57 @@ class TestCollectSSE:
     def test_empty_stream_raises(self):
         with pytest.raises(ValueError):
             collect_sse_to_response("")
+
+
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+def test_typed_data_only_terminal_after_named_delta(newline):
+    import json
+    response={'id':'resp_done','model':'demo','status':'completed','output':[]}
+    text=newline.join(['event: response.output_text.delta','data: '+json.dumps({'type':'response.output_text.delta','delta':'{"action":"WAIT"}'}),'',
+                       'data:'+json.dumps({'type':'response.completed','response':response}),''])
+    result=collect_sse_to_response(text)
+    assert result['status']=='completed'
+    assert result['output'][0]['content'][0]['text']=='{"action":"WAIT"}'
+
+
+def test_named_terminal_is_proof_of_status_without_guessing_from_text():
+    result=collect_sse_to_response('event: response.completed\ndata: {"response":{"id":"resp_done","output":[]}}\n\n')
+    assert result['status']=='completed'
+    partial=collect_sse_to_response('data: {"type":"response.output_text.delta","delta":"{}"}\n\n')
+    assert partial['status']=='incomplete'
+    assert partial['incomplete_details']['reason']=='missing_terminal_event'
+    assert partial['usage'] is None
+
+
+def test_explicit_incomplete_preserves_reason_and_actual_usage():
+    import json
+    response={'id':'resp_cut','status':'incomplete','incomplete_details':{'reason':'max_output_tokens'},'usage':{'input_tokens':12,'output_tokens':8}}
+    result=collect_sse_to_response('data: '+json.dumps({'type':'response.incomplete','response':response})+'\n\n')
+    assert result==response
+
+
+@pytest.mark.parametrize('text',[
+    'event: response.output_text.delta\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+    'data: {"type":"response.incomplete","response":{"status":"completed"}}\n\n',
+])
+def test_conflicting_terminal_information_is_never_accepted(text):
+    with pytest.raises(ValueError,match='Conflicting SSE'):
+        collect_sse_to_response(text)
+
+
+def test_typed_stream_error_preserves_cause_without_fabricating_completion():
+    result=collect_sse_to_response('data: {"type":"error","code":"rate_limit_exceeded","message":"service busy"}\n\n')
+    assert result['status']=='failed'
+    assert result['error']['code']=='rate_limit_exceeded'
+
+
+def test_failure_followed_by_completion_is_not_silently_promoted():
+    with pytest.raises(ValueError,match='Conflicting SSE terminal events'):
+        collect_sse_to_response('data: {"type":"response.failed","response":{"status":"failed"}}\n\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n')
+
+
+def test_unicode_line_separator_inside_json_text_is_preserved():
+    import json
+    body={'type':'response.completed','response':{'status':'completed','output':[{'type':'message','role':'assistant','content':[{'type':'output_text','text':'a\u2028b'}]}]}}
+    result=collect_sse_to_response('data: '+json.dumps(body,ensure_ascii=False)+'\n\n')
+    assert result['output'][0]['content'][0]['text']=='a\u2028b'

@@ -40,6 +40,29 @@ class ScenarioOAuthTimeout(ValueError):
     """Safe timeout category for sealed review evidence."""
 
 
+class ScenarioOAuthIncomplete(ValueError):
+    """A bounded failure summary, never a partial model response or credential."""
+
+    def __init__(self, reason, response):
+        super().__init__('scenario_oauth_failed:' + (safe_failure_reason(reason) or 'incomplete'))
+        def known(value, allowed):
+            return value if isinstance(value, str) and value in allowed else None
+        details = response.get('incomplete_details')
+        error = response.get('error')
+        output = response.get('output')
+        reconstructed = response.get('id') == 'resp_reconstructed'
+        self.response_summary = dict(
+            status=known(response.get('status'), {'completed','incomplete','failed','cancelled','queued','in_progress'}),
+            incomplete_reason=known(details.get('reason') if isinstance(details,dict) else None,
+                {'max_output_tokens','max_messages','content_filter','steered','missing_terminal_event'}),
+            error_code=known(error.get('code') if isinstance(error,dict) else None,
+                {'server_error','rate_limit_exceeded','usage_limit_reached','insufficient_quota','authentication_error',
+                 'context_length_exceeded','invalid_request_error','unsupported_parameter'}),
+            locally_reconstructed=reconstructed,
+            output_items=len(output) if isinstance(output,list) else None,
+            usage_available=not reconstructed and usage_counts(response.get('usage')) is not None)
+
+
 def safe_failure_reason(value):
     """Only closed categories can cross the trading evidence/notice boundary."""
     if not isinstance(value, str):
@@ -167,7 +190,7 @@ def generate_scenario(*, system_prompt, user_prompt, model, reasoning_effort,
             reason = {'server_error':'upstream_error', 'rate_limit_exceeded':'rate_limited',
                       'usage_limit_reached':'rate_limited', 'insufficient_quota':'rate_limited',
                       'authentication_error':'authentication'}.get(code, 'incomplete') if isinstance(code, str) else 'incomplete'
-            raise ValueError('oauth_' + reason)
+            raise ScenarioOAuthIncomplete(reason, result)
         if result.get("model") != model:
             raise ValueError("oauth_model_mismatch")
         texts=[]
@@ -184,6 +207,8 @@ def generate_scenario(*, system_prompt, user_prompt, model, reasoning_effort,
             raise ValueError("model_text_missing")
         usage = usage_counts(result.get('usage'))
         return SimpleNamespace(text="".join(texts), **({'usage':usage} if usage is not None else {}))
+    except ScenarioOAuthIncomplete:
+        raise
     except HTTPError as exc:
         reason = safe_failure_reason('http_' + str(exc.code))
         raise ValueError('scenario_oauth_failed:' + (reason or 'connection')) from None

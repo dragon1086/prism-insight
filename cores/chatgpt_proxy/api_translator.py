@@ -259,7 +259,7 @@ def translate_response(response_body: dict, model: str) -> dict:
         message["tool_calls"] = tool_calls
 
     # Map usage
-    usage_in = response_body.get("usage", {})
+    usage_in = response_body.get("usage") or {}
     usage_out = {
         "prompt_tokens": usage_in.get("input_tokens", 0),
         "completion_tokens": usage_in.get("output_tokens", 0),
@@ -305,24 +305,35 @@ def collect_sse_to_response(sse_text: str) -> dict:
     arrive with an empty output array. We collect output items from the
     .done events and merge them into the final response.
     """
-    lines = sse_text.split("\n")
+    lines = sse_text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     current_event = ""
     data_lines: list[str] = []
-    completed_data: dict | None = None
-    failed_data: dict | None = None
+    terminal_data: dict | None = None
+    terminal_status: str | None = None
     output_items: list[dict] = []
     text_chunks: list[str] = []
 
     def _process(event: str, raw: str) -> None:
-        nonlocal completed_data, failed_data
+        nonlocal terminal_data, terminal_status
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
             return
-        if event == "response.completed":
-            completed_data = parsed
-        elif event == "response.failed":
-            failed_data = parsed
+        if not isinstance(parsed, dict):
+            return
+        semantic_event = parsed.get("type")
+        if isinstance(semantic_event, str):
+            if event and event != "message" and event != semantic_event:
+                raise ValueError("Conflicting SSE event types")
+            event = semantic_event
+        if event in {"response.completed", "response.failed", "response.incomplete", "error"}:
+            status = "failed" if event == "error" else event.removeprefix("response.")
+            if terminal_status is not None and terminal_status != status:
+                raise ValueError("Conflicting SSE terminal events")
+            terminal_data = {"error": parsed.get("error", parsed)} if event == "error" else parsed.get("response", parsed)
+            terminal_status = status
+            if not isinstance(terminal_data, dict) or terminal_data.get("status", terminal_status) != terminal_status:
+                raise ValueError("Conflicting SSE terminal status")
         elif event == "response.output_text.delta":
             delta = parsed.get("delta", "")
             if delta:
@@ -333,19 +344,22 @@ def collect_sse_to_response(sse_text: str) -> dict:
                 output_items.append(item)
 
     for line in lines:
-        if line.startswith("event: "):
-            if data_lines and current_event:
+        if not line:
+            if data_lines:
                 _process(current_event, "\n".join(data_lines))
-            current_event = line[7:].strip()
-            data_lines = []
-        elif line.startswith("data: "):
-            data_lines.append(line[6:])
-        elif line == "" and data_lines and current_event:
-            _process(current_event, "\n".join(data_lines))
-            data_lines = []
+            current_event, data_lines = "", []
+            continue
+        field, separator, value = line.partition(":")
+        if not separator:
+            value = ""
+        if value.startswith(" "):
+            value = value[1:]
+        if field == "event":
+            current_event = value
+        elif field == "data":
+            data_lines.append(value)
 
-    # Process any remaining data
-    if data_lines and current_event:
+    if data_lines:
         _process(current_event, "\n".join(data_lines))
 
     def _ensure_output(response_obj: dict) -> dict:
@@ -364,15 +378,14 @@ def collect_sse_to_response(sse_text: str) -> dict:
             ]
         return response_obj
 
-    if completed_data:
-        return _ensure_output(completed_data.get("response", completed_data))
+    if terminal_data is not None:
+        response = {**terminal_data, "status": terminal_status}
+        return _ensure_output(response) if terminal_status == "completed" else response
 
-    if failed_data:
-        return failed_data.get("response", failed_data)
-
-    # No completed event — synthesize from collected items/deltas
+    # Partial output is not proof that the response completed.
     if output_items or text_chunks:
-        synthesized: dict = {"id": "resp_reconstructed", "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}}
+        synthesized = {"id": "resp_reconstructed", "status": "incomplete",
+                       "incomplete_details": {"reason": "missing_terminal_event"}, "usage": None}
         return _ensure_output(synthesized)
 
     raise ValueError("No response.completed or response.failed event found in SSE stream")
