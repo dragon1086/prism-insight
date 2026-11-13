@@ -628,3 +628,10 @@ def test_partial_result_precedes_remaining_risk_and_is_not_repeated():
     assert out.count("정산 미확정") == 1
     assert "💵 청산 결과" not in out
     assert "TP/SL은 비용 전, 전체 예상은 향후 비용 전(수수료·슬리피지·펀딩)" in out
+
+
+@pytest.mark.parametrize('reason,expected',[('stream_incomplete','완료 신호'),('input_limit','입력이'),('output_limit','생성 한도'),('content_filter','응답 처리'),('steered','응답 처리')])
+def test_terminal_failure_categories_have_safe_korean_notice(reason,expected):
+    from live.scenario_notice import render_notice
+    text=render_notice(dict(kind='MODEL_ERROR',timestamp=1000,reason_code='llm_call_failed',transport_reason=reason))
+    assert expected in text

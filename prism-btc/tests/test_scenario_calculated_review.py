@@ -710,3 +710,13 @@ def test_valid_holding_cancel_only_wait_keeps_current_protection_and_metadata():
     assert result["executable"] is False and result["orders_submitted"] == 0
     assert ctx["previous_hard_stop"] == original["previous_hard_stop"]
     assert ctx["positions"] == original["positions"]
+
+
+def test_new_incomplete_reason_round_trips_through_exact_failure_tape():
+    from analysis.scenario_review_tape import record_review,replay_review
+    c=context();snapshot=dict(valid=True,as_of_ms=1000000);contract=response_contract(c);bindings={'test':'terminal-reason'}
+    def fail(**request):raise ValueError('scenario_oauth_failed:stream_incomplete')
+    tape=record_review(research_review,snapshot,c,contract,generate=fail,record=lambda e:None,clock=lambda:1000,bindings=bindings)
+    assert tape['outcome']['status']=='FAILED'
+    assert replay_review(tape,research_review,snapshot,c,contract,bindings=bindings)==tape['outcome']
+    assert any(o.get('event',{}).get('failure_detail')=='stream_incomplete'for o in tape['operations'])

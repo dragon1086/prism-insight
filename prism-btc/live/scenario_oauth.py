@@ -45,7 +45,8 @@ def safe_failure_reason(value):
     if not isinstance(value, str):
         return None
     if value in {'timeout', 'connection', 'upstream_error', 'rate_limited',
-                 'authentication', 'incomplete', 'model_mismatch', 'invalid_response'}:
+                 'authentication', 'incomplete', 'model_mismatch', 'invalid_response',
+                 'stream_incomplete', 'input_limit', 'output_limit', 'content_filter', 'steered'}:
         return value
     return value if re.fullmatch(r'http_[1-5][0-9]{2}', value) else None
 
@@ -166,7 +167,14 @@ def generate_scenario(*, system_prompt, user_prompt, model, reasoning_effort,
             code = error.get('code') if isinstance(error, dict) else None
             reason = {'server_error':'upstream_error', 'rate_limit_exceeded':'rate_limited',
                       'usage_limit_reached':'rate_limited', 'insufficient_quota':'rate_limited',
-                      'authentication_error':'authentication'}.get(code, 'incomplete') if isinstance(code, str) else 'incomplete'
+                      'authentication_error':'authentication', 'context_length_exceeded':'input_limit'}.get(code, 'incomplete') if isinstance(code, str) else 'incomplete'
+            if reason == 'incomplete':
+                details = result.get('incomplete_details')
+                why = details.get('reason') if isinstance(details, dict) else None
+                if isinstance(why, str):
+                    reason = {'missing_terminal_event':'stream_incomplete',
+                              'max_output_tokens':'output_limit', 'max_messages':'output_limit',
+                              'content_filter':'content_filter', 'steered':'steered'}.get(why, 'incomplete')
             raise ValueError('oauth_' + reason)
         if result.get("model") != model:
             raise ValueError("oauth_model_mismatch")
@@ -192,7 +200,7 @@ def generate_scenario(*, system_prompt, user_prompt, model, reasoning_effort,
             raise ScenarioOAuthTimeout("scenario_oauth_failed:timeout") from None
         raise ValueError("scenario_oauth_failed:connection") from None
     except Exception as exc:
-        reason = {'oauth_deadline':'timeout', 'oauth_upstream_error':'upstream_error',
-                  'oauth_rate_limited':'rate_limited', 'oauth_authentication':'authentication',
-                  'oauth_incomplete':'incomplete', 'oauth_model_mismatch':'model_mismatch'}.get(str(exc), 'invalid_response')
+        message = str(exc)
+        reason = ('timeout' if message == 'oauth_deadline' else
+                  safe_failure_reason(message[6:]) if message.startswith('oauth_') else None) or 'invalid_response'
         raise ValueError('scenario_oauth_failed:' + reason) from None
