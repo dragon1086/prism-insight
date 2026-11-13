@@ -70,15 +70,19 @@ def prepare(snapshot, context, structure):
             confirmed=next((v for v in stops if v[2]=='CONFIRMED'and v[1]!=stops[0][1]),None)
             if confirmed is not None:anchors.append(confirmed)
             offers=[(anchor,dict(kind='CURRENT_LIMIT',price=quote))for anchor in anchors]
-            anchor=anchors[0];stop=rounded(anchor[1]-sign*tick,side=='SHORT')
             breaks=sorted({p for ref,p,phase in points if ref.startswith('P:')and ref.endswith(':'+favourable)and sign*(p-quote)>tick},key=lambda p:abs(p-quote))
-            pullbacks=sorted({p for _,p,_ in points if sign*(p-stop)>tick and sign*(quote-p)>tick},key=lambda p:abs(quote-p))
-            if breaks and context.get('conditional_entry_version')==1:
-                trigger=rounded(breaks[0]+sign*tick,side=='LONG')
-                offers.append((anchor,dict(kind='BREAKOUT_TRIGGER',price=trigger+sign*tick,trigger_price=trigger)))
-            elif pullbacks:offers.append((anchor,dict(kind='PULLBACK_LIMIT',price=pullbacks[0])))
+            for anchor in anchors:
+                if breaks and context.get('conditional_entry_version')==1:
+                    trigger=rounded(breaks[0]+sign*tick,side=='LONG')
+                    offers.append((anchor,dict(kind='BREAKOUT_TRIGGER',price=trigger+sign*tick,trigger_price=trigger)))
+            for anchor in anchors:
+                stop=rounded(anchor[1]-sign*tick,side=='SHORT')
+                pullbacks=sorted({p for _,p,_ in points if sign*(p-stop)>tick and sign*(quote-p)>tick},key=lambda p:abs(quote-p))
+                if pullbacks:offers.append((anchor,dict(kind='PULLBACK_LIMIT',price=pullbacks[0])))
+            side_start=len(layouts)
             observed=sorted({p for _,p,_ in points if sign*(p-quote)>0},key=lambda p:sign*(p-quote))
             for anchor,entry in offers:
+                if len(layouts)-side_start>=3:break
                 stop=rounded(anchor[1]-sign*tick,side=='SHORT')
                 price=rounded(entry['price'],side=='LONG');distance=sign*(price-stop)
                 if distance<=0:continue
