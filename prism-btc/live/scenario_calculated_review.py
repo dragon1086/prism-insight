@@ -1221,7 +1221,7 @@ def research_review(snapshot, context, response_contract, *, generate, record,
         try:
             result = generate(**deepcopy(request))
         except Exception as exc:
-            from live.scenario_oauth import safe_failure_reason, ScenarioOAuthIncomplete
+            from live.scenario_oauth import safe_failure_reason
             message = str(exc)
             detail = safe_failure_reason(message[len('scenario_oauth_failed:'):]) if message.startswith('scenario_oauth_failed:') else None
             error_event = dict(kind="MODEL_ERROR", phase=phase, code="model_call_failed",
@@ -1229,8 +1229,6 @@ def research_review(snapshot, context, response_contract, *, generate, record,
                 actual_request_sha256=actual_request_hash, elapsed_seconds=clock() - actual_started)
             if detail is not None:
                 error_event['failure_detail'] = detail
-            if isinstance(exc, ScenarioOAuthIncomplete):
-                error_event['response_summary'] = deepcopy(exc.response_summary)
             record(deepcopy(error_event))
             raise ValueError("research_model_call_failed" + (':' + detail if detail else '')) from None
         from live.scenario_oauth import usage_counts

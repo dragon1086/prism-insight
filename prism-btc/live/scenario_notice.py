@@ -541,6 +541,14 @@ def render_notice(event: dict) -> str:
                 reason = 'AI 응답 시간이 제한을 초과했습니다.'
             elif detail == 'connection':
                 reason = 'AI 응답 경로에 연결하지 못했습니다.'
+            elif detail == 'stream_incomplete':
+                reason = 'AI 응답의 완료 신호를 받지 못했습니다.'
+            elif detail == 'input_limit':
+                reason = 'AI 입력이 서비스 처리 한도를 초과했습니다.'
+            elif detail == 'output_limit':
+                reason = 'AI 응답 생성 한도에 도달했습니다.'
+            elif detail in {'content_filter', 'steered'}:
+                reason = 'AI 서비스에서 응답 처리가 중단됐습니다.'
             elif detail == 'incomplete':
                 reason = 'AI 서비스가 완성된 응답을 반환하지 못했습니다.'
             elif detail == 'model_mismatch':

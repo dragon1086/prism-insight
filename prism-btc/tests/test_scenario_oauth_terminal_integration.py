@@ -2,7 +2,7 @@
 import json
 import pytest
 from cores.chatgpt_proxy.api_translator import collect_sse_to_response
-from live.scenario_oauth import generate_scenario, ScenarioOAuthIncomplete
+from live.scenario_oauth import generate_scenario
 
 
 class Response:
@@ -33,13 +33,10 @@ def test_complete_typed_terminal_is_accepted_without_named_event_line(monkeypatc
 
 
 def test_valid_looking_partial_json_is_rejected_without_a_completed_terminal(monkeypatch):
-    with pytest.raises(ScenarioOAuthIncomplete)as e:
+    with pytest.raises(ValueError,match="scenario_oauth_failed:stream_incomplete"):
         invoke('data: {"type":"response.output_text.delta","delta":"{}"}\n\n',monkeypatch)
-    assert e.value.response_summary['incomplete_reason']=='missing_terminal_event'
-    assert e.value.response_summary['usage_available']is False
 
 
 def test_typed_upstream_error_is_classified_without_retry(monkeypatch):
-    with pytest.raises(ScenarioOAuthIncomplete,match='scenario_oauth_failed:rate_limited')as e:
+    with pytest.raises(ValueError,match='scenario_oauth_failed:rate_limited'):
         invoke('data: {"type":"error","code":"rate_limit_exceeded","message":"service busy"}\n\n',monkeypatch)
-    assert e.value.response_summary['error_code']=='rate_limit_exceeded'

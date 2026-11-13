@@ -469,14 +469,13 @@ def test_usage_fields_are_small_safe_counters_and_missing_is_not_zero(monkeypatc
     assert response.usage==dict(input_tokens=100,output_tokens=20,cached_input_tokens=0,reasoning_tokens=10)
 
 
-def test_incomplete_summary_is_bounded_and_does_not_retain_model_text(monkeypatch):
-    import json
-    from live.scenario_oauth import ScenarioOAuthIncomplete
-    response={'id':'resp_reconstructed','status':'incomplete','incomplete_details':{'reason':'missing_terminal_event'},
-              'output':[{'text':'SENSITIVE_OUTPUT_7401'}],'error':{'message':'SENSITIVE_OUTPUT_7401','code':'SENSITIVE_OUTPUT_7401'},
-              'usage':{'input_tokens':0,'output_tokens':0}}
-    error=ScenarioOAuthIncomplete('incomplete',response)
-    assert str(error)=='scenario_oauth_failed:incomplete'
-    assert error.response_summary==dict(status='incomplete',incomplete_reason='missing_terminal_event',error_code=None,
-        locally_reconstructed=True,output_items=1,usage_available=False)
-    assert 'SENSITIVE_OUTPUT_7401' not in json.dumps(error.__dict__)
+@pytest.mark.parametrize('reason,category', [('missing_terminal_event','stream_incomplete'),('max_output_tokens','output_limit'),
+    ('max_messages','output_limit'),('content_filter','content_filter'),('steered','steered'),('SENSITIVE_OUTPUT_7401','incomplete')])
+def test_incomplete_reason_is_closed_and_never_retried(reason,category):
+    calls=[]
+    def opened(*args,**kwargs):
+        calls.append(1)
+        return Response(dict(status='incomplete',incomplete_details={'reason':reason}))
+    with pytest.raises(ValueError,match='scenario_oauth_failed:'+category)as e:call(opened)
+    assert len(calls)==1
+    assert 'SENSITIVE_OUTPUT_7401'not in str(e.value)
