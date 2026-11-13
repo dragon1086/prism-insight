@@ -329,3 +329,30 @@ def test_unicode_line_separator_inside_json_text_is_preserved():
     body={'type':'response.completed','response':{'status':'completed','output':[{'type':'message','role':'assistant','content':[{'type':'output_text','text':'a\u2028b'}]}]}}
     result=collect_sse_to_response('data: '+json.dumps(body,ensure_ascii=False)+'\n\n')
     assert result['output'][0]['content'][0]['text']=='a\u2028b'
+
+
+@pytest.mark.parametrize('status',['failed','incomplete','cancelled','in_progress'])
+def test_chat_translation_does_not_promote_known_noncompletion(status):
+    from cores.chatgpt_proxy.api_translator import translate_response
+    with pytest.raises(ValueError,match='Upstream response was not completed'):
+        translate_response({'status':status,'output':[]},'gpt-6.1-terra')
+
+
+def test_chat_route_returns_error_for_noncompleted_upstream(monkeypatch):
+    import asyncio,json
+    from cores.chatgpt_proxy import proxy_server
+    class Request:
+        async def json(self):return {'model':'gpt-6.1-terra','messages':[{'role':'user','content':'hi'}]}
+    async def forward(body):return {'status':'incomplete','output':[]},None
+    monkeypatch.setattr(proxy_server,'_token_manager',object())
+    monkeypatch.setattr(proxy_server,'_forward_to_codex',forward)
+    response=asyncio.run(proxy_server.handle_chat_completions(Request()))
+    assert response.status==500
+    assert 'choices'not in json.loads(response.body)
+
+
+@pytest.mark.parametrize('usage',[None,{}, {'input_tokens':True,'output_tokens':1,'total_tokens':2}])
+def test_chat_usage_missing_or_invalid_is_not_reported_as_zero(usage):
+    from cores.chatgpt_proxy.api_translator import translate_response
+    result=translate_response({'status':'completed','output':[],'usage':usage},'gpt-6.1-terra')
+    assert result['usage']is None

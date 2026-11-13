@@ -222,6 +222,9 @@ def translate_response(response_body: dict, model: str) -> dict:
     - output[].type==function_call -> choices[].message.tool_calls[]
     - usage fields mapped
     """
+    status = response_body.get("status")
+    if status is not None and status != "completed":
+        raise ValueError("Upstream response was not completed")
     resp_id = response_body.get("id", "resp_unknown")
     output = response_body.get("output", [])
 
@@ -259,12 +262,17 @@ def translate_response(response_body: dict, model: str) -> dict:
         message["tool_calls"] = tool_calls
 
     # Map usage
-    usage_in = response_body.get("usage") or {}
-    usage_out = {
-        "prompt_tokens": usage_in.get("input_tokens", 0),
-        "completion_tokens": usage_in.get("output_tokens", 0),
-        "total_tokens": usage_in.get("total_tokens", 0),
-    }
+    usage_in = response_body.get("usage")
+    usage_out = None
+    if isinstance(usage_in, dict) and all(
+        type(usage_in.get(k)) is int and usage_in[k] >= 0
+        for k in ("input_tokens", "output_tokens", "total_tokens")
+    ):
+        usage_out = {
+            "prompt_tokens": usage_in["input_tokens"],
+            "completion_tokens": usage_in["output_tokens"],
+            "total_tokens": usage_in["total_tokens"],
+        }
 
     return {
         "id": f"chatcmpl-{resp_id}",
