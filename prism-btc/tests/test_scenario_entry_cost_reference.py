@@ -110,3 +110,15 @@ def test_reference_survives_model_input_projection():
     c=context();c['entry_fee_reference']=demo_entry_fee_reference()
     projected,_=project_model_input(dict(contract_context=c))
     assert restore_model_input(projected)['contract_context']['entry_fee_reference']==c['entry_fee_reference']
+
+
+def test_real_two_pass_prompt_describes_the_same_costs_as_host():
+    from tests.test_scenario_calculated_review import run
+    c=context();c['entry_economics']=policy();c['entry_fee_reference']=demo_entry_fee_reference()
+    p=wire(c,'LONG');p['take_profits']=[dict(id='far',price=86000,fraction=1)]
+    result,events,calls=run(c,candidates=[p])
+    assert len(calls)==2
+    text=calls[1]['system_prompt']
+    assert '5bps/fill slippage assumptions' in text
+    assert 'assumed entry slippage is already deducted' in text
+    assert 'funding/slippage are excluded, NOT zero.' not in text

@@ -1192,6 +1192,13 @@ def research_review(snapshot, context, response_contract, *, generate, record,
         prompt = _encoded(data)
         if len(prompt.encode()) > 100_000:
             raise ValueError("research_input_size")
+        if frozen_context.get('entry_fee_reference') is not None:
+            appendix = appendix.replace('uses historical taker-max estimates',
+                'uses the explicit entry fee source and 5bps/fill slippage assumptions')
+            appendix = appendix.replace('slippage, fill timing and revision races remain UNKNOWN/unmodelled, never zero.',
+                'actual slippage, fill timing and revision races remain UNKNOWN; assumed slippage is deducted, not verified.')
+            appendix = appendix.replace('funding/slippage are excluded, NOT zero.',
+                'funding is excluded, NOT zero; explicitly assumed entry slippage is already deducted.')
         system = scenario_llm.immediate_reduce_instructions(base + appendix, frozen_context)
         if explanation_enabled(frozen_context):
             system += EXPLANATION_PROMPT
