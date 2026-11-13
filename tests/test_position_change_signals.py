@@ -361,13 +361,21 @@ def test_us_add_uses_cents_and_the_plain_holding_query(sub):
 
 
 def test_plan_add_amount_edges(sub):
-    assert sub.plan_add_amount(unit_amount=0, delta_fraction=0.5, allocation_after=0.8, held_quantity=1,
-                               price=10)[0] == 0
-    assert sub.plan_add_amount(unit_amount=1000, delta_fraction=0.001, allocation_after=0.4, held_quantity=1,
-                               price=10)[1] == "add amount below one share"
-    assert sub.plan_add_amount(unit_amount=1000.0, delta_fraction=0.333, allocation_after=1.0, held_quantity=1,
-                               price=10, market="US") == (333.0, None)
+    assert sub.plan_add_amount(unit_amount=0, allocation_after=0.8, held_quantity=1, price=10)[0] == 0
+    assert sub.plan_add_amount(unit_amount=1000.0, allocation_after=1.0, held_quantity=1,
+                               price=10, market="US") == (990.0, None)
     assert sub._position_fraction({}) == 1.0  # old BUY signals without the field stay a full slot
+
+
+def test_add_fills_the_gap_to_the_allocation_not_only_the_delta(sub):
+    # 2026-11-14 JNJ: entry 0.8 x $1,000 bought 2 x $284.55; the 0.8 -> 0.9 add ($100) was below one
+    # share, so the rounding gap never closed. The gap to $900 ($324.94) buys one more share.
+    assert sub.plan_add_amount(unit_amount=1000.0, allocation_after=0.9, held_quantity=2,
+                               price=287.53, market="US") == (324.94, None)
+    # AAPL: 2 x $360 = $720 of $900; one more share ($1,080) would pass the allocation -> no order.
+    amount, why = sub.plan_add_amount(unit_amount=1000.0, allocation_after=0.9, held_quantity=2,
+                                      price=360.0, market="US")
+    assert amount == 0 and "already at PRISM's allocation" in why
 
 
 # ---------------------------------------------------------------- pyramid rows (2026-11-08)
@@ -393,7 +401,7 @@ def test_invalid_or_missing_ticker_totals_fall_back_to_the_row(sub):
                      full, alerts=alerts)
     assert result["skipped"] and full.buys == []      # an older signal keeps the old, safe behaviour
     # never above the rows PRISM holds, even if the total says more
-    assert sub.plan_add_amount(unit_amount=1000, delta_fraction=0.5, allocation_after=3.5, held_quantity=290,
+    assert sub.plan_add_amount(unit_amount=1000, allocation_after=3.5, held_quantity=290,
                                price=10, slot_rows=3) == (100, None)     # 3 slots - 2,900 held
 
 
