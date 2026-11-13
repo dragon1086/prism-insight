@@ -440,7 +440,8 @@ def _gross_projection(plan, context, *, lots=None,
             return dict(status="UNKNOWN", reason="recorded_scenario_net_missing")
         return fee_only_projection(side=plan["side"], entry_price=basis, exit_price=price,
             quantity=qty, evidence=context.get("observed_execution_fee_evidence"), now=context.get("now"),
-            new_entry=new_entry, recorded_net=context.get("recorded_scenario_net") if whole and confirmed else None)
+            new_entry=new_entry, recorded_net=context.get("recorded_scenario_net") if whole and confirmed else None,
+            entry_fee_reference=context.get('entry_fee_reference') if new_entry else None)
     for kind in ("take_profits", "partial_stops"):
         allocated = Decimal(0)
         for row in plan[kind]:
@@ -486,6 +487,9 @@ def _gross_projection(plan, context, *, lots=None,
                     values = [float(reward), float(loss), float(reward / loss)]
                     if all(math.isfinite(v) for v in values):
                         payoff.update(status='AVAILABLE', net_reward=values[0], full_stop_loss=values[1], ratio=values[2])
+                        from live.scenario_fee_projection import DEMO_REFERENCE_BASIS
+                        if full_stop.get('basis') == DEMO_REFERENCE_BASIS:
+                            payoff['fee_basis'] = DEMO_REFERENCE_BASIS
         except (StopIteration, KeyError, IndexError, TypeError, ValueError, OverflowError):
             pass  # Optional arithmetic cannot create an execution/selection veto.
         result['whole_plan_payoff'] = payoff

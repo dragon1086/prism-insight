@@ -4,6 +4,23 @@ import hashlib
 import json
 import math
 
+DEMO_REFERENCE_BASIS = 'PUBLISHED_NONVIP_TAKER_AND_5BPS_SLIPPAGE_NOT_ACCOUNT_RATE'
+
+
+def demo_entry_fee_reference():
+    """Explicit operator opt-in estimate, never a fresh or observed account rate."""
+    return dict(version=1, environment='demo', taker_fee_rate=.00055, slippage_rate_per_fill=.0005,
+        basis=DEMO_REFERENCE_BASIS, current_account_rate_verified=False,
+        source='https://www.bybit.com/en/help-center/article/Trading-Fee-Structure')
+
+
+def _reference_rate(reference):
+    if (not isinstance(reference, dict) or type(reference.get('version')) is not int
+            or reference.get('current_account_rate_verified') is not False
+            or reference != demo_entry_fee_reference()):
+        raise ValueError('invalid_demo_fee_reference')
+    return _d(reference['taker_fee_rate'])
+
 
 def _d(value):
     if value is None or isinstance(value, bool):
@@ -77,7 +94,7 @@ def verified_taker_rate(evidence, now):
 
 
 def fee_only_projection(*, side, entry_price, exit_price, quantity, evidence, now,
-                        new_entry, recorded_net=None):
+                        new_entry, recorded_net=None, entry_fee_reference=None):
     """TAKER historical upper observed rate illustration, not net-profit guarantee.
 
     A new leg includes its attributable entry fee. Held lots have paid entry fees
@@ -86,7 +103,21 @@ def fee_only_projection(*, side, entry_price, exit_price, quantity, evidence, no
     """
     unknown=dict(status='UNKNOWN',reason='missing_or_stale_taker_fee_evidence')
     try:
-        rate=verified_taker_rate(evidence, now)
+        basis='HISTORICAL_TAKER_MAX_ASSUMPTION_NOT_CURRENT_TIER'
+        use_reference = new_entry is True and entry_fee_reference is not None
+        reference_rate = _reference_rate(entry_fee_reference) if use_reference else None
+        try:
+            rate=verified_taker_rate(evidence, now)
+        except (AttributeError,KeyError,TypeError,ValueError,InvalidOperation,OverflowError):
+            if new_entry is not True or recorded_net is not None:
+                raise ValueError('fee_reference_not_for_holdings')
+            if reference_rate is None:
+                raise ValueError('missing_entry_fee_reference')
+            rate=reference_rate
+            basis='PUBLISHED_NONVIP_TAKER_ASSUMPTION'
+        fee_basis=basis
+        if use_reference:
+            basis=DEMO_REFERENCE_BASIS
         entry,exit_,qty=map(_d,(entry_price,exit_price,quantity))
         if side not in ('LONG','SHORT') or min(entry,exit_,qty)<=0 or type(new_entry) is not bool:
             return dict(status='UNKNOWN',reason='invalid_projection_inputs')
@@ -98,13 +129,19 @@ def fee_only_projection(*, side, entry_price, exit_price, quantity, evidence, no
             return dict(status='UNKNOWN',reason='mixed_accounting_scope')
         values=dict(estimated_gross_pnl=gross,assumed_entry_fee=entry_fee,
             assumed_exit_fee=exit_fee,estimated_net_before_unmodelled_costs=recorded+gross-entry_fee-exit_fee)
+        if use_reference:
+            slip = _d(entry_fee_reference['slippage_rate_per_fill'])
+            values['assumed_entry_slippage'] = entry * qty * slip
+            values['assumed_exit_slippage'] = exit_ * qty * slip
+            values['estimated_net_before_unmodelled_costs'] -= (entry + exit_) * qty * slip
         values={key:float(value) for key,value in values.items()}
         if not all(math.isfinite(value) for value in values.values()):
             return dict(status='UNKNOWN',reason='nonfinite_projection')
         return dict(status='AVAILABLE',scope='WHOLE_SCENARIO' if recorded_net is not None else 'LEG_ONLY',
             entry_fee_treatment='ATTRIBUTABLE_NEW_ENTRY' if new_entry else 'ALREADY_RECORDED_NOT_CHARGED_AGAIN',
-            basis='HISTORICAL_TAKER_MAX_ASSUMPTION_NOT_CURRENT_TIER',
-            assumed_fee_rate=float(rate),future_slippage='UNKNOWN_EXCLUDED',future_funding='UNKNOWN_EXCLUDED',
+            basis=basis,
+            **(dict(fee_rate_basis=fee_basis, future_slippage='ASSUMED_5BPS_EACH_FILL') if use_reference else dict(future_slippage='UNKNOWN_EXCLUDED')),
+            assumed_fee_rate=float(rate),future_funding='UNKNOWN_EXCLUDED',
             estimates_not_guaranteed=True,**values)
     except (AttributeError,KeyError,TypeError,ValueError,InvalidOperation,OverflowError):
         return unknown

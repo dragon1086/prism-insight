@@ -255,6 +255,8 @@ def main():
                         help="opt in to two-pass, host-sized DEMO MAIN decisions; requires --execute")
     parser.add_argument("--entry-contract", action="store_true",
                         help="opt in to immutable entry premises and sampled failure EXIT; requires --execute")
+    parser.add_argument('--demo-fee-reference', action='store_true',
+                        help='explicit fresh OPEN fee + 5bps/fill slippage assumptions; not verified costs')
     parser.add_argument("--root-db",type=Path,
                         default=Path(__file__).resolve().parents[2]/"stock_tracking_db.sqlite")
     args=parser.parse_args()
@@ -262,6 +264,8 @@ def main():
         parser.error("--calculated-review requires --execute and cannot be used for activation/protection")
     if args.entry_contract and not args.execute:
         parser.error("--entry-contract requires --execute")
+    if args.demo_fee_reference and (not args.calculated_review or not args.execute or args.protect_only or args.activate):
+        parser.error('--demo-fee-reference requires --execute --calculated-review')
     started=time.monotonic()
     loop="protection" if args.protect_only else "decision"
     if not args.execute and not args.protect_only and not args.activate:
@@ -289,7 +293,8 @@ def main():
         from live.scenario_broker import ScenarioDemoBroker
         broker=ScenarioDemoBroker(conn,expected_main_uid=main_uid,execution_enabled=True,
                                   convergence_entry_enabled=True,
-                                  entry_economics_enabled=args.calculated_review)
+                                  entry_economics_enabled=args.calculated_review,
+                                  entry_fee_reference_enabled=args.demo_fee_reference)
         if args.activate:
             failure_stage="activation"
             from live.scenario_control import begin_transition,activate,flat_handoff_probe
