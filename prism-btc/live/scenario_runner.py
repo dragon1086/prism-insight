@@ -257,6 +257,7 @@ def main():
                         help="opt in to immutable entry premises and sampled failure EXIT; requires --execute")
     parser.add_argument('--demo-fee-reference', action='store_true',
                         help='explicit fresh OPEN fee + 5bps/fill slippage assumptions; not verified costs')
+    parser.add_argument('--prepared-entry-plans',action='store_true',help='host-coupled entry/SL/TP plans for flat calculated DEMO decisions')
     parser.add_argument("--root-db",type=Path,
                         default=Path(__file__).resolve().parents[2]/"stock_tracking_db.sqlite")
     args=parser.parse_args()
@@ -266,6 +267,8 @@ def main():
         parser.error("--entry-contract requires --execute")
     if args.demo_fee_reference and (not args.calculated_review or not args.execute or args.protect_only or args.activate):
         parser.error('--demo-fee-reference requires --execute --calculated-review')
+    if args.prepared_entry_plans and (not args.execute or not args.calculated_review or args.protect_only or args.activate):
+        parser.error('--prepared-entry-plans requires --execute --calculated-review decision mode')
     started=time.monotonic()
     loop="protection" if args.protect_only else "decision"
     if not args.execute and not args.protect_only and not args.activate:
@@ -294,7 +297,8 @@ def main():
         broker=ScenarioDemoBroker(conn,expected_main_uid=main_uid,execution_enabled=True,
                                   convergence_entry_enabled=True,
                                   entry_economics_enabled=args.calculated_review,
-                                  entry_fee_reference_enabled=args.demo_fee_reference)
+                                  entry_fee_reference_enabled=args.demo_fee_reference,
+                                  **({'prepared_entry_plans_enabled':True} if args.prepared_entry_plans else {}))
         if args.activate:
             failure_stage="activation"
             from live.scenario_control import begin_transition,activate,flat_handoff_probe

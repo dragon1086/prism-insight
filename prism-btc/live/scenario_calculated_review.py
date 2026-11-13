@@ -795,9 +795,18 @@ def _project_initial_entry_progress(projected, context):
         return projected
 
 
-def _model_payload(snapshot, context, response_contract, *, calculated_candidates=None):
+def _model_payload(snapshot, context, response_contract, *, calculated_candidates=None, prepared_plans=None):
     def project(source):
         baseline = _base_model_payload(source, context, response_contract, calculated_candidates=calculated_candidates)
+        if prepared_plans is not None:
+            from live.scenario_model_input import restore_model_input, project_model_input
+            logical=restore_model_input(baseline)
+            if calculated_candidates is None:
+                logical['response_contract']={'authority':'API response_schema; exact schema retained in the review envelope'}
+                logical['prepared_entry_plans']=prepared_plans
+            else:
+                logical['prepared_entry_plan_sources']=[{k:p[k]for k in ('id','side','entry_kind','target_basis')}for p in prepared_plans['layouts']]
+            baseline,_=project_model_input(logical,allow_gap_rescue=True)
         if not explanation_enabled(context):
             baseline = project_holding_price_order_input(baseline)[0]
         projected = project_explanation_input(baseline, context, snapshot=source)
@@ -1328,6 +1337,22 @@ def research_review(snapshot, context, response_contract, *, generate, record,
     if allocation:
         draft_prompt = draft_prompt.replace("SL, TP, quantities and fractions yourself", "SL, TP, confidence and entry allocation_fraction yourself") + ALLOCATION_SINGLE_PROMPT
         payload = _model_payload(frozen_snapshot, frozen_context, draft_schema)
+    prepared = None
+    if (action_contract and type(context.get('prepared_entry_plans_version')) is int and context['prepared_entry_plans_version']==1
+            and frozen_context.get('scenario_id') is None and draft_schema['properties']['candidates']['maxItems']>0):
+        from live.scenario_entry_plans import prepare, constrain
+        menu=prepare(frozen_snapshot,frozen_context,build_ma_structure_context(frozen_snapshot,frozen_context))
+        if menu['status']=='AVAILABLE':
+            offered=deepcopy(draft_schema)
+            offered['properties']['candidates']['items']=constrain(offered['properties']['candidates']['items'],menu)
+            proposed_payload=_model_payload(frozen_snapshot,frozen_context,offered,prepared_plans=menu)
+            if len(_encoded(proposed_payload).encode())<=100_000:
+                draft_schema,payload,prepared=offered,proposed_payload,menu
+                draft_prompt=draft_prompt.replace('SL, TP, confidence and entry allocation_fraction yourself',
+                    'confidence and entry allocation_fraction; use the coupled prepared_entry_plans prices/fractions')
+                draft_prompt=draft_prompt.replace('choose direction, strategic prices, SL, TP,\nconfidence and allocation_fraction',
+                    'choose supported direction, confidence and allocation_fraction using coupled host plan prices/fractions')
+                draft_prompt+='\nPrepared prices are not proof of an edge. Assess structure/volume, entry style, original goal and barriers; otherwise WAIT. Each listed TP ID once. Sizing examples are not confidence recommendations; final host sizing/payoff can still reject. Do not inflate confidence/allocation to pass. Unlisted directions retain their original proposal contract.\n'
     draft = call("candidate", draft_prompt, payload, draft_schema)
     category = "FIRST_OBSERVATION" if first_observation else "CANDIDATES_PROVIDED" if draft["candidates"] else "NO_CANDIDATES_SUPPLIED"
     if not explanation_enabled(context) and (len(draft["no_candidate_reason"]) > 2000 or (not draft["candidates"] and not draft["no_candidate_reason"].strip())):
@@ -1406,7 +1431,7 @@ def research_review(snapshot, context, response_contract, *, generate, record,
         # Re-project with the phase-specific contract so restoration hashes remain
         # valid. Market/account facts are unchanged; only obsolete output rules go.
         selection_payload = _model_payload(frozen_snapshot, frozen_context, selection_schema,
-                                          calculated_candidates=bundle)
+                                          calculated_candidates=bundle, prepared_plans=prepared)
         selection_wire = call("selection", SELECT_PROMPT, selection_payload, selection_schema)
         chosen = choices[selection_wire["selection_token"]]
         final = dict(selection=chosen["id"], receipt_sha256=chosen["receipt_sha256"],
