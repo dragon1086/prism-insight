@@ -94,19 +94,24 @@ def build(snapshot, context, structure):
                                 side=side, entry_price=float(e), exit_price=float(exit_price), quantity=1,
                                 evidence=context.get('observed_execution_fee_evidence'),
                                 now=context['now'], new_entry=True,
+                                entry_fee_reference=context.get('entry_fee_reference'),
                             )
                         gain,loss=fees(target),fees(stop)
                         payoff=({'status':'AVAILABLE','net_reward':gain['estimated_net_before_unmodelled_costs'],'full_stop_loss':-loss['estimated_net_before_unmodelled_costs']}
                                 if gain['status']==loss['status']=='AVAILABLE' else {'status':'UNKNOWN'})
+                        from live.scenario_fee_projection import DEMO_REFERENCE_BASIS
+                        if gain.get('basis') == DEMO_REFERENCE_BASIS and payoff['status'] == 'AVAILABLE':
+                            payoff['fee_basis'] = DEMO_REFERENCE_BASIS
                         p={'quantity':1,'weighted_risk_per_btc':unit,'gross_at_full_stop':float(sign*(stop-e)),
                            'whole_plan_payoff':payoff,'joint_exit_paths':{'paths':[[['TP_STOP'],0,float(sign*(target-e)),None]]}}
                         result=assess({'action':'OPEN'},context,p)
                         if not result or result['status']=='UNKNOWN':
                             continue
-                        basis='FEE' if result['basis'].startswith('VERIFIED_') else 'RESERVE'
+                        basis=('REFERENCE' if payoff.get('fee_basis') == DEMO_REFERENCE_BASIS else
+                               'FEE' if result['basis'].startswith('VERIFIED_') else 'RESERVE')
                         price_risk = abs(e - stop)
                         fee_share = ((_number(loss['assumed_entry_fee']) + _number(loss['assumed_exit_fee'])) / price_risk
-                                     if basis == 'FEE' else None)
+                                     if basis in {'FEE','REFERENCE'} else None)
                         reserve_share = ((_number(unit) - price_risk) / price_risk if basis == 'RESERVE' else None)
                         rounded = lambda value: round(float(value), 6) if value is not None else None
                         diagnostics = [rounded(price_risk / atrs['1h']) if atrs['1h'] else None,
@@ -116,7 +121,7 @@ def build(snapshot, context, structure):
         view={'version':2,'status':'AVAILABLE' if rows else 'UNAVAILABLE','snapshot_as_of_ms':int(asof),'quote_captured_at':float(stamp),'entry_deadline_seconds_remaining':deadline_remaining,
               'columns':['side','entry_kind','raw_entry_reference','worst_entry_bound','stop_ref','stop_level','target_ref','target_level','stop_distance_atr30','single_target_ratio','reward_per_btc','loss_per_btc','cost_basis','stop_distance_atr1h','entry_distance_atr30','fee_to_price_stop_risk','reserve_to_price_stop_risk'],
               'rows':rows[:MAX_ROWS],
-              'meaning':'USDT/BTC single-target diagnostics, not orders, ladder payoff, support strength or win/fill probability. Observed nearest/outer levels are not rankings. Raw levels precede buffers; static worst-entry anchor does not promise repricing/fill. FEE assumes historical taker and excludes future funding/slippage; RESERVE is host cost stress, never known fees. New cost/ATR ratios rounded to 6 decimals. Missing stays null. V2 deadline is entry-only. Final host validates the actual ladder.'}
+              'meaning':'USDT/BTC single-target diagnostics, not orders, ladder payoff, support strength or win/fill probability. Observed nearest/outer levels are not rankings. Raw levels precede buffers; static worst-entry anchor does not promise repricing/fill. FEE assumes historical taker and excludes future funding/slippage; REFERENCE assumes published taker + 5bps each fill, funding unknown. RESERVE is host risk stress, never known fees. New cost/ATR ratios rounded to 6 decimals. Missing stays null. V2 deadline is entry-only. Final host validates the actual ladder.'}
         return view if len(json.dumps(view,ensure_ascii=False).encode())<=MAX_BYTES else unavailable
     except (KeyError,TypeError,ValueError,ArithmeticError,OverflowError):
         return unavailable
@@ -129,7 +134,7 @@ def project(projected, snapshot, context):
         logical = restore_model_input(projected)
         target = logical['contract_context']
         if ('entry_geometry' in target or target.get('scenario_id',True) is not None
-                or any(target.get(k)!=context.get(k) for k in ['positions','pending_entries','input_captured_at','entry_contract_version','mark_price','limit_price_quotes','entry_economics','now','initial_equity','estimated_cost_rate','slippage_bps','observed_execution_fee_evidence'])):
+                or any(target.get(k)!=context.get(k) for k in ['positions','pending_entries','input_captured_at','entry_contract_version','mark_price','limit_price_quotes','entry_economics','now','initial_equity','estimated_cost_rate','slippage_bps','observed_execution_fee_evidence','entry_fee_reference'])):
             return projected
         view=build(logical.get('market_snapshot',{}),target,target.get('ma_structure',{}))
         if view['status']!='AVAILABLE':

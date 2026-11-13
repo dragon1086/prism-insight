@@ -34,6 +34,9 @@ def assess(plan, context, projection):
         if payoff.get('status') == 'AVAILABLE':
             reward, loss = map(_number, (payoff['net_reward'], payoff['full_stop_loss']))
             basis = 'VERIFIED_HISTORICAL_TAKER_MAX_FUNDING_SLIPPAGE_EXCLUDED'
+            from live.scenario_fee_projection import DEMO_REFERENCE_BASIS
+            if payoff.get('fee_basis') == DEMO_REFERENCE_BASIS:
+                basis = 'DEMO_ENTRY_FEE_AND_SLIPPAGE_ASSUMPTIONS_FUNDING_EXCLUDED'
         else:
             # Reuse the already computed total risk reserve; never call it an observed fee.
             quantity = _number(projection['quantity'])

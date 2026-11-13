@@ -17,6 +17,7 @@ ALLOCATION_PROFILES = {
 }
 REJECTION_PROFILES = {
     "deployed-main-v3": "economic-reject-calculated-v1",
+    "deployed-cost-reference-v4": "economic-reject-calculated-v1",
     "economic-reject-single-v1": "economic-reject-single-v1",
     "economic-reject-calculated-v1": "economic-reject-calculated-v1",
     "economic-reject-goal-v2": "economic-reject-calculated-v1",
