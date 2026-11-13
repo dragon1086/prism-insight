@@ -805,7 +805,7 @@ def _model_payload(snapshot, context, response_contract, *, calculated_candidate
                 logical['response_contract']={'authority':'API response_schema; exact schema retained in the review envelope'}
                 logical['prepared_entry_plans']=prepared_plans
             else:
-                logical['prepared_entry_plan_sources']=[{k:p[k]for k in ('id','side','entry_kind','target_basis')}for p in prepared_plans['layouts']]
+                logical['prepared_entry_plan_sources']=[{k:p[k]for k in ('id','side','entry_kind','target_basis','stop_ref','stop_phase')}for p in prepared_plans['layouts']]
             baseline,_=project_model_input(logical,allow_gap_rescue=True)
         if not explanation_enabled(context):
             baseline = project_holding_price_order_input(baseline)[0]

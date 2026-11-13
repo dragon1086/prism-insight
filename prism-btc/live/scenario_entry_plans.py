@@ -53,8 +53,8 @@ def prepare(snapshot, context, structure):
     try:
         tick = _number(context['price_tick'])
         if tick <= 0:return unavailable
-        points = [(ref,_number(price)) for ref,price,phase,at in source_from_structure(structure,context)['points']
-                  if phase=='CONFIRMED' and 0<_number(at)<=_number(snapshot['as_of_ms'])]
+        points = [(ref,_number(price),phase) for ref,price,phase,at in source_from_structure(structure,context)['points']
+                  if phase in {'CONFIRMED','FORMING'} and 0<_number(at)<=_number(snapshot['as_of_ms'])]
         def rounded(value, upward):
             return (value/tick).to_integral_value(rounding=ROUND_CEILING if upward else ROUND_FLOOR)*tick
         layouts=[]
@@ -63,18 +63,23 @@ def prepare(snapshot, context, structure):
             quote=_number(context['limit_price_quotes']['ask'if side=='LONG'else'bid'])
             adverse='low'if side=='LONG'else'high'
             favourable='high'if side=='LONG'else'low'
-            stops=sorted({p for ref,p in points if ref.startswith('P:')and ref.endswith(':'+adverse)and sign*(quote-p)>0},key=lambda p:abs(quote-p))
+            stops=sorted([(ref,p,phase)for ref,p,phase in points if ref.startswith('P:')and ref.endswith(':'+adverse)and sign*(quote-p)>0],
+                         key=lambda row:(abs(quote-row[1]),row[2]!='CONFIRMED',row[0]))
             if not stops:continue
-            stop=rounded(stops[0]-sign*tick,side=='SHORT')
-            entries=[dict(kind='CURRENT_LIMIT',price=quote)]
-            pullbacks=sorted({p for _,p in points if sign*(p-stop)>tick and sign*(quote-p)>tick},key=lambda p:abs(quote-p))
-            if pullbacks:entries.append(dict(kind='PULLBACK_LIMIT',price=pullbacks[0]))
-            breaks=sorted({p for ref,p in points if ref.startswith('P:')and ref.endswith(':'+favourable)and sign*(p-quote)>tick},key=lambda p:abs(p-quote))
+            anchors=[stops[0]]
+            confirmed=next((v for v in stops if v[2]=='CONFIRMED'and v[1]!=stops[0][1]),None)
+            if confirmed is not None:anchors.append(confirmed)
+            offers=[(anchor,dict(kind='CURRENT_LIMIT',price=quote))for anchor in anchors]
+            anchor=anchors[0];stop=rounded(anchor[1]-sign*tick,side=='SHORT')
+            breaks=sorted({p for ref,p,phase in points if ref.startswith('P:')and ref.endswith(':'+favourable)and sign*(p-quote)>tick},key=lambda p:abs(p-quote))
+            pullbacks=sorted({p for _,p,_ in points if sign*(p-stop)>tick and sign*(quote-p)>tick},key=lambda p:abs(quote-p))
             if breaks and context.get('conditional_entry_version')==1:
                 trigger=rounded(breaks[0]+sign*tick,side=='LONG')
-                entries.append(dict(kind='BREAKOUT_TRIGGER',price=trigger+sign*tick,trigger_price=trigger))
-            observed=sorted({p for _,p in points if sign*(p-quote)>0},key=lambda p:sign*(p-quote))
-            for entry in entries:
+                offers.append((anchor,dict(kind='BREAKOUT_TRIGGER',price=trigger+sign*tick,trigger_price=trigger)))
+            elif pullbacks:offers.append((anchor,dict(kind='PULLBACK_LIMIT',price=pullbacks[0])))
+            observed=sorted({p for _,p,_ in points if sign*(p-quote)>0},key=lambda p:sign*(p-quote))
+            for anchor,entry in offers:
+                stop=rounded(anchor[1]-sign*tick,side=='SHORT')
                 price=rounded(entry['price'],side=='LONG');distance=sign*(price-stop)
                 if distance<=0:continue
                 level_targets=[p-sign*tick for p in observed if sign*(p-price)>tick]
@@ -97,15 +102,15 @@ def prepare(snapshot, context, structure):
                     try:stop_atr=float(distance/_number(atr)) if _number(atr)>0 else None
                     except (TypeError,ValueError,ArithmeticError):stop_atr=None
                     layouts.append(dict(id=identity,side=side,entry_kind=entry['kind'],entry_price=float(price),
-                        price_risk_per_btc=float(distance),stop_distance_atr30=stop_atr,
+                        stop_ref=anchor[0],stop_phase=anchor[2],price_risk_per_btc=float(distance),stop_distance_atr30=stop_atr,
                         raw_target_R=[float(sign*(_number(t['price'])-price)/distance)for t in tps],
                         trigger_price=row.get('trigger_price'),hard_stop=float(stop),take_profits=tps,
                         target_basis=basis,unpriced_runner_fraction=0.,sizing_examples=examples,
                         support_strength='NOT_CERTIFIED',fill_probability='UNKNOWN'))
-                    break  # Preserve entry-style variety, not a ranking of predicted returns.
+                    break  # Preserve structural/entry-style choices, not a ranking of returns.
         result=dict(version=1,status='AVAILABLE'if layouts else'UNAVAILABLE',layouts=layouts[:MAX_PLANS],
             meaning='Coupled numerical proposals, not permission or win probabilities. Sizing examples are illustrations, not suggested confidence. Host rechecks chosen confidence/allocation, lot rounding including dust at SL, goal, risk and fresh execution. Partial stops keep their original qualitative contract; no risk credit. R projections are not observed support.')
-        return result if len(json.dumps(result,ensure_ascii=False).encode())<=MAX_BYTES else unavailable
+        return result if len(json.dumps(result,ensure_ascii=False,allow_nan=False).encode())<=MAX_BYTES else unavailable
     except (KeyError,TypeError,ValueError,ArithmeticError,OverflowError):
         return unavailable
 

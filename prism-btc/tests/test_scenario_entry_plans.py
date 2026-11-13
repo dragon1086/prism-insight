@@ -124,3 +124,12 @@ def test_new_replay_profile_has_all_live_flags_without_changing_old_profiles(tmp
         assert c['prepared_entry_plans_version']==1
         assert c['entry_fee_reference']['slippage_rate_per_fill']==.0005
         assert conn.execute('SELECT count(*)FROM llm_scenario_intents').fetchone()[0]==0
+
+
+def test_forming_and_confirmed_invalidation_options_keep_their_source_phase():
+    s,c,t=sample();forming=deepcopy(t['primary']['30m']['points'][0]);forming.update(phase='FORMING',is_confirmed=False,as_of_ms=s['as_of_ms']-1,high=103.,low=97.)
+    t['primary']['30m']['points'].append(forming);menu=prepare(s,c,t)
+    short=[p for p in menu['layouts']if p['side']=='SHORT'and p['entry_kind']=='CURRENT_LIMIT']
+    assert {p['stop_phase']for p in short}=={'FORMING','CONFIRMED'}
+    assert next(p['hard_stop']for p in short if p['stop_phase']=='FORMING')<next(p['hard_stop']for p in short if p['stop_phase']=='CONFIRMED')
+    assert all(p['support_strength']=='NOT_CERTIFIED'for p in short)
