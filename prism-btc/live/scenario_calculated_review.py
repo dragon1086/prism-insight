@@ -262,6 +262,18 @@ def _flat_selection_prompt(system, context):
         if pending[0][1] <= pending[1][0]:
             for first, last in reversed(pending):
                 system = system[:first] + system[last:]
+    if (type(context.get('prepared_entry_plans_version')) is int
+            and context['prepared_entry_plans_version'] == 1):
+        system = system.replace(
+            'Interpret trend, support/resistance, fill plausibility\n'
+            'and supplied host calculations. Compare effective entry location, evidenced reaction\n'
+            'zones, whole-path costs and grounded continuation; a higher conditional ratio alone\n'
+            'is not a reason to select an implausible target.',
+            'Assess current 1h/30m progress, participation, entry location and invalidation.\n'
+            'For supported TREND candidates, weigh missed participation against supplied risk.\n'
+            'An unhit TP or potential obstacle crossing is future trade risk, not automatically\n'
+            'missing entry evidence. WAIT for absent edge or material counterevidence;\n'
+            'never select implausible targets for ratio alone.', 1)
     return system
 
 
