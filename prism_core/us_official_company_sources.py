@@ -61,7 +61,7 @@ def _configured_user_agent(config_path=None):
 
 def _validate_url(url: str, company_domains=()):
     parsed = urlsplit(url)
-    paths = {'data.sec.gov': ('/submissions/CIK',),
+    paths = {'data.sec.gov': ('/submissions/CIK', '/api/xbrl/companyfacts/CIK'),
              'www.sec.gov': ('/Archives/edgar/data/', '/files/company_tickers.json'),
              'cdn.yahoofinance.com': ('/prod/sec-filings/',)}
     company_host = bool(parsed.hostname and any(parsed.hostname == domain or parsed.hostname.endswith('.' + domain)
@@ -74,7 +74,7 @@ def _validate_url(url: str, company_domains=()):
     return parsed
 
 
-def _fetch(url: str, *, timeout: float = 10, company_domains=()):
+def _fetch(url: str, *, timeout: float = 10, company_domains=(), max_bytes: int = MAX_BYTES):
     """No proxies/redirects; validate and pin a public DNS answer for TLS transport."""
     deadline = time.monotonic() + timeout
     parsed = _validate_url(url, company_domains)
@@ -104,12 +104,12 @@ def _fetch(url: str, *, timeout: float = 10, company_domains=()):
         while True:
             if time.monotonic() >= deadline:
                 raise TimeoutError('source_read_deadline')
-            chunk = response.read1(min(65536, MAX_BYTES + 1 - size))
+            chunk = response.read1(min(65536, max_bytes + 1 - size))
             if not chunk:
                 break
             chunks.append(chunk)
             size += len(chunk)
-            if size > MAX_BYTES:
+            if size > max_bytes:
                 raise ValueError('source_too_large')
         payload = b''.join(chunks)
         return payload, url
