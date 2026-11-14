@@ -8,6 +8,7 @@ from prism_inverse.adapters.fakes import FakeBroker, FakeEvents, MemoryStore
 from prism_inverse.adapters.registry import load_us_inverse, load_us_sectors
 from prism_inverse.adapters.sqlite_store import SqliteStore
 from prism_inverse.app.live_cycle import kr_product_map, run_live, us_product_map
+from prism_inverse.app.signals_cycle import FAMILY_MAP
 from prism_inverse.domain.lane import (CLOSED, OPEN, ORDERED_BUY, ORDERED_SELL, REJECTED, KR_LANE, US_LANE, LivePosition,
                                        Product, plan_entries)
 from prism_inverse.domain.virtual import PENDING_ENTRY, PENDING_EXIT, VirtualTrade
@@ -18,6 +19,13 @@ D = [date(2026, 11, 10) + timedelta(days=i) for i in range(6)]
 def _t(fam, day, etf="251340", und="229200", status=PENDING_ENTRY, exit_day=None, reason=None):
     return VirtualTrade(f"{fam}-{day.isoformat()}", fam, etf, und, day, 100.0, status=status,
                         exit_signal_date=exit_day, exit_reason=reason)
+
+
+def test_rally_fail_family_is_recorded_but_never_ordered():
+    """S20 (2026-11-14): KQ_RFAIL is a recorder family only; the live lane has no product for it."""
+    assert "KQ_RFAIL" in FAMILY_MAP and "KQ_RFAIL" not in kr_product_map()
+    r = run_live("KR", D[0], [_t("KQ_RFAIL", D[0])], kr_product_map(), KR_LANE, [FakeBroker("acct", 1_000_000)], MemoryStore(), FakeEvents())
+    assert r.positions == [] and r.actions == []
 
 
 def _pos(pid, product, status, **kw):
