@@ -91,6 +91,22 @@ def test_kq_fr_fires_on_the_first_close_under_ma5_after_a_two_atr_rally():
     assert S.kq_fr(a) == []
 
 
+def test_kq_rally_fail_fires_on_the_down_close_after_a_touch_of_the_falling_20_day_line():
+    c = [100.0, 96.0, 95.0, 96.0, 96.5, 97.6, 97.2, 96.5, 96.9, 96.7]
+    a = {"c": c, "h": [x + 0.5 for x in c], "hi20": [100.0] * 10, "atr": [1.0] * 10,
+         "ma20": [100.0, 99.7, 99.4, 99.1, 98.8, 98.5, 98.2, 97.9, 97.6, 97.3]}
+    # switch on at 1 (4 ATR under the high); low 95 at 2; the line is falling from 5 on; 97.6 touches it (0.9 <= 1 ATR)
+    # -> 97.2 under the previous high 98.1 and close fires 6; low resets, 96.5 is a new low, 96.9 touches, 96.7 fires 9
+    assert S.kq_rally_fail(a) == [6, 9]
+    a["h"][5] = None                                               # unknown previous high: no fire at 6, the touch stands -> 7
+    assert S.kq_rally_fail(a) == [7, 9]
+    a["h"][5] = 98.1
+    a["ma20"] = [90.0] * 10                                        # switch off from day 1: nothing can fire
+    assert S.kq_rally_fail(a) == []
+    a["ma20"] = [98.0] * 10                                        # switch on but the line is flat, not falling
+    assert S.kq_rally_fail(a) == []
+
+
 def test_switched_second_breaks_keeps_only_breaks_while_the_switch_is_on():
     c = [100.0, 95.0, 105.0, 95.0, 105.0, 95.0]
     a = {"c": c, "ma50": [100.0] * 6, "peak": [130.0] * 6, "atr": [10.0] * 6}
@@ -267,7 +283,7 @@ def test_recorder_fires_queues_and_fills_next_open(tmp_path):
     r = C.run_signals(fire_day, SECTORS, "069500", FakeMarketData(series), store, events, mode="observe")
     status, inputs, error = r.days["KQ_F1"]
     assert status == C.FIRED and error is None and inputs["virtual"] == f"QUEUED:KQ_F1-{fire_day}"
-    assert {f for f, (s, _, _) in r.days.items() if s == C.NOT_FIRED} == {"KQ_DRIVER", "K200_DRIVER", "KQ_X10", "KQ_FR", "K200_SEMI"}
+    assert {f for f, (s, _, _) in r.days.items() if s == C.NOT_FIRED} == {"KQ_DRIVER", "K200_DRIVER", "KQ_X10", "KQ_FR", "K200_SEMI", "KQ_RFAIL"}
     [t] = store.active_virtual_trades()
     assert t.status == PENDING_ENTRY and t.atr == inputs["atr"]
     again = C.run_signals(fire_day, SECTORS, "069500", FakeMarketData(series), store, events, mode="observe")
@@ -280,11 +296,11 @@ def test_recorder_fires_queues_and_fills_next_open(tmp_path):
     assert (t.status, t.entry_date, t.entry_open) == (OPEN, nxt, series["251340"][-1].open)
     assert t.entry_underlying == series["229200"][-1].open and t.stop == pytest.approx(t.entry_underlying + 1.5 * t.atr)
     kinds = [e for e, _ in events.events]
-    assert kinds.count("inverse.signal_evaluated") == 18 and kinds.count("inverse.virtual_entry") == 1
+    assert kinds.count("inverse.signal_evaluated") == 21 and kinds.count("inverse.virtual_entry") == 1   # 7 families x 3 runs
     tids = {f["trace_id"] for e, f in events.events if f["attributes"].get("family") == "KQ_F1" or e != "inverse.signal_evaluated"}
     assert len(tids) == 2  # signal day and the trade share one trace; the next day's evaluation has its own
     rows = store.db.execute("SELECT family, status, inputs_json FROM inv_signal_days").fetchall()
-    assert len(rows) == 18 and json.loads(rows[0][2])["underlying"] == "229200"
+    assert len(rows) == 21 and json.loads(rows[0][2])["underlying"] == "229200"
 
 
 def _fr_closes():
@@ -481,6 +497,17 @@ def test_parity_with_research_on_synthetic_panel():
             if rallied and rc[i] < ma5[i] and rc[i - 1] >= ma5[i - 1]: ref_fr.append(i); rallied = False; L = rc[i]
         assert S.kq_fr(mine) == ref_fr
         fired += len(ref_fr)
+        ref_rf, L, touched = [], None, False                            # c3_rally_fail.rally_fail(ma_n=20, dry=0, slope='d5', align=0)
+        hh = _nan(h)
+        for i in range(n):
+            if not sw[i] or not np.isfinite(m20[i]): L, touched = None, False; continue
+            if L is None or rc[i] < L: L, touched = rc[i], False; continue
+            if i < 5 or not m20[i] < m20[i - 5]: continue
+            if not touched:
+                if abs(rc[i] - m20[i]) <= rt[i] and rc[i] > L: touched = True
+                continue
+            if rc[i] < hh[i - 1] and rc[i] < rc[i - 1]: ref_rf.append(i); L, touched = rc[i], False
+        assert S.kq_rally_fail(mine) == ref_rf
     assert fired
     n, mine = len(kq_c), S.ind(*_ohlc(kq))                           # back to the panel series
     below = x.Close.to_numpy() < ra["ma10"]

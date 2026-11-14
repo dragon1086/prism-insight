@@ -24,12 +24,13 @@ from prism_inverse.domain.models import Bar, Instrument
 from prism_inverse.domain.virtual import CLOSED, KR_RULES, US_RULES, Rules, VirtualTrade, advance
 from prism_inverse.ports import EventSink, MarketData, SignalStore, Unavailable, Unsupported
 
-SIGNALS_VERSION = "inverse-signals-kr-v3"  # v3: S18 exits (1.5/3/trail 3/breakeven/10d/no-progress), + KQ_FR, K200_SEMI
+SIGNALS_VERSION = "inverse-signals-kr-v4"  # v3: S18 exits (1.5/3/trail 3/breakeven/10d/no-progress), + KQ_FR, K200_SEMI; v4: + KQ_RFAIL (observe)
 US_SIGNALS_VERSION = "inverse-signals-us-v1"
 KOSDAQ, K200, SEMI = "229200", "069500", "091160"
 # family -> (underlying the rules read, inverse ETF the virtual trade uses)
 FAMILY_MAP = {"KQ_F1": (KOSDAQ, "251340"), "KQ_DRIVER": (KOSDAQ, "251340"), "K200_DRIVER": (K200, "114800"),
-              "KQ_X10": (KOSDAQ, "251340"), "KQ_FR": (KOSDAQ, "251340"), "K200_SEMI": (K200, "252670")}
+              "KQ_X10": (KOSDAQ, "251340"), "KQ_FR": (KOSDAQ, "251340"), "K200_SEMI": (K200, "252670"),
+              "KQ_RFAIL": (KOSDAQ, "251340")}   # S20 rally-fail, observe only (not in live_cycle.KR_LIVE_FAMILIES)
 FIRED, NOT_FIRED, MISSING = "FIRED", "NOT_FIRED", "MISSING"
 
 
@@ -79,7 +80,7 @@ def evaluate(day: date, sectors: Sequence[str], bench: str, bars: dict, errors: 
     out = {}
     err = missing([KOSDAQ])
     if err:
-        out["KQ_F1"] = out["KQ_X10"] = out["KQ_FR"] = (MISSING, {}, err)
+        out["KQ_F1"] = out["KQ_X10"] = out["KQ_FR"] = out["KQ_RFAIL"] = (MISSING, {}, err)
     else:
         a = _ind(bars[KOSDAQ])
         t = len(a["c"]) - 1
@@ -89,6 +90,8 @@ def evaluate(day: date, sectors: Sequence[str], bench: str, bars: dict, errors: 
         out["KQ_X10"] = (FIRED if t in S.kq_x10(a) else NOT_FIRED, {**base, "ma10": _last(a, "ma10")}, None)
         out["KQ_FR"] = (FIRED if t in S.kq_fr(a) else NOT_FIRED,
                         {**base, "ma5": _last(a, "ma5"), "hi20": _last(a, "hi20"), "switch": S.crash_switch(a)[t]}, None)
+        out["KQ_RFAIL"] = (FIRED if t in S.kq_rally_fail(a) else NOT_FIRED,
+                           {**base, "ma20": _last(a, "ma20"), "high": _last(a, "h"), "switch": S.crash_switch(a)[t]}, None)
 
     err = missing([K200, SEMI])
     if err:

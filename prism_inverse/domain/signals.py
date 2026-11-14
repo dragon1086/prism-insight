@@ -13,7 +13,7 @@ from typing import Callable, Optional, Sequence
 
 Series = Sequence[Optional[float]]
 
-FAMILIES = ("KQ_F1", "KQ_DRIVER", "K200_DRIVER", "KQ_X10", "KQ_FR", "K200_SEMI")
+FAMILIES = ("KQ_F1", "KQ_DRIVER", "K200_DRIVER", "KQ_X10", "KQ_FR", "K200_SEMI", "KQ_RFAIL")
 WINDOW, EPISODE = 100, 120          # re-break must come within 100 sessions; episode ends after 120
 LEADER_GAIN, LEADER_RANK, LEADER_LOOKBACK = 0.15, 2 / 3, 120
 CORR_WINDOW, CORR_MIN = 60, 48
@@ -47,7 +47,7 @@ def ind(o: Series, h: Series, l: Series, c: Series) -> dict:
         if i and c[i - 1] is not None:
             parts += [abs(h[i] - c[i - 1]), abs(l[i] - c[i - 1])]
         tr.append(max(parts))
-    return {"o": list(o), "c": list(c), "atr": rolling_mean(tr, 20), "ma5": rolling_mean(c, 5), "ma10": rolling_mean(c, 10),
+    return {"o": list(o), "h": list(h), "c": list(c), "atr": rolling_mean(tr, 20), "ma5": rolling_mean(c, 5), "ma10": rolling_mean(c, 10),
             "ma20": rolling_mean(c, 20), "ma50": rolling_mean(c, 50), "hi20": rolling_max(c, 20, 20),
             "peak": rolling_max(c, 120, 60)}
 
@@ -128,6 +128,32 @@ def kq_fr(a: dict, rally_atr: float = 2.0) -> list[int]:
         if rallied and _lt(c[i], ma[i]) and i and c[i - 1] is not None and ma[i - 1] is not None and c[i - 1] >= ma[i - 1]:
             out.append(i)
             rallied, low = False, c[i]
+    return out
+
+
+def kq_rally_fail(a: dict) -> list[int]:
+    """S20 'RF ma20 d5' (2026-11-14, observe only): inside the crash switch, while the 20-day line is falling
+    (below its value 5 sessions ago), the close rallies off the switch low to within 1 ATR of the line (touch);
+    the next close under both the previous high and the previous close fires. The low resets after a fire.
+    Research: tasks/research-20261114/inverse-improve/c3_rally_fail.py ``rally_fail`` (dry=0, slope='d5', align=0)."""
+    c, h, at, ma, sw = a["c"], a["h"], a["atr"], a["ma20"], crash_switch(a)
+    out, low, touched = [], None, False
+    for i in range(len(c)):
+        if not sw[i] or c[i] is None or ma[i] is None:
+            low, touched = None, False
+            continue
+        if low is None or c[i] < low:
+            low, touched = c[i], False
+            continue
+        if i < 5 or not _lt(ma[i], ma[i - 5]):
+            continue
+        if not touched:
+            if at[i] is not None and abs(c[i] - ma[i]) <= at[i] and c[i] > low:
+                touched = True
+            continue
+        if _lt(c[i], h[i - 1]) and _lt(c[i], c[i - 1]):
+            out.append(i)
+            low, touched = c[i], False
     return out
 
 
