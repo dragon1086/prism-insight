@@ -268,3 +268,72 @@ def test_cli_dry_run_before_close_refuses_without_flag(tmp_path):
                           env={"PATH": "/usr/bin:/bin", "PRISM_DISABLE_SIGNAL_PUBLISH": "1"})
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert "market not closed yet" in proc.stderr
+
+
+# ── The final fill quantity is written to the micro-split ledger leg (2026-11-14) ─────────────
+
+def _holding(db, row_id, symbol, legs, account=ACCOUNT):
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE IF NOT EXISTS stock_holdings (id INTEGER PRIMARY KEY, ticker TEXT, company_name TEXT, "
+                 "account_key TEXT, scenario TEXT, buy_price REAL, stop_loss REAL)")
+    scenario = {"micro_split": {"contract": "micro-split-live-v1", "market": "KR", "unit_amount": "1000000",
+                                "allocation": "1", "legs": legs}}
+    conn.execute("INSERT INTO stock_holdings VALUES (?,?,?,?,?,?,?)",
+                 (row_id, symbol, "x", account, json.dumps(scenario), 100, 90))
+    conn.commit()
+    conn.close()
+
+
+def _legs(db, row_id):
+    conn = sqlite3.connect(db)
+    scenario = json.loads(conn.execute("SELECT scenario FROM stock_holdings WHERE id=?", (row_id,)).fetchone()[0])
+    conn.close()
+    return scenario["micro_split"]["legs"]
+
+
+def _ledger_run(tmp_path, monkeypatch, intents, rows, legs, **kwargs):
+    db = tmp_path / "t.sqlite"
+    _db(db, intents)
+    _holding(db, 7, "053800", legs)
+    summary, _ = _run(tmp_path, monkeypatch, intents, rows, **kwargs)
+    return summary, _legs(db, 7)
+
+
+INITIAL_LEG = {"kind": "INITIAL", "allocation": "0.5", "price": "100", "at": "t0"}
+ADD_LEG = {"kind": "ADD", "allocation": "0.5", "price": "100", "at": "t1", "bar_end": "s1", "decision_id": "add-1"}
+
+
+def test_partial_fills_are_written_to_the_initial_and_add_legs(tmp_path, monkeypatch):
+    entry = dict(KR_ENTRY, position="legacy:KR:7")
+    add = {"id": "i2", "symbol": "053800", "decision": "add-1", "odno": "0000124", "qty": 5, "position": "legacy:KR:7",
+           "source": "micro_split_add", "created": "2026-10-21T02:05:00+00:00"}
+    rows = [_kr("0000123", "053800", 4, 4, 400), _kr("0000124", "053800", 5, 2, 200, tmd="110500")]
+    summary, legs = _ledger_run(tmp_path, monkeypatch, [entry, add], rows, [dict(INITIAL_LEG), dict(ADD_LEG)])
+    assert [leg.get("filled_qty") for leg in legs] == ["4", "2"]
+    assert [o["ledger_fill_recorded"] for o in summary["orders"]] == [True, True]
+
+
+def test_missing_or_dry_run_never_touches_the_ledger(tmp_path, monkeypatch):
+    entry = dict(KR_ENTRY, position="legacy:KR:7")
+    _, legs = _ledger_run(tmp_path, monkeypatch, [entry], [], [dict(INITIAL_LEG)], ok=False)
+    assert "filled_qty" not in legs[0]
+    other = tmp_path / "dry"
+    other.mkdir()
+    _, legs = _ledger_run(other, monkeypatch, [entry], [_kr("0000123", "053800", 4, 0, 0)], [dict(INITIAL_LEG)],
+                          dry_run=True)
+    assert "filled_qty" not in legs[0]
+
+
+def test_unfilled_is_zero_and_a_foreign_or_ambiguous_row_is_left_alone(tmp_path, monkeypatch):
+    entry = dict(KR_ENTRY, position="legacy:KR:7")
+    _, legs = _ledger_run(tmp_path, monkeypatch, [entry], [_kr("0000123", "053800", 4, 0, 0)], [dict(INITIAL_LEG)])
+    assert legs[0]["filled_qty"] == "0"
+    for name, intents in (("other_row", [dict(KR_ENTRY, position="legacy:KR:8")]),
+                          ("us_ref", [dict(KR_ENTRY, position="legacy:US:7")]),
+                          ("two_buys", [dict(KR_ENTRY, position="legacy:KR:7"),
+                                        dict(KR_ENTRY, id="i9", odno="0000125", position="legacy:KR:7")])):
+        path = tmp_path / name
+        path.mkdir()
+        rows = [_kr("0000123", "053800", 4, 4, 400), _kr("0000125", "053800", 4, 4, 400)]
+        _, legs = _ledger_run(path, monkeypatch, intents, rows, [dict(INITIAL_LEG)])
+        assert "filled_qty" not in legs[0], name
