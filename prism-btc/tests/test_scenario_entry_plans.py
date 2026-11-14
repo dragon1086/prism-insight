@@ -24,7 +24,8 @@ def sample():
 def offer(c,p):
     raw=allocation_wire(c);raw.update(side=p['side'],expires_at=c['now']+60,hard_stop=p['hard_stop'],
         entries=[dict(id=p['id'],price=p['entry_price'],allocation_fraction=.5,trigger_price=p['trigger_price'])],
-        take_profits=deepcopy(p['take_profits']),partial_stops=[])
+        take_profits=deepcopy(p['take_profits']),partial_stops=[],
+        entry_readiness=dict(status='SUPPORTED_NOW',reason='Current primary-frame structure independently supports the entry.'))
     return raw
 
 
@@ -75,8 +76,13 @@ def test_unavailable_direction_keeps_original_contract_and_no_facts_are_changed(
     assert any(b['properties']['side']['enum']==['LONG']for b in schema['anyOf'])
 
 
-def test_two_phase_runtime_uses_menu_and_replays_with_original_host_checks(monkeypatch):
+@pytest.mark.parametrize('readiness,expected_calls,action,with_peer',[
+    ('SUPPORTED_NOW',2,'OPEN',False),('WAIT_FOR_EVIDENCE',1,'WAIT',False),
+    ('WAIT_FOR_EVIDENCE',2,'OPEN',True)])
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_two_phase_runtime_uses_menu_and_replays_with_original_host_checks(monkeypatch,readiness,expected_calls,action,side,with_peer):
     s,c,t=sample();calls=[]
+    s.setdefault('timeframes',{}).setdefault('30m',{})['volume_4d_30m']={'latest_closed_over_overall_median':.2}
     # Supply the same timestamped structure to this synthetic fixture, not real model calls.
     from live import scenario_calculated_review as m
     monkeypatch.setattr(m,'build_ma_structure_context',lambda snapshot,ctx:t)
@@ -84,8 +90,11 @@ def test_two_phase_runtime_uses_menu_and_replays_with_original_host_checks(monke
         from live.scenario_model_input import restore_model_input
         calls.append(q);body=restore_model_input(json.loads(q['user_prompt']))
         if 'wait_proposal'in q['response_schema']['properties']:
-            menu=body['prepared_entry_plans'];p=offer(c,menu['layouts'][0]);wait=wire(c,'WAIT');wait['expires_at']=c['now']+60
+            menu=body['prepared_entry_plans'];p=offer(c,next(v for v in menu['layouts']if v['side']==side));wait=wire(c,'WAIT');wait['expires_at']=c['now']+60
+            p['entry_readiness']=dict(status=readiness,reason='Low participation needs a new reversal observation.'if readiness=='WAIT_FOR_EVIDENCE'else'Price structure already supports entry despite low volume.')
             result=dict(wait_proposal=wait,candidates=[p],no_candidate_reason='')
+            if with_peer:
+                result['candidates'].append(offer(c,next(v for v in menu['layouts']if v['id']!=p['entries'][0]['id'])))
             assert body['response_contract']['authority'].startswith('API response_schema')
         else:
             assert body['prepared_entry_plan_sources']
@@ -96,13 +105,32 @@ def test_two_phase_runtime_uses_menu_and_replays_with_original_host_checks(monke
     review=partial(research_review,research_mode='economic-reject-calculated-v1');contract=response_contract(c)
     tape=record_review(review,s,c,contract,generate=generate,record=lambda e:None,clock=lambda:c['now'])
     assert tape['outcome']['status']=='COMPLETE',tape['outcome']
-    assert len(calls)==2 and tape['outcome']['result']['selected']['effective_plan']['action']=='OPEN'
+    result=tape['outcome']['result']
+    selected=result['selected']
+    assert len(calls)==expected_calls and (selected.get('effective_plan')or selected['raw_proposal'])['action']==action
+    assert 'entry_readiness'not in result['selected']['raw_proposal']
+    assert result['candidates']['entry_readiness_reviews'][0]['selectable']==(readiness=='SUPPORTED_NOW')
+    if with_peer:
+        assert result['selected']['id']=='c1'
+        assert [v['id']for v in result['candidates']['candidates']]==['c1']
+    if action=='WAIT':
+        assert result['candidates']['candidates']==[]
+        assert result['candidates']['no_candidate_category']=='ENTRY_EVIDENCE_PENDING'
     assert replay_review(tape,review,s,c,contract)==tape['outcome']
+
+
+@pytest.mark.parametrize('damage',['missing','unknown'])
+def test_entry_readiness_cannot_default_missing_or_unknown_to_ready(damage):
+    s,c,t=sample();menu=prepare(s,c,t);p=offer(c,menu['layouts'][0])
+    if damage=='missing':p.pop('entry_readiness')
+    else:p['entry_readiness']['status']='UNKNOWN'
+    assert not _matches(p,constrain(_action_allocation_branches(c,{'OPEN'}),menu))
 
 
 def test_duplicate_targets_remain_rejected_by_original_host():
     from live.scenario_calculated_review import calculate_economic_candidate
     s,c,t=sample();menu=prepare(s,c,t);raw=offer(c,menu['layouts'][0])
+    raw.pop('entry_readiness')
     raw['take_profits']=[deepcopy(raw['take_profits'][0]),deepcopy(raw['take_profits'][0])]
     with pytest.raises(ValueError):calculate_economic_candidate(raw,c,candidate_id='c0')
 

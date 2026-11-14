@@ -1352,7 +1352,7 @@ def research_review(snapshot, context, response_contract, *, generate, record,
                     'confidence and entry allocation_fraction; use the coupled prepared_entry_plans prices/fractions')
                 draft_prompt=draft_prompt.replace('choose direction, strategic prices, SL, TP,\nconfidence and allocation_fraction',
                     'choose supported direction, confidence and allocation_fraction using coupled host plan prices/fractions')
-                draft_prompt+='\nPrepared prices are not proof of an edge. Assess structure/volume, entry style, original goal and barriers; otherwise WAIT. Each listed TP ID once. Sizing examples are not confidence recommendations; final host sizing/payoff can still reject. Do not inflate confidence/allocation to pass. Unlisted directions retain their original proposal contract.\n'
+                draft_prompt+='\nPrepared prices are not proof of an edge. For each OPEN, entry_readiness must distinguish SUPPORTED_NOW (present primary-frame price/volume and location independently justify this order) from WAIT_FOR_EVIDENCE (another candle, volume, retest or reversal observation is still needed). Explain that distinction in reason. A pullback LIMIT touch is not trend-resumption confirmation; a supported numeric MarkPrice trigger alone may be executable. Low volume alone is not a veto, and a favourable payoff is not evidence of reachable targets. Assess the original goal and barriers. Each listed TP ID once. Sizing examples are not confidence recommendations; final host sizing/payoff can still reject. Do not inflate confidence/allocation to pass. Unlisted directions retain their original price proposal contract.\n'
     draft = call("candidate", draft_prompt, payload, draft_schema)
     category = "FIRST_OBSERVATION" if first_observation else "CANDIDATES_PROVIDED" if draft["candidates"] else "NO_CANDIDATES_SUPPLIED"
     if not explanation_enabled(context) and (len(draft["no_candidate_reason"]) > 2000 or (not draft["candidates"] and not draft["no_candidate_reason"].strip())):
@@ -1387,10 +1387,21 @@ def research_review(snapshot, context, response_contract, *, generate, record,
     if action_contract:
         _bind_model_wrapper(wait_receipt, draft, wait_wire)
     calculator = calculate_economic_candidate if economic_reject else calculate_allocation_candidate if allocation else calculate_candidate
-    receipts = [calculator(wire, now_context, candidate_id=f"c{index}",
-                                   original_input_now=frozen_context["now"],
-                                   **({'explanation_snapshot': frozen_snapshot} if explanation_enabled(context) else {}))
-                for index, wire in enumerate(draft["candidates"])]
+    receipts, readiness_reviews = [], []
+    for index, model_wire in enumerate(draft["candidates"]):
+        wire = deepcopy(model_wire)
+        if prepared is not None and wire['action'] == 'OPEN':
+            readiness = wire.pop('entry_readiness')
+            if not 1 <= len(readiness['reason'].strip()) <= 600:
+                raise ValueError('research_entry_readiness_reason')
+            allowed = readiness['status'] == 'SUPPORTED_NOW'
+            readiness_reviews.append(dict(candidate_id=f'c{index}', assessment=readiness,
+                selectable=allowed, source='MODEL_QUALITATIVE_NOT_CALIBRATED'))
+            if not allowed:
+                continue
+        receipts.append(calculator(wire, now_context, candidate_id=f"c{index}",
+            original_input_now=frozen_context["now"],
+            **({'explanation_snapshot': frozen_snapshot} if explanation_enabled(context) else {})))
     if effective_wait.get('pending_renewal'):
         # Preserve the model's exact WAIT proposal as an explicit selectable
         # renewal, plus a separately labelled host-derived inert fallback.
@@ -1417,6 +1428,10 @@ def research_review(snapshot, context, response_contract, *, generate, record,
                   no_candidate_category=category, category_source="HOST_DERIVED_FROM_STATE_AND_ARRAY",
                   no_candidate_reason=draft.get("no_candidate_reason"),
                   qualitative_reason_truth="NOT_MECHANICALLY_VERIFIED")
+    if readiness_reviews:
+        bundle['entry_readiness_reviews'] = readiness_reviews
+        if not receipts:
+            bundle['no_candidate_category'] = 'ENTRY_EVIDENCE_PENDING'
     bundle_sha = receipt_hash(bundle)
     record(deepcopy(dict(kind="CALCULATED_CANDIDATES", body=bundle, sha256=bundle_sha)))
     if economic_reject and receipts and all(
@@ -1438,7 +1453,7 @@ def research_review(snapshot, context, response_contract, *, generate, record,
                      rationale=selection_wire.get("rationale"))
     else:
         final = dict(selection="WAIT", receipt_sha256=wait_receipt["receipt_sha256"],
-                     rationale=draft.get("no_candidate_reason"))
+                     rationale=wait_wire['rationale'] if readiness_reviews else draft.get("no_candidate_reason"))
     fresh()
     if receipt_hash(bundle) != bundle_sha:
         raise ValueError("research_candidate_mutated")

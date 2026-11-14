@@ -144,5 +144,12 @@ def constrain(schema, menu):
                 props['take_profits'].update(minItems=len(targets),maxItems=len(targets),items={'anyOf':targets})
                 for key in ('max_bps','max_reprices'):props['chase']['properties'][key]['enum']=[0]
                 branches.append(offered)
+    for branch in branches:
+        if branch['properties']['action']['enum']==['OPEN']:
+            branch['properties']['entry_readiness']={
+                'type':'object','additionalProperties':False,
+                'properties':{'status':{'type':'string','enum':['SUPPORTED_NOW','WAIT_FOR_EVIDENCE']},
+                              'reason':{'type':'string'}},'required':['status','reason']}
+            branch['required'].append('entry_readiness')
     result['anyOf']=branches
     return result
