@@ -669,8 +669,10 @@ _SCENARIO_SQL = {
 }
 
 
-def record_add_order_cash(agent, *, market, row_id, bar_end, cash):
-    """Store what an add leg ordered (``order_cash``): a fill-to-target notional, or 0 when rejected.
+def record_add_leg(agent, *, market, row_id, bar_end, **fields):
+    """Store order facts on an add leg (``bar_end``): ``order_cash`` (a fill-to-target notional, or 0
+    when rejected) and ``decision_id`` (the order intent's source decision id, which the post-close
+    fill check matches to write ``filled_qty``).
 
     Per-row exit quantities (prism_core.loop_row_split) size a leg from its allocation delta; a
     fill-to-target add orders more than that and a rejected add nothing, so the leg keeps what it
@@ -688,7 +690,7 @@ def record_add_order_cash(agent, *, market, row_id, bar_end, cash):
         if leg is None:
             conn.rollback()
             return False
-        leg["order_cash"] = str(cash)
+        leg.update({key: str(value) for key, value in fields.items()})
         conn.execute(_UPDATE_SQL[market], (json.dumps(scenario, ensure_ascii=False), int(row_id)))
         conn.commit()
         return True
@@ -696,6 +698,36 @@ def record_add_order_cash(agent, *, market, row_id, bar_end, cash):
         if conn is not None:
             with contextlib.suppress(Exception):
                 conn.rollback()
+        return False
+
+
+def record_leg_fill(conn, *, market, row_id, symbol, account_key, decision_id, filled_qty):
+    """Store the broker-confirmed ``filled_qty`` on one ledger leg after the close; never raises.
+
+    ``decision_id`` set: the add leg that recorded it; None: the row's INITIAL leg. A row that is
+    gone, belongs to another ticker/account or has no such leg is left alone (returns False).
+    Per-row exit quantities then count shares bought instead of shares ordered.
+    """
+    try:
+        market = str(market).upper()
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(_ROW_SQL[market], (int(row_id), symbol, account_key)).fetchone()
+        scenario = json.loads(row[4]) if row and row[4] else None
+        legs = (record(scenario) or {}).get("legs") or []
+        if decision_id is None:
+            leg = legs[0] if legs and legs[0].get("kind") == "INITIAL" else None
+        else:
+            leg = next((leg for leg in legs if leg.get("decision_id") == decision_id), None)
+        if leg is None or leg.get("filled_qty") == str(int(filled_qty)):
+            conn.rollback()
+            return False
+        leg["filled_qty"] = str(int(filled_qty))
+        conn.execute(_UPDATE_SQL[market], (json.dumps(scenario, ensure_ascii=False), int(row_id)))
+        conn.commit()
+        return True
+    except Exception:  # noqa: BLE001 - the ordered quantity stays the basis
+        with contextlib.suppress(Exception):
+            conn.rollback()
         return False
 
 
@@ -891,7 +923,6 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
         if held and "ticker_allocation_after" in ticker_fields:
             cash, cash_basis = fill_to_target_cash(block["unit_amount"], ticker_fields["ticker_allocation_after"],
                                                    held, price, market), "fill_to_target"
-            record_add_order_cash(agent, market=market, row_id=row_id, bar_end=decision["bar_end"], cash=cash)
         else:
             cash, cash_basis = scaled_cash(block["unit_amount"], delta, market), "delta"
         intent = OrderIntent.create(
@@ -900,6 +931,10 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
             source_decision_id=_hash(["micro-split-add", campaign["campaign_id"], decision["bar_end"]]),
             source_position_id=campaign["position_id"], cash_amount=cash, limit_price=price,
             reason="Micro-split add")
+        leg_facts = {"decision_id": intent.source_decision_id}  # the post-close fill check finds the leg by it
+        if cash_basis == "fill_to_target":
+            leg_facts["order_cash"] = cash
+        record_add_leg(agent, market=market, row_id=row_id, bar_end=decision["bar_end"], **leg_facts)
         if whole_share_quantity(cash, price) <= 0:
             result = {"success": False, "status": "blocked_budget", "reason_code": "micro_split_add_below_one_share",
                       "message": "Add budget below one share; strategy allocation recorded", "quantity": 0}
@@ -908,7 +943,7 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
             result = await trading.execute_buy(buy_amount=cash, limit_price=price, intent=intent,
                                                strict_budget=True, **kwargs)
             if result.get("intent_status") == "FAILED":  # broker rejected: the leg bought nothing
-                record_add_order_cash(agent, market=market, row_id=row_id, bar_end=decision["bar_end"], cash=0)
+                record_add_leg(agent, market=market, row_id=row_id, bar_end=decision["bar_end"], order_cash=0)
     # One channel message per add: a secondary account's add of the same position sends no second notice.
     announce = campaign["account_key"] == (primary_account_key(agent) or campaign["account_key"])
     if announce:

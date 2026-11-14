@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Post-close fill confirmation for the day's buys and micro-split adds (read-only, observation).
+"""Post-close fill confirmation for the day's buys and micro-split adds.
 
 For every BUY the order ledger says was sent that market-local day, read the broker's
 daily execution inquiry for the account that sent it and emit one ``entry.fill_reconciled``
 (CONFIRMED / PARTIAL / NOT_FILLED / MISSING) on the trade's trace. Only inquiry TRs are
-called (KR TTTC0081R, US TTTS3035R). Nothing is ordered, amended or cancelled, and the
-trading database is opened ``mode=ro``. Account numbers never leave the broker call: the
-event carries only ``execution_profile_ref``.
+called (KR TTTC0081R, US TTTS3035R). Nothing is ordered, amended or cancelled. The one
+write (2026-11-14): a final fill quantity is stored as ``filled_qty`` on the micro-split
+ledger leg that order bought (the row's INITIAL leg, or the add leg with its decision id),
+so per-row stop quantities count shares bought, not shares ordered; MISSING writes nothing.
+Account numbers never leave the broker call: the event carries only ``execution_profile_ref``.
 
 Usage:
     python tools/reconcile_fills.py --market KR [--date YYYYMMDD] [--dry-run]
@@ -23,6 +25,7 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -80,10 +83,19 @@ async def _account_rows(market, account, day, service_factory=_service):
     return parsed_ok, rows, None if parsed_ok else "BROKER_ROWS_INVALID"
 
 
+def _leg_key(market, target):
+    """(holding row id, add decision id or None for the INITIAL leg) this buy filled, or None."""
+    parts = str(target.get("source_position_id") or "").split(":")
+    if len(parts) != 3 or parts[0] != "legacy" or parts[1] != market or not parts[2].isdigit():
+        return None
+    return int(parts[2]), (target.get("source_decision_id") if target["is_add"] else None)
+
+
 async def run(market, day, *, db_path, dry_run=False, state_path=None, accounts=None,
               service_factory=_service, spool_path=None):
     from observability import fill_reconciliation as fr
     from observability.trading_context import execution_profile_ref
+    from prism_core.micro_split_live import record_leg_fill
 
     targets = fr.load_targets(db_path, market, day)
     accounts = _accounts(market) if accounts is None else accounts
@@ -92,6 +104,9 @@ async def run(market, day, *, db_path, dry_run=False, state_path=None, accounts=
     for target in targets:
         by_account[target["account_id"]].append(target)
     report, counts = [], Counter()
+    leg_keys = {target["id"]: _leg_key(market, target) for target in targets}
+    key_uses = Counter(key for key in leg_keys.values() if key)  # two buys on one leg: ambiguous, skip
+    ledger = None if dry_run else sqlite3.connect(db_path, timeout=30)
     for account_key, group in by_account.items():
         account = accounts.get(account_key)
         if account is None:
@@ -108,6 +123,12 @@ async def run(market, day, *, db_path, dry_run=False, state_path=None, accounts=
                 emitted = fr.emit(target, attributes, market=market, spool_path=spool_path)
                 if emitted is not None:
                     state.mark(target["id"], status)
+            key = leg_keys[target["id"]]
+            leg_recorded = bool(
+                ledger is not None and key and key_uses[key] == 1 and status in fr.FINAL_STATUSES
+                and result["filled_qty"] is not None
+                and record_leg_fill(ledger, market=market, row_id=key[0], symbol=target["symbol"],
+                                    account_key=account_key, decision_id=key[1], filled_qty=result["filled_qty"]))
             counts[status] += 1
             report.append({"symbol": target["symbol"], "entry_kind": attributes["entry_kind"],
                            "intent_source": target.get("source"), "fill_status": status,
@@ -116,7 +137,9 @@ async def run(market, day, *, db_path, dry_run=False, state_path=None, accounts=
                            "avg_fill_price": result["avg_fill_price"],
                            "submitted_limit_price": attributes["submitted_limit_price"],
                            "trace_linked": bool(target.get("trace_decision_id")),
-                           "emitted": emitted is not None})
+                           "emitted": emitted is not None, "ledger_fill_recorded": leg_recorded})
+    if ledger is not None:
+        ledger.close()
     if not dry_run:
         state.save()
     return {"market": market, "date": day, "dry_run": dry_run, "targets": len(targets),

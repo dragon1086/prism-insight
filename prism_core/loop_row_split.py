@@ -72,7 +72,8 @@ def split_sell_quantity(split: dict[str, Any], live_qty: int, row_id: Any = None
 # strategy ledger: each leg ordered floor(scaled_cash(slot amount, leg allocation) / leg price)
 # shares (strict-budget limit orders, prism_core.micro_split_live), or floor(leg order_cash /
 # price) when the add recorded what it ordered (fill-to-target; a rejected add records 0). That
-# is the ORDERED quantity; an unfilled order makes it overstate, and then the closing row still
+# is the ORDERED quantity until the post-close fill check writes the leg's ``filled_qty``
+# (2026-11-14); an order still open intraday makes it overstate, and then the closing row still
 # sells its own shares (exit priority, see row_sell_quantity).
 _ROWS_SQL = {
     "KR": "SELECT id, scenario FROM stock_holdings WHERE ticker = ? AND account_key = ? ORDER BY id",
@@ -91,7 +92,10 @@ def _micro_block(scenario: Any):
 
 
 def row_ledger_quantity(scenario: Any) -> int | None:
-    """Whole shares a micro-split row ordered per its ledger legs; None when not derivable.
+    """Whole shares of a micro-split row per its ledger legs; None when not derivable.
+
+    A leg with ``filled_qty`` (broker-confirmed after the close) counts those shares; other legs
+    count what they ordered.
 
     Each leg is sized at ``order_price`` when recorded (the price the broker order used, e.g. the
     US broker re-quote), else at the leg price.
@@ -104,6 +108,9 @@ def row_ledger_quantity(scenario: Any) -> int | None:
     try:
         total = 0
         for leg in block["legs"]:
+            if "filled_qty" in leg:  # broker-confirmed after the close (tools/reconcile_fills.py)
+                total += int(leg["filled_qty"])
+                continue
             try:  # a fill-to-target add (2026-11-14) records the notional it actually ordered
                 cash = (float(leg["order_cash"]) if "order_cash" in leg
                         else scaled_cash(block["unit_amount"], leg["allocation"], block["market"]))

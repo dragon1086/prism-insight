@@ -785,6 +785,8 @@ def test_execute_add_fills_the_broker_holding_to_the_allocation(live_on, monkeyp
     assert attributes["cash_basis"] == ("fill_to_target" if held else "delta")
     stored = json.loads(conn.execute(f"SELECT scenario FROM {table} WHERE id=7").fetchone()[0])
     leg = stored["micro_split"]["legs"][-1]
+    from prism_core.oneil_adaptive_policy import _hash  # the post-close fill check matches the add by it
+    assert leg["decision_id"] == _hash(["micro-split-add", "c1", "add-plan:2026-10-05:breakout_1"])
     from prism_core.loop_row_split import row_ledger_quantity
     if held:  # per-row exit quantities count the shares the add actually sized
         assert leg["order_cash"] == str(expected)

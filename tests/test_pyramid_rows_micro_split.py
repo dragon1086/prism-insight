@@ -319,6 +319,21 @@ def test_an_unfilled_add_on_the_open_row_never_blocks_the_closing_rows_stop():
     assert L.row_sell_quantity(3, 2, b, [a])[0] == 3                                       # never above broker
 
 
+def test_a_recorded_fill_replaces_the_ordered_quantity_of_the_closing_row():
+    # 2026-11-14 follow-up: the CLOSING row's own add filled 2 of 5 (ledger 10, real 7); the other
+    # row holds 5. Ordered basis sells 10 (5 of them the other row's); once the post-close fill
+    # check records filled_qty, the row sells its 7 and the other row keeps its 5.
+    def row(qty):
+        return _row(initial="0.5", price=10, unit=20 * qty)
+    a, b = row(10), row(5)
+    assert L.row_sell_quantity(12, 2, a, [b])[:2] == (10, "PYRAMID_ROW_LEDGER_OVER_BROKER")
+    a["micro_split"]["legs"][0]["filled_qty"] = "7"
+    assert L.row_ledger_quantity(a) == 7
+    assert L.row_sell_quantity(12, 2, a, [b])[:2] == (7, "PYRAMID_ROW_LEDGER_QTY")
+    a["micro_split"]["legs"][0]["filled_qty"] = "0"                    # nothing filled: nothing of it
+    assert L.row_ledger_quantity(a) == 0
+
+
 @pytest.mark.parametrize("own,other", [(772, 291), (291, 772), (500, 500), (1, 999), (999, 1)])
 def test_subscriber_denominator_never_sells_another_rows_share(own, other):
     # Review 2026-11-08: round(1063/772) = 1 made a mirror sell row B too. ceil and >= 2 while rows remain.
