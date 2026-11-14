@@ -297,13 +297,26 @@ def test_row_exit_sells_its_own_ledger_shares():
     assert L.row_ledger_quantity(pyramid) == 37 + 18                  # 400,000/10,800 + 200,000/11,000
     assert L.row_sell_quantity(90, 2, pyramid, [first])[:2] == (55, "PYRAMID_ROW_LEDGER_QTY")
     assert L.row_sell_quantity(90, 2, first, [pyramid])[:2] == (35, "PYRAMID_ROW_LEDGER_QTY")
-    # A rejected add order: the broker holds fewer shares; never take the other row's 35.
-    assert L.row_sell_quantity(70, 2, pyramid, [first])[:2] == (35, "PYRAMID_ROW_LEDGER_QTY")
+    # Ledger above the broker (an unfilled add): the closing row still sells its own ledger shares
+    # (2026-11-14 exit priority); the row left open absorbs the shortfall.
+    assert L.row_sell_quantity(70, 2, pyramid, [first])[:2] == (55, "PYRAMID_ROW_LEDGER_OVER_BROKER")
     assert L.row_sell_quantity(20, 1, first, []) == (20, "LAST_ROW_REMAINDER", 1, 1.0)   # last row sweeps
     # Recorded order price (US broker re-quote) sizes the leg instead of the leg price.
     requoted = _row(initial="0.35")
     requoted["micro_split"]["legs"][0]["order_price"] = "10500"
     assert L.row_ledger_quantity(requoted) == 33                      # 350,000 / 10,500
+
+
+def test_an_unfilled_add_on_the_open_row_never_blocks_the_closing_rows_stop():
+    # 2026-11-14 report: row A (5 shares) added 5 more that were rejected (ledger 10) or filled 2 of 5
+    # (ledger 10, broker 7); row B (5 shares) hits its stop. It sold 0 (row closed, nothing sold) / 2.
+    def row(qty):
+        return _row(initial="0.5", price=10, unit=20 * qty)
+    a, b = row(10), row(5)
+    assert L.row_sell_quantity(10, 2, b, [a])[:2] == (5, "PYRAMID_ROW_LEDGER_OVER_BROKER")   # rejected add
+    assert L.row_sell_quantity(12, 2, b, [a])[:2] == (5, "PYRAMID_ROW_LEDGER_OVER_BROKER")   # partly filled
+    assert L.row_sell_quantity(15, 2, b, [a])[:2] == (5, "PYRAMID_ROW_LEDGER_QTY")           # consistent
+    assert L.row_sell_quantity(3, 2, b, [a])[0] == 3                                       # never above broker
 
 
 @pytest.mark.parametrize("own,other", [(772, 291), (291, 772), (500, 500), (1, 999), (999, 1)])
