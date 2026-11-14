@@ -148,6 +148,45 @@ def scaled_cash(unit_amount, allocation, market):
     return int(value) if quantum == 1 else float(value)
 
 
+def fill_to_target_cash(unit_amount, ticker_allocation, held_quantity, price, market):
+    """Order notional that brings the broker holding up to PRISM's ticker allocation, never above (0 if there).
+
+    Why (2026-11-14, user decision): whole-share rounding leaves the broker below the strategy ledger
+    (JNJ 0.8 x $1,000 bought 2 x $284.55 = $569), and an add of only the delta ($100 < one share)
+    never closes that gap, so an add orders the gap to the new allocation instead.
+    """
+    quantum = Decimal(1) if str(market).upper() == "KR" else Decimal("0.01")
+    value = (_dec(unit_amount) * _dec(ticker_allocation) - _dec(held_quantity) * _dec(price)).quantize(
+        quantum, rounding=ROUND_DOWN)
+    value = max(value, Decimal(0))
+    return int(value) if quantum == 1 else float(value)
+
+
+async def broker_held_quantity(trading, symbol):
+    """Shares of symbol held at the broker, or None when not authoritative.
+
+    KR has a checked balance query (HELD/FLAT/UNKNOWN); the US trader only has the plain one, where
+    0 also means a failed query, so only a positive count counts. FLAT is None too: an add never
+    rebuilds a position the broker does not hold.
+    """
+    import asyncio
+
+    from prism_core.execution_service import normalize_checked_holding
+
+    try:
+        checked = getattr(trading, "get_holding_quantity_checked", None)
+        if callable(checked):
+            state, quantity = normalize_checked_holding(await asyncio.to_thread(checked, symbol))
+            return quantity if state == "HELD" else None
+        plain = getattr(trading, "get_holding_quantity", None)
+        if callable(plain):
+            quantity = await asyncio.to_thread(plain, symbol)
+            return quantity if type(quantity) is int and quantity > 0 else None
+    except Exception:  # noqa: BLE001 - an unreadable balance falls back to the delta order
+        return None
+    return None
+
+
 # Conviction tilt (2026-10-04, user-approved design 2): top setups start one step bigger.
 # The B3 plan (and its plan_hash, the B3 virtual ledger) keeps the volatility-based initial;
 # the tilt is stored explicitly on the holding's micro_split block, which every LIVE consumer
@@ -630,6 +669,36 @@ _SCENARIO_SQL = {
 }
 
 
+def record_add_order_cash(agent, *, market, row_id, bar_end, cash):
+    """Store what an add leg ordered (``order_cash``): a fill-to-target notional, or 0 when rejected.
+
+    Per-row exit quantities (prism_core.loop_row_split) size a leg from its allocation delta; a
+    fill-to-target add orders more than that and a rejected add nothing, so the leg keeps what it
+    actually ordered. Never raises.
+    """
+    conn = None
+    try:
+        market, conn = str(market).upper(), agent.conn
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(_SCENARIO_SQL[market], (int(row_id),)).fetchone()
+        scenario = json.loads(row[0]) if row and row[0] else None
+        block = record(scenario)
+        leg = next((leg for leg in (block or {}).get("legs", []) if leg.get("bar_end") == bar_end), None)
+        if leg is None:
+            conn.rollback()
+            return False
+        leg["order_cash"] = str(cash)
+        conn.execute(_UPDATE_SQL[market], (json.dumps(scenario, ensure_ascii=False), int(row_id)))
+        conn.commit()
+        return True
+    except Exception:  # noqa: BLE001 - the leg delta stays the sizing basis
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+        return False
+
+
 def record_order_price(agent, *, market, row_id, price, logger=None):
     """Store the price that sized the first leg's broker order (``legs[0].order_price``).
 
@@ -763,7 +832,8 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
     The holding row's scenario is updated first and independently of the broker
     fill, like the legacy entry. ``buy_price`` stays the initial entry (positions
     mirror, -7% stop basis and SHADOW parity); the cost-weighted entry is recorded
-    at exit by ``exit_basis``. The order notional is the allocation delta of one slot.
+    at exit by ``exit_basis``. The order notional fills the broker
+    holding up to the ticker allocation (the slot delta when the holding is unknown).
     """
     from observability.events import emit_event
     from prism_core.execution_service import ExecutionService
@@ -811,22 +881,34 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
         agent.conn.rollback()
         raise
     after = float(updated[SCENARIO_KEY]["allocation"])
-    cash = scaled_cash(block["unit_amount"], delta, market)
-    intent = OrderIntent.create(
-        market=market, account_id=campaign["account_key"], symbol=campaign["symbol"], side="buy",
-        order_style="smart", source="micro_split_add",
-        source_decision_id=_hash(["micro-split-add", campaign["campaign_id"], decision["bar_end"]]),
-        source_position_id=campaign["position_id"], cash_amount=cash, limit_price=price,
-        reason="Micro-split add")
-    if whole_share_quantity(cash, price) <= 0:
-        result = {"success": False, "status": "blocked_budget", "reason_code": "micro_split_add_below_one_share",
-                  "message": "Add budget below one share; strategy allocation recorded", "quantity": 0}
-    else:
-        service = (ExecutionService.domestic if market == "KR" else ExecutionService.us)
-        async with service(account_name=account["name"], db_path=agent.db_path) as trading:
+    ticker_fields = ticker_signal_fields(agent, market=market, symbol=campaign["symbol"],
+                                         account_key=campaign["account_key"], row_id=row_id,
+                                         before=before, after=after)
+    service = (ExecutionService.domestic if market == "KR" else ExecutionService.us)
+    async with service(account_name=account["name"], db_path=agent.db_path) as trading:
+        # Fill to the ticker allocation when the broker holding is known; otherwise the delta, as before.
+        held = await broker_held_quantity(trading, campaign["symbol"])
+        if held and "ticker_allocation_after" in ticker_fields:
+            cash, cash_basis = fill_to_target_cash(block["unit_amount"], ticker_fields["ticker_allocation_after"],
+                                                   held, price, market), "fill_to_target"
+            record_add_order_cash(agent, market=market, row_id=row_id, bar_end=decision["bar_end"], cash=cash)
+        else:
+            cash, cash_basis = scaled_cash(block["unit_amount"], delta, market), "delta"
+        intent = OrderIntent.create(
+            market=market, account_id=campaign["account_key"], symbol=campaign["symbol"], side="buy",
+            order_style="smart", source="micro_split_add",
+            source_decision_id=_hash(["micro-split-add", campaign["campaign_id"], decision["bar_end"]]),
+            source_position_id=campaign["position_id"], cash_amount=cash, limit_price=price,
+            reason="Micro-split add")
+        if whole_share_quantity(cash, price) <= 0:
+            result = {"success": False, "status": "blocked_budget", "reason_code": "micro_split_add_below_one_share",
+                      "message": "Add budget below one share; strategy allocation recorded", "quantity": 0}
+        else:
             kwargs = {"stock_code": campaign["symbol"]} if market == "KR" else {"ticker": campaign["symbol"]}
             result = await trading.execute_buy(buy_amount=cash, limit_price=price, intent=intent,
                                                strict_budget=True, **kwargs)
+            if result.get("intent_status") == "FAILED":  # broker rejected: the leg bought nothing
+                record_add_order_cash(agent, market=market, row_id=row_id, bar_end=decision["bar_end"], cash=0)
     # One channel message per add: a secondary account's add of the same position sends no second notice.
     announce = campaign["account_key"] == (primary_account_key(agent) or campaign["account_key"])
     if announce:
@@ -843,9 +925,7 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
             fields = add_signal_fields(market=market, campaign=campaign, meta=meta, before=before, after=after,
                                        price=price, stop_loss=row.get("stop_loss"), result=result,
                                        signal_id=intent.source_decision_id)
-            fields.update(ticker_signal_fields(agent, market=market, symbol=campaign["symbol"],
-                                               account_key=campaign["account_key"], row_id=row_id,
-                                               before=before, after=after))
+            fields.update(ticker_fields)
         except (KeyError, TypeError, ValueError) as error:
             import logging
             logging.getLogger(__name__).warning("[MICRO_SPLIT][%s] add signal skipped: %s", market, error)
@@ -864,7 +944,8 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
                            "rail": meta.get("rail"), "acceleration": meta.get("acceleration"),
                            "allocation_before": before,
                            "allocation_after": after, "add_price": price, "average_entry": average,
-                           "order_cash": cash, "intent_id": intent.id, "broker_success": bool(result.get("success")),
+                           "order_cash": cash, "cash_basis": cash_basis,
+                           "broker_held_before": held, "intent_id": intent.id, "broker_success": bool(result.get("success")),
                            "broker_status": result.get("status") or result.get("intent_status"),
                            "broker_quantity": result.get("quantity"),
                            "broker_reason": result.get("reason_code") or result.get("message"),
