@@ -270,7 +270,8 @@ def _flat_selection_prompt(system, context):
             'zones, whole-path costs and grounded continuation; a higher conditional ratio alone\n'
             'is not a reason to select an implausible target.',
             'Assess current 1h/30m progress, participation, entry location and invalidation.\n'
-            'For supported TREND candidates, weigh missed participation against supplied risk.\n'
+            'When current primary progress and participation support TREND, '
+            'weigh missed participation against supplied risk.\n'
             'An unhit TP or potential obstacle crossing is future trade risk, not automatically\n'
             'missing entry evidence. WAIT for absent edge or material counterevidence;\n'
             'never select implausible targets for ratio alone.', 1)
