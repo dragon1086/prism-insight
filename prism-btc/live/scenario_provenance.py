@@ -44,7 +44,7 @@ def review_policy_binding(*, research_mode="legacy"):
                       scenario_review_guard, scenario_llm, scenario_oauth, scenario_contract,
                       scenario_model_input, scenario_preview, scenario_runtime,
                       scenario_entry_contract, scenario_position_flow, scenario_pending_renewal, scenario_entry_goal,
-                      scenario_entry_display, scenario_analysis_frames, scenario_explanation, scenario_fee_projection, scenario_entry_economics, scenario_entry_geometry,
+                      scenario_entry_display, scenario_analysis_frames, scenario_explanation, scenario_fee_projection, scenario_entry_economics, scenario_entry_geometry, scenario_entry_plans,
                       scenario_review_storage)
     from core import scenario_limit_prices, llm_scenario, scenario_stop_policy, scenario_convergence
     from core import scenario_pending_renewal as pending_renewal_core
@@ -82,6 +82,7 @@ def review_policy_binding(*, research_mode="legacy"):
         'live/scenario_fee_projection.py': scenario_fee_projection,
         'live/scenario_entry_economics.py': scenario_entry_economics,
         'live/scenario_entry_geometry.py': scenario_entry_geometry,
+        'live/scenario_entry_plans.py': scenario_entry_plans,
         'live/scenario_position_flow.py': scenario_position_flow,
         'live/scenario_immediate_reduce.py': scenario_immediate_reduce,
         'live/scenario_management_quarantine.py': scenario_management_quarantine,

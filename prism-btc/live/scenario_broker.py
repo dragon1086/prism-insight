@@ -127,7 +127,10 @@ class ScenarioDemoBroker(ScenarioExecution):
     capabilities = frozenset()
     execution_blockers = ("explicit_execution_enablement_required",)
 
-    def __init__(self, conn, *, session=None, expected_main_uid, clock=time.time, execution_enabled=False, convergence_entry_enabled=False, entry_economics_enabled=False, entry_fee_reference_enabled=False):
+    def __init__(self, conn, *, session=None, expected_main_uid, clock=time.time, execution_enabled=False, convergence_entry_enabled=False, entry_economics_enabled=False, entry_fee_reference_enabled=False, prepared_entry_plans_enabled=False):
+        if type(prepared_entry_plans_enabled) is not bool or (prepared_entry_plans_enabled and not entry_economics_enabled):
+            raise ValueError('prepared_plans_require_entry_economics')
+        self.prepared_entry_plans_enabled = prepared_entry_plans_enabled
         if type(entry_fee_reference_enabled) is not bool or (entry_fee_reference_enabled and not entry_economics_enabled):
             raise ValueError('fee_reference_requires_entry_economics')
         self.entry_fee_reference_enabled = entry_fee_reference_enabled
@@ -652,6 +655,8 @@ class ScenarioDemoBroker(ScenarioExecution):
                 and not pending and accounting['positions'] == []):
             from live.scenario_fee_projection import demo_entry_fee_reference
             economics['entry_fee_reference'] = demo_entry_fee_reference()
+        if economics and getattr(self,'prepared_entry_plans_enabled',False) and financial_ok and not pending and accounting['positions']==[]:
+            economics['prepared_entry_plans_version']=1
         return dict(**economics, historical_unsettled=historical(self.conn), incident_epoch_blocked=incident_blocked,
             entry_thesis=initial_entry_evidence, stop_policy=stop_policy, scenario_risk_fraction=fraction, conditional_entry_version=1, account_version=observed["account_version"],legacy_fenced=observed["legacy_fenced"],
             **({'management_quarantine': management} if management else {}),

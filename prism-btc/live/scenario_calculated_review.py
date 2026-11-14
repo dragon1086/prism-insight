@@ -795,9 +795,18 @@ def _project_initial_entry_progress(projected, context):
         return projected
 
 
-def _model_payload(snapshot, context, response_contract, *, calculated_candidates=None):
+def _model_payload(snapshot, context, response_contract, *, calculated_candidates=None, prepared_plans=None):
     def project(source):
         baseline = _base_model_payload(source, context, response_contract, calculated_candidates=calculated_candidates)
+        if prepared_plans is not None:
+            from live.scenario_model_input import restore_model_input, project_model_input
+            logical=restore_model_input(baseline)
+            if calculated_candidates is None:
+                logical['response_contract']={'authority':'API response_schema; exact schema retained in the review envelope'}
+                logical['prepared_entry_plans']=prepared_plans
+            else:
+                logical['prepared_entry_plan_sources']=[{k:p[k]for k in ('id','side','entry_kind','target_basis','stop_ref','stop_phase')}for p in prepared_plans['layouts']]
+            baseline,_=project_model_input(logical,allow_gap_rescue=True)
         if not explanation_enabled(context):
             baseline = project_holding_price_order_input(baseline)[0]
         projected = project_explanation_input(baseline, context, snapshot=source)
@@ -1328,6 +1337,22 @@ def research_review(snapshot, context, response_contract, *, generate, record,
     if allocation:
         draft_prompt = draft_prompt.replace("SL, TP, quantities and fractions yourself", "SL, TP, confidence and entry allocation_fraction yourself") + ALLOCATION_SINGLE_PROMPT
         payload = _model_payload(frozen_snapshot, frozen_context, draft_schema)
+    prepared = None
+    if (action_contract and type(context.get('prepared_entry_plans_version')) is int and context['prepared_entry_plans_version']==1
+            and frozen_context.get('scenario_id') is None and draft_schema['properties']['candidates']['maxItems']>0):
+        from live.scenario_entry_plans import prepare, constrain
+        menu=prepare(frozen_snapshot,frozen_context,build_ma_structure_context(frozen_snapshot,frozen_context))
+        if menu['status']=='AVAILABLE':
+            offered=deepcopy(draft_schema)
+            offered['properties']['candidates']['items']=constrain(offered['properties']['candidates']['items'],menu)
+            proposed_payload=_model_payload(frozen_snapshot,frozen_context,offered,prepared_plans=menu)
+            if len(_encoded(proposed_payload).encode())<=100_000:
+                draft_schema,payload,prepared=offered,proposed_payload,menu
+                draft_prompt=draft_prompt.replace('SL, TP, confidence and entry allocation_fraction yourself',
+                    'confidence and entry allocation_fraction; use the coupled prepared_entry_plans prices/fractions')
+                draft_prompt=draft_prompt.replace('choose direction, strategic prices, SL, TP,\nconfidence and allocation_fraction',
+                    'choose supported direction, confidence and allocation_fraction using coupled host plan prices/fractions')
+                draft_prompt+='\nPrepared prices are not proof of an edge. For each OPEN, entry_readiness must distinguish SUPPORTED_NOW (present primary-frame price/volume and location independently justify this order) from WAIT_FOR_EVIDENCE (another candle, volume, retest or reversal observation is still needed). Explain that distinction in reason. A pullback LIMIT touch is not trend-resumption confirmation; a supported numeric MarkPrice trigger alone may be executable. Low volume alone is not a veto, and a favourable payoff is not evidence of reachable targets. Assess the original goal and barriers. Each listed TP ID once. Sizing examples are not confidence recommendations; final host sizing/payoff can still reject. Do not inflate confidence/allocation to pass. Unlisted directions retain their original price proposal contract.\n'
     draft = call("candidate", draft_prompt, payload, draft_schema)
     category = "FIRST_OBSERVATION" if first_observation else "CANDIDATES_PROVIDED" if draft["candidates"] else "NO_CANDIDATES_SUPPLIED"
     if not explanation_enabled(context) and (len(draft["no_candidate_reason"]) > 2000 or (not draft["candidates"] and not draft["no_candidate_reason"].strip())):
@@ -1362,10 +1387,21 @@ def research_review(snapshot, context, response_contract, *, generate, record,
     if action_contract:
         _bind_model_wrapper(wait_receipt, draft, wait_wire)
     calculator = calculate_economic_candidate if economic_reject else calculate_allocation_candidate if allocation else calculate_candidate
-    receipts = [calculator(wire, now_context, candidate_id=f"c{index}",
-                                   original_input_now=frozen_context["now"],
-                                   **({'explanation_snapshot': frozen_snapshot} if explanation_enabled(context) else {}))
-                for index, wire in enumerate(draft["candidates"])]
+    receipts, readiness_reviews = [], []
+    for index, model_wire in enumerate(draft["candidates"]):
+        wire = deepcopy(model_wire)
+        if prepared is not None and wire['action'] == 'OPEN':
+            readiness = wire.pop('entry_readiness')
+            if not 1 <= len(readiness['reason'].strip()) <= 600:
+                raise ValueError('research_entry_readiness_reason')
+            allowed = readiness['status'] == 'SUPPORTED_NOW'
+            readiness_reviews.append(dict(candidate_id=f'c{index}', assessment=readiness,
+                selectable=allowed, source='MODEL_QUALITATIVE_NOT_CALIBRATED'))
+            if not allowed:
+                continue
+        receipts.append(calculator(wire, now_context, candidate_id=f"c{index}",
+            original_input_now=frozen_context["now"],
+            **({'explanation_snapshot': frozen_snapshot} if explanation_enabled(context) else {})))
     if effective_wait.get('pending_renewal'):
         # Preserve the model's exact WAIT proposal as an explicit selectable
         # renewal, plus a separately labelled host-derived inert fallback.
@@ -1392,6 +1428,10 @@ def research_review(snapshot, context, response_contract, *, generate, record,
                   no_candidate_category=category, category_source="HOST_DERIVED_FROM_STATE_AND_ARRAY",
                   no_candidate_reason=draft.get("no_candidate_reason"),
                   qualitative_reason_truth="NOT_MECHANICALLY_VERIFIED")
+    if readiness_reviews:
+        bundle['entry_readiness_reviews'] = readiness_reviews
+        if not receipts:
+            bundle['no_candidate_category'] = 'ENTRY_EVIDENCE_PENDING'
     bundle_sha = receipt_hash(bundle)
     record(deepcopy(dict(kind="CALCULATED_CANDIDATES", body=bundle, sha256=bundle_sha)))
     if economic_reject and receipts and all(
@@ -1406,14 +1446,14 @@ def research_review(snapshot, context, response_contract, *, generate, record,
         # Re-project with the phase-specific contract so restoration hashes remain
         # valid. Market/account facts are unchanged; only obsolete output rules go.
         selection_payload = _model_payload(frozen_snapshot, frozen_context, selection_schema,
-                                          calculated_candidates=bundle)
+                                          calculated_candidates=bundle, prepared_plans=prepared)
         selection_wire = call("selection", SELECT_PROMPT, selection_payload, selection_schema)
         chosen = choices[selection_wire["selection_token"]]
         final = dict(selection=chosen["id"], receipt_sha256=chosen["receipt_sha256"],
                      rationale=selection_wire.get("rationale"))
     else:
         final = dict(selection="WAIT", receipt_sha256=wait_receipt["receipt_sha256"],
-                     rationale=draft.get("no_candidate_reason"))
+                     rationale=wait_wire['rationale'] if readiness_reviews else draft.get("no_candidate_reason"))
     fresh()
     if receipt_hash(bundle) != bundle_sha:
         raise ValueError("research_candidate_mutated")

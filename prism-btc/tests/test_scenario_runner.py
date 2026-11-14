@@ -339,7 +339,7 @@ def test_submission_unknown_is_preserved_as_error_even_without_decision_slot(tmp
     c.close()
 
 
-@pytest.mark.parametrize('flags,enabled',[(['--execute','--calculated-review'],True),(['--execute','--calculated-review','--demo-fee-reference'],True),(['--protect-only'],False)])
+@pytest.mark.parametrize('flags,enabled',[(['--execute','--calculated-review'],True),(['--execute','--calculated-review','--demo-fee-reference'],True),(['--execute','--calculated-review','--prepared-entry-plans'],True),(['--protect-only'],False)])
 def test_cli_enables_economics_only_for_decision_broker(tmp_path,monkeypatch,capsys,flags,enabled):
     import inspect
     from live import scenario_broker
@@ -356,6 +356,7 @@ def test_cli_enables_economics_only_for_decision_broker(tmp_path,monkeypatch,cap
     assert runner.main()==0
     assert configured['entry_economics_enabled'] is enabled
     assert configured['entry_fee_reference_enabled'] is ('--demo-fee-reference' in flags)
+    assert configured.get('prepared_entry_plans_enabled',False) is ('--prepared-entry-plans' in flags)
     assert json.loads(capsys.readouterr().out)['status']=='wait'
 
 
@@ -364,4 +365,12 @@ def test_fee_reference_cannot_activate_or_run_protection(monkeypatch,flags):
     from live import scenario_runner
     monkeypatch.setattr(sys,'argv',['runner','--demo-fee-reference',*flags])
     with pytest.raises(SystemExit) as e:scenario_runner.main()
+    assert e.value.code==2
+
+
+@pytest.mark.parametrize('flags',[[],['--execute'],['--execute','--calculated-review','--protect-only'],['--execute','--calculated-review','--activate']])
+def test_prepared_plans_cannot_activate_or_run_protection(monkeypatch,flags):
+    from live import scenario_runner
+    monkeypatch.setattr(sys,'argv',['runner','--prepared-entry-plans',*flags])
+    with pytest.raises(SystemExit)as e:scenario_runner.main()
     assert e.value.code==2

@@ -48,6 +48,9 @@ POLICY_PROFILES = {
     "deployed-cost-reference-v4": {"recovery_enabled": True, "automatic_normalization_enabled": True,
         "entry_contract_enabled": True, "entry_goal_enabled": True, "pending_renewal_enabled": True,
         "convergence_entry_enabled": True},
+    "deployed-entry-plans-v5": {"recovery_enabled": True, "automatic_normalization_enabled": True,
+        "entry_contract_enabled": True, "entry_goal_enabled": True, "pending_renewal_enabled": True,
+        "convergence_entry_enabled": True},
     "current-live-v2": {"recovery_enabled": True, "automatic_normalization_enabled": True},
     "legacy-no-recovery": {"recovery_enabled": False, "automatic_normalization_enabled": False},
     "single-pass-economic-v4": {"recovery_enabled": True, "automatic_normalization_enabled": True},
@@ -249,7 +252,7 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
         raise ValueError("observed_input_contract_required")
     if observed_manifest is not None and market_input_mode not in {"observed", "reconstructed_at_observed_schedule"}:
         raise ValueError("explicit_observed_input_mode_required")
-    if initial_fee_context is not None and policy_profile not in {'deployed-main-v3','deployed-cost-reference-v4'}:
+    if initial_fee_context is not None and policy_profile not in {'deployed-main-v3','deployed-cost-reference-v4','deployed-entry-plans-v5'}:
         raise ValueError('initial_fee_seed_requires_explicit_profile')
     fee_seed=validated_fee_seed(initial_fee_context,bundle['start_ms'])
     package=ROOT/"prism-btc"
@@ -275,7 +278,7 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
         latencies=dict(entry=5000,market=5000,cancel=2000,amend=2000,model="measured_and_taped_ms"),
         decision_interval_ms=300000,protection_interval_ms=60000,
         terminal_policy="NO_FORCED_CLOSE_MARK_OPEN_POSITION",liquidity="previous_minute_volume_shared_across_four_path_points")
-    if policy_profile in {"economic-reject-goal-v2", "deployed-main-v3", "deployed-cost-reference-v4"}:
+    if policy_profile in {"economic-reject-goal-v2", "deployed-main-v3", "deployed-cost-reference-v4", "deployed-entry-plans-v5"}:
         contract["context_contracts"].update(entry_contract_version=2, pending_renewal_version=1, entry_convergence_version=1)
     if policy_profile in ECONOMIC_PROFILES:
         import inspect
@@ -287,7 +290,7 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
             phase_contracts={"profile":policy_profile,
                 "schema_builder_sha256":hashlib.sha256(inspect.getsource(response_schema).encode()).hexdigest(),
                 "SINGLE_PASS":hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest()})
-        if policy_profile in {"economic-reject-goal-v2", "deployed-main-v3", "deployed-cost-reference-v4"}:
+        if policy_profile in {"economic-reject-goal-v2", "deployed-main-v3", "deployed-cost-reference-v4", "deployed-entry-plans-v5"}:
             contract["identity_scheme"] = "EXACT_REPLAY_UUID5_CALLSITE_PID0_V2"
         if policy_profile in REVIEW_PROFILES:
             from live.scenario_calculated_review import DRAFT_PROMPT, SELECT_PROMPT, research_review
@@ -337,10 +340,12 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
             clock="OBSERVED_AVAILABILITY_BEFORE_SIMULATED_CONTEXT",
             account_source="INDEPENDENT_SIMULATED_ACCOUNT_ONLY"),
             replay_scope="HYBRID_OBSERVED_INPUT_ASSUMED_EXECUTION")
-    if policy_profile in {'deployed-main-v3','deployed-cost-reference-v4'}:
+    if policy_profile in {'deployed-main-v3','deployed-cost-reference-v4','deployed-entry-plans-v5'}:
         contract['broker_flags']={'entry_economics_enabled':True}
-        if policy_profile=='deployed-cost-reference-v4':
+        if policy_profile in {'deployed-cost-reference-v4','deployed-entry-plans-v5'}:
             contract['broker_flags']['entry_fee_reference_enabled']=True
+        if policy_profile=='deployed-entry-plans-v5':
+            contract['broker_flags'].update(prepared_entry_plans_enabled=True,convergence_entry_enabled=True)
         contract['initial_fee_context']=fee_seed
         contract['fee_seed_scope']='OBSERVED_RATE_ASSUMPTION_PSEUDONYMOUS_OFFLINE_UID_NO_TRADES_OR_PNL'
     return contract
@@ -559,7 +564,7 @@ def run_replay(bundle,market,output,**kwargs):
         sys.path.append(str(ROOT))
     from observability.events import suppress_events
     with suppress_events(), replay_identity_scope(economic=kwargs.get("policy_profile", "") in ECONOMIC_PROFILES,
-                               stable_process_id=kwargs.get("policy_profile") in {"economic-reject-goal-v2", "deployed-main-v3", "deployed-cost-reference-v4"}):
+                               stable_process_id=kwargs.get("policy_profile") in {"economic-reject-goal-v2", "deployed-main-v3", "deployed-cost-reference-v4", "deployed-entry-plans-v5"}):
         return _run_replay(bundle,market,output,**kwargs)
 
 
@@ -640,8 +645,9 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
     if type(session) is not OfflineBybitSession or session.simulation is not True:
         raise ValueError("offline_exchange_required")
     broker=ScenarioDemoBroker(conn,session=session,expected_main_uid="42",clock=session.clock,execution_enabled=True,
-        entry_economics_enabled=policy_profile in {'deployed-main-v3','deployed-cost-reference-v4'},
-        **({'entry_fee_reference_enabled':True} if policy_profile=='deployed-cost-reference-v4' else {}))
+        entry_economics_enabled=policy_profile in {'deployed-main-v3','deployed-cost-reference-v4','deployed-entry-plans-v5'},
+        **({'entry_fee_reference_enabled':True} if policy_profile in {'deployed-cost-reference-v4','deployed-entry-plans-v5'} else {}),
+        **({'prepared_entry_plans_enabled':True,'convergence_entry_enabled':True} if policy_profile=='deployed-entry-plans-v5' else {}))
     seed=contract.get('initial_fee_context')
     if seed is not None:
         # Observed rate only: no execution, balance, settlement or prior-loss seed.
