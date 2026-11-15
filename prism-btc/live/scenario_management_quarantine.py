@@ -26,7 +26,7 @@ def account_observation_fingerprint(observed):
 
 def inspect_unsettled_entry_evidence(*, child, order, observed, active, children, pending,
                                     legacy_local, now, order_captured_at, maximum_quantity,
-                                    identity_verified, endpoint):
+                                    identity_verified, endpoint, allow_prior_unfilled=False):
     """Classify one aggregate match; this does not authorize actions or prove fills."""
     from decimal import Decimal, InvalidOperation
 
@@ -45,8 +45,20 @@ def inspect_unsettled_entry_evidence(*, child, order, observed, active, children
     _require(identity_verified is True and endpoint == ENDPOINT, 'identity_untrusted')
     _require(isinstance(children, list) and children == [child] and isinstance(pending, list)
              and len(pending) == 1 and legacy_local is False, 'other_exposure_unknown')
-    _require(child.get('kind') == 'entry' and child.get('status') == 'UNKNOWN'
-             and child.get('evidence') is None and isinstance(child.get('order_id'), str)
+    evidence = child.get('evidence')
+    previous = evidence.get('order') if isinstance(evidence, dict) else None
+    prior_unfilled = (allow_prior_unfilled is True and child.get('status') == 'LIVE'
+        and isinstance(previous, dict) and evidence.get('executions') == []
+        and previous.get('orderStatus') == 'New' and previous.get('reduceOnly') is False
+        and type(previous.get('positionIdx')) is int
+        and all(previous.get(k) == order.get(k) for k in
+                ('orderId','orderLinkId','symbol','side','orderType','timeInForce','positionIdx','slTriggerBy'))
+        and number(previous.get('cumExecQty')) == 0
+        and number(previous.get('leavesQty')) == number(previous.get('qty')) == number(order.get('qty'))
+        and number(previous.get('price')) == number(order.get('price'))
+        and number(previous.get('stopLoss')) == number(order.get('stopLoss')))
+    unresolved = (child.get('status') == 'UNKNOWN' and evidence is None) or prior_unfilled
+    _require(child.get('kind') == 'entry' and unresolved and isinstance(child.get('order_id'), str)
              and bool(child['order_id']) and isinstance(child.get('link_id'), str)
              and bool(child['link_id']) and isinstance(child.get('intent_id'), str)
              and bool(child['intent_id']) and isinstance(child.get('scenario_id'), str)
