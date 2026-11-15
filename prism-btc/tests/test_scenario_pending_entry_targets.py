@@ -75,6 +75,25 @@ def test_ack_loss_target_is_queried_never_resubmitted_and_missing_peer_recovers(
     assert len([r for kind, r in exchange.writes if kind == 'place' and r.get('reduceOnly')]) == 2
 
 
+def test_resting_entry_fills_after_initial_zero_fill_proof_without_delaying_targets(live, monkeypatch):
+    broker, exchange = live
+    plan = persist(broker, take_profits=[dict(id='near',price=105,fraction=.3),
+                                       dict(id='far',price=110,fraction=.7)],
+                   chase=dict(max_bps=0,max_reprices=0))
+    broker.execute(plan,'a1')
+    entry=next(c for c in broker.children('s1')if c['kind']=='entry')
+    assert entry['status']=='LIVE' and entry['evidence']['executions']==[]
+    exchange.fill(entry['link_id'],.1)
+    exchange.orders[entry['link_id']]['avgPrice']='100'
+    monkeypatch.setattr(exchange,'get_executions',lambda **kw:reply([]))
+    broker.reconcile()
+    assert len([c for c in broker.children('s1')if c['kind']=='tp'])==2
+    retained=next(c for c in broker.children('s1')if c['kind']=='entry')
+    assert retained['status']=='LIVE' and retained['evidence']==entry['evidence']
+    assert broker.capture_account()['legacy_fenced']is True
+    before=list(exchange.writes);broker.reconcile();assert exchange.writes==before
+
+
 @pytest.mark.parametrize('damage', ['position', 'average', 'parent', 'stop', 'foreign_order', 'partial', 'plan'])
 def test_aggregate_mismatch_never_installs_targets(live, monkeypatch, damage):
     broker, exchange, plan = delayed_fill(live, monkeypatch)

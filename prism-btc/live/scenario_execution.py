@@ -1186,7 +1186,7 @@ class ScenarioExecution:
         if len(entries) != 1 or len(payload.get('entries', [])) != 1:
             return None
         entry = entries[0]
-        if entry['intent_id'] != intent_id or entry['status'] != 'UNKNOWN' or entry['evidence'] is not None:
+        if entry['intent_id'] != intent_id or entry['status'] not in {'UNKNOWN', 'LIVE'}:
             return None
         planned = payload['entries'][0]
         if (payload['side'] != active['side'] or payload['hard_stop'] != active['hard_stop']
@@ -1227,7 +1227,8 @@ class ScenarioExecution:
         proof = inspect_unsettled_entry_evidence(child=entry, order=orders[0], observed=observed,
             active=active, children=[entry], pending=_entry_unresolved_rows(self.conn),
             legacy_local=self._legacy_local(), now=self.clock(), order_captured_at=captured,
-            maximum_quantity=self._instrument()['maximum'], identity_verified=True, endpoint=self.session.endpoint)
+            maximum_quantity=self._instrument()['maximum'], identity_verified=True, endpoint=self.session.endpoint,
+            allow_prior_unfilled=True)
         if proof['status'] == 'AGGREGATE_MATCH' and proof['authorization'] is False:
             return decimal(entry['request']['qty'])
         return None

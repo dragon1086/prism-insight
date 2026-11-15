@@ -69,6 +69,33 @@ def test_aggregate_match_is_not_trade_or_management_authority(side):
     assert value == evidence(side)
 
 
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_previous_unfilled_proof_requires_explicit_tp_only_opt_in(side):
+    value=evidence(side)
+    previous=dict(value['order'],orderStatus='New',cumExecQty='0',leavesQty='0.019',avgPrice='0')
+    value['child'].update(status='LIVE',evidence=dict(order=previous,executions=[]))
+    with pytest.raises(ValueError):
+        inspect_unsettled_entry_evidence(**value)
+    result=inspect_unsettled_entry_evidence(**value,allow_prior_unfilled=True)
+    assert result['status']=='AGGREGATE_MATCH' and result['authorization']is False
+    assert value['child']['status']=='LIVE' and value['child']['evidence']['executions']==[]
+
+
+@pytest.mark.parametrize('damage',['partial','quantity','price','stop','identity','fills','missing_fills'])
+def test_tp_only_opt_in_never_accepts_conflicting_previous_evidence(damage):
+    value=evidence();previous=dict(value['order'],orderStatus='New',cumExecQty='0',leavesQty='0.019',avgPrice='0')
+    saved=dict(order=previous,executions=[]);value['child'].update(status='LIVE',evidence=saved)
+    if damage=='partial':previous.update(orderStatus='PartiallyFilled',cumExecQty='0.001')
+    if damage=='quantity':previous['qty']='0.020'
+    if damage=='price':previous['price']='76221'
+    if damage=='stop':previous['stopLoss']='75719'
+    if damage=='identity':previous['orderId']='other'
+    if damage=='fills':saved['executions']=[dict(execQty='0.001')]
+    if damage=='missing_fills':saved.pop('executions')
+    with pytest.raises(ValueError):
+        inspect_unsettled_entry_evidence(**value,allow_prior_unfilled=True)
+
+
 @pytest.mark.parametrize('mutation', [
     lambda x: x['order'].update(orderStatus='PartiallyFilled'),
     lambda x: x['order'].update(cumExecQty='0.018'),
