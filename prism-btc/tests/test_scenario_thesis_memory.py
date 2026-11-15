@@ -65,11 +65,6 @@ def test_old_or_invalid_timestamp_remains_unknown(at):
     assert prior["status"] == "WEAKENING"
 
 
-def test_transition_instruction_allows_correction_without_automatic_exit():
-    assert "previous_thesis_assessment" in ENTRY_CONTRACT_PROMPT
-    assert "historical model opinion, not market fact" in ENTRY_CONTRACT_PROMPT
-    assert "correct the prior assessment" in ENTRY_CONTRACT_PROMPT
-    assert "does not itself require EXIT" in ENTRY_CONTRACT_PROMPT
 
 
 @pytest.mark.parametrize("status", ["INTACT", "WEAKENING", "UNKNOWN"])

@@ -11,6 +11,7 @@ from live.scenario_model_input import restore_model_input
 from live.scenario_preview import response_contract
 from tests.test_scenario_calculated_review import context, run, wire
 from tests.test_scenario_ma_context import NOW, point, snapshot
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 @pytest.mark.parametrize('close,fast,slow,expected', [
@@ -80,7 +81,8 @@ def test_incident_total_target_usdt_is_not_per_btc_and_receipt_is_untouched():
     assert target['quantity'] == .015
     assert target['gross_reward_per_btc'] == 52.7
     assert target['gross_pnl'] == .7905
-    assert restored['calculated_candidates']['candidates'][0] == original
+    assert restored['calculated_candidates']['candidates'][0]['projection'] == original['projection']
+    assert restored['calculated_candidates']['candidates'][0]['host_receipt_sha256'] == original['receipt_sha256']
     assert receipt == original and receipt_hash(receipt) == original_hash
     assert 'calculation_field_units' not in receipt
 
@@ -109,10 +111,11 @@ def test_nested_holding_target_units_preserve_separate_assumptions_and_hashes(si
     assert result['confirmed_remaining']['targets'][0]['gross_pnl'] == 20
     assert result['hypothetical_all_fills']['targets'][0]['quantity'] == .05
     assert result['hypothetical_all_fills']['targets'][0]['gross_pnl'] == 50
-    assert 'projection.confirmed_remaining.targets' in SELECT_PROMPT
-    assert 'projection.hypothetical_all_fills.targets' in SELECT_PROMPT
-    assert 'never\nadd these alternative projections together' in SELECT_PROMPT
-    assert restored['calculated_candidates']['candidates'][0] == original
+    assert 'confirmed_remaining covers held lots' in SELECT_PROMPT
+    assert 'hypothetical_all_fills additionally assumes pending/new fills' in SELECT_PROMPT
+    assert 'Never add them' in SELECT_PROMPT
+    assert restored['calculated_candidates']['candidates'][0]['projection'] == original['projection']
+    assert restored['calculated_candidates']['candidates'][0]['host_receipt_sha256'] == original['receipt_sha256']
     assert receipt == original and receipt_hash(receipt) == digest
 
 
@@ -137,7 +140,7 @@ def test_both_phases_deliver_new_relations_and_keep_snapshot_and_receipts_exact(
         else:
             assert payload['calculation_field_units']['projection.targets']['quantity'] == 'BTC'
             chosen = payload['calculated_candidates']['wait']
-            reply = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale='fixture')
+            reply = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale='fixture')
         return SimpleNamespace(text=json.dumps(reply))
 
     result = research_review(snap, ctx, response_contract(ctx), generate=generate,

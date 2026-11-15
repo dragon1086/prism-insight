@@ -11,6 +11,7 @@ import pytest
 from live.scenario_contract import identity_fields
 from live.scenario_review_adapter import make_calculated_review_proposer
 from live.scenario_runtime import REQUIRED_CAPABILITIES, ScenarioRuntime
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 class Broker:
@@ -80,7 +81,7 @@ def runtime(tmp_path, *, change=None, tape_change=None, fail_second=False, empty
                 raise RuntimeError("model failed")
             data = json.loads(request["user_prompt"])["calculated_candidates"]
             chosen = data["candidates"][0]
-            result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale=selection_reason)
+            result = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale=selection_reason)
         return SimpleNamespace(text=json.dumps(result))
 
     adapter = make_calculated_review_proposer(generate=generate, clock=lambda: now[0])

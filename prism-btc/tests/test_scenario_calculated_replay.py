@@ -13,6 +13,7 @@ from tests.test_scenario_review_runtime import wire as runtime_wire
 from live.scenario_model_input import restore_model_input
 from live.scenario_review_storage import review_text
 from utils.btc_review_event_references import read_event
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def wire(ctx, action):
@@ -122,7 +123,7 @@ def test_zero_network_native_economic_fresh_frozen_exact_full_tick(tmp_path, pat
         if "selection_token" in request["response_schema"]["properties"]:
             receipts = payload["calculated_candidates"]
             selected = next((r for r in receipts["candidates"] if r["eligible"]), receipts["wait"])
-            result = dict(selection_token=f"{selected['id']}:{selected['receipt_sha256']}", rationale="계산 확인")
+            result = dict(selection_token=f"{selected['id']}:{model_receipt_hash(selected)}", rationale="계산 확인")
         elif "wait_proposal" in request["response_schema"]["properties"]:
             if ctx.get("scenario_id") and ctx["now"] >= bundle["start_ms"]/1000 + 600:
                 candidates = [wire(ctx, "EXIT")]
@@ -190,7 +191,7 @@ def test_exit_cancel_latency_is_not_submission_failure_and_replays_exactly(tmp_p
         if "selection_token" in request["response_schema"]["properties"]:
             receipts=payload["calculated_candidates"]
             selected=next((r for r in receipts["candidates"] if r["eligible"]),receipts["wait"])
-            result=dict(selection_token=f"{selected['id']}:{selected['receipt_sha256']}",rationale="fixture")
+            result=dict(selection_token=f"{selected['id']}:{model_receipt_hash(selected)}",rationale="fixture")
         else:
             action="EXIT" if ctx.get("scenario_id") else ("OPEN" if ctx["now"] < bundle["start_ms"]/1000+300 else "WAIT")
             result=wire(ctx,action)
@@ -300,7 +301,7 @@ def test_post_review_durable_record_delay_cannot_extend_deadline(tmp_path,monkey
         payload=json.loads(request["user_prompt"])
         if "selection_token" in request["response_schema"]["properties"]:
             receipt=payload["calculated_candidates"]["candidates"][0]
-            result=dict(selection_token=f"{receipt['id']}:{receipt['receipt_sha256']}",rationale="검산")
+            result=dict(selection_token=f"{receipt['id']}:{model_receipt_hash(receipt)}",rationale="검산")
         else:
             ctx=payload["contract_context"]
             result=dict(wait_proposal=wire(ctx,"WAIT"),candidates=[wire(ctx,"OPEN")],
@@ -368,7 +369,7 @@ def test_final_guard_validation_latency_is_not_invisible(tmp_path,monkeypatch):
         payload=json.loads(request["user_prompt"])
         if "selection_token" in request["response_schema"]["properties"]:
             receipt=payload["calculated_candidates"]["candidates"][0]
-            result=dict(selection_token=f"{receipt['id']}:{receipt['receipt_sha256']}",rationale="검산")
+            result=dict(selection_token=f"{receipt['id']}:{model_receipt_hash(receipt)}",rationale="검산")
         else:
             ctx=payload["contract_context"]
             result=dict(wait_proposal=wire(ctx,"WAIT"),candidates=[wire(ctx,"OPEN")],
@@ -455,7 +456,7 @@ def test_consumed_recovery_exact_all_runtime_review_exchange_tables(tmp_path,pro
         payload=restore_model_input(json.loads(request["user_prompt"]))
         if "selection_token" in request["response_schema"]["properties"]:
             candidate=next(r for r in payload["calculated_candidates"]["candidates"] if r["eligible"])
-            result=dict(selection_token=f"{candidate['id']}:{candidate['receipt_sha256']}",rationale="계산 검토")
+            result=dict(selection_token=f"{candidate['id']}:{model_receipt_hash(candidate)}",rationale="계산 검토")
         else:
             ctx=payload["contract_context"]
             proposal=policy(payload["market_snapshot"],ctx)
@@ -541,7 +542,7 @@ def test_observing_post_record_stop_crossing_never_consumes_permit(tmp_path,monk
         data=restore_model_input(json.loads(request["user_prompt"]))
         if "selection_token" in request["response_schema"]["properties"]:
             candidate=next(r for r in data["calculated_candidates"]["candidates"] if r["eligible"])
-            result=dict(selection_token=f"{candidate['id']}:{candidate['receipt_sha256']}",rationale="계산 확인")
+            result=dict(selection_token=f"{candidate['id']}:{model_receipt_hash(candidate)}",rationale="계산 확인")
         else:
             ctx=data["contract_context"]
             candidates=[]
@@ -580,7 +581,7 @@ def test_changed_context_records_only_allowed_field_without_order(tmp_path, monk
         payload = json.loads(request['user_prompt'])
         if 'selection_token' in request['response_schema']['properties']:
             choice = payload['calculated_candidates']['wait']
-            result = dict(selection_token=f"{choice['id']}:{choice['receipt_sha256']}", rationale='fixture')
+            result = dict(selection_token=f"{choice['id']}:{model_receipt_hash(choice)}", rationale='fixture')
         else:
             result = dict(wait_proposal=wire(payload['contract_context'], 'WAIT'), candidates=[], no_candidate_reason='fixture')
         return SimpleNamespace(text=json.dumps(result))

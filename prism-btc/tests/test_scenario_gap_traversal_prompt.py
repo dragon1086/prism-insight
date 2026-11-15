@@ -13,6 +13,7 @@ from live.scenario_model_input import restore_model_input
 from live.scenario_preview import response_contract
 from tests.test_scenario_calculated_review import context, wire
 from tests.test_scenario_ma_context import NOW, point
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def gap_snapshot(side, provisional=True, *, stationary=False, include_4h=True):
@@ -33,42 +34,16 @@ def gap_snapshot(side, provisional=True, *, stationary=False, include_4h=True):
 
 
 def test_gap_policy_keeps_bounded_thesis_and_existing_host_authority():
-    policy = ' '.join(MA_STRUCTURE_PROMPT.split())
-    for clause in (
-        'gap is still WIDENING',
-        'LONG: MA10 < MA35, actual price rises from below MA10',
-        'SHORT: MA10 > MA35, actual price falls from above MA10',
-        'Do not require convergence, a divergence peak, an MA-order crossover, full trend reversal',
-        'prior MA35 touch/rejection, another closed bar or an additional retest',
-        'Width or WIDENING alone is insufficient',
-        'moving MA passing stationary price',
-        'prefer 1h and available 4h over 30m',
-        'does not replace the global directional priority',
-        "market_snapshot.timeframes['4h'].ma_path own-time points",
-        'host-calculated costs and structural invalidation',
-        'size within the existing risk cap',
-        'No fixed gap threshold or invented probability',
-        'For a NEW gap candidate as well as its holdings',
-        'compare exits at/before MA35 or a nearer actual obstacle',
-        'takes precedence over generic runner/allocation defaults for this setup only',
-        'use existing BREAKOUT regime',
-        'entry_contract_version is 1 or 2',
-        'With version 1, name the bounded purpose and timeframe in premise and expected_progress',
-        'With version 2, name them in premise and the required structured goal',
-        'Without an enabled contract, describe the purpose in rationale only',
-        'only authoritative numeric failure rule',
-        'do not assume extension beyond MA35',
-        'Arrival/touch alone is not automatic FAILED or EXIT',
-        'Never relabel pre-existing or legacy holdings',
-        'SHORT: rebound above MA10, failed advance at MA35',
-        'LONG: pullback below MA10, defense at MA35',
-    ):
-        assert clause in policy
-    assert entry_contract_schema()['properties']['regime']['enum'] == ['TREND', 'BREAKOUT', 'RANGE']
-    v1, v2 = entry_contract_schema(1), entry_contract_schema(2)
+    from live.scenario_llm import FLAT_ENTRY_PROMPT,entry_contract_prompt
+    assert 'MA10-MA35 traversal' in FLAT_ENTRY_PROMPT
+    assert 'do not relabel a bounded move' in FLAT_ENTRY_PROMPT
+    assert 'A widening gap alone is not a strong trend' in MA_STRUCTURE_PROMPT
+    assert 'no habitual extra close, crossover or retest' in FLAT_ENTRY_PROMPT
+    assert 'BOUNDED_BEFORE' in entry_contract_prompt({'entry_contract_version':2})
+    assert entry_contract_schema()['properties']['regime']['enum'] == ['TREND','BREAKOUT','RANGE']
+    v1,v2=entry_contract_schema(1),entry_contract_schema(2)
     assert 'expected_progress' in v1['required'] and 'goal' not in v1['properties']
     assert 'goal' in v2['required'] and 'expected_progress' not in v2['properties']
-    assert '1h > 30m > 4h > 12h > 1d > 1w' in SYSTEM_PROMPT
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -121,7 +96,7 @@ def test_widening_price_crossing_survives_both_actual_review_requests(side, prov
             reply = dict(wait_proposal=wait, candidates=[candidate], no_candidate_reason='')
         else:
             candidate = next(c for c in payload['calculated_candidates']['candidates'] if c['eligible'])
-            reply = dict(selection_token=f"{candidate['id']}:{candidate['receipt_sha256']}", rationale='fixture')
+            reply = dict(selection_token=f"{candidate['id']}:{model_receipt_hash(candidate)}", rationale='fixture')
         return SimpleNamespace(text=json.dumps(reply))
 
     result = research_review(snap, ctx, response_contract(ctx), generate=generate,

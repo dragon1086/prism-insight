@@ -86,12 +86,12 @@ def test_holding_prompt_consolidates_examples_without_touching_flat_or_unconfirm
     text=holding_management_instructions(base,c)
     assert '100-300 USDT' not in text and '800-1000 USDT' not in text and '500 USDT' not in text
     assert 'SUSTAINED DIRECTION' in text and 'WEAKENING/RANGE' in text
-    assert 'Retain broker hard SL' in text and 'existing eligible stop_policy' in text
-    assert 'bounded MA35 traversal' in text and 'Pending-entry replanning' in text
+    assert 'retain native SL' in text and 'eligible host stop_policy/stop_revision' in text
+    assert 'Preserve a bounded traversal' in text and 'original risk budget' in text
     assert holding_management_instructions(base,{**c,'scenario_id':None})==base
     assert holding_management_instructions(base,{**c,'accounting_status':'pending'})==base
-    with pytest.raises(ValueError,match='holding_prompt_source_changed'):
-        holding_management_instructions('unknown prompt',c)
+    assert holding_management_instructions('short base',c).startswith('short base')
+    assert holding_management_instructions('short base',c).count('SUSTAINED DIRECTION')==1
 
 
 def test_restoration_price_reference_never_overrides_the_host_loss_budget():
@@ -146,7 +146,7 @@ def test_both_calculated_review_phases_use_one_holding_policy():
     for q in calls:
         text=q['system_prompt']
         assert text.count('SUSTAINED DIRECTION')==1 and '500 USDT' not in text
-        assert '100-300 USDT' not in text and 'Retain broker hard SL' in text
+        assert '100-300 USDT' not in text and 'retain native SL' in text
     assert 'When weakening evidence or a nearer TP changes a held trade' not in calls[0]['system_prompt']
 
 
@@ -187,9 +187,9 @@ def test_reaction_reference_does_not_tighten_inside_one_atr_of_entry_noise(side)
     assert row['candidate_stop']==c['previous_hard_stop']
 
 
-def test_confirmed_holding_prompt_preserves_pre_entry_cleanup_bytes():
+def test_compact_confirmed_holding_policy_is_pinned():
     import hashlib
     context = dict(scenario_id='held', positions=[dict(price=100, quantity=1)],
                    pending_entries=[], accounting_status='confirmed', protection_ok=True)
     prompt = holding_management_instructions(SYSTEM_PROMPT + MA_STRUCTURE_PROMPT, context)
-    assert hashlib.sha256(prompt.encode()).hexdigest() == '5569c9efb734a2cd494607671d0b5f6a90e143904118fdd2ad491d89fef06bf1'
+    assert hashlib.sha256(prompt.encode()).hexdigest() == '22348125f2827b9e0242abf0a3259f58423f6fc5c868894942236142da62c3d2'

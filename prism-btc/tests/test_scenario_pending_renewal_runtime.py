@@ -16,6 +16,7 @@ from live.scenario_runtime import ScenarioRuntime
 from live.scenario_model_input import restore_model_input
 from tests.test_scenario_execution import Exchange
 from tests.test_scenario_review_runtime import wire
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def renewal_runtime(tmp_path, *, reapprove=True, assessment='INTACT', before_select=None,
@@ -87,7 +88,7 @@ def renewal_runtime(tmp_path, *, reapprove=True, assessment='INTACT', before_sel
             chosen = (next((row for row in bundle['candidates'] if row['id'] == 'WAIT_RENEWAL'), bundle['wait'])
                       if ctx['scenario_id'] and select_renewal else
                       bundle['wait'] if ctx['scenario_id'] else bundle['candidates'][0])
-            result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale=selection_reason)
+            result = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale=selection_reason)
             if before_select and ctx['scenario_id']:
                 before_select(broker, exchange)
         return SimpleNamespace(text=json.dumps(result))

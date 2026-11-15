@@ -8,9 +8,10 @@ import pytest
 from live.scenario_llm import FLAT_ENTRY_PROMPT
 from live.scenario_model_input import restore_model_input
 from tests.test_scenario_calculated_review import context, run, wire
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
-MARKER = "Before opportunity framing, compare actual 30m/1h highs/lows"
+MARKER = 'For a new entry compare LONG, SHORT and WAIT'
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -31,35 +32,14 @@ def test_mirrored_structural_inputs_keep_both_phases_and_host_contract(side, pat
         assert FLAT_ENTRY_PROMPT in call["system_prompt"]
         assert policy.count(MARKER) == 1
         for clause in (
-            "old MA order and ABOVE/BELOW persist",
-            "If no structural entry edge exists, prefer WAIT; small risk cannot repair it",
-            "nearer first TP before the actual obstacle",
-            "In calculated review, use host-calculated candidate economics; do not discard",
-            "a structurally justified candidate solely on an estimated-cost impression before that calculation",
-            "The host still enforces economic and safety limits",
-            "SL at structural invalidation with noise room",
-            "When either 1h or 30m gap narrows, treat it as a caution for new entry or add",
-            "including 1h narrowing with 30m expansion when price progress supports it",
-            "A single narrowing timeframe alone is not a veto; host entry restrictions always apply",
-            "while the old MA gap still narrows, before a lagging crossover",
-            "Do not require another MA10 cross, a candle close or unanimous 30m/1h alignment",
-            "forming progress is provisional",
-            "a tiny WIDENING sign alone is not strong expansion",
-            "name the timeframe and confirmed/forming phase",
-            "ma_structure.primary[frame].confirmed_gap.state or forming_gap.state",
-            "matching timestamped transitions.gap_state/gap_change_price",
-            "Do not transfer another frame's expansion to 30m/1h",
-            "while the still-bullish MA gap narrows",
-            "a still-bearish narrowing gap",
-            "directional price progress, not same-direction MA-gap expansion",
-            "in recovery reasoning as well as the final rationale",
-            "For LONG inspect higher lows",
-            "for SHORT mirror with lower highs",
-            "not a mandatory short target for every flat entry",
-            "preserve later targets and a strong runner",
+            'location, not direction', 'A widening gap alone is not a strong trend',
+            'genuine early 30m move', 'Convergence in either primary frame',
+            'not an automatic veto', 'Forming bars are provisional',
+            'Do not stretch TP or squeeze SL merely to pass host economics',
+            'A better limit price, small position or high conditional ratio does not repair a weak setup',
         ):
             assert clause in policy
-        assert policy.index(MARKER) < policy.index("Compare a capped marketable LIMIT now")
+        assert policy.index(MARKER)<policy.index('Compare a supported entry now')
         payload = restore_model_input(json.loads(call["user_prompt"]))
         assert payload["contract_context"]["test_structural_facts"] == ctx["test_structural_facts"]
         assert len(call["user_prompt"].encode()) <= 100000
@@ -84,8 +64,8 @@ def test_active_and_pending_prompts_do_not_receive_flat_entry_change(side, phase
         assert MARKER not in " ".join(call["system_prompt"].split())
         assert FLAT_ENTRY_PROMPT not in call["system_prompt"]
         policy = " ".join(call["system_prompt"].split())
-        assert "When either 1h or 30m gap narrows, treat it as a caution for new entry or add" in policy
-        assert "Existing position protection and exits are unchanged" in policy
+        assert "Convergence in either primary frame" in policy
+        assert "every entry retains native Full SL" in policy
 
 
 def test_host_allocation_both_phases_include_priority_without_new_fields():
@@ -96,8 +76,8 @@ def test_host_allocation_both_phases_include_priority_without_new_fields():
     assert len(calls) == 2
     for call in calls:
         assert MARKER in " ".join(call["system_prompt"].split())
-    assert "Do not emit entry quantity" in calls[0]["system_prompt"]
-    assert "Return exactly selection_token and rationale" in calls[1]["system_prompt"]
+    assert "new entries use allocation_fraction, not BTC quantity" in calls[0]["system_prompt"]
+    assert "Choose one offered schema selection_token" in calls[1]["system_prompt"]
     assert set(calls[1]["response_schema"]["properties"]) == {"selection_token", "rationale"}
 
 
@@ -138,14 +118,14 @@ def test_mirrored_real_derived_gap_facts_remain_frame_and_phase_specific(side):
             assert transition["gap_change_price"] == pytest.approx(-19.77)
             assert transition["close_change_price"] == direction * 20
             assert transition["provisional"] is True
-        assert "matching timestamped transitions.gap_state/gap_change_price" in " ".join(request["system_prompt"].split())
+        assert "Keep each frame, phase and timestamp separate" in " ".join(request["system_prompt"].split())
         if len(calls) == 1:
             candidate, wait = wire(ctx, side), wire(ctx)
             candidate["expires_at"] = wait["expires_at"] = ctx["now"] + 100
             reply = dict(wait_proposal=wait, candidates=[candidate], no_candidate_reason="")
         else:
             candidate = next(c for c in payload["calculated_candidates"]["candidates"] if c["eligible"])
-            reply = dict(selection_token=f"{candidate['id']}:{candidate['receipt_sha256']}", rationale="fixture")
+            reply = dict(selection_token=f"{candidate['id']}:{model_receipt_hash(candidate)}", rationale="fixture")
         return SimpleNamespace(text=json.dumps(reply))
 
     result = research_review(snap, ctx, response_contract(ctx), generate=generate,

@@ -61,15 +61,15 @@ def test_zero_p90_has_unknown_ratio():
 def test_optional_summary_falls_back_if_it_exceeds_model_limit(monkeypatch):
     from copy import deepcopy
     from live import scenario_calculated_review as review
-    monkeypatch.setattr(review, '_base_model_payload', lambda snap, *args, **kwargs: deepcopy(snap))
-    monkeypatch.setattr(review, 'explanation_enabled', lambda context: True)
-    monkeypatch.setattr(review, 'project_explanation_input', lambda payload, *args, **kwargs: payload)
-    summary = {'medians_btc': [1., 2., 3., 4.]}
-    snap = {'timeframes': {'30m': {'volume_4d_30m': summary}}, 'padding': 'x' * 99940}
-    payload = review._model_payload(snap, {}, {})
-    assert 'volume_4d_30m' not in payload['timeframes']['30m']
-    assert snap['timeframes']['30m']['volume_4d_30m'] == summary
-    assert len(review._encoded(payload).encode()) <= 100_000
+    monkeypatch.setattr(review,'_base_model_payload',lambda snap,*args,**kwargs:deepcopy(snap))
+    monkeypatch.setattr(review,'explanation_enabled',lambda context:True)
+    monkeypatch.setattr(review,'project_explanation_input',lambda payload,*args,**kwargs:payload)
+    summary={'medians_btc':[1.,2.,3.,4.]}
+    snap={'timeframes':{'30m':{'volume_4d_30m':summary}},'padding':'x'*99940}
+    payload=review._model_payload(snap,{}, {})
+    assert payload==snap
+    assert payload['timeframes']['30m']['volume_4d_30m']==summary
+    assert len(review._encoded(payload).encode())>100_000  # Caller rejects; never hide evidence to fit.
 
 
 def test_optional_volume_history_does_not_change_existing_market_facts():

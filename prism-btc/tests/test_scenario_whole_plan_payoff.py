@@ -103,8 +103,11 @@ def test_missing_or_nonfinite_path_never_affects_other_projection(monkeypatch, r
 
 
 def test_prompt_labels_scope_units_and_excluded_unknown_costs():
-    from live.scenario_calculated_review import SELECT_PROMPT
-    assert 'full hard SL WITHOUT partial SL' in SELECT_PROMPT
-    assert 'both are USDT, ratio is' in SELECT_PROMPT
-    assert 'not probability, expectancy or a guarantee' in SELECT_PROMPT
-    assert 'funding/slippage are excluded, NOT zero' in SELECT_PROMPT
+    from live.scenario_calculated_review import _model_payload
+    from live.scenario_model_input import restore_model_input
+    view=restore_model_input(_model_payload({},context(),{},calculated_candidates={}))
+    units=view['calculation_field_units']
+    assert 'without partial SL risk credit' in units['whole_plan_payoff']['full_stop_loss']
+    assert 'USDT' in units['whole_plan_payoff']['net_reward']
+    assert 'not expectancy/probability' in units['whole_plan_payoff']['ratio']
+    assert 'unmodelled, not zero' in units['joint_exit_paths']['assumptions']

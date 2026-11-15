@@ -10,6 +10,7 @@ import pytest
 from live.scenario_broker import ScenarioDemoBroker
 from live import scenario_management_quarantine as quarantine
 from tests.test_scenario_management_quarantine_runtime import incident as incident_fixture
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 @pytest.fixture(name='incident')
@@ -146,7 +147,7 @@ def test_real_two_phase_review_deadline_with_duplicate_terminal_get_latency(inci
         else:
             bundle = json.loads(request['user_prompt'])['calculated_candidates']
             chosen = bundle['wait'] if action == 'WAIT' else bundle['candidates'][0]
-            result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale=rationale)
+            result = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale=rationale)
             now[0] += 5
             phases.append('SELECT')
         return SimpleNamespace(text=json.dumps(result))

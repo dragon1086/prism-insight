@@ -16,6 +16,7 @@ from live.scenario_preview import response_contract
 from live.scenario_review_guard import guard_review
 from tests.test_scenario_allocation_review import allocation_wire
 from tests.test_scenario_review_guard import context as base_context
+from tests.test_scenario_review_guard import model_receipt_hash,model_intent
 
 
 def definition(side="LONG"):
@@ -77,8 +78,8 @@ def taped(ctx=None, *, mode="economic-reject-calculated-v1", status="FAILED", mu
                 assert all(not t.startswith("WAIT:") for t in request["response_schema"]["properties"]["selection_token"]["enum"])
             chosen = bundle["wait"] if choose_wait else bundle["candidates"][0]
             original = draft_raw['wait_proposal'] if choose_wait else draft_raw['candidates'][0]
-            assert chosen["raw_proposal"]["thesis_assessment"] == original['thesis_assessment']
-            raw = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale="Selected original premise response")
+            assert model_intent(chosen)["thesis_assessment"] == original['thesis_assessment']
+            raw = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale="Selected original premise response")
         if mutate:
             mutate(raw, len(calls))
         if len(calls) == 1:
@@ -174,7 +175,7 @@ def test_assessment_prompt_contract_matches_comparison_and_preserves_input_budge
     rule = next(rule for rule in args[2]['rules'] if rule.startswith('entry_contract is non-null'))
     assert 'share contract_id/status; reasons may differ' in rule
     assert len(rule.encode()) <= 394  # Previous exact-assessment rule byte budget.
-    assert 'Draft assessments must share contract_id/status, not reason wording' in calls[0]['system_prompt']
+    assert 'WAIT template and candidates must agree on contract_id/status' in calls[0]['system_prompt']
 
 
 @pytest.mark.parametrize('choose_wait', [False, True])
@@ -332,9 +333,9 @@ def test_open_definition_survives_allocation_projection_and_replay(side):
             raw = dict(wait_proposal=wait, candidates=[candidate], no_candidate_reason="")
         else:
             candidate = restored["calculated_candidates"]["candidates"][0]
-            assert candidate["raw_proposal"]["entry_contract"] == definition(side)
-            assert candidate["raw_model_wrapper"]["candidates"][0]["entry_contract"] == definition(side)
-            raw = dict(selection_token=f"{candidate['id']}:{candidate['receipt_sha256']}", rationale="Original contract")
+            assert model_intent(candidate)["entry_contract"] == definition(side)
+            assert model_intent(candidate)["entry_contract"] == definition(side)
+            raw = dict(selection_token=f"{candidate['id']}:{model_receipt_hash(candidate)}", rationale="Original contract")
         return SimpleNamespace(text=json.dumps(raw))
 
     mode = "economic-reject-calculated-v1"

@@ -11,6 +11,7 @@ from live.scenario_review_storage import review_text
 from utils.btc_review_event_references import read_event
 from tests.test_scenario_calculated_replay import wire
 from tests.test_scenario_replay import inputs
+from tests.test_scenario_review_guard import model_receipt_hash
 
 PROFILE = 'economic-reject-goal-v2'
 
@@ -43,7 +44,7 @@ def test_goal_profile_registers_holds_and_replays_or_rejects_crossed_bound(tmp_p
         if 'selection_token' in request['response_schema']['properties']:
             choices = payload['calculated_candidates']
             selected = next((r for r in choices['candidates'] if r['eligible']), choices['wait'])
-            response = dict(selection_token=f"{selected['id']}:{selected['receipt_sha256']}", rationale='fixture')
+            response = dict(selection_token=f"{selected['id']}:{model_receipt_hash(selected)}", rationale='fixture')
         else:
             contexts.append(ctx)
             wait = wire(ctx, 'WAIT')

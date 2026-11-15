@@ -12,6 +12,7 @@ from live.scenario_contract import validate_wire_proposal
 from live.scenario_preview import response_contract
 from live.scenario_review_guard import guard_review
 from tests.test_scenario_review_guard import context, wire
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 @pytest.mark.parametrize('action,selection_reason', [
@@ -37,7 +38,7 @@ def test_selected_candidate_reason_survives_contradictory_selection_prose(action
         else:
             data=json.loads(request['user_prompt'])['calculated_candidates']
             chosen=data['wait'] if action=='WAIT' else data['candidates'][0]
-            value=dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale=selection_reason)
+            value=dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale=selection_reason)
         return SimpleNamespace(text=json.dumps(value))
     envelope=record_review(research_review, snapshot, ctx, contract, generate=generate,
         record=lambda _:None, clock=lambda:1000)

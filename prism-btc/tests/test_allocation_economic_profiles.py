@@ -9,6 +9,7 @@ from tests.test_scenario_replay import inputs
 from tests.test_calculated_economic_study import data_files, study
 from tests.test_scenario_calculated_replay import wire
 from analysis.scenario_replay import run_replay, network_boundary
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 @pytest.mark.parametrize("profile,mode,cap", [
@@ -70,7 +71,7 @@ def test_allocation_lifecycle_exact_frozen_zero_calls(tmp_path, profile, path):
         if "selection_token" in request["response_schema"]["properties"]:
             receipts = payload["calculated_candidates"]
             selected = next((r for r in receipts["candidates"] if r["eligible"]), receipts["wait"])
-            result = dict(selection_token=f"{selected['id']}:{selected['receipt_sha256']}", rationale="계산 확인")
+            result = dict(selection_token=f"{selected['id']}:{model_receipt_hash(selected)}", rationale="계산 확인")
         else:
             action = ("EXIT" if ctx.get("scenario_id") and ctx["now"] >= bundle["start_ms"] / 1000 + 600
                       else "WAIT" if ctx.get("scenario_id") else "OPEN")

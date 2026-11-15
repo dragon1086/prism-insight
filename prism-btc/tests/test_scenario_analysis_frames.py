@@ -192,7 +192,7 @@ def test_retired_historical_opinions_are_omitted_without_mutating_registered_con
     result=analysis_model_view(raw)['contract_context']
     assert result['previous_thesis_assessment']=={'status':'WEAKENING','reason':'OMITTED_RETIRED_TIMEFRAME_OPINION'}
     assert result['position_flow']['thesis_transitions']==[{'reason':'OMITTED_RETIRED_TIMEFRAME_OPINION','price':123}]
-    assert result['current_plan']['rationale']=='OMITTED_RETIRED_TIMEFRAME_OPINION'
+    assert 'rationale'not in result['current_plan']
     assert result['registered_entry_contract']==contract
     assert result['current_plan']['entry_contract']==contract
     assert result['review_memory']==ctx['review_memory']

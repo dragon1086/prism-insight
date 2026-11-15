@@ -13,6 +13,7 @@ from tests.test_scenario_calculated_replay import wire
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.compare_btc_scenario_replays import verify_economic_rejections  # noqa: E402
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def generator(calls, *, calculated, bad_raw=False, held=False):
@@ -23,7 +24,7 @@ def generator(calls, *, calculated, bad_raw=False, held=False):
         if "selection_token" in request["response_schema"]["properties"]:
             receipts = payload["calculated_candidates"]
             chosen = next((r for r in receipts["candidates"] if r["eligible"]), receipts["wait"])
-            result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale="검산 확인")
+            result = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale="검산 확인")
         else:
             raw = wire(ctx, "OPEN")
             if ctx.get("scenario_id"):
