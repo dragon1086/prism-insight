@@ -109,6 +109,8 @@ def test_signal_price_bands_on_a_fresh_quote():
     assert LIVE.price_in_band("RETEST", 100, 100) and LIVE.price_in_band("RETEST", 100, 105)
     assert not LIVE.price_in_band("RETEST", 100, 99.9) and not LIVE.price_in_band("RETEST", 100, 105.1)
     assert LIVE.price_in_band("SHAKEOUT_RECLAIM", 100, 105) and not LIVE.price_in_band("SHAKEOUT_RECLAIM", 100, 100)
+    assert LIVE.price_in_band("MA20R", 100, 105) and not LIVE.price_in_band("MA20R", 100, 100)
+    assert not LIVE.price_in_band("MA20R", 100, 105.1)
 
 
 def test_scenario_carries_reentry_metadata_capped_stop_and_buy_rule_target():
@@ -208,6 +210,32 @@ def test_only_primary_rule_signals_trade(tmp_path, live_on):
     executor = FakeExecutor()
     _, results = _process(tmp_path, [_record()], {"ev1": _item(live_rule=None)}, executor)
     assert results == [] and executor.calls == []
+
+
+def _ma20r_item(n=1, live_rule="MA20R", trigger="MA20R"):
+    item = _item(n, trigger=trigger, live_rule=live_rule, rr=2.9)
+    item.update(stop=11785.0, target=14580.0, stop_rule="POST_ANCHOR_LOW", target_rule="ma20r_2a", ma20=12010.0,
+                attempts={live_rule: {"attempt": 1, "max": 3, "prior": []}})
+    return item
+
+
+def test_ma20r_market_trades_only_ma20r_signals_with_the_ma20_band(tmp_path, live_on, monkeypatch):
+    # H-1116 LIVE (user decision 2026-11-16): REENTRY_V3_MA20R_LIVE_MARKETS=US -> US orders MA20R items only.
+    monkeypatch.setenv("REENTRY_V3_MA20R_LIVE_MARKETS", "US")
+    executor = FakeExecutor()
+    items = {"ev1": _ma20r_item(1), "ev2": _item(2)}                              # ev2: an L97 retest, record only
+    _, results = _process(tmp_path, [_record(1), _record(2)], items, executor, now=US_1350, market="US")
+    assert [(r["ticker"], r["signal"], r["status"]) for r in results] == [("000001", "MA20R", "BOUGHT")]
+    scenario = executor.calls[0][1][0]["scenario"]
+    meta = scenario["reentry"]
+    assert meta["signal"] == "MA20R" and meta["rule"] == "MA20R" and meta["band_level"] == 12010.0
+    assert meta["band_basis"] == "ma20" and meta["signal_ko"] == "20일선 회복 매수"
+    assert scenario["target_price"] == 14580.0 and scenario["stop_loss"] == 11785.0
+    assert scenario["trigger_type"] == "Re-entry (MA20R)" and scenario["risk_reward_ratio"] > 1.8
+    assert "20일 이동평균선 위로" in LIVE.deterministic_record(items["ev1"], "US")["scenario"]["rationale"]
+    kr = FakeExecutor()                                                           # KR keeps L97: MA20R is a record
+    _, results = _process(tmp_path, [_record(1)], {"ev1": _ma20r_item(1)}, kr, market="KR")
+    assert results == [] and kr.calls == []
 
 
 def test_rerun_never_buys_twice_and_one_ticker_per_session(tmp_path, live_on):

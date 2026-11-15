@@ -736,7 +736,8 @@ def section_reentry(datas, window, runtime: Path, events) -> str:
             for day, info in (watch.get("live") or {}).items():
                 if window.has(day):
                     live[str(info.get("result") or info.get("status"))] += 1
-            camp = ((watch.get("ledger") or {}).get("campaigns") or {}).get("L97") or {}
+            camps = (watch.get("ledger") or {}).get("campaigns") or {}
+            camp = camps.get("MA20R") or camps.get("L97") or {}     # the traded rule (MA20R where it is live)
             for att in camp.get("attempts") or []:
                 if window.has(att.get("date")) and att.get("status") == "CLOSED":
                     approved_flag = (by_day.get(att.get("date")) or {}).get("approved")
