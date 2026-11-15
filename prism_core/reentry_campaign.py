@@ -97,6 +97,12 @@ SHAKEOUT_WINDOW = 5
 SHAKEOUT_DEEP = 0.90        # close < reclaim*0.90 ends the watch
 SHAKEOUT_CHASE = 0.05       # entry <= reclaim*1.05
 SHAKEOUT_LOW_STOP = 0.99    # stop under the shakeout low
+# MA20 recovery re-entry (H-1116, user decision 2026-11-16): independent of the level L, first up-day close
+# back above the 20-session average with volume >= the 20-session average; stop under the post-anchor low;
+# target = 2a (+20%), since the nearest-resistance target failed the R/R floor for a third of these signals.
+MA20R_AVG_BARS = 20
+MA20R_LOW_STOP = 0.99
+MA20R_CHASE = 0.05          # fresh-quote band: ma20 < price <= ma20*1.05
 # Share of a normal day's volume traded by the decision time (14:00 KST / 13:50 ET) when no
 # ticker-specific intraday profile is supplied (quote["volume_share"]).
 VOLUME_SHARE_DEFAULT = {"KR": 0.80, "US": 0.70}
@@ -118,6 +124,27 @@ POLICY = {
     "max_attempts": MAX_ATTEMPTS,
     "horizon": HORIZON,
 }
+# Campaign rules with their own trigger set (the others use policy triggers / window_triggers).
+RULE_TRIGGERS = {"MA20R": ("MA20R",)}
+
+
+def rule_triggers(rule, window, policy=None):
+    policy = policy or POLICY
+    return RULE_TRIGGERS.get(rule) or (policy["window_triggers"] if window else policy["triggers"])
+
+
+def ma20r_live_markets():
+    """REENTRY_V3_MA20R_LIVE_MARKETS=US (user decision 2026-11-16): the MA20 recovery rule is the traded
+    primary rule there; the level rules L97/SS stay as records. Research: tasks/research-20261116/reentry-funnel
+    (US 10-slot account +48%p vs no re-entry, 27/30 orderings; KR crowded out, observe only)."""
+    return {m.strip().upper() for m in os.getenv("REENTRY_V3_MA20R_LIVE_MARKETS", "").split(",") if m.strip()}
+
+
+def policy_for(market, policy=None):
+    policy = policy or POLICY
+    if str(market).upper() in ma20r_live_markets() and "MA20R" not in policy["campaign_rules"]:
+        return dict(policy, campaign_rules=tuple(policy["campaign_rules"]) + ("MA20R",), primary_rule="MA20R")
+    return policy
 # R2S stale-level guard (research 2026-10-22, KR 028670): when the report has resistance levels and every one
 # of them is at or under the entry, the levels are stale and the R/R target falls to a wick high, so the
 # pullback buy needs a fresh analysis instead. Default off; REENTRY_V3_STALE_LEVEL_GUARD=true or the policy
@@ -347,7 +374,12 @@ def _exit_e2(bars, j, pos):
     return _stop_hit(bars[j], pos, j - pos["_start"] + 1)
 
 
-CAMPAIGN_RULES = {"L97": _end_l97, "SS": _end_ss}
+def _end_ma20r(setup, broke):
+    """No breakdown line: the MA20 recovery rule needs no pullback and only ends at the horizon."""
+    return None
+
+
+CAMPAIGN_RULES = {"L97": _end_l97, "SS": _end_ss, "MA20R": _end_ma20r}
 STOP_RULES = {"STRUCT": _stop_struct}
 EXIT_RULES = {"E1": _exit_e1, "E2": _exit_e2}
 
@@ -421,9 +453,41 @@ def _trigger_shakeout(ctx):
     return out
 
 
-def evaluate(setup, *, bars, i, flags, price, day_low, regime, window=None, volume_projected=None, policy=None):
+@register_trigger("MA20R", "20일선 회복 매수")
+def _trigger_ma20_recovery(ctx):
+    bars, i, price = ctx["bars"], ctx["i"], ctx["price"]
+    if i < MA20R_AVG_BARS + 1:
+        return {"fired": False, "reason": "history_short"}
+    avg = sum(b["close"] for b in bars[i - MA20R_AVG_BARS:i]) / MA20R_AVG_BARS
+    if ctx["prev_close"] > avg:
+        return {"fired": False, "reason": "prev_close_above"}
+    if price <= avg:
+        return {"fired": False, "reason": "below_level"}
+    avg20 = P.avg_volume(bars, i)
+    projected = ctx.get("volume_projected")
+    if projected is None or not avg20:
+        return {"fired": False, "reason": "missing_volume"}
+    if projected < avg20:
+        return {"fired": False, "reason": "volume_below_avg20", "volume_ratio": round(projected / avg20, 4)}
+    anchor = ctx["setup"].get("anchor_date")
+    lows = [b["low"] for b in bars[:i] if not anchor or b["date"] >= anchor]
+    if ctx["day_low"] is not None:
+        lows.append(ctx["day_low"])
+    stop = max(min(lows) * MA20R_LOW_STOP, price * (1 - max_stop(ctx["regime"])))
+    out = {"fired": True, "reason": "fired", "entry": price, "ma20": round(avg, 6),
+           "volume_ratio": round(projected / avg20, 4)}
+    out.update(_priced(ctx, price, stop=stop, stop_rule="POST_ANCHOR_LOW"))
+    target = round(price * ONEIL_TARGET, 6)
+    out.update(target=target, target_source="ma20r_2a", target_rule="ma20r_2a", resistance=None,
+               add_condition=None, target_unsupported=None, rr=round((target - price) / (price - out["stop"]), 4))
+    return out
+
+
+def evaluate(setup, *, bars, i, flags, price, day_low, regime, window=None, volume_projected=None, policy=None,
+             triggers=None):
     """Trigger check for day i: bars[:i] is completed history; price/day_low/volume_projected are day-i
-    decision values. Inside a shakeout window only the window triggers are evaluated.
+    decision values. Inside a shakeout window only the window triggers are evaluated; `triggers` overrides
+    the set (a rule with its own triggers, see rule_triggers).
 
     Returns {"trigger": fired dict or None, "checks": {trigger_id: reason}, ...context}.
     """
@@ -433,7 +497,7 @@ def evaluate(setup, *, bars, i, flags, price, day_low, regime, window=None, volu
            "prev_close": bars[i - 1]["close"], "price": price, "day_low": day_low,
            "volume_projected": volume_projected, "regime": regime or "sideways"}
     checks, details, fired = {}, {}, None
-    for trigger_id in (policy["window_triggers"] if window else policy["triggers"]):
+    for trigger_id in (triggers if triggers is not None else rule_triggers(None, window, policy)):
         result = TRIGGERS[trigger_id]["fn"](ctx)
         checks[trigger_id] = result["reason"]
         # Observation only: the numbers behind a miss (R/R vs floor, volume ratio) for the ledger.
@@ -587,7 +651,7 @@ def _open(campaign, setup, bars, i, trigger, *, mode, decision, regime, pulse, s
         "shadow_exits": {r: {"entry": entry, "stop": trigger["stop"], "_start": i + 1, "intraday": False,
                              "status": "OPEN"} for r in policy["shadow_exit_rules"]},
     }
-    for key in ("shakeout_low", "window_start", "volume_ratio"):
+    for key in ("shakeout_low", "window_start", "volume_ratio", "ma20"):
         if key in trigger:
             record[key] = trigger[key]
     if decision:
@@ -725,12 +789,13 @@ def replay(setup, bars, anchor, *, decisions=None, regime_at=None, pulse_at=None
                 if (changes.get(rule) or ("",))[0] == "end":
                     continue                                  # research: no close entry on the end day
                 window = camp["window"]
-                key = (window["R"], window["_start"]) if window else None
+                key = ((window["R"], window["_start"]) if window else None, rule_triggers(rule, window, policy))
                 groups.setdefault(key, []).append(camp)
-            for members in groups.values():
+            for (_, triggers), members in groups.items():
                 window = members[0]["window"]
                 result = evaluate(setup, bars=bars, i=i, flags=flags, price=bar["close"], day_low=bar["low"],
-                                  regime=regime, window=window, volume_projected=bar["volume"], policy=policy)
+                                  regime=regime, window=window, volume_projected=bar["volume"], policy=policy,
+                                  triggers=triggers)
                 for tid, reason in result["checks"].items():
                     stats["checks"].setdefault(tid, {}).setdefault(reason, 0)
                     stats["checks"][tid][reason] += 1
@@ -870,9 +935,6 @@ def pivot_control(setup, bars, anchor, end_index, market, policy=None, regime_at
     pos["alloc"] = alloc
     out["trade"] = _public(pos)
     return out
-
-
-MA20R_AVG_BARS = 20
 
 
 def ma20_recovery_control(setup, bars, anchor, market, policy=None, regime_at=None):

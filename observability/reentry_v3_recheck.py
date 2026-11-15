@@ -68,6 +68,7 @@ TRIGGER_TEXT = {
     "R1C": "기준 가격 재돌파 매수",
     "R2S": "기준 가격 눌림 지지 매수",
     "SHAKEOUT_RECLAIM": "흔들기 후 회복 매수",
+    "MA20R": "20일선 회복 매수",
 }
 BASIS_TEXT = {
     "primary_support": "첫 매수 때 돌파했던 가격대 = 원래 진입가 바로 아래의 1차 지지",
@@ -151,6 +152,12 @@ def _trigger_lines(item):
                 f"- 현재가 {_money(price)} (회복 기준 {_money(reclaim)} 대비 {_pct(price, reclaim)}, 한도 +5%)\n"
                 f"- 추정 오늘 거래량: 20일 평균의 {shake.get('volume_ratio')}배 (판단 시각 누적 거래량 ÷ 이 시각까지의 "
                 f"하루 거래량 비중 {item.get('volume_share')})\n")
+    elif t == "MA20R":
+        ma20 = item.get("ma20") or price
+        body = (f"- 직전 종가 {_money(prev)} ≤ 20일 이동평균 {_money(ma20)} < 현재가 {_money(price)} "
+                f"(20일선 대비 {_pct(price, ma20)}, 한도 +5%)\n"
+                f"- 추정 오늘 거래량: 20일 평균 이상 (판단 시각 누적 거래량 ÷ 이 시각까지의 하루 거래량 비중 "
+                f"{item.get('volume_share')})\n")
     else:
         body = f"- 현재가 {_money(price)} (기준 가격 대비 {_pct(price, level)})\n"
     return head + body

@@ -513,6 +513,45 @@ def test_ma20_recovery_control_records_the_first_cross_with_volume_and_skips_kr_
     assert later["checks"]["volume_below_avg20"] == 1 and (later["first_trigger"] or {}).get("date") != bars[70]["date"]
 
 
+def test_ma20r_is_the_traded_rule_only_where_the_market_flag_names_it(monkeypatch):
+    # H-1116 LIVE (user decision 2026-11-16): US trades the MA20 recovery rule (no pullback to L needed); KR keeps L97.
+    bars = yc_bars()
+    monkeypatch.setenv("REENTRY_V3_MA20R_LIVE_MARKETS", "US")
+    assert C.policy_for("KR") is C.POLICY and "MA20R" not in C.replay(yc_setup(bars), bars, 69, market="KR")["campaigns"]
+    policy = C.policy_for("US")
+    assert policy["primary_rule"] == "MA20R" and policy["campaign_rules"] == ("L97", "SS", "MA20R")
+    ledger = C.replay(yc_setup(bars), bars, 69, market="US", policy=policy)
+    assert ledger["rule_ids"]["primary_rule"] == "MA20R"
+    first = ledger["campaigns"]["MA20R"]["attempts"][0]
+    # day 70 gaps over L*1.03 (R1C chase, no L97 entry that day) but closes back over the 20-session average on volume
+    assert (first["trigger"], first["label"], first["date"], first["entry"]) == ("MA20R", "20일선 회복 매수", bars[70]["date"], 12400)
+    assert first["stop0"] == pytest.approx(max(11550 * 0.99, 12400 * (1 - C.max_stop("sideways"))))
+    assert first["target"] == pytest.approx(12400 * 1.20) and first["target_rule"] == "ma20r_2a"
+    assert first["rr"] >= first["rr_floor"] and first["stop_rule"] == "POST_ANCHOR_LOW" and first["ma20"] < 12400
+    assert first["exit_reason"] == "ma20" and first["ret"] > 0.10
+    assert ledger["campaigns"]["L97"]["attempts"][0]["date"] == bars[71]["date"]     # level rule still recorded
+    assert ledger["campaigns"]["MA20R"]["end_reason"] == "horizon"                    # no breakdown line, horizon only
+    monkeypatch.delenv("REENTRY_V3_MA20R_LIVE_MARKETS")
+    assert C.policy_for("US") is C.POLICY
+
+
+def test_ma20r_trigger_needs_a_cross_and_volume_at_or_above_the_20_session_average():
+    bars = yc_bars()
+    setup = yc_setup(bars)
+    flags = {"armed": True, "above": False}
+    def check(i, price, volume):
+        return C.evaluate(setup, bars=bars[:i], i=i, flags=flags, price=price, day_low=price * 0.99, regime="sideways",
+                          volume_projected=volume, triggers=("MA20R",))
+    fired = check(70, 12400, 1000)["trigger"]
+    assert fired["trigger"] == "MA20R" and fired["volume_ratio"] == 1.0 and fired["target"] == pytest.approx(12400 * 1.2)
+    assert check(70, 12400, 999)["checks"] == {"MA20R": "volume_below_avg20"}
+    assert check(70, 11650, 1000)["checks"] == {"MA20R": "below_level"}            # still under the average
+    assert check(72, 12300, 1000)["checks"] == {"MA20R": "prev_close_above"}       # already above yesterday
+    assert check(70, 12400, None)["checks"] == {"MA20R": "missing_volume"}
+    assert C.rule_triggers("MA20R", None) == ("MA20R",) and C.rule_triggers("L97", None) == ("R1C", "R2S")
+    assert C.rule_triggers("MA20R", {"R": 1}) == ("MA20R",) and C.rule_triggers("L97", {"R": 1}) == ("SHAKEOUT_RECLAIM",)
+
+
 def test_trigger_registry_is_pluggable():
     @C.register_trigger("TEST_ALWAYS", "T")
     def always(ctx):

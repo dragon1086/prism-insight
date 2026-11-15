@@ -683,6 +683,20 @@ def test_reentry_bull_full_size_only_in_bull(live_on, monkeypatch, regime, cash,
         assert block["reentry_size"]["reason"] == live.REENTRY_BULL_SIZE_REASON and block["allocation"] == "0.7777"
 
 
+@pytest.mark.parametrize("regime", ["strong_bull", "sideways", "strong_bear", None])
+def test_ma20r_reentry_takes_the_full_size_in_every_regime(live_on, monkeypatch, regime):
+    # H-1116 LIVE (user decision 2026-11-16): the MA20 recovery re-entry keeps the full B3 initial.
+    monkeypatch.delenv("REENTRY_V3_BULL_FULL_SIZE", raising=False)
+    monkeypatch.setenv("REENTRY_V3_FIRST_SIZE_FACTOR", "0.5")
+    scenario = {"stop_loss": 9300, "reentry": {"version": "reentry_v3", "signal": "MA20R"}}
+    if regime is not None:
+        scenario["_deterministic_market_regime"] = regime
+    _, cash, scenario = live.prepare_entry(_agent(), market="KR", ticker="005930", current_price=10000, scenario=scenario,
+                                           decision_ref="reentry_v3:x", account={"buy_amount_krw": 1_000_000})
+    assert cash == 777_700 and scenario["micro_split"]["reentry_size"]["factor"] == "1"
+    assert scenario["micro_split"]["reentry_size"]["reason"] == live.REENTRY_MA20R_SIZE_REASON
+
+
 def test_reentry_bull_full_size_off_keeps_half(live_on, monkeypatch):
     monkeypatch.delenv("REENTRY_V3_BULL_FULL_SIZE", raising=False)
     _, cash, scenario = _reentry_prepared("0.5", monkeypatch, regime="strong_bull")

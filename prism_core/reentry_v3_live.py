@@ -43,13 +43,14 @@ SAFE_WINDOWS = {"KR": ("Asia/Seoul", dtime(9, 5), dtime(15, 15)),
                 "US": ("America/New_York", dtime(9, 35), dtime(15, 45))}
 # No re-entry order after this local time (before the regular afternoon batches KR 14:46 / US 14:30 ET).
 ORDER_DEADLINES = {"KR": ("Asia/Seoul", dtime(14, 40)), "US": ("America/New_York", dtime(14, 25))}
-SIGNALS = {"R1C": "REBREAK", "R2S": "RETEST", "SHAKEOUT_RECLAIM": "SHAKEOUT_RECLAIM"}
+SIGNALS = {"R1C": "REBREAK", "R2S": "RETEST", "SHAKEOUT_RECLAIM": "SHAKEOUT_RECLAIM", "MA20R": "MA20R"}
 SIGNAL_KO = {"REBREAK": "기준 가격 재돌파 매수", "RETEST": "기준 가격 눌림 지지 매수",
-             "SHAKEOUT_RECLAIM": "흔들기 후 회복 매수"}
+             "SHAKEOUT_RECLAIM": "흔들기 후 회복 매수", "MA20R": "20일선 회복 매수"}
 SIGNAL_WHY_KO = {
     "REBREAK": "{level} 위로 다시 올라섰습니다",
     "RETEST": "{level}까지 내려왔다가 지지를 받고 버텼습니다",
     "SHAKEOUT_RECLAIM": "{level} 아래로 크게 흔들린 뒤 거래량을 동반해 다시 회복했습니다",
+    "MA20R": "거래량을 동반해 20일 이동평균선 위로 다시 올라섰습니다",
 }
 SOURCE_SENTENCE_KO = {"STOP_EXIT": "이전에 손절했던 종목입니다.",
                       "LOCATION_SKIP": "이전 분석에서 매수를 보류했던 종목입니다.",
@@ -129,8 +130,9 @@ def deterministic_record(item, market, now=None):
     original = item.get("original") or {}
     meta = {"signal": signal, "level": item["level"]["L"], "source": item["source"],
             "level_basis": item["level"].get("basis"),
-            "band_level": (((item.get("campaign") or {}).get("windows") or {}).get(PRIMARY_RULE) or {}).get("R"),
-            "band_basis": (item.get("campaign") or {}).get("reclaim_basis")}
+            "band_level": item.get("ma20") or (((item.get("campaign") or {}).get("windows") or {})
+                                               .get(live_rule(item)) or {}).get("R"),
+            "band_basis": "ma20" if item.get("ma20") else (item.get("campaign") or {}).get("reclaim_basis")}
     why = SIGNAL_WHY_KO[signal].format(level=level_phrase(meta, market))
     scenario = {"decision": "진입", "investment_period": "중기",
                 "rationale": (f"재진입 규칙 신호로 매수합니다(AI 재점검 없음). "
@@ -169,14 +171,15 @@ def before_deadline(market, now=None):
 
 
 def price_in_band(signal, level, price):
-    """The signal's price band on a fresh quote: REBREAK L<p<=1.03L, RETEST L<=p<=1.05L, SHAKEOUT L<p<=1.05L."""
+    """The signal's price band on a fresh quote: REBREAK L<p<=1.03L, RETEST L<=p<=1.05L, SHAKEOUT L<p<=1.05L,
+    MA20R ma20<p<=1.05*ma20 (level = the 20-session average)."""
     if not level or not price:
         return False
     if signal == "REBREAK":
         return level < price <= level * 1.03
     if signal == "RETEST":
         return level <= price <= level * 1.05
-    if signal == "SHAKEOUT_RECLAIM":
+    if signal in ("SHAKEOUT_RECLAIM", "MA20R"):
         return level < price <= level * 1.05
     return False
 
@@ -195,9 +198,19 @@ def approved(record):
             and str((record.get("scenario") or {}).get("decision", "")).strip().lower() in APPROVE)
 
 
+def live_rule(item):
+    """The campaign rule the item was frozen under (MA20R where REENTRY_V3_MA20R_LIVE_MARKETS names the market)."""
+    return item.get("live_rule") or PRIMARY_RULE
+
+
+def primary_rule(market):
+    from prism_core.reentry_campaign import policy_for
+    return policy_for(market)["primary_rule"]
+
+
 def live_rank_key(item):
     """Deterministic order for the daily cap: earlier attempt, then higher deterministic R/R, then ticker."""
-    attempt = (item.get("attempts") or {}).get(PRIMARY_RULE, {}).get("attempt", 9)
+    attempt = (item.get("attempts") or {}).get(live_rule(item), {}).get("attempt", 9)
     rr = item.get("rr")
     return (attempt, -(rr if isinstance(rr, (int, float)) else -1.0), str(item.get("ticker")))
 
@@ -217,17 +230,19 @@ def build_scenario(item, record, market):
     """The recheck's BUY JSON plus re-entry metadata, the capped re-entry stop and the BUY-rule target."""
     scenario = dict(record.get("scenario") or {})
     signal = SIGNALS[item["trigger"]]
-    attempt = (item.get("attempts") or {}).get(PRIMARY_RULE, {}).get("attempt", 1)
-    window = ((item.get("campaign") or {}).get("windows") or {}).get(PRIMARY_RULE) or {}
+    rule = live_rule(item)
+    attempt = (item.get("attempts") or {}).get(rule, {}).get("attempt", 1)
+    window = ((item.get("campaign") or {}).get("windows") or {}).get(rule) or {}
     scenario["reentry"] = {
         "version": LIVE_VERSION, "signal": signal, "signal_ko": SIGNAL_KO[signal], "attempt": attempt,
         "max_attempts": 3, "attempt_label": f"{attempt}/3", "level": item["level"]["L"],
         "level_basis": item["level"]["basis"], "watch_id": item["watch_ref"], "source": item["source"],
         "trigger_date": item["trigger_date"], "decision_price": item["decision_price"],
-        "decision_time": item["decision_time"], "event_id": item["event_id"], "rule": PRIMARY_RULE,
+        "decision_time": item["decision_time"], "event_id": item["event_id"], "rule": rule,
         "stop_rule": item.get("stop_rule"), "target_rule": item.get("target_rule"),
-        "band_level": window.get("R") or item["level"]["L"],
-        "band_basis": (item.get("campaign") or {}).get("reclaim_basis") if window.get("R") else "L",
+        "band_level": item.get("ma20") or window.get("R") or item["level"]["L"],
+        "band_basis": ("ma20" if item.get("ma20") else
+                       (item.get("campaign") or {}).get("reclaim_basis") if window.get("R") else "L"),
         "approval": record.get("approval") or "llm",
     }
     scenario["stop_loss"] = item["stop"]
@@ -395,8 +410,8 @@ def plan(market, decision_day, records, items, journal, now):
         item = items.get(record.get("event_id"))
         if item is None or item.get("trigger_date") != decision_day or not approved(record):
             continue
-        if item.get("live_rule") != PRIMARY_RULE:
-            continue                     # SS-rule signals are a parallel record only
+        if item.get("live_rule") != primary_rule(market):
+            continue                     # SS-rule (and, where MA20R trades, L97) signals are a record only
         candidates.append((live_rank_key(item), item, record))
     to_submit, skipped = [], []
     for _, item, record in sorted(candidates, key=lambda c: c[0]):

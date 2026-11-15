@@ -257,6 +257,7 @@ REENTRY_SIZE_REASON = "REENTRY_FIRST_SIZE"
 # 2026-11-10 (user decision): the switch also takes a market list ("KR") - US bull re-entries lost under
 # both the current and the K8b regime, so US goes back to the factor. "true" still means KR and US.
 REENTRY_BULL_SIZE_REASON = "REENTRY_BULL_FULL_SIZE"
+REENTRY_MA20R_SIZE_REASON = "REENTRY_MA20R_FULL_SIZE"
 
 
 def _bull_full_size_market(market):
@@ -275,6 +276,12 @@ def reentry_first_size(base, scenario, market=None):
     if not isinstance(meta, dict) or not meta.get("version"):
         return None
     regime = scenario.get("_deterministic_market_regime")
+    if meta.get("signal") == "MA20R":
+        # H-1116 (user decision 2026-11-16): the MA20 recovery re-entry takes the full B3 initial in every regime
+        # (the account replay that passed used a full slot; half size halved the gain).
+        base = _dec(base)
+        return {"base": str(base), "sized": str(base), "factor": "1", "reason": REENTRY_MA20R_SIZE_REASON,
+                "regime": regime}
     if _bull_full_size_market(market) and regime in _BULL:
         base = _dec(base)
         return {"base": str(base), "sized": str(base), "factor": "1", "reason": REENTRY_BULL_SIZE_REASON,
