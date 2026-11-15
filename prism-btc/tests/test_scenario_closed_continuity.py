@@ -176,13 +176,12 @@ def test_runtime_constructs_missing_continuity_in_frozen_context(tmp_path):
 
 
 def test_stage_a_reasoning_preserves_fast_breaks_and_failed_exit():
-    from live.scenario_llm import SYSTEM_PROMPT,FLAT_ENTRY_PROMPT,MA_STRUCTURE_PROMPT
-    all_text=' '.join((SYSTEM_PROMPT+FLAT_ENTRY_PROMPT+MA_STRUCTURE_PROMPT).split())
-    for phrase in ('independent current price progress', 'Risk capacity and small size are not evidence',
-                   'holding advantage from merely NOT FAILED', 'early failure EXIT',
-                   'no fixed crossing width or duration applies', 'without a mandatory candle close or retest',
-                   'including a supported MA10-to-MA35 traverse'):
-        assert phrase in all_text
+    from live.scenario_llm import system_instructions
+    text=' '.join(system_instructions(dict(scenario_id=None,positions=[],pending_entries=[],entry_contract_version=2)).split())
+    for phrase in ('A prior loss, elapsed time or changing numbers alone creates no edge',
+                   'Already supported progress needs no habitual extra close',
+                   'FAILED requires the allowed full EXIT','never repair a contradiction in prose'):
+        assert phrase in text
 
 
 @pytest.mark.parametrize('fault',['future_exit','other_contract','wrong_intent_input'])

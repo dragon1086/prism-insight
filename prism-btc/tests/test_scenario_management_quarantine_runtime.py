@@ -12,6 +12,7 @@ from tests.test_scenario_execution import Exchange, persist, record_exit_decisio
 from tests.test_scenario_entry_contract_runtime import definition
 from tests.test_scenario_immediate_reduce_execution import auto_fill
 from tests.test_scenario_runtime import proposal, wait_proposal
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 class ShortExchange(Exchange):
@@ -416,7 +417,7 @@ def calculated_runtime(incident, action, *, after_review=None):
         else:
             data = json.loads(request['user_prompt'])['calculated_candidates']
             chosen = data['wait'] if action == 'WAIT' else data['candidates'][0]
-            result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale=rationale)
+            result = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale=rationale)
         return SimpleNamespace(text=json.dumps(result))
     adapter = make_calculated_review_proposer(generate=generate, clock=lambda: incident['now'][0])
     def propose(snapshot, context, *, record):

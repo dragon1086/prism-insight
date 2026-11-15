@@ -13,6 +13,7 @@ from analysis.scenario_review_tape import record_review,replay_review
 from tests.test_scenario_entry_geometry import inputs
 from tests.test_scenario_review_guard import context,wire
 from tests.test_scenario_allocation_review import allocation_wire
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def sample():
@@ -99,7 +100,7 @@ def test_two_phase_runtime_uses_menu_and_replays_with_original_host_checks(monke
         else:
             assert body['prepared_entry_plan_sources']
             chosen=next(v for v in body['calculated_candidates']['candidates']if v['eligible'])
-            result=dict(selection_token=chosen['id']+':'+chosen['receipt_sha256'],rationale='구조와 검산 검토')
+            result=dict(selection_token=chosen['id']+':'+model_receipt_hash(chosen),rationale='구조와 검산 검토')
         assert _matches(result,q['response_schema'])
         return SimpleNamespace(text=json.dumps(result))
     review=partial(research_review,research_mode='economic-reject-calculated-v1');contract=response_contract(c)

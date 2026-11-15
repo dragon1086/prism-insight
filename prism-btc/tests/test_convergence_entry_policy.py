@@ -9,6 +9,7 @@ from core.scenario_convergence import entry_convergence, require_entry_convergen
 from core.llm_scenario import ScenarioValidationError, validate_scenario
 from tests.test_llm_scenario import sample, active
 from tests.test_scenario_review_runtime import runtime, wire
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def snapshot(now=1800000000, h1=-1, m30=-1):
@@ -99,7 +100,7 @@ def test_actual_review_rejects_entry_but_preserves_early_30m_expansion(tmp_path,
         if 'selection_token' in request['response_schema']['properties']:
             candidates = data['calculated_candidates']
             chosen = next((x for x in candidates['candidates'] if x['eligible']), candidates['wait'])
-            result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale='fixture')
+            result = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale='fixture')
         else:
             plan = wire(ctx, 'OPEN')
             if mode != 'legacy':
@@ -113,7 +114,7 @@ def test_actual_review_rejects_entry_but_preserves_early_30m_expansion(tmp_path,
     outcome = r.tick()
     assert outcome['status'] == expected, outcome
     assert len(broker.executed) == (1 if m30 == 1 else 0)
-    assert all('one gap widening or unchanged' in x['system_prompt'] for x in seen)
+    assert all('One narrowing frame alone is not this block' in x['system_prompt'] for x in seen)
 
 
 def test_pending_entries_cancel_without_calling_model(tmp_path):
@@ -192,7 +193,7 @@ def test_native_pending_order_is_cancelled_without_resetting_state_or_replaying_
         if 'selection_token' in request['response_schema']['properties']:
             choices = data['calculated_candidates']
             selected = next((x for x in choices['candidates'] if x['eligible']), choices['wait'])
-            result = dict(selection_token=f"{selected['id']}:{selected['receipt_sha256']}", rationale='fixture')
+            result = dict(selection_token=f"{selected['id']}:{model_receipt_hash(selected)}", rationale='fixture')
         else:
             wait = replay_wire(ctx, 'WAIT')
             wait.update(entry_contract=None, thesis_assessment=None)

@@ -13,6 +13,7 @@ from live.scenario_preview import response_contract
 from live.scenario_review_guard import guard_rejected_review
 from tests.test_scenario_allocation_review import allocation_wire
 from tests.test_scenario_review_guard import context, wire
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def run(mode, *, mutate=None, second=None, context_change=None):
@@ -32,7 +33,7 @@ def run(mode, *, mutate=None, second=None, context_change=None):
         if len(calls) == 2:
             bundle = json.loads(request["user_prompt"])["calculated_candidates"]
             chosen = next(r for r in bundle["candidates"] if r["eligible"])
-            result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale="선택")
+            result = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale="선택")
         elif "single" in mode:
             result = dict(proposal=raw)
         else:

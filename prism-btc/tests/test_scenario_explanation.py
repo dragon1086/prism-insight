@@ -225,14 +225,14 @@ def test_assembled_prompts_delegate_claims_and_keep_one_v1_namespace(tmp_path, a
         contract_context=dict(ma_structure=build_ma_structure_context(snap, original_ctx))))
     for request in requests:
         prompt = request['system_prompt']
-        assert 'Use interpretation only for qualitative market interpretation and action tradeoffs.' in prompt
-        assert 'do not restate these numeric/source/order claims in interpretation' in prompt
-        assert 'holding_price_order helper IDs M, T0 and 1h.index.low are not output references.' in prompt
+        assert 'unverified qualitative opinion' in prompt
+        assert 'Never put literal values/relations in comparison objects' in prompt
+        assert 'Use explanation_source references' in prompt
         assert 'Use holding_price_order when available' not in prompt
         restored = restore_model_input(json.loads(request['user_prompt']))
         ctx = restored['contract_context']
         assert 'holding_price_order' not in ctx
-        assert ctx['current_plan'] == old_plan
+        assert ctx['current_plan'] == {k:v for k,v in old_plan.items() if k not in {'risk','rationale','host_entry_contract_id'}}
         assert restored['market_snapshot'] == expected['market_snapshot']
         assert ctx['ma_structure'] == expected['contract_context']['ma_structure']
         for key in ('positions', 'pending_entries', 'initial_equity', 'previous_hard_stop',
@@ -249,5 +249,5 @@ def test_assembled_prompts_delegate_claims_and_keep_one_v1_namespace(tmp_path, a
 
 def test_legacy_holding_helper_instruction_is_unchanged():
     from live.scenario_llm import immediate_reduce_instructions
-    assert 'Use holding_price_order when available' in immediate_reduce_instructions('', dict(
-        immediate_reduce_version=1, scenario_id='held', positions=[dict(quantity=1)]))
+    text = immediate_reduce_instructions('',dict(immediate_reduce_version=1,scenario_id='held',positions=[dict(quantity=1)]))
+    assert 'verified protected holdings' in text and 'preserves native SL' in text

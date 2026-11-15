@@ -103,7 +103,7 @@ def test_final_single_draft_select_paths_add_only_optional_view():
         return SimpleNamespace(text=json.dumps(dict(wire(ctx),reduce_fraction=None)))
     propose(snapshot,ctx,contract,generate=generate,clock=lambda:1000)
     assert 'holding_price_order' in restore_model_input(json.loads(calls[0]['user_prompt']))['contract_context']
-    assert 'do not group a level beyond a TP' in calls[0]['system_prompt']
+    assert 'Use the correct LONG/SHORT price ordering' in calls[0]['system_prompt']
     for bundle in (None,{'candidates':[]}):
         baseline=_base_model_payload(snapshot,ctx,contract,calculated_candidates=bundle)
         actual=restore_model_input(_model_payload(snapshot,ctx,contract,calculated_candidates=bundle))

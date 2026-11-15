@@ -136,8 +136,8 @@ def test_calculated_reduce_roundtrip_and_fresh_guard():
                         bindings={'code':'test'},research_mode='economic-reject-calculated-v1')
     assert result['validated']['action']=='REDUCE'
     assert all('Immediate partial market reduction is unsupported' not in c['system_prompt'] for c in calls)
-    assert all('FAILED requires full EXIT' in c['system_prompt'] for c in calls)
-    assert all('target quantities are proportionally scaled to the actual remainder' in c['system_prompt'] for c in calls)
+    assert all('FAILED still requires full EXIT' in c['system_prompt'] for c in calls)
+    assert all('relative to the current position' in c['system_prompt'] for c in calls)
 
 
 @pytest.mark.parametrize('field,value',[

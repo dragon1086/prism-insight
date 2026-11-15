@@ -36,14 +36,6 @@ def test_missing_higher_frames_not_invented_from_priority():
         assert data['higher_frames'][frame]['status'] == 'unavailable'
 
 
-def test_order_is_shared_instruction_without_higher_frame_veto():
-    assert '1h > 30m > 4h > 12h > 1d > 1w' in SYSTEM_PROMPT
-    assert 'Do not use 15m, including timing or management' in SYSTEM_PROMPT
-    assert 'not calibrated numeric weights or independent votes' in SYSTEM_PROMPT
-    assert 'NOT a veto' in SYSTEM_PROMPT
-    assert 'especially 1h with 30m confirmation/conflict' in MA_STRUCTURE_PROMPT
-    assert 'especially 30m with 1h context' not in MA_STRUCTURE_PROMPT
-    assert '30m > 1h' not in SYSTEM_PROMPT + MA_STRUCTURE_PROMPT
 
 
 def test_missing_hourly_frame_remains_unknown_despite_highest_priority():

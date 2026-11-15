@@ -13,6 +13,7 @@ from live.scenario_entry_goal import (
     GoalConsistencyRejection, goal_schema, prepare_goal_source, resolve_goal, validate_goal_plan,
 )
 from tests.test_scenario_ma_context import NOW, point, snapshot
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def context():
@@ -179,9 +180,10 @@ def test_goal_rejected_candidate_keeps_taped_select_wait_and_original_prose():
             bundle = payload['calculated_candidates']
             rejected = bundle['candidates'][0]
             assert rejected['rejection_type'] == 'PREAUTHORITY_PLAN_CONSISTENCY'
-            assert rejected['raw_allocation_proposal'] == raw
+            assert rejected['draft_intent']['entry_contract'] == raw['entry_contract']
+            assert rejected['draft_intent']['rationale'] == raw['rationale']
             chosen = bundle['wait']
-            result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale='원래 목표와 불일치')
+            result = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale='원래 목표와 불일치')
         return SimpleNamespace(text=json.dumps(result))
 
     mode = 'economic-reject-calculated-v1'
@@ -487,10 +489,11 @@ def test_v1_schema_and_registered_record_match_deployed_9d4a_golden():
 
 
 def test_v2_prompt_is_reviewed_and_v1_prompt_is_unchanged():
-    from live.scenario_llm import ENTRY_CONTRACT_PROMPT, entry_contract_prompt
-    assert entry_contract_prompt({'entry_contract_version': 1}) == ENTRY_CONTRACT_PROMPT
-    assert hashlib.sha256(entry_contract_prompt({'entry_contract_version': 2}).encode()).hexdigest() == (
-        '33d1c257facbc6711586c5cc78800de6df5e6f6c45fc8f322c8c3d92584d7381')
+    from live.scenario_llm import entry_contract_prompt
+    v1, v2 = [entry_contract_prompt({'entry_contract_version': v}) for v in (1,2)]
+    assert 'premise/expected_progress fields' in v1 and 'Version2' not in v1
+    assert 'BOUNDED_BEFORE' in v2 and 'strictly before that value' in v2
+    assert 'never repair a contradiction in prose' in v2
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -843,7 +846,7 @@ def test_source_loss_after_selection_does_not_reject_goal_independent_protection
             bundle = restore_model_input(json.loads(request['user_prompt']))['calculated_candidates']
             chosen = bundle['candidates'][0]
             assert chosen['eligible'], chosen
-            answer = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale='protect')
+            answer = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale='protect')
         return SimpleNamespace(text=json.dumps(answer))
     mode = 'economic-reject-calculated-v1'
     contract = response_contract(ctx)

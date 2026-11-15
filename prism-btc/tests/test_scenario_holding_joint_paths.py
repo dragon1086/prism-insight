@@ -3,7 +3,7 @@ from copy import deepcopy
 
 import pytest
 
-from live.scenario_calculated_review import _holding_projection_values, _gross_projection, DRAFT_PROMPT, SELECT_PROMPT
+from live.scenario_calculated_review import _holding_projection_values, _gross_projection
 from tests.test_scenario_joint_exit_projection import fixture, paths
 
 
@@ -86,12 +86,6 @@ def test_partial_tp_then_larger_remaining_loss_is_not_hidden_by_profitable_leg()
     assert rows['TP_THEN_HARD_SL']['fee_only']['estimated_net_before_unmodelled_costs'] < 0
 
 
-def test_prompt_keeps_current_orders_distinct_and_partial_stop_optional():
-    assert 'ADJUST confirmed_remaining joint paths' in SELECT_PROMPT
-    assert 'never replay current_plan fractions' in SELECT_PROMPT
-    assert 'recorded net exactly once' in SELECT_PROMPT
-    assert 'nearer TP alone does not repair' in DRAFT_PROMPT
-    assert 'normal thesis-preserving fluctuations' in DRAFT_PROMPT
 
 
 @pytest.mark.parametrize('value', [None, True, '7', float('nan'), float('inf')])
@@ -120,7 +114,8 @@ def test_optional_view_preserves_receipts_source_and_baseline_on_size_fallback(m
     logical=restore_model_input(augmented)
     view=logical['contract_context'].pop('holding_exit_paths')
     assert view[0][:2]==['c0',candidate['receipt_sha256']]
-    assert logical['calculated_candidates']==bundle
+    assert logical['calculated_candidates']['candidates'][0]['projection']==candidate['projection']
+    assert logical['calculated_candidates']['candidates'][0]['host_receipt_sha256']==candidate['receipt_sha256']
     assert (bundle,ctx)==before
     baseline,_=flow.project_position_flow_input(logical)
     monkeypatch.setattr(flow,'_MODEL_INPUT_LIMIT',flow._size(baseline))
@@ -152,7 +147,8 @@ def test_optional_view_missing_binding_does_not_reject_candidate(tamper):
         return
     restored=restore_model_input(payload)
     assert 'holding_exit_paths' not in restored['contract_context']
-    assert restored['calculated_candidates']==bundle
+    assert restored['calculated_candidates']['candidates'][0]['projection']==candidate['projection']
+    assert restored['calculated_candidates']['candidates'][0]['host_receipt_sha256']==candidate['receipt_sha256']
 
 
 def test_view_uses_bound_validation_clock_not_earlier_frozen_fee_freshness():

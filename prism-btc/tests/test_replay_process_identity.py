@@ -6,6 +6,7 @@ import pytest
 from analysis.scenario_replay import replay_identity_scope, contract_for
 from live import scenario_execution
 from tests.test_scenario_replay import inputs
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def test_scoped_process_identity_never_changes_shared_os_and_restores_on_error():
@@ -46,7 +47,7 @@ def _run_process(directory, mode):
         if 'selection_token' in request['response_schema']['properties']:
             choices = data['calculated_candidates']
             chosen = next((c for c in choices['candidates'] if c['eligible']), choices['wait'])
-            return SimpleNamespace(text=json.dumps(dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale='fixture')))
+            return SimpleNamespace(text=json.dumps(dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale='fixture')))
         wait = wire(ctx, 'WAIT')
         wait.update(entry_contract=None, thesis_assessment=None)
         if ctx.get('pending_renewal_version') == 1:

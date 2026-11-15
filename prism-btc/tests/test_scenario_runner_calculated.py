@@ -12,6 +12,7 @@ import pytest
 
 from live import scenario_runner as runner
 from tests.test_scenario_review_runtime import Broker, wire
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 @pytest.mark.parametrize("flags", [[], ["--protect-only"], ["--activate"]])
@@ -186,7 +187,7 @@ def test_operational_holding_row_factory_keeps_prices_and_exits(tmp_path, monkey
             body = dict(wait_proposal=wire(captured, "WAIT"), candidates=[raw], no_candidate_reason="")
         else:
             candidate = next(row for row in json.loads(request["user_prompt"])["calculated_candidates"]["candidates"] if row["eligible"])
-            body = dict(selection_token=f"{candidate['id']}:{candidate['receipt_sha256']}", rationale="잔량 검산")
+            body = dict(selection_token=f"{candidate['id']}:{model_receipt_hash(candidate)}", rationale="잔량 검산")
         return SimpleNamespace(text=json.dumps(body))
 
     monkeypatch.setattr(runner.time, "time", lambda: now)
@@ -244,7 +245,7 @@ def test_runner_first_observation_then_host_sized_decision_with_row_factory(tmp_
                 raise TimeoutError("selection fixture")
             bundle = json.loads(request["user_prompt"])["calculated_candidates"]
             candidate = next(row for row in bundle["candidates"] if row["eligible"])
-            body = dict(selection_token=f"{candidate['id']}:{candidate['receipt_sha256']}", rationale="검산 승인")
+            body = dict(selection_token=f"{candidate['id']}:{model_receipt_hash(candidate)}", rationale="검산 승인")
         else:
             first = len(calls) == 1
             raw = wire(captured, "OPEN")

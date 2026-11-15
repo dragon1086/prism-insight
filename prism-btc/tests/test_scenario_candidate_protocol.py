@@ -9,6 +9,7 @@ from analysis.scenario_review_tape import record_review, replay_review
 from live.scenario_calculated_review import research_review
 from live.scenario_preview import response_contract
 from tests.test_scenario_calculated_review import context, wire
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def review(*, first=False, count=0, mutate=None, rejected=False):
@@ -30,7 +31,7 @@ def review(*, first=False, count=0, mutate=None, rejected=False):
         else:
             bundle=json.loads(request["user_prompt"])["calculated_candidates"]
             chosen=next((row for row in bundle["candidates"] if row["eligible"]),bundle["wait"])
-            result=dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}",rationale="모델 선택 원문")
+            result=dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}",rationale="모델 선택 원문")
         return SimpleNamespace(text=json.dumps(result))
     snapshot=dict(valid=True,as_of_ms=1000000)
     contract=response_contract(ctx)
@@ -109,6 +110,9 @@ def test_hard_wait_only_permission_is_not_first_observation(monkeypatch):
 
 def test_draft_prompt_clarifies_fallback_and_historical_baseline_without_echo_fields():
     from live.scenario_calculated_review import DRAFT_PROMPT
-    assert "fallback" in DRAFT_PROMPT and "baseline_kind" in DRAFT_PROMPT
-    assert "recovery.first_observation" in DRAFT_PROMPT
+    assert "WAIT alternative" in DRAFT_PROMPT
+    from live.scenario_llm import system_instructions
+    recovery=system_instructions(dict(recovery_contract_version=2))
+    assert "baseline_kind" in recovery and "first_observation" in recovery
+    assert "first_observation=true requires WAIT" in recovery
     assert "no_candidate_category" not in DRAFT_PROMPT

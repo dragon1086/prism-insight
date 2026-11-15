@@ -12,6 +12,7 @@ from live.scenario_model_input import project_model_input, restore_model_input
 from live.scenario_preview import response_contract
 from tests.test_scenario_calculated_review import context, wire
 from tests.test_scenario_ma_context import point, snapshot, NOW
+from tests.test_scenario_review_guard import model_receipt_hash,model_intent
 
 
 MARK = 81911.6
@@ -118,9 +119,9 @@ def test_both_review_requests_keep_current_facts_and_unmodified_bad_candidate_pr
             reply = dict(wait_proposal=wait, candidates=[candidate], no_candidate_reason='')
         else:
             bundle = data['calculated_candidates']
-            assert bundle['candidates'][0]['raw_proposal']['rationale'] == bad_reason
+            assert model_intent(bundle['candidates'][0])['rationale'] == bad_reason
             chosen = bundle['wait']
-            reply = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale='fixture WAIT')
+            reply = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale='fixture WAIT')
         return SimpleNamespace(text=json.dumps(reply))
 
     result = research_review(snap, ctx, response_contract(ctx), generate=generate,
@@ -128,20 +129,3 @@ def test_both_review_requests_keep_current_facts_and_unmodified_bad_candidate_pr
     assert len(calls) == 2 and result['selected']['raw_proposal']['action'] == 'WAIT'
     assert result['orders_submitted'] == 0 and result['executable'] is False
     assert (snap, ctx) == original
-
-
-def test_reference_instruction_is_symmetric_and_does_not_reclassify_future_as_past():
-    text = ' '.join(MA_STRUCTURE_PROMPT.split())
-    for clause in (
-        'relative_to_mark describes the LEVEL relative to reference.price (CURRENT Mark)',
-        'not price relative to the MA and not a proposed entry/trigger',
-        'BELOW means the level is below current Mark (distance_price < 0)',
-        'ABOVE means above (> 0), EQUAL means equal (= 0)',
-        'mirror this for LONG',
-        'does not establish that price has already passed a level',
-        'Only supplied observed chronology can support that past-tense claim',
-        'do not enumerate every MA',
-        'Missing reference/levels remain unknown',
-        "a candidate's prose is not market evidence",
-    ):
-        assert clause in text

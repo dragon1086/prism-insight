@@ -11,6 +11,16 @@ from live.scenario_preview import response_contract
 from live.scenario_review_guard import guard_review
 
 
+def model_receipt_hash(receipt):
+    value=receipt.get('host_receipt_sha256',receipt.get('receipt_sha256'))
+    assert isinstance(value,str)and len(value)==64
+    return value
+
+
+def model_intent(receipt):
+    return receipt.get('draft_intent',receipt.get('raw_proposal'))
+
+
 def context():
     return dict(now=1000, input_id="guard-1", input_captured_at=1000,
         account_captured_at=1000, max_input_age_seconds=120, scenario_id=None, revision=0,
@@ -51,7 +61,7 @@ def taped(ctx=None, action="OPEN"):
             bundle = json.loads(request["user_prompt"])["calculated_candidates"]
             chosen = bundle["candidates"][0]
             assert chosen["eligible"], chosen
-            result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale="계산 검토 완료")
+            result = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale="계산 검토 완료")
         return SimpleNamespace(text=json.dumps(result))
 
     envelope = record_review(research_review, snapshot, ctx, contract, generate=generate,

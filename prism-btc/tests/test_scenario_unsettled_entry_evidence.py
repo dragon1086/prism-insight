@@ -8,6 +8,7 @@ from live.scenario_management_quarantine import (
     authorize_unsettled_entry_management, digest, inspect_unsettled_entry_evidence,
     prepare_unsettled_entry_authority, probe_unsettled_entry,
 )
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def evidence(side='LONG'):
@@ -319,7 +320,7 @@ def test_authorized_entry_rechecks_account_and_never_authorizes_exit_yet():
     schema=response_schema(dict(input_id='input',revision=1,scenario_id='scenario-id',management_quarantine=receipt))
     assert schema['properties']['action']['enum']==['WAIT','EXIT']
     instructions=immediate_reduce_instructions('base',{'management_quarantine':receipt})
-    assert 'only WAIT or full EXIT' in instructions
+    assert 'only offered WAIT/full EXIT' in instructions
     changed=deepcopy(broker.value['observed']);changed['account_version']='different'
     with pytest.raises(ValueError,match='management_quarantine_'):
         quarantine.project(broker,changed,broker.value['active'],broker.value['children'])
@@ -893,7 +894,7 @@ def test_entry_quarantine_two_stage_production_profile(tmp_path, action, disrupt
         else:
             bundle=json.loads(request['user_prompt'])['calculated_candidates']
             selected=bundle['wait'] if action=='WAIT' else bundle['candidates'][0]
-            result=dict(selection_token=f"{selected['id']}:{selected['receipt_sha256']}",rationale=rationale)
+            result=dict(selection_token=f"{selected['id']}:{model_receipt_hash(selected)}",rationale=rationale)
             if disrupt=='revoked':
                 quarantine.revoke(broker,approval_id='approval',reason='revoked')
             elif disrupt=='order_changed':

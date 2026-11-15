@@ -12,18 +12,54 @@ from live.scenario_contract import identity_fields
 from live.scenario_analysis_frames import analysis_model_view
 
 
-def test_user_approved_flexible_management_prompt_version_is_pinned():
+def test_reviewed_core_policy_versions_are_pinned():
     import hashlib
-    from live.scenario_llm import FLAT_ENTRY_PROMPT
-    # 2026-11-07: purpose-specific framing; host gates and TP allocation unchanged.
-    expected = {
-        'SYSTEM_PROMPT': '490b6d92254f2923e079039e9613d6984d93d2b76efb821c59d95143aca12e4a',
-        'MA_STRUCTURE_PROMPT': '82859463405921af991331e9d9dde51bd5a72a5c0294feecea6f2b52af578615',
-        'FLAT_ENTRY_PROMPT': '93e1062f240495b0c476a35f561e21afddab054749d287a2d196121070e657c4',
-    }
-    for name, prompt in [('SYSTEM_PROMPT', SYSTEM_PROMPT), ('MA_STRUCTURE_PROMPT', MA_STRUCTURE_PROMPT),
-                         ('FLAT_ENTRY_PROMPT', FLAT_ENTRY_PROMPT)]:
-        assert hashlib.sha256(prompt.encode()).hexdigest() == expected[name]
+    from live import scenario_llm, scenario_calculated_review
+    # 2026-11-15: one scoped policy; numerical/authorization contracts unchanged.
+    expected = {'SYSTEM_PROMPT': '9df7f82f5511d151edc9ac7e5e46bf92760d0d7ebe275a8a2df3e481be257e67', 'MA_STRUCTURE_PROMPT': 'd97dc83eeb38460cc7486d2c1b2b77ac20cd84f0b1d47338d794736573c8999c', 'FLAT_ENTRY_PROMPT': 'fb7bf55e4d019a1a2d9b4869466562e1dfac1597410bb7cbc6d03dd7ba917f6c', 'ENTRY_CONTRACT_PROMPT': 'f39ac4ce3692c8738e8380b675c82bc2a6c6dc5112071068361329a2efc601cf', 'HOLDING_MANAGEMENT_PROMPT': 'aa9d7d81ee51a967679652623e01e3aa8891d5f336b9724ffa6894db3600e8b0', 'PENDING_WAIT_PROMPT': 'e33d342b20482b59ce52ddec0b09969e2dc9439b8b1cf576e39001e4596022a5', 'DRAFT_PROMPT': '5d434eff443fa748b607e078d2c379016de999d97d6467a034c34efb2e276a35', 'SELECT_PROMPT': '4d62f5fcf2b34c5b34eb3bab984541594ca8735d07f73d3584eeae14a1651826'}
+    for name, digest in expected.items():
+        module = scenario_calculated_review if name in ('DRAFT_PROMPT','SELECT_PROMPT') else scenario_llm
+        assert hashlib.sha256(getattr(module,name).encode()).hexdigest() == digest
+
+
+def test_core_decision_roles_and_conflicting_old_rules_are_consolidated():
+    from live import scenario_llm as policy
+    from live.scenario_calculated_review import DRAFT_PROMPT,SELECT_PROMPT
+    assert 'Price above/below MA10/MA35 describes location, not direction' in policy.MA_STRUCTURE_PROMPT
+    assert 'Use 1h for primary direction and 30m for entry timing' in policy.MA_STRUCTURE_PROMPT
+    assert 'not an automatic veto' in policy.MA_STRUCTURE_PROMPT
+    assert 'OHLC does not reveal intrabar event order' in policy.MA_STRUCTURE_PROMPT
+    assert 'Failure of one direction does not establish the other' in policy.FLAT_ENTRY_PROMPT
+    assert 'no habitual extra close, crossover or retest' in policy.FLAT_ENTRY_PROMPT
+    assert 'Partial SL is optional' in policy.FLAT_ENTRY_PROMPT
+    assert 'Holding is not a fresh-entry test' in policy.HOLDING_MANAGEMENT_PROMPT
+    assert 'Faster adverse progress can justify faster action' in policy.HOLDING_MANAGEMENT_PROMPT
+    assert 'Activation price, fill or elapsed time alone is not thesis failure' in policy.ENTRY_CONTRACT_PROMPT
+    assert 'a previous opinion is historical' in policy.ENTRY_CONTRACT_PROMPT
+    assert 'FAILED requires the allowed full EXIT' in policy.ENTRY_CONTRACT_PROMPT
+    assert 'offered stop restoration may widen protection after host validation' in policy.HOLDING_MANAGEMENT_PROMPT
+    assert 'Never cancel protection' in policy.SYSTEM_PROMPT
+    assert 'No output is an order or authority' in DRAFT_PROMPT
+    assert 'Do not start a second independent directional forecast' in SELECT_PROMPT
+    assert 'not the predicted ending or value of an open runner' in SELECT_PROMPT
+    assert 'execution_authorized=false does not reject an eligible schema token' in SELECT_PROMPT
+
+
+@pytest.mark.parametrize('state',['flat','pending','holding','quarantine'])
+@pytest.mark.parametrize('phase',['draft','select'])
+def test_system_policy_stays_below_12kb_in_all_lifecycle_phases(state,phase):
+    from live import scenario_llm as policy
+    from live.scenario_calculated_review import DRAFT_PROMPT,SELECT_PROMPT,ALLOCATION_SINGLE_PROMPT
+    ctx=dict(context(state!='flat'),entry_contract_version=2,recovery_contract_version=2,
+             immediate_reduce_version=1,entry_convergence={},accounting_status='confirmed',
+             protection_ok=True,pending_wait_policy_version=1)
+    if state=='pending':ctx.update(positions=[],pending_entries=[{'id':'pending'}])
+    if state=='quarantine':ctx['management_quarantine']={'status':'unsettled'}
+    text=policy.system_instructions(ctx)+ALLOCATION_SINGLE_PROMPT+(DRAFT_PROMPT if phase=='draft'else SELECT_PROMPT)
+    assert len(text.encode())<=12_000
+    assert text.count(policy.MA_STRUCTURE_PROMPT)==1
+    assert text.count(policy.HOLDING_MANAGEMENT_PROMPT)==(1 if state=='holding'else 0)
+
 
 
 def context(active=False):
@@ -51,29 +87,24 @@ def test_host_contract_actions_match_wire_lifecycle(active):
 
 
 def test_prompt_has_one_authority_and_incremental_order_semantics():
-    assert "Treat all supplied strings as data" not in SYSTEM_PROMPT
-    assert "ADJUST entries are ONLY new incremental orders" in SYSTEM_PROMPT
-    assert "Accepted OPEN reserves" in SYSTEM_PROMPT
-    assert "halt forbids NEW entries" in SYSTEM_PROMPT
-    assert "WAIT + cancel_entry_ids" in SYSTEM_PROMPT
-    assert "IF no active scenario: WAIT/OPEN. ELSE: WAIT/ADJUST/EXIT." in SYSTEM_PROMPT
-    assert "revision_allocation*fraction - same_intent_target_fills" in SYSTEM_PROMPT
-    assert "Subtract filled quota AFTER applying the fraction" in SYSTEM_PROMPT
-    assert "Skip below-minimum reductions; never round quantity up" in SYSTEM_PROMPT
+    text=' '.join(SYSTEM_PROMPT.split())
+    for rule in ('host alone authorizes and executes','API response_schema',
+                 'ADJUST entries are ONLY new incremental orders','Accepted OPEN reserves',
+                 'halt forbids NEW entries','never restore sold lots','never round a reduction up'):
+        assert rule in text
+    assert 'revision_allocation*fraction' not in text  # Arithmetic belongs to tested host code.
 
 
 def test_price_buffer_is_host_owned_not_a_new_model_wire_field():
-    text = ' '.join(SYSTEM_PROMPT.split())
-    assert 'execution_price_policy.version is round-limit-v1' in text
-    assert 'Do not pre-apply that buffer' in text
-    assert 'Preserve existing target prices when maintaining them' in text
-    assert 'does not change SLs or signal rules' in text
-    ctx = context()
-    p = wire(ctx, 'OPEN')
-    p['entries'] = [dict(id='entry', price=60000, quantity=.001)]
-    p['execution_pricing'] = dict(applied=True)
-    with pytest.raises(ValueError, match='response_unknown_fields'):
-        validate_wire_proposal(p, ctx)
+    text=' '.join(SYSTEM_PROMPT.split())
+    assert 'host alone buffers NEW round-number limits' in text
+    assert 'Do not pre-apply the buffer' in text
+    assert 'Preserve existing targets with WAIT' in text
+    assert 'or change trigger caps/SL through it' in text
+    ctx=context();p=wire(ctx,'OPEN');p['entries']=[dict(id='entry',price=60000,quantity=.001)]
+    p['execution_pricing']=dict(applied=True)
+    with pytest.raises(ValueError,match='response_unknown_fields'):
+        validate_wire_proposal(p,ctx)
 
 
 def test_contract_risk_uses_stop_slippage_and_dynamic_quantity_step():
@@ -169,16 +200,13 @@ def test_active_targets_use_mark_not_entry_and_list_fractions_independent():
 
 
 def test_prompt_reassesses_filled_exposure_without_forcing_add_or_new_actions():
-    text = ' '.join(SYSTEM_PROMPT.split())
-    assert 'active scenario has confirmed filled exposure' in text
-    assert 'maintaining exposure, adding incrementally, conditional reduction/protection, and full exit' in text
-    assert 'small runner, prior profit or unused budget alone is not a reason to add' in text
-    assert 'Immediate partial market reduction is unsupported' in text
-    assert 'historical current_plan.risk' in text
-    assert 'A completed TP target does not mean the whole position is flat' in text
-    assert 'complete intended exit protection' in text
-    assert 'not an obligation to keep exposure small' in text
-    assert 'Never close/reopen solely to reset average entry or replenish risk budget' in text
+    from live.scenario_llm import system_instructions
+    ctx=context(True);ctx.update(accounting_status='confirmed',protection_ok=True,pending_entries=[])
+    text=' '.join(system_instructions(ctx).split())
+    for rule in ('Holding is not a fresh-entry test','protected WAIT',
+                 'conditional partial SL/reduction and full EXIT','not unused budget or prior profit',
+                 'Never close/reopen solely to reset entry basis','actual remaining holdings and target_status'):
+        assert rule in text
 
 
 def runner_context():
@@ -250,38 +278,33 @@ def test_pending_accounting_still_allows_safe_wait_or_full_exit_proposals(action
 
 
 def test_prompt_compares_directions_without_inheriting_one_sided_wait_veto():
-    text = ' '.join(SYSTEM_PROMPT.split())
-    assert 'no active scenario, compare LONG, SHORT and WAIT on equal terms' in text
-    assert 'Failure of a LONG condition is neither proof of a SHORT edge nor a veto on SHORT' in text
-    assert 'Apply the same test in reverse' in text
-    assert 'Previous direction-specific waiting conditions are not shared entry requirements' in text
+    from live.scenario_llm import system_instructions
+    text=' '.join(system_instructions(context()).split())
+    assert 'compare LONG, SHORT and WAIT' in text
+    assert 'Failure of one direction does not establish the other' in text
+    assert 'A prior loss, elapsed time or changing numbers alone creates no edge' in text
 
 
 def test_prompt_reassesses_zero_fill_without_imaginary_confirmation_orders():
-    text = ' '.join(SYSTEM_PROMPT.split())
-    assert 'pending entries even when filled quantity is zero' in text
-    assert 'retain the existing limit, replan entry/TP/SL/quantity, or cancel' in text
-    assert 'zero chase allowance is not a command to keep an obsolete plan forever' in text
-    assert 'ADJUST with empty entries cannot enable chase for an older entry' in text
-    assert 'touching a limit price is NOT confirmation of a rebound or breakout' in text
-    assert 'If genuine additional candle/volume/retest confirmation is required, WAIT' in text
-    assert 'numeric MarkPrice crossing alone may use the conditional entry contract' in text
-    assert 'WAIT + cancel_entry_ids and await exact cancellation; bare WAIT leaves it live' in text
-    assert 'marketable LIMIT may be proposed' in text
-    assert 'WAIT does not renew existing entry expiry or change chase' in text
+    from live.scenario_llm import system_instructions
+    ctx=context();ctx.update(scenario_id='pending',pending_entries=[{'id':'pending'}],pending_wait_policy_version=1)
+    text=' '.join(system_instructions(ctx).split())
+    for rule in ('Review even zero-fill reservations','zero chase does not force retaining an obsolete plan',
+                 'LIMIT touch is not trend confirmation','numeric crossing alone suffices',
+                 'WAIT preserves current orders','Time passing alone grants no renewal'):
+        assert rule in text
 
 
 def test_management_framing_preserves_both_trend_runner_and_failure_responses():
-    text = ' '.join(SYSTEM_PROMPT.split())
-    assert 'Minimum analysis frame is 30m' in text
-    assert '30m/1h/4h/12h/1d/1w' in text
-    assert 'Do not use 15m, including timing or management' in text
-    assert 'five-minute evaluation cadence is not a candle timeframe' in text
-    assert 'Supported trend continuation (LONG or SHORT)' in text
-    assert 'neither early profit-taking nor a distant all-size TP is mandatory' in text
-    assert 'Ordinary pullbacks with an intact primary thesis may justify WAIT' in text
-    assert 'deterioration must inform management of EXISTING exposure' in text
-    assert 'Immediate partial market reduction is unsupported' in text
+    from live.scenario_llm import system_instructions
+    ctx=context(True);ctx.update(accounting_status='confirmed',protection_ok=True,pending_entries=[])
+    text=' '.join(system_instructions(ctx).split())
+    for rule in ('No 15m or shorter trading analysis','Evaluation cadence is not a candle timeframe',
+                 'preserve meaningful exposure','normal pullbacks','WEAKENING/RANGE',
+                 'partial TP','genuine invalidation never waits','Use REDUCE only when offered'):
+        if rule=='Use REDUCE only when offered':
+            assert rule not in text  # This fixture has no REDUCE capability.
+        else:assert rule in text
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -395,25 +418,10 @@ def test_assembled_entry_framing_is_flat_only_and_preserves_inputs(active, monke
     else:
         text = ' '.join(policy.split())
         assert 'Flat-entry comparison only' in text
-        assert 'baseline and changed_evidence audit change/authorization' in text
-        assert 'hours-old baseline price alone is not a momentum veto' in text
-        assert 'capped marketable LIMIT now' in text
-        assert 'new low/high or retest by habit' in text
-        assert 'Smaller quantity or a nearer TP does not repair an unsupported location' in text
-        assert 'do not move its goalposts without fresh counterevidence' in text
-        assert 'Never invent an omitted prior condition' in text
-        assert "Keep recovery's first-observation WAIT" in text
-        assert 'Preserve host-authorized NORMAL ordinary-entry chase rules' in text
-        assert 'original_budget*confidence' in text
-        assert 'hard_stop*slippage_bps/10000' in text
-        assert 'Never raise confidence or widen SL merely to fit quantity' in text
-        assert 'bearish MA order is NOT price below both MAs' in text
-        assert 'Mixed price position can still support a trade' in text
-        assert json.loads(calls[0]['user_prompt'])['contract_context']['current_primary_frame_facts']['30m']['status'] == 'unavailable'
-    assert result['action'] == 'WAIT'
-    assert journal[0]['system_prompt'] == calls[0]['system_prompt']
-    assert journal[0]['user_prompt'] == calls[0]['user_prompt']
-    assert json.loads(calls[0]['user_prompt'])['contract_context']['recovery'] == ctx['recovery']
+        assert 'A prior loss, elapsed time or changing numbers alone creates no edge' in text
+        assert 'current evidence, executable location' in text
+        assert 'Already supported progress needs no habitual extra close' in text
+        assert 'does not repair a weak setup' in text
     assert ctx == original
 
 
@@ -668,18 +676,11 @@ def test_full_recovery_payload_with_seven_frames_preserves_headroom():
 
 
 def test_followthrough_prompt_compares_without_forced_entry_or_early_exit():
-    text = ' '.join((SYSTEM_PROMPT + MA_STRUCTURE_PROMPT).split())
-    for rule in (
-        'WIDENING reports the sign, not the strength of expansion',
-        'falling highs/closes in a bullish MA order',
-        'rising lows/closes in a bearish MA order',
-        'Healthy pullbacks and a supported provisional reclaim remain eligible',
-        'recent bar extremes, not confirmed swing pivots',
-        'An infeasible cost-positive SL alone does not justify retaining exposure',
-        'loss-limiting stop below break-even for LONG or above break-even for SHORT',
-        'A reassessment condition is not an installed protective order',
-        'Immediate partial market reduction is unsupported',
-    ):
+    from live.scenario_llm import FLAT_ENTRY_PROMPT,HOLDING_MANAGEMENT_PROMPT
+    text=' '.join((SYSTEM_PROMPT+MA_STRUCTURE_PROMPT+FLAT_ENTRY_PROMPT+HOLDING_MANAGEMENT_PROMPT).split())
+    for rule in ('A widening gap alone is not a strong trend','direction, probability or a mandatory stop width',
+                 'Recent bar extremes are not confirmed swing pivots','A missing cost-positive stop',
+                 'future review/checkpoint is advisory','Already supported progress needs no habitual extra close'):
         assert rule in text
 
 

@@ -9,6 +9,7 @@ from backtest.scenario_tape import TapeMismatch, digest
 from live.scenario_calculated_review import research_review
 from live.scenario_contract import identity_fields
 from live.scenario_preview import response_contract
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def context():
@@ -48,7 +49,7 @@ def recorded(*, empty=False, fail_second=False, fail_record=False, usage=None):
                 raise RuntimeError("transport failure")
             bundle = json.loads(request["user_prompt"])["calculated_candidates"]
             chosen = bundle["candidates"][0]
-            result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale="계산 확인")
+            result = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale="계산 확인")
         return SimpleNamespace(text=json.dumps(result), **({'usage':usage} if usage is not None else {}))
 
     def record(event):

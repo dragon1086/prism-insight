@@ -122,7 +122,7 @@ def test_actual_selection_prompt_and_both_requests_receive_same_keep_comparison(
     p=holding_wire(c);p['take_profits']=[dict(id='new',price=110.,fraction=.5)]
     _,_,calls=run(c,[p])
     assert len(calls)==2
-    assert 'For unchanged WAIT, existing_exit_paths' in calls[-1]['system_prompt']
+    assert 'Use existing_exit_paths for unchanged WAIT' in calls[-1]['system_prompt']
     assert 'it has no invented TP path' not in calls[-1]['system_prompt']
     for call in calls:
         value=restore_model_input(json.loads(call['user_prompt']))

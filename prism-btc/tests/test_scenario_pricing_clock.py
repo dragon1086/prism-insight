@@ -9,6 +9,7 @@ import pytest
 from core.llm_scenario import ScenarioValidationError
 from core.scenario_limit_prices import POLICY_VERSION, validate_execution_prices
 from tests.test_llm_scenario import sample, active
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def preview(payload, context, original_input_now=1000):
@@ -104,7 +105,7 @@ def test_delayed_receipt_still_rejects_real_quote_drift_and_never_double_pads():
         else:
             wall[0]+=1
             candidate=json.loads(request["user_prompt"])["calculated_candidates"]["candidates"][0]
-            result=dict(selection_token=f"{candidate['id']}:{candidate['receipt_sha256']}",rationale="계산 검토")
+            result=dict(selection_token=f"{candidate['id']}:{model_receipt_hash(candidate)}",rationale="계산 검토")
         return SimpleNamespace(text=json.dumps(result))
     snapshot=dict(valid=True,as_of_ms=1000000)
     contract=response_contract(ctx)
@@ -144,7 +145,7 @@ def test_original_pricing_reference_cannot_extend_review_expiry_or_75_seconds(fa
             bundle=json.loads(request["user_prompt"])["calculated_candidates"]
             assert bundle["candidates"][0]["eligible"] is False
             receipt=bundle["wait"]
-            result=dict(selection_token=f"{receipt['id']}:{receipt['receipt_sha256']}",rationale="만료 후보는 선택하지 않음")
+            result=dict(selection_token=f"{receipt['id']}:{model_receipt_hash(receipt)}",rationale="만료 후보는 선택하지 않음")
         return SimpleNamespace(text=json.dumps(result))
     def run():
         return research_review(dict(valid=True,as_of_ms=1000000),ctx,response_contract(ctx),
@@ -180,7 +181,7 @@ def test_native_round_delayed_draft_selected_open_and_exact_frozen(tmp_path,side
         if "selection_token" in request["response_schema"]["properties"]:
             wall[0]+=1
             receipt=next(row for row in data["calculated_candidates"]["candidates"] if row["eligible"])
-            result=dict(selection_token=f"{receipt['id']}:{receipt['receipt_sha256']}",rationale="원래 자료의 계산 검토")
+            result=dict(selection_token=f"{receipt['id']}:{model_receipt_hash(receipt)}",rationale="원래 자료의 계산 검토")
         else:
             wall[0]+=draft_seconds
             ctx=data["contract_context"]

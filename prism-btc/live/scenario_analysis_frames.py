@@ -68,6 +68,16 @@ def analysis_model_view(payload):
                 if isinstance(projection, dict):
                     projection.pop('same_progress_profile', None)
     ctx = result.get('contract_context', {})
+    # Keep one current-risk authority; promotion arithmetic remains host-only.
+    ctx.pop('seen_action_ids', None)
+    if isinstance(ctx.get('current_plan'), dict):
+        ctx['current_plan'] = {k:v for k,v in ctx['current_plan'].items()
+                               if k not in {'risk','rationale','host_entry_contract_id'}}
+    if (type(ctx.get('recovery_contract_version')) is int
+            and ctx['recovery_contract_version'] in (1,2) and isinstance(ctx.get('recovery'), dict)):
+        ctx['recovery'] = {k:v for k,v in ctx['recovery'].items() if k in {
+            'phase','eligible','consumed','entry_deadline','first_observation','changed_evidence',
+            'one_attempt_only','automatic_normal_resume','current_stage','offered_stage'}}
     if (ctx.get('scenario_id') is None and not ctx.get('positions')
             and market.get('valid') is True and isinstance(frames, dict)):
         for tf in PRIMARY_FRAMES:

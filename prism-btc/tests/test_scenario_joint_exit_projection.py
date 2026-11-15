@@ -7,24 +7,8 @@ from live.scenario_calculated_review import _gross_projection, calculate_candida
 from tests.test_scenario_calculated_review import context, wire
 
 
-def test_north_star_framing_is_optional_structural_not_profit_or_stop_pressure():
-    from live.scenario_calculated_review import DRAFT_PROMPT, SELECT_PROMPT
-    assert 'normal thesis-preserving fluctuations' in DRAFT_PROMPT
-    assert 'rounding dust an intentional runner' in DRAFT_PROMPT
-    assert 'without a fixed stop width or exit percentage' in DRAFT_PROMPT
-    assert 'remaining quantity at hard SL as a stress test, NOT the' in SELECT_PROMPT
-    assert 'an unpriced protected remainder has no invented profit' in SELECT_PROMPT
-    assert 'No partial SL, full TP or no fixed TP can each be' in SELECT_PROMPT
-    assert 'never force a runner or a partial stop' in SELECT_PROMPT
-    assert 'not hidden reasoning' in SELECT_PROMPT
-    assert all(label in SELECT_PROMPT for label in ('계획:', '경로:', '연장:'))
 
 
-def test_no_partial_stop_compares_applicable_paths_not_a_fictional_reduction():
-    from live.scenario_calculated_review import SELECT_PROMPT
-    assert 'compare the applicable full-stop/TP paths, never invent a partial SL' in SELECT_PROMPT
-    assert 'explain the no-reduction tradeoff' not in SELECT_PROMPT
-    assert 'legs actually apply, compare exposure saved on weakness versus participation lost' in SELECT_PROMPT
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -197,7 +181,7 @@ def test_fee_all_entry_quantity_charged_once_or_entire_path_unknown(evidence):
         assert path['fee_only']['estimated_net_before_unmodelled_costs'] == pytest.approx(7.792)
     from live.scenario_calculated_review import SELECT_PROMPT
     assert result['version'] == 2
-    assert 'remain UNKNOWN/unmodelled, never zero' in SELECT_PROMPT
+    assert 'Funding/unknown execution remain unknown' in SELECT_PROMPT
 
 
 def test_holding_and_adjust_projections_unchanged_scope():
@@ -264,8 +248,9 @@ def test_two_phase_shared_receipt_roundtrip_and_no_execution():
     restored = restore_model_input(json.loads(calls[1]['user_prompt']))
     candidate = restored['calculated_candidates']['candidates'][0]
     assert 'joint_exit_paths' in candidate['projection']
-    assert candidate['receipt_sha256'] == receipt_hash({k: v for k, v in candidate.items() if k != 'receipt_sha256'})
-    assert 'partial_stops=[]' in calls[0]['system_prompt']
+    assert candidate['host_receipt_sha256'] == result['selected']['receipt_sha256']
+    assert result['selected']['receipt_sha256'] == receipt_hash({k:v for k,v in result['selected'].items() if k!='receipt_sha256'})
+    assert 'Partial SL is optional' in calls[0]['system_prompt']
     assert 'joint_exit_paths' in calls[1]['system_prompt']
     assert len(calls[1]['user_prompt'].encode()) <= 100000
 
@@ -291,5 +276,6 @@ def test_two_candidate_multilevel_partial_sl_compact_input_stress():
         joint = candidate['projection']['joint_exit_paths']
         assert len(joint['paths']) == 4
         assert len(json.dumps(joint, separators=(',', ':')).encode()) < 1000
-        assert candidate['raw_proposal'] in candidates
+        assert candidate['effective_plan']['entries'] in [p['entries'] for p in candidates]
+        assert candidate['draft_intent']['side'] in ('LONG','SHORT')
     assert len(calls[1]['user_prompt'].encode()) <= 100000

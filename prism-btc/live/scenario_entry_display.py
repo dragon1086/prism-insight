@@ -48,7 +48,7 @@ def confirmed_three_bar_progress(snapshot):
     return result
 
 
-def project_entry_display_input(payload):
+def project_entry_display_input(payload, *, source_candidates=None):
     """Preserve legacy history selection before adding this lossless-only view."""
     from live.scenario_model_input import project_model_input, restore_model_input
     from live.scenario_position_flow import project_position_flow_input, _MODEL_INPUT_LIMIT, _size
@@ -57,11 +57,12 @@ def project_entry_display_input(payload):
         return projected, audit
     logical = restore_model_input(projected)
     context = logical['contract_context']
-    context['entry_display'] = flat_entry_display(context['ma_structure'], logical.get('calculated_candidates'))
+    bundle = logical.get('calculated_candidates') if source_candidates is None else source_candidates
+    context['entry_display'] = flat_entry_display(context['ma_structure'], bundle)
     baseline, baseline_audit = project_model_input(logical, allow_gap_rescue=True)
     if _size(baseline) > _MODEL_INPUT_LIMIT and _size(projected) <= _MODEL_INPUT_LIMIT:
         return projected, audit
-    context['entry_display'] = flat_entry_display(context['ma_structure'], logical.get('calculated_candidates'),
+    context['entry_display'] = flat_entry_display(context['ma_structure'], bundle,
                                                    snapshot=logical.get('market_snapshot'))
     augmented, augmented_audit = project_model_input(logical, allow_gap_rescue=True)
     if _size(augmented) > _MODEL_INPUT_LIMIT and _size(baseline) <= _MODEL_INPUT_LIMIT:

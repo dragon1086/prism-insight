@@ -73,9 +73,9 @@ def test_assembled_v2_policy_separates_stage_authority_and_market_proposal():
         return SimpleNamespace(text=json.dumps(p))
     propose({'valid':True,'as_of_ms':1000000},c,response_contract(c),generate=generate,clock=lambda:1000)
     policy=' '.join(calls[0]['system_prompt'].split())
-    for text in ('When recovery_contract_version=2','host-offered scenario_risk_fraction',
-                 'does not expire the entire recovery program','NORMAL stage 2',
-                 'not a statistical proof','never raises the risk budget of an active scenario'):
+    for text in ('Recovery permissions/stage/cap come from the host',
+                 'No promotion arithmetic or higher cap requests',
+                 'protection survives entry expiry','Unsettled exposure grants no attempt'):
         assert text in policy
 
 

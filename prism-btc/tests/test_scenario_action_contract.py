@@ -15,6 +15,7 @@ from live.scenario_preview import response_contract
 from live.scenario_review_guard import guard_review
 from tests.test_scenario_allocation_review import allocation_wire
 from tests.test_scenario_review_guard import context
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def test_wait_chase_regression():
@@ -125,7 +126,7 @@ def test_wrapper_extraction_receipts_and_zero_call_fresh_replay(mode, action):
             body = json.loads(request["user_prompt"])
             selected = body["calculated_candidates"]["candidates"][0]
             assert selected["eligible"], selected
-            raw = dict(selection_token=f"{selected['id']}:{selected['receipt_sha256']}", rationale="선택")
+            raw = dict(selection_token=f"{selected['id']}:{model_receipt_hash(selected)}", rationale="선택")
         elif "single" in mode:
             raw = dict(proposal=allocation_wire(ctx, action))
         else:
