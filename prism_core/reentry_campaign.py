@@ -790,7 +790,8 @@ def replay(setup, bars, anchor, *, decisions=None, regime_at=None, pulse_at=None
     }
     if market:
         end_index = camps[policy["primary_rule"]].get("_end_index")
-        ledger["controls"] = {"PIVOT": pivot_control(setup, bars, a, end_index, market, policy, regime_at)}
+        ledger["controls"] = {"PIVOT": pivot_control(setup, bars, a, end_index, market, policy, regime_at),
+                              "MA20R": ma20_recovery_control(setup, bars, a, market, policy, regime_at)}
     return ledger
 
 
@@ -861,6 +862,67 @@ def pivot_control(setup, bars, anchor, end_index, market, policy=None, regime_at
         if j == end_index:
             _close(pos, bars, j, bars[j]["close"], "campaign_end", policy["primary_rule"])
             break
+    alloc, _ = b3_allocation(entry, atr14(bars[:i]))
+    if pos["status"] == "CLOSED":
+        pos["slot"] = round(alloc * pos["ret"], 6)
+    else:
+        pos["mark_ret"] = round(bars[last]["close"] / entry - 1, 6)
+    pos["alloc"] = alloc
+    out["trade"] = _public(pos)
+    return out
+
+
+MA20R_AVG_BARS = 20
+
+
+def ma20_recovery_control(setup, bars, anchor, market, policy=None, regime_at=None):
+    """Observe-only arm (H-1116-reentry-ma20r-observe, 2026-11-16): the first up-day close back above the 20-session
+    average with volume >= the 20-session average, from the session after the anchor to the horizon, independent of the
+    level L and of the primary campaign's end. Managed like an attempt: stop = post-anchor low x0.99 capped by the
+    regime stop, E1 exit, horizon end. US: every watch. KR (user decision): only watches anchored in a bull regime;
+    the others record SKIPPED_NON_BULL_ANCHOR. Research: tasks/research-20261116/reentry-funnel (US account +48%p).
+    """
+    policy = policy or POLICY
+    regime_at = regime_at or (lambda day: None)
+    anchor_regime = regime_at(bars[anchor]["date"])
+    out = {"status": "OK", "anchor_regime": anchor_regime, "checks": {}, "first_trigger": None, "trade": None}
+    if str(market).upper() == "KR" and anchor_regime not in BULL_REGIMES:
+        out["status"] = "SKIPPED_NON_BULL_ANCHOR"
+        return out
+    last = min(len(bars) - 1, anchor + policy["horizon"])
+    checks, first = out["checks"], None
+    for i in range(anchor + 1, last + 1):
+        if i < MA20R_AVG_BARS + 1:
+            checks["history_short"] = checks.get("history_short", 0) + 1
+            continue
+        closes = [b["close"] for b in bars[i - MA20R_AVG_BARS:i + 1]]
+        prev_avg, avg = sum(closes[:-1]) / MA20R_AVG_BARS, sum(closes[1:]) / MA20R_AVG_BARS
+        if not (bars[i - 1]["close"] <= prev_avg < bars[i]["close"]):
+            checks["no_cross"] = checks.get("no_cross", 0) + 1
+            continue
+        avg_volume = sum(b["volume"] for b in bars[i - MA20R_AVG_BARS:i]) / MA20R_AVG_BARS
+        if not avg_volume or bars[i]["volume"] < avg_volume:
+            checks["volume_below_avg20"] = checks.get("volume_below_avg20", 0) + 1
+            continue
+        first = i
+        checks["fired"] = checks.get("fired", 0) + 1
+        break
+    if first is None:
+        return out
+    i, entry = first, bars[first]["close"]
+    regime = regime_at(bars[i]["date"]) or "sideways"
+    low = min(b["low"] for b in bars[anchor:i + 1])
+    stop = max(low * 0.99, entry * (1 - max_stop(regime)))
+    pos = {"entry": entry, "stop": round(stop, 6), "_start": i, "intraday": False, "status": "OPEN"}
+    out["first_trigger"] = {"date": bars[i]["date"], "entry": entry, "stop": round(stop, 6), "regime": regime,
+                            "post_anchor_low": low}
+    for j in range(i, last + 1):
+        hit = EXIT_RULES[policy["exit_rule"]](bars, j, pos)
+        if hit:
+            _close(pos, bars, j, hit[0], hit[1], policy["exit_rule"])
+            break
+        if j == last and last == anchor + policy["horizon"]:
+            _close(pos, bars, j, bars[j]["close"], "horizon", "MA20R")
     alloc, _ = b3_allocation(entry, atr14(bars[:i]))
     if pos["status"] == "CLOSED":
         pos["slot"] = round(alloc * pos["ret"], 6)

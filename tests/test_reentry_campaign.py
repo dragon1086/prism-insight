@@ -496,6 +496,23 @@ def test_pivot_control_is_recorded_without_a_market_ban():
     assert set(control) == {"status_counts", "first_trigger", "trade"} and sum(control["status_counts"].values()) > 0
 
 
+def test_ma20_recovery_control_records_the_first_cross_with_volume_and_skips_kr_non_bull():
+    # 2026-11-16 (H-1116-reentry-ma20r-observe): day 70 closes back over the 20-session average on volume == avg.
+    bars = yc_bars()
+    us = C.replay(yc_setup(bars), bars, 69, market="US")["controls"]["MA20R"]
+    assert us["status"] == "OK" and us["first_trigger"]["date"] == bars[70]["date"]
+    assert us["first_trigger"]["entry"] == 12400 and us["first_trigger"]["post_anchor_low"] == 11550
+    assert us["trade"]["status"] == "CLOSED" and us["trade"]["ret"] > 0.10      # rides the rally, E1 MA20 exit
+    kr_no_regime = C.replay(yc_setup(bars), bars, 69, market="KR")["controls"]["MA20R"]
+    assert kr_no_regime["status"] == "SKIPPED_NON_BULL_ANCHOR" and kr_no_regime["first_trigger"] is None
+    kr_bull = C.replay(yc_setup(bars), bars, 69, market="KR", regime_at=lambda d: "strong_bull")["controls"]["MA20R"]
+    assert kr_bull["first_trigger"]["date"] == bars[70]["date"] and kr_bull["anchor_regime"] == "strong_bull"
+    quiet = [dict(b) for b in bars]
+    quiet[70]["volume"] = 500                                                   # cross without volume: not this day
+    later = C.replay(yc_setup(quiet), quiet, 69, market="US")["controls"]["MA20R"]
+    assert later["checks"]["volume_below_avg20"] == 1 and (later["first_trigger"] or {}).get("date") != bars[70]["date"]
+
+
 def test_trigger_registry_is_pluggable():
     @C.register_trigger("TEST_ALWAYS", "T")
     def always(ctx):
