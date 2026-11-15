@@ -155,9 +155,21 @@ def test_new_replay_profile_has_all_live_flags_without_changing_old_profiles(tmp
 
 
 def test_forming_and_confirmed_invalidation_options_keep_their_source_phase():
-    s,c,t=sample();forming=deepcopy(t['primary']['30m']['points'][0]);forming.update(phase='FORMING',is_confirmed=False,as_of_ms=s['as_of_ms']-1,high=103.,low=97.)
+    s,c,t=sample();c.pop('conditional_entry_version');forming=deepcopy(t['primary']['30m']['points'][0]);forming.update(phase='FORMING',is_confirmed=False,as_of_ms=s['as_of_ms']-1,high=103.,low=97.)
     t['primary']['30m']['points'].append(forming);menu=prepare(s,c,t)
     short=[p for p in menu['layouts']if p['side']=='SHORT'and p['entry_kind']=='CURRENT_LIMIT']
     assert {p['stop_phase']for p in short}=={'FORMING','CONFIRMED'}
     assert next(p['hard_stop']for p in short if p['stop_phase']=='FORMING')<next(p['hard_stop']for p in short if p['stop_phase']=='CONFIRMED')
     assert all(p['support_strength']=='NOT_CERTIFIED'for p in short)
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_stop_variants_do_not_crowd_out_feasible_entry_styles(side):
+    s,c,t=sample()
+    forming=deepcopy(t['primary']['30m']['points'][0])
+    forming.update(phase='FORMING',is_confirmed=False,as_of_ms=s['as_of_ms']-1,high=103.,low=97.)
+    t['primary']['30m']['points'].append(forming)
+    menu=prepare(s,c,t)
+    plans=[p for p in menu['layouts']if p['side']==side]
+    assert len(plans)<=3
+    assert {p['entry_kind']for p in plans}=={'CURRENT_LIMIT','BREAKOUT_TRIGGER','PULLBACK_LIMIT'}
