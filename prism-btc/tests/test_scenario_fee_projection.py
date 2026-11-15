@@ -172,8 +172,8 @@ def test_full_holding_two_candidate_select_fee_views_fit_and_restore(target_coun
     originals=[]
     sizes=[]
     if target_count==20:
-        # Keep this overflow fixture above the cap after retiring lower-frame input.
-        ctx['capacity_fixture_padding']='x'*64
+        # Keep an actual overflow after duplicate candidate copies are removed.
+        ctx['capacity_fixture_padding']='x'*12000
     def without_fee_additions(value):
         if isinstance(value,list):
             return [without_fee_additions(item) for item in value]

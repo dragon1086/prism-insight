@@ -341,7 +341,7 @@ def test_operating_default_is_sol_low_for_both_calculated_phases():
     _, _, calls = run()
     assert len(calls) == 2
     assert all((c['model'], c['reasoning_effort'], c['retry_transport']) == ('gpt-6.1-terra','low',False) for c in calls)
-    assert all('combine transitions only when their respective before/after source values match' in c['system_prompt'] for c in calls)
+    assert all('Keep each frame, phase and timestamp separate' in c['system_prompt'] for c in calls)
 
 
 def test_sol_transport_failure_does_not_retry_or_fallback(monkeypatch):

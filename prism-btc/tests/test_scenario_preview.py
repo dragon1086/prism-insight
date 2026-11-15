@@ -8,8 +8,9 @@ from live.scenario_preview import preview, collect_snapshot
 
 def test_snapshot_model_validation_end_to_end_no_broker():
     def generate(**kw):
-        c=json.loads(kw['user_prompt'])['response_contract']
-        return SimpleNamespace(text=json.dumps(dict(schema_version=1,scenario_id=c['scenario_id'],revision=1,
+        c={key:kw['response_schema']['properties'][key]['enum'][0]
+           for key in ('schema_version','scenario_id','revision','input_id','action_id')}
+        return SimpleNamespace(text=json.dumps(dict(schema_version=c['schema_version'],scenario_id=c['scenario_id'],revision=c['revision'],
             input_id=c['input_id'],action_id=c['action_id'],action='WAIT',confidence=.2,expires_at=1100,
             rationale='관망',entries=[],take_profits=[],partial_stops=[],cancel_entry_ids=[],
             side=None,hard_stop=None,chase=None,leverage=10)))

@@ -148,8 +148,8 @@ def test_initial_lease_and_explicit_selected_wait_keep_exact_order(tmp_path, sid
     assert len(calls) == 4  # OPEN DRAFT+SELECT, renewal DRAFT+SELECT even without trade alternatives.
     selected_input = restore_model_input(json.loads(calls[-1]['user_prompt']))
     fallback = selected_input['calculated_candidates']['wait']
-    assert fallback['proposal_source'] == 'HOST_NO_RENEWAL_FALLBACK'
-    assert fallback['raw_proposal']['pending_renewal'] is None
+    assert fallback['effective_plan']['pending_renewal'] is None
+    assert 'raw_proposal'not in fallback
     # Repeated executor call returns durable proof, never another renewal/write.
     payload = json.loads(r.conn.execute('SELECT payload FROM llm_scenario_intents ORDER BY rowid DESC LIMIT 1').fetchone()[0])
     b.execute(payload, payload['action_id'])
@@ -320,10 +320,17 @@ def test_two_trade_alternatives_plus_renewal_are_lossless_and_decline_is_availab
     choices = restored['calculated_candidates']
     assert [row['id'] for row in choices['candidates']] == ['c0', 'c1', 'WAIT_RENEWAL']
     renewal = choices['candidates'][-1]
-    assert renewal['raw_model_wrapper']['wait_proposal']['pending_renewal'] == renewal['raw_proposal']['pending_renewal']
+    assert renewal['effective_plan']['pending_renewal'] is not None
+    assert choices['wait']['effective_plan']['pending_renewal'] is None
+    slot,body=r.conn.execute('SELECT slot,body FROM llm_scenario_review_tapes ORDER BY slot DESC LIMIT 1').fetchone()
+    original=json.loads(read_tape(body,r.conn,slot,decode_legacy=review_text))['outcome']['result']['candidates']
+    full=original['candidates'][-1]
+    assert full['raw_model_wrapper']['wait_proposal']['pending_renewal']==full['raw_proposal']['pending_renewal']
     from live.scenario_calculated_review import receipt_hash
-    assert choices['wait']['derived_from_model_proposal_sha256'] == receipt_hash(renewal['raw_proposal'])
-    assert choices['wait']['raw_proposal']['pending_renewal'] is None
+    assert original['wait']['proposal_source']=='HOST_NO_RENEWAL_FALLBACK'
+    assert original['wait']['derived_from_model_proposal_sha256']==receipt_hash(full['raw_proposal'])
+    assert choices['wait']['host_receipt_sha256']==original['wait']['receipt_sha256']
+    assert renewal['host_receipt_sha256']==full['receipt_sha256']
     assert len(calls[-1]['user_prompt'].encode()) < 100000
 
 
