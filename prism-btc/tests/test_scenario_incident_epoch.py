@@ -837,8 +837,8 @@ def test_evidence_index_is_initialized_under_lock_once_before_epoch_lookup(tmp_p
     conn.set_trace_callback(observe)
     ScenarioDemoBroker(conn, session=Session(), expected_main_uid='123')
     conn.set_trace_callback(None)
-    assert lock_checks == [True]
-    index_at = next(n for n, sql in enumerate(trace) if sql.startswith('CREATE INDEX'))
+    assert lock_checks == [True, True]
+    index_at = max(n for n, sql in enumerate(trace) if sql.startswith('CREATE INDEX'))
     epoch_at = next(n for n, sql in enumerate(trace) if sql.startswith('SELECT kind,body FROM llm_scenario_broker_evidence WHERE kind IN'))
     assert index_at < epoch_at
     schema_version = conn.execute('PRAGMA schema_version').fetchone()[0]

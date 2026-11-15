@@ -276,7 +276,8 @@ def authorize_unsettled_entry_management(broker, preview):
 def _events(conn, kind):
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_scenario_broker_evidence'").fetchone():
         return []
-    return [json.loads(r[0]) for r in conn.execute('SELECT body FROM llm_scenario_broker_evidence WHERE kind=? ORDER BY rowid', (kind,))]
+    # Preserve exact rowid order while permitting a covering read instead of table lookups.
+    return [json.loads(r[0]) for r in conn.execute('SELECT body FROM llm_scenario_broker_evidence WHERE kind=? ORDER BY +rowid', (kind,))]
 
 
 def _append(conn, kind, body, at):
