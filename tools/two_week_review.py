@@ -764,6 +764,16 @@ def section_reentry(datas, window, runtime: Path, events) -> str:
                          f"({len(rejected_rets)}건). 거절 쪽이 더 좋으면 재점검이 기회를 막은 것입니다.")
         if reasons:
             lines.append(f"- AI 거절 사유 상위: {_top(reasons, 3)}")
+        # 2026-11-16 observe-only arm: 20-day-average recovery re-entry (H-1116-reentry-ma20r-observe).
+        ma20r = [((w.get("ledger") or {}).get("controls") or {}).get("MA20R") for w in watches]
+        fired = [c for c in ma20r if c and c.get("first_trigger") and window.has(c["first_trigger"].get("date"))]
+        skipped = sum(1 for c in ma20r if c and c.get("status") == "SKIPPED_NON_BULL_ANCHOR")
+        closed = [c["trade"] for c in fired if (c.get("trade") or {}).get("status") == "CLOSED"]
+        rets = [_f(t.get("ret")) for t in closed]
+        rets = [r * 100 for r in rets if r is not None]
+        lines.append(f"- 관측 전용 '20일선 회복+거래량' 재진입(주문 없음): 기간 내 신호 {len(fired)}건, 가상 청산 {len(closed)}건 "
+                     f"평균 {_p(_avg(rets))}, +20% 도달 {sum(1 for r in rets if r >= LEADER_PCT)}건, 진행 중 "
+                     f"{len(fired) - len(closed)}건" + (f", 강세 앵커 아니라 건너뜀 {skipped}건" if market == "KR" else "") + ".")
     return "\n".join(lines)
 
 

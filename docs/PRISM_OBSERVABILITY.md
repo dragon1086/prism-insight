@@ -207,6 +207,10 @@ One `trace_id` reads a decision end to end. Read it with `tools/clickstack_query
   US yfinance quarterly income statement, period = quarter-end date, diluted EPS in USD). No
   extra fetch at decision time; a block collected after the decision or absent from the report
   run is `MISSING` (`not_in_report_meta`, `collected_after_decision`). Observation only.
+- **Re-entry observe-only arms (state file, not events)**: every v3 watch ledger carries `controls.PIVOT` (pivot
+  breakout control) and, from 2026-11-16, `controls.MA20R` (first close back above the 20-session average on an up day
+  with volume >= the 20-session average; virtual E1 trade; KR records `SKIPPED_NON_BULL_ANCHOR` unless the anchor
+  regime is bull). Read them from `runtime/reentry_v3_state_{kr,us}.json`; `tools/two_week_review.py` section 5 sums them.
 - **Re-entry evidence (2026-10-21)**: `reentry_v3.shadow_trigger` and
   `reentry_v3.shadow_near_miss` (the primary rule missed only on its own filters: R/R floor,
   no target, chase, below the level, shakeout volume) carry a `snapshot`
