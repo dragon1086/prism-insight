@@ -93,3 +93,18 @@ def test_recovery_view_preserves_permission_and_changes_without_pnl_bookkeeping(
     assert view['recovery']=={k:v for k,v in ctx['recovery'].items()
                              if k in {'phase','eligible','first_observation','entry_deadline','changed_evidence'}}
     assert ctx==before
+
+
+@pytest.mark.parametrize('active',[False,True])
+def test_real_review_keeps_recent_wait_reasons_as_historical_context(active):
+    from tests.test_scenario_calculated_review import holding
+    from live.scenario_model_input import restore_model_input
+    ctx=holding()if active else flat()
+    ctx['recent_waits']=[dict(as_of_ms=999000,confidence=.5,rationale='1h weakening; wait for 30m participation')]
+    before=deepcopy(ctx)
+    _,_,calls=run(ctx=ctx,candidates=[])
+    assert calls
+    for call in calls:
+        actual=restore_model_input(json.loads(call['user_prompt']))['contract_context']
+        assert actual['recent_waits']==ctx['recent_waits']
+    assert ctx==before

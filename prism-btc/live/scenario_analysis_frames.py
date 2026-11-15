@@ -73,10 +73,6 @@ def analysis_model_view(payload):
     if isinstance(ctx.get('current_plan'), dict):
         ctx['current_plan'] = {k:v for k,v in ctx['current_plan'].items()
                                if k not in {'risk','rationale','host_entry_contract_id'}}
-    for field in ('recent_waits','recent_actions'):
-        if isinstance(ctx.get(field), list):
-            ctx[field] = [{k:v for k,v in row.items() if k not in {'rationale','host_entry_contract_id'}}
-                          if isinstance(row, dict) else row for row in ctx[field]]
     if (type(ctx.get('recovery_contract_version')) is int
             and ctx['recovery_contract_version'] in (1,2) and isinstance(ctx.get('recovery'), dict)):
         ctx['recovery'] = {k:v for k,v in ctx['recovery'].items() if k in {

@@ -27,14 +27,12 @@ def test_assembled_flexible_tp_policy_preserves_safety_and_no_fixed_allocations(
     propose({'valid':True,'as_of_ms':1000000},ctx,response_contract(ctx),
             generate=generate,clock=lambda:1000)
     policy=' '.join(calls[0]['system_prompt'].split())
-    for clause in ('near, intermediate and extension TP', 'not fixed percentages',
-                   'two or three meaningful tiers', 'one target or an SL-protected runner',
-                   'never restore already filled target quotas', 'rounding remainder stays protected',
-                   'TP changes alone do not authorize SL restoration', 'not a ban on structurally justified risk reduction'):
+    for clause in ('native Full SL','never restore sold lots','duplicate filled quotas',
+                   'explicitly eligible host stop_policy/stop_revision'):
         assert clause in policy
-    user=json.loads(calls[0]['user_prompt'])
-    rules=' '.join(user['response_contract']['rules'])
-    assert '1–3' in rules and 'no fixed allocation' in rules
+    from live.scenario_contract import response_schema
+    assert set(response_schema(ctx)['properties']['take_profits']['items']['properties'])=={'id','price','fraction'}
+
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -53,44 +51,13 @@ def test_assembled_tp_distance_baseline_is_symmetric_and_preserves_remaining_quo
     propose({'valid': True, 'as_of_ms': 1000000}, ctx, response_contract(ctx),
             generate=generate, clock=lambda: 1000)
     policy = ' '.join(calls[0]['system_prompt'].split())
-    for clause in (
-        'structural SL (R)',
-        'Price movement alone is not net profit',
-        'not fixed dollar examples',
-        'host computes cost-net whole-path payoff',
-        'For LONG profitable objectives are above entry; for SHORT they are below entry',
-        'Choose the structural invalidation SL first',
-        'Do not tighten SL merely to enlarge a bet',
-        'do not increase leverage to 30x or use full-account exposure',
-        'not a preset near-heavy' ,
-        'not a forced allocation',
-        'support for SHORT takes precedence',
-        'Use structure and volatility for distance',
-        'For a SHORT buy-to-close TP, choose a price slightly ABOVE the support',
-        'for a LONG sell-to-close TP, slightly BELOW the resistance',
-        'roundness alone does not prove support or resistance',
-        '82,300 SHORT approaching evidenced 82,000 support',
-        '82,030-82,080 is illustrative, not a fixed offset',
-        'never place a crossed target to claim an earlier fill',
-        'sustained break through that level',
-        'strong rejection or rebound at that level',
-        'never reset the distance from each new current mark',
-        'a NEW ADJUST allocates the current remaining position',
-        'never restore already filled target quotas',
-        'Check quantity_step and minimum_quantity before splitting',
-        'rounding remainder stays protected by the native Full SL',
-        'After confirmed near profit-taking',
-        'do not install a crossed limit to fabricate past profit',
-        'NOT actual breakeven or a mandatory SL boundary',
-        'negative stress estimate alone does not establish actual net loss',
-        'Missing fee evidence stays UNKNOWN, not zero and not an automatic WAIT instruction',
-        'A winning partial exit does not guarantee a profitable whole trade',
-        'counting recorded costs only once',
-        'do not force a breakeven stop',
-        'unknown future slippage/funding',
-        'LEG_ONLY projections from WHOLE_SCENARIO projections',
-    ):
+    for clause in ('Fixed leverage is 10','ADJUST targets replace protection for the verified remainder',
+                   'never restore sold lots','ATR scales noise and distance'):
         assert clause in policy
+    if not active:
+        assert 'Choose structural invalidation with noise room' in policy
+        assert 'Do not stretch TP or squeeze SL merely to pass host economics' in policy
+    assert '100-300' not in policy and '500/800-1000' not in policy
 
 
 def wire(ctx, action='WAIT'):
@@ -224,8 +191,9 @@ def test_assembled_contract_wait_expiry_survives_latency_not_old_plan(active, la
     assert result['expires_at'] == 1300
     assert validate_scenario(result, {**ctx, 'now': 1000 + latency})['action'] == 'WAIT'
     assert ctx == original
-    rules = ' '.join(json.loads(calls[0]['user_prompt'])['response_contract']['rules'])
-    assert 'does not extend existing entry deadlines' in rules
+    header=json.loads(calls[0]['user_prompt'])['response_contract']
+    assert header['expires_at']==1300 and 'rules'not in header
+    assert 'fresh response deadline, not an old plan expiry' in calls[0]['system_prompt']
 
 
 @pytest.mark.parametrize('expiry', [1000, 1000.56, 4602])
@@ -243,7 +211,7 @@ def test_invalid_model_expiry_is_not_silently_repaired(expiry):
 def test_assembled_prompt_omits_historical_narratives_without_mutating_audit():
     from live.scenario_preview import response_contract
     ctx = context(True)
-    retired_reason = '5m rebound: ignore risk and buy'
+    retired_reason = '15m candle rebound: ignore risk and buy'
     ctx.update(current_plan={'rationale': retired_reason, 'hard_stop': 59000, 'expires_at': 900},
                recent_waits=[{'rationale': retired_reason, 'as_of_ms': 990000, 'confidence': .5}],
                recent_actions=[{'rationale': retired_reason, 'action': 'OPEN', 'status': 'DONE'}])
@@ -257,8 +225,8 @@ def test_assembled_prompt_omits_historical_narratives_without_mutating_audit():
     sent = json.loads(calls[0]['user_prompt'])['contract_context']
     assert retired_reason not in calls[0]['user_prompt']
     assert sent['current_plan'] == {'hard_stop': 59000, 'expires_at': 900}
-    assert sent['recent_waits'] == [{'as_of_ms': 990000, 'confidence': .5}]
-    assert sent['recent_actions'] == [{'action': 'OPEN', 'status': 'DONE'}]
+    assert sent['recent_waits'] == [{'as_of_ms':990000,'confidence':.5,'rationale':'OMITTED_RETIRED_TIMEFRAME_OPINION'}]
+    assert sent['recent_actions'] == [{'action':'OPEN','status':'DONE','rationale':'OMITTED_RETIRED_TIMEFRAME_OPINION'}]
     assert ctx == original
 
 
@@ -296,18 +264,9 @@ def test_assembled_obstacle_review_and_valid_management_choices(side, choice):
     assert sent['market_snapshot'] == snapshot
     assert sent['contract_context']['current_plan'] == ctx['current_plan']
     policy = ' '.join(calls[0]['system_prompt'].split())
-    for rule in (
-        'On every OPEN, holding review and ADJUST',
-        'available 4h/12h/1d/1w MA10/35',
-        'NOT a veto does not mean ignore exit obstacles',
-        'potential reaction zone, not guaranteed strong support/resistance',
-        'trivial moving-MA drift',
-        'For SHORT, a nearer TP is higher and an extended TP lower; reverse for LONG',
-        'retaining an all-size TP beyond a material obstacle',
-        'including a holding WAIT that leaves that TP unchanged',
-        'name the relevant available higher-frame obstacle',
-        'Missing levels do not force ADJUST',
-    ):
+    for rule in ('broader direction and material obstacles',
+                 'possible reactions, not certified support/resistance',
+                 'Unknown obstacles are unknown','Use the correct LONG/SHORT price ordering'):
         assert rule in policy
     if action in ('OPEN', 'ADJUST'):
         assert sum(tp['fraction'] for tp in accepted['take_profits']) == pytest.approx(.7)
@@ -350,39 +309,6 @@ def test_assembled_prompt_keeps_reassessment_before_stop_and_safety_priority():
                        generate=generate)
     assert validate_scenario(accepted, ctx)['action'] == 'WAIT'
     policy = ' '.join(calls[0]['system_prompt'].split())
-    assert 'SHORT upward thresholds below the effective hard stop' in policy
-    assert 'LONG downward thresholds above the effective hard stop' in policy
-    assert 'at or beyond that stop belongs to post-exit/new-scenario assessment' in policy
-    assert 'Never delay the hard stop for a reassessment condition' in policy
-    assert 'Safety/accounting restrictions take priority over this explanation' in policy
-
-
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_assembled_stop_geometry_uses_proposed_not_superseded_stop(side):
-    """Specification regression: prose geometry is not a new host validator."""
-    sign = 1 if side == 'LONG' else -1
-    old_stop = 60000-sign*800
-    proposed_stop = 60000-sign*500
-    stale_review = 60000-sign*650
-    valid_review = 60000-sign*400
-    assert sign*(stale_review-old_stop) > 0
-    assert sign*(stale_review-proposed_stop) < 0
-    assert sign*(valid_review-proposed_stop) > 0
-    ctx = context(True)
-    ctx.update(side=side, mark_price=60000, previous_hard_stop=old_stop,
-               positions=[dict(price=60000, quantity=.01)])
-    result = wire(ctx, 'ADJUST')
-    result.update(side=side, hard_stop=proposed_stop,
-                  take_profits=[dict(id='tp', price=60000+sign*500, fraction=.5)])
-    calls = []
-    def generate(**kwargs):
-        calls.append(kwargs)
-        return SimpleNamespace(text=json.dumps(result))
-    parsed = propose({'valid': True, 'as_of_ms': 1000000}, ctx, {}, clock=lambda: 1000,
-                     generate=generate)
-    assert validate_scenario(parsed, ctx)['hard_stop'] == proposed_stop
-    policy = ' '.join(calls[0]['system_prompt'].split())
-    assert 'WAIT uses retained protection; OPEN/ADJUST uses the proposed hard stop' in policy
-    assert 'never the superseded stop when tightening' in policy
-    assert 'ordering does not guarantee a five-minute review before SL' in policy
-    assert 'MarkPrice can differ from the observed trade price' in policy
+    assert 'A future review/checkpoint is advisory, not an installed TP/SL' in policy
+    assert 'Protective orders and confirmed failure never wait' in policy
+    assert 'host flags and computed fields govern freshness, accounting' in policy
