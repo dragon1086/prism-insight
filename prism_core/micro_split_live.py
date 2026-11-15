@@ -12,7 +12,7 @@ import contextlib
 import json
 import os
 from copy import deepcopy
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
 
 from prism_core.slot_weight import slot_fraction
 
@@ -160,6 +160,22 @@ def fill_to_target_cash(unit_amount, ticker_allocation, held_quantity, price, ma
         quantum, rounding=ROUND_DOWN)
     value = max(value, Decimal(0))
     return int(value) if quantum == 1 else float(value)
+
+
+def one_share_floor_cash(unit_amount, held_quantity, price, market):
+    """Cash for exactly one share when the add budget is below one share, or 0 to keep the block.
+
+    Why (2026-11-15, user decision): the 5%p add steps are below one share of AAPL, JNJ, BKH or a
+    480,000-won KR stock at the live account size, so no add was ever executed (6/6 blocked in the
+    11/02~15 review). One share is allowed when the broker holding is known and one more share keeps
+    the ticker within one full slot; an unknown holding stays blocked.
+    """
+    if held_quantity is None:
+        return 0
+    cost = _dec(price) * (_dec(held_quantity) + 1)
+    if cost > _dec(unit_amount):
+        return 0
+    return int(_dec(price).quantize(Decimal(1), rounding=ROUND_CEILING)) if str(market).upper() == "KR" else float(price)
 
 
 async def broker_held_quantity(trading, symbol):
@@ -925,6 +941,10 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
                                                    held, price, market), "fill_to_target"
         else:
             cash, cash_basis = scaled_cash(block["unit_amount"], delta, market), "delta"
+        if whole_share_quantity(cash, price) <= 0:
+            floor_cash = one_share_floor_cash(block["unit_amount"], held, price, market)
+            if floor_cash:
+                cash, cash_basis = floor_cash, "one_share_floor"
         intent = OrderIntent.create(
             market=market, account_id=campaign["account_key"], symbol=campaign["symbol"], side="buy",
             order_style="smart", source="micro_split_add",
@@ -932,7 +952,7 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
             source_position_id=campaign["position_id"], cash_amount=cash, limit_price=price,
             reason="Micro-split add")
         leg_facts = {"decision_id": intent.source_decision_id}  # the post-close fill check finds the leg by it
-        if cash_basis == "fill_to_target":
+        if cash_basis in ("fill_to_target", "one_share_floor"):
             leg_facts["order_cash"] = cash
         record_add_leg(agent, market=market, row_id=row_id, bar_end=decision["bar_end"], **leg_facts)
         if whole_share_quantity(cash, price) <= 0:
