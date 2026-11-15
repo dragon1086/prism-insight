@@ -733,7 +733,11 @@ def test_regime_size_shadow_bull_without_k8b_age_keeps_age_arms_missing(live_on,
     # 2026-11-14: the add fills the broker holding up to the new allocation (0.8 slot), never above.
     ("KR", "stock_holdings", 1_000_000, 10200, ("HELD", 45), 341_000),   # 800,000 - 45 x 10,200
     ("US", "us_stock_holdings", 1000, 102.0, 4, 392.0),                  # $800 - 4 x $102
-    ("KR", "stock_holdings", 1_000_000, 10200, ("HELD", 79), 0),         # already at target: no order
+    # 2026-11-15: a gap below one share orders one share while the ticker stays within one slot (user decision:
+    # the 5%p steps never reached one share of AAPL/JNJ/BKH, 6/6 adds blocked in the 11/02~15 review).
+    ("KR", "stock_holdings", 1_000_000, 10200, ("HELD", 79), 10200),     # at target, 80 x 10,200 fits the slot
+    ("US", "us_stock_holdings", 1000, 355.0, 3, 0.0),                    # at target, a 4th share would exceed $1,000
+    ("KR", "stock_holdings", 1_000_000, 10200, ("HELD", 98), 0),         # a 99th share would exceed the slot
     ("KR", "stock_holdings", 1_000_000, 10200, ("UNKNOWN", None), 300_000),  # unknown -> the delta
     ("KR", "stock_holdings", 1_000_000, 10200, ("FLAT", 0), 300_000),        # never rebuild a flat holding
     ("US", "us_stock_holdings", 1000, 102.0, 0, 300.0),                  # US 0 may be a failed query
@@ -782,7 +786,7 @@ def test_execute_add_fills_the_broker_holding_to_the_allocation(live_on, monkeyp
         assert _FakeTrading.calls == [] and result["broker"]["reason_code"] == "micro_split_add_below_one_share"
     attributes = emitted[-1][1]["attributes"]
     held = holding[1] if market == "KR" else holding
-    assert attributes["cash_basis"] == ("fill_to_target" if held else "delta")
+    assert attributes["cash_basis"] == (("one_share_floor" if expected == price else "fill_to_target") if held else "delta")
     stored = json.loads(conn.execute(f"SELECT scenario FROM {table} WHERE id=7").fetchone()[0])
     leg = stored["micro_split"]["legs"][-1]
     from prism_core.oneil_adaptive_policy import _hash  # the post-close fill check matches the add by it
@@ -793,6 +797,15 @@ def test_execute_add_fills_the_broker_holding_to_the_allocation(live_on, monkeyp
         assert row_ledger_quantity(stored) == int(unit * 0.5 // price) + int(expected // price)
     else:
         assert "order_cash" not in leg
+
+
+def test_one_share_floor_cash_needs_a_known_holding_inside_one_slot():
+    # 2026-11-15: one share when the gap is below one share and the ticker stays within one slot.
+    assert live.one_share_floor_cash(1000, 1, 355.0, "US") == 355.0        # 2 x $355 = $710 fits the $1,000 slot
+    assert live.one_share_floor_cash(1000, 2, 355.0, "US") == 0            # a 3rd share ($1,065) exceeds the slot
+    assert live.one_share_floor_cash(1000, None, 102.0, "US") == 0         # unknown holding stays blocked
+    assert live.one_share_floor_cash(1_000_000, 79, 10200, "KR") == 10200
+    assert live.one_share_floor_cash(1_000_000, 10, 10200.5, "KR") == 10201  # KR cash is whole won, rounded up
 
 
 def test_a_rejected_add_leg_records_zero_shares(live_on, monkeypatch, tmp_path):
