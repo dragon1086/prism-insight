@@ -1169,6 +1169,69 @@ class ScenarioExecution:
         self.conn.commit()
         return True
 
+    def _pending_entry_target_quantity(self, payload, intent_id):
+        """Order/position proof permits committed TP installation, never accounting or new risk."""
+        from live.exchange_snapshot import read_complete
+        from live.scenario_broker import read_evidence_pages
+        from live.scenario_management_quarantine import (
+            _entry_relevant_children, _entry_unresolved_rows, inspect_unsettled_entry_evidence)
+        if payload.get('action') != 'OPEN' or payload.get('partial_stops') or not payload.get('take_profits'):
+            return None
+        stored = self.conn.execute('SELECT payload FROM llm_scenario_intents WHERE id=?', (intent_id,)).fetchone()
+        if not stored or json.loads(stored[0]) != payload:
+            return None
+        active = self._active()
+        children = _entry_relevant_children(self, active)
+        entries = [c for c in children if c['kind'] == 'entry']
+        if len(entries) != 1 or len(payload.get('entries', [])) != 1:
+            return None
+        entry = entries[0]
+        if entry['intent_id'] != intent_id or entry['status'] != 'UNKNOWN' or entry['evidence'] is not None:
+            return None
+        planned = payload['entries'][0]
+        if (payload['side'] != active['side'] or payload['hard_stop'] != active['hard_stop']
+                or planned['id'] != entry['local_id']
+                or decimal(planned['quantity']) != decimal(entry['request']['qty'])
+                or decimal(planned['price']) != decimal(entry['request']['price'])):
+            return None
+        # Only this exact plan's unfilled, already registered targets may coexist.
+        target_ids = set()
+        for child in children:
+            if child == entry:
+                continue
+            if child['kind'] != 'tp' or child['intent_id'] != intent_id:
+                return None
+            child = self._query_child(child)
+            if child['status'] != 'LIVE' or child['evidence']['executions']:
+                return None
+            request, order = child['request'], child['evidence']['order']
+            if (request.get('reduceOnly') is not True or order.get('reduceOnly') is not True
+                    or any(order.get(k) != request.get(k) for k in ('side', 'price', 'qty', 'orderType'))):
+                return None
+            target_ids.add(child['order_id'])
+        result = read_complete(self._call, 'get_open_orders', max_pages=3,
+                              category='linear', symbol='BTCUSDT', orderLinkId=entry['link_id'])
+        if result is None:
+            return None
+        orders = result['result']['list']
+        if not orders:
+            orders = read_evidence_pages(self._call, 'get_order_history', max_pages=3,
+                                        category='linear', symbol='BTCUSDT', orderLinkId=entry['link_id'])
+        if len(orders) != 1:
+            return None
+        captured = self.clock()
+        observed = self.capture_account()
+        observed = dict(observed, open_orders=[o for o in observed['open_orders'] if o.get('orderId') not in target_ids])
+        if active != self._active():
+            return None
+        proof = inspect_unsettled_entry_evidence(child=entry, order=orders[0], observed=observed,
+            active=active, children=[entry], pending=_entry_unresolved_rows(self.conn),
+            legacy_local=self._legacy_local(), now=self.clock(), order_captured_at=captured,
+            maximum_quantity=self._instrument()['maximum'], identity_verified=True, endpoint=self.session.endpoint)
+        if proof['status'] == 'AGGREGATE_MATCH' and proof['authorization'] is False:
+            return decimal(entry['request']['qty'])
+        return None
+
     def _sync_exits(self,payload,intent_id):
         """Rebuild partial exits against confirmed current size; Full SL stays."""
         observed=self._ensure_protection(self.capture_account(),payload["hard_stop"],payload["side"])
@@ -1182,6 +1245,10 @@ class ScenarioExecution:
         children=self.children(payload["scenario_id"])
         entered=sum((decimal(e["execQty"]) for c in children if c["kind"]=="entry" and c["evidence"]
                      for e in c["evidence"]["executions"]),Decimal(0))
+        if not entered:
+            entered = self._pending_entry_target_quantity(payload, intent_id)
+            if entered is None:
+                self._fail('entry_execution_evidence_pending')
         basis=self.conn.execute("SELECT quantity,entry_baseline FROM llm_scenario_exit_basis WHERE intent_id=?",(intent_id,)).fetchone()
         if not basis:
             self._fail("exit_allocation_basis_missing")
