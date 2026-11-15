@@ -895,8 +895,7 @@ def ma20_recovery_control(setup, bars, anchor, market, policy=None, regime_at=No
         if i < MA20R_AVG_BARS + 1:
             checks["history_short"] = checks.get("history_short", 0) + 1
             continue
-        closes = [b["close"] for b in bars[i - MA20R_AVG_BARS:i + 1]]
-        prev_avg, avg = sum(closes[:-1]) / MA20R_AVG_BARS, sum(closes[1:]) / MA20R_AVG_BARS
+        prev_avg = sum(b["close"] for b in bars[i - MA20R_AVG_BARS:i]) / MA20R_AVG_BARS
         if not (bars[i - 1]["close"] <= prev_avg < bars[i]["close"]):
             checks["no_cross"] = checks.get("no_cross", 0) + 1
             continue
