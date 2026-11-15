@@ -79,10 +79,8 @@ def prepare(snapshot, context, structure):
                 stop=rounded(anchor[1]-sign*tick,side=='SHORT')
                 pullbacks=sorted({p for _,p,_ in points if sign*(p-stop)>tick and sign*(quote-p)>tick},key=lambda p:abs(quote-p))
                 if pullbacks:offers.append((anchor,dict(kind='PULLBACK_LIMIT',price=pullbacks[0])))
-            side_start=len(layouts)
             observed=sorted({p for _,p,_ in points if sign*(p-quote)>0},key=lambda p:sign*(p-quote))
             for anchor,entry in offers:
-                if len(layouts)-side_start>=3:break
                 stop=rounded(anchor[1]-sign*tick,side=='SHORT')
                 price=rounded(entry['price'],side=='LONG');distance=sign*(price-stop)
                 if distance<=0:continue
@@ -112,6 +110,14 @@ def prepare(snapshot, context, structure):
                         target_basis=basis,unpriced_runner_fraction=0.,sizing_examples=examples,
                         support_strength='NOT_CERTIFIED',fill_probability='UNKNOWN'))
                     break  # Preserve structural/entry-style choices, not a ranking of returns.
+        selected=[]
+        for side in ('LONG','SHORT'):
+            candidates=[p for p in layouts if p['side']==side]
+            # Reserve a place for each feasible entry style before duplicating stops.
+            styles=list(dict.fromkeys(p['entry_kind']for p in candidates))
+            diverse=[next(p for p in candidates if p['entry_kind']==kind)for kind in styles]
+            selected.extend((diverse+[p for p in candidates if p not in diverse])[:3])
+        layouts=selected
         result=dict(version=1,status='AVAILABLE'if layouts else'UNAVAILABLE',layouts=layouts[:MAX_PLANS],
             meaning='Coupled numerical proposals, not permission or win probabilities. Sizing examples are illustrations, not suggested confidence. Host rechecks chosen confidence/allocation, lot rounding including dust at SL, goal, risk and fresh execution. Partial stops keep their original qualitative contract; no risk credit. R projections are not observed support.')
         return result if len(json.dumps(result,ensure_ascii=False,allow_nan=False).encode())<=MAX_BYTES else unavailable
