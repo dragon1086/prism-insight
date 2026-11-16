@@ -88,6 +88,9 @@ class ScenarioExecution:
             kind TEXT NOT NULL, local_id TEXT NOT NULL, request TEXT NOT NULL,
             status TEXT NOT NULL, order_id TEXT, evidence TEXT, created_at REAL NOT NULL)""")
         self.conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_exit_basis(intent_id TEXT PRIMARY KEY,quantity TEXT NOT NULL,entry_baseline TEXT NOT NULL)")
+        # Old intents keep their original quotas across restart and new fills.
+        if 'rounding_version' not in {r[1] for r in self.conn.execute("PRAGMA table_info(llm_scenario_exit_basis)")}:
+            self.conn.execute("ALTER TABLE llm_scenario_exit_basis ADD COLUMN rounding_version INTEGER NOT NULL DEFAULT 0")
         self.conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_execution_batches(intent_id TEXT PRIMARY KEY,status TEXT NOT NULL)")
         from live.scenario_immediate_reduce import initialize
         initialize(self.conn)
@@ -1047,7 +1050,7 @@ class ScenarioExecution:
             own=self.children(active["scenario_id"])
             baseline=sum((decimal(fill["execQty"]) for c in own if c["kind"]=="entry" and c["evidence"]
                           for fill in c["evidence"]["executions"]),Decimal(0))
-            self.conn.executemany("INSERT OR IGNORE INTO llm_scenario_exit_basis VALUES(?,?,?)",
+            self.conn.executemany("INSERT OR IGNORE INTO llm_scenario_exit_basis(intent_id,quantity,entry_baseline,rounding_version) VALUES(?,?,?,1)",
                 [(intent_id,text_number(observed["position"]["size"]),text_number(baseline))])
             self.conn.commit()
             if own:
@@ -1250,7 +1253,7 @@ class ScenarioExecution:
             entered = self._pending_entry_target_quantity(payload, intent_id)
             if entered is None:
                 self._fail('entry_execution_evidence_pending')
-        basis=self.conn.execute("SELECT quantity,entry_baseline FROM llm_scenario_exit_basis WHERE intent_id=?",(intent_id,)).fetchone()
+        basis=self.conn.execute("SELECT quantity,entry_baseline,rounding_version FROM llm_scenario_exit_basis WHERE intent_id=?",(intent_id,)).fetchone()
         if not basis:
             self._fail("exit_allocation_basis_missing")
         allocation=decimal(basis[0])+entered-decimal(basis[1])
@@ -1364,9 +1367,13 @@ class ScenarioExecution:
                 if decision_size+entry_delta-exit_delta-current_exits!=size:
                     self._fail("exit_decision_position_conflict")
                 allocation=decision_size+entry_delta-exit_delta+sum(prior_fills.values(),Decimal(0))
+        from core.llm_scenario import target_quantities
         for field,kind in (("take_profits","tp"),("partial_stops","partial_sl")):
+            rows=payload.get(field,[])
+            quotas=target_quantities(allocation, rows, instrument["step"],
+                                     full_exit=kind=="tp" and basis[2]==1)
             allocated=Decimal(0)
-            for index,row in enumerate(payload.get(field,[])):
+            for index,row in enumerate(rows):
                 key=(kind,index)
                 retained=prior_fills.get(key,Decimal(0))
                 current_id=generation+":"+row["id"]
@@ -1379,7 +1386,7 @@ class ScenarioExecution:
                 consumed=sum((decimal(e["execQty"]) for c in children if c["kind"]==kind and
                     c["intent_id"]==intent_id and c["local_id"].partition(":")[2]==row["id"] and c["evidence"]
                     for e in c["evidence"]["executions"]),Decimal(0))+retained
-                quantity=(max(Decimal(0),min(size-allocated,allocation*decimal(row["fraction"])-consumed))/instrument["step"]).to_integral_value(rounding=ROUND_DOWN)*instrument["step"]
+                quantity=(max(Decimal(0),min(size-allocated,quotas[index]-consumed))/instrument["step"]).to_integral_value(rounding=ROUND_DOWN)*instrument["step"]
                 allocated+=quantity
                 if quantity<instrument["minimum"]:
                     continue

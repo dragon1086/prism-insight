@@ -7,13 +7,27 @@ fills, reserve orders atomically, persist action IDs, and supply trusted context
 from __future__ import annotations
 
 import math
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from copy import deepcopy
 from core.scenario_stop_policy import validate_stop_revision
 from core.scenario_convergence import require_entry_convergence
 
 LEVERAGE = 10
 RISK_FRACTION = 0.02
+
+
+def target_quantities(quantity, rows, step, *, full_exit=False):
+    """Frozen per-revision quotas; only an intended full TP absorbs rounding."""
+    quantity, step = Decimal(str(quantity)), Decimal(str(step))
+    fractions = [Decimal(str(row['fraction'])) for row in rows]
+    complete = full_exit and sum(fractions, Decimal(0)) == 1
+    allocated, result = Decimal(0), []
+    for index, fraction in enumerate(fractions):
+        quota = quantity - allocated if complete and index == len(rows)-1 else quantity*fraction
+        quota = (max(Decimal(0), min(quantity-allocated, quota))/step).to_integral_value(rounding=ROUND_DOWN)*step
+        allocated += quota
+        result.append(quota)
+    return result
 
 
 def immediate_reduce_allowed(context):
