@@ -133,13 +133,12 @@ def test_adjust_reallocates_only_remnant_without_restoring_old_quota(ladder):
     broker.reconcile()
     rows = live_targets(broker, "a2")
     assert {key: Decimal(row["request"]["qty"]) for key, row in rows.items()} == {
-        "near": Decimal(".017"), "mid": Decimal(".025"), "far": Decimal(".042")}
+        "near": Decimal(".017"), "mid": Decimal(".025"), "far": Decimal(".043")}
     assert all(exchange.orders[row["link_id"]]["orderStatus"] == "Cancelled"
                for row in old_live.values())
     assert exchange.orders[near["link_id"]]["orderStatus"] == "Filled"
-    assert sum(Decimal(row["request"]["qty"]) for row in rows.values()) == Decimal(".084")
-    # Per-tier flooring leaves .001 under native Full SL, not overclosed or
-    # falsely described as exact 100% TP coverage.
+    assert sum(Decimal(row["request"]["qty"]) for row in rows.values()) == Decimal(".085")
+    # The new full-TP revision conserves only the actual .085 remainder.
     assert Decimal(exchange.orders["native"]["qty"]) == Decimal(".085")
     assert broker.reconcile()["protection_confirmed"] is True
 
@@ -166,11 +165,11 @@ def test_rejected_adjustment_checks_later_full_stop_direction(ladder,change):
     assert Decimal(exchange.orders["native"]["triggerPrice"])==stop_after
 
 
-def test_small_fill_skips_subminimum_tier_and_keeps_floor_residual_protected(ladder):
+def test_small_fill_skips_zero_tier_and_allocates_full_remaining_tp(ladder):
     broker, exchange = open_ladder(ladder, (.1, .2, .7), filled=.007)
     rows = live_targets(broker)
     assert {key: Decimal(row["request"]["qty"]) for key, row in rows.items()} == {
-        "mid": Decimal(".001"), "far": Decimal(".004")}
+        "mid": Decimal(".001"), "far": Decimal(".006")}
     assert Decimal(exchange.orders["native"]["qty"]) == Decimal(".007")
     assert broker.reconcile()["protection_confirmed"] is True
 

@@ -5,6 +5,7 @@ import json
 import math
 from decimal import Decimal, ROUND_DOWN
 
+from core.llm_scenario import target_quantities
 from engine.scenario_ma_context import _frame_points
 from engine.scenario_snapshot import TIMEFRAME_MS
 from live.scenario_analysis_frames import ANALYSIS_FRAMES
@@ -178,13 +179,10 @@ def validate_goal_pair(raw, effective, context):
                     raise ValueError('entry_goal_instrument_missing')
                 quantity = sum((Decimal(str(e['quantity'])) for e in plan['entries']), Decimal(0))
                 # Same sequential clipping/step/minimum as host TP projection.
-                allocated, beyond = Decimal(0), False
-                for target in plan['take_profits']:
-                    qty = (max(Decimal(0), min(quantity - allocated,
-                        quantity * Decimal(str(target['fraction'])))) / Decimal(str(step))).to_integral_value(
-                            rounding=ROUND_DOWN) * Decimal(str(step))
-                    allocated += qty
-                    if qty >= Decimal(str(minimum)) and (
+                beyond = False
+                for target, qty in zip(plan['take_profits'], target_quantities(
+                        quantity, plan['take_profits'], step, full_exit=True)):
+                    if min(qty, quantity * Decimal(str(target['fraction']))) >= Decimal(str(minimum)) and (
                             target['price'] > bound if plan['side'] == 'LONG' else target['price'] < bound):
                         beyond = True
                 runner = ((quantity * max(remainder, Decimal(0)) / Decimal(str(step)))

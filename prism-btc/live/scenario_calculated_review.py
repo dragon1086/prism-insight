@@ -10,7 +10,7 @@ import json
 import math
 import time
 
-from core.llm_scenario import EntryConvergenceRejection, EconomicProposalRejection, ScenarioValidationError, risk_snapshot, validate_scenario
+from core.llm_scenario import target_quantities, EntryConvergenceRejection, EconomicProposalRejection, ScenarioValidationError, risk_snapshot, validate_scenario
 from core.scenario_limit_prices import preview_execution_prices
 from engine.scenario_ma_context import build_ma_structure_context
 from live import scenario_llm
@@ -222,13 +222,9 @@ def _gross_projection(plan, context, *, lots=None,
             new_entry=new_entry, recorded_net=context.get("recorded_scenario_net") if whole and confirmed else None,
             entry_fee_reference=context.get('entry_fee_reference') if new_entry else None)
     for kind in ("take_profits", "partial_stops"):
-        allocated = Decimal(0)
-        for row in plan[kind]:
-            # New revision: prior reductions are already absent from supplied lots.
-            qty = (max(Decimal(0), min(quantity - allocated,
-                   quantity * _decimal(row["fraction"]))) / step).to_integral_value(
-                       rounding=ROUND_DOWN) * step
-            allocated += qty
+        # New revision: prior reductions are already absent from supplied lots.
+        for row, qty in zip(plan[kind], target_quantities(quantity, plan[kind], step,
+                                                       full_exit=kind == "take_profits")):
             below_minimum = qty < minimum
             projected_qty = Decimal(0) if below_minimum else qty
             gross = sign * (_decimal(row["price"]) - basis) * projected_qty

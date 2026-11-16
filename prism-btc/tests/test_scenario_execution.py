@@ -1976,3 +1976,51 @@ def test_entry_action_expiry_is_rechecked_after_incident_refresh(live, monkeypat
     with pytest.raises(BrokerNotReady,match='expired_scenario_action'):
         b.execute(p,'a1')
     assert e.writes==before and b.children()==[]
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_full_tp_lot_conservation_is_frozen_per_intent(live, legacy):
+    b,e=live
+    targets=[dict(id="near",price=105,fraction=.3),dict(id="far",price=110,fraction=.7)]
+    p=persist(b,entries=[dict(id="e1",price=100,quantity=.149)],take_profits=targets)
+    if legacy:
+        b.conn.execute("INSERT INTO llm_scenario_exit_basis(intent_id,quantity,entry_baseline) VALUES('a1','0','0')")
+        b.conn.commit()
+    b.execute(p,"a1")
+    e.fill(next(iter(e.orders)),.149)
+    b.reconcile()
+    def quotas():
+        return {c['local_id'].partition(':')[2]:float(c['request']['qty']) for c in b.children() if c['kind']=='tp'}
+    assert quotas()==dict(near=.044,far=.104 if legacy else .105)
+    b.reconcile()
+    assert quotas()==dict(near=.044,far=.104 if legacy else .105)
+    near=next(c for c in b.children() if c['kind']=='tp' and c['local_id'].endswith(':near'))
+    e.fill(near['link_id'],.044)
+    b.reconcile()
+    far=next(c for c in b.children() if c['kind']=='tp' and c['local_id'].endswith(':far'))
+    e.fill(far['link_id'],.104 if legacy else .105)
+    b.reconcile()
+    assert float(e.size)==pytest.approx(.001 if legacy else 0)
+
+
+@pytest.mark.parametrize("fractions,full,expected", [
+    ([.3,.7],True,['.044','.105']),([.3,.7],False,['.044','.104']),
+    ([.1,.7],True,['.014','.104']),([1.],True,['.149']),
+    ([.3,.3,.4],True,['.044','.044','.061'])])
+def test_frozen_target_quota_rounding(fractions,full,expected):
+    from decimal import Decimal
+    from core.llm_scenario import target_quantities
+    rows=[dict(fraction=f) for f in fractions]
+    assert target_quantities('.149',rows,'.001',full_exit=full)==list(map(Decimal,expected))
+
+
+def test_legacy_exit_basis_upgrade_keeps_rows_and_is_idempotent(live):
+    b,e=live
+    b.conn.execute('DROP TABLE llm_scenario_exit_basis')
+    b.conn.execute('CREATE TABLE llm_scenario_exit_basis(intent_id TEXT PRIMARY KEY,quantity TEXT NOT NULL,entry_baseline TEXT NOT NULL)')
+    b.conn.execute("INSERT INTO llm_scenario_exit_basis VALUES('old','.149','.149')")
+    b.conn.commit()
+    for _ in range(2):
+        ScenarioDemoBroker(b.conn,session=e,expected_main_uid='123',clock=b.clock,execution_enabled=True)
+        assert tuple(b.conn.execute('SELECT * FROM llm_scenario_exit_basis').fetchone())==('old','.149','.149',0)
+    assert e.writes==[]
