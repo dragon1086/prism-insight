@@ -91,7 +91,10 @@ def prepare(snapshot, context, structure):
                     offers.append((anchor,dict(kind='BREAKOUT_TRIGGER',price=trigger+sign*tick,trigger_price=trigger)))
             for anchor in anchors:
                 stop=rounded(anchor[1]-sign*tick,side=='SHORT')
-                pullbacks=sorted({p for _,p,_ in points if sign*(p-stop)>tick and sign*(quote-p)>tick},key=lambda p:abs(quote-p))
+                # A moving candle close is a current price, not a pullback level.
+                pullbacks=sorted({p for ref,p,phase in points
+                                  if not (phase=='FORMING' and ref.endswith(':close'))
+                                  and sign*(p-stop)>tick and sign*(quote-p)>tick},key=lambda p:abs(quote-p))
                 if pullbacks:offers.append((anchor,dict(kind='PULLBACK_LIMIT',price=pullbacks[0])))
             observed=sorted({p for _,p,_ in points if sign*(p-quote)>0},key=lambda p:sign*(p-quote))
             for anchor,entry in offers:

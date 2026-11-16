@@ -175,6 +175,47 @@ def test_stop_variants_do_not_crowd_out_feasible_entry_styles(side):
     assert {p['entry_kind']for p in plans}=={'CURRENT_LIMIT','BREAKOUT_TRIGGER','PULLBACK_LIMIT'}
 
 
+@pytest.mark.parametrize('side,forming_close,confirmed_close,expected', [
+    ('SHORT', 100.2, 102., 102.), ('LONG', 99.9, 98., 98.)])
+def test_pullback_uses_independent_structure_instead_of_forming_close(
+        side, forming_close, confirmed_close, expected):
+    s,c,t=sample()
+    for point in t['primary']['30m']['points']:
+        point['close']=confirmed_close
+    forming=deepcopy(t['primary']['30m']['points'][0])
+    forming.update(phase='FORMING',is_confirmed=False,as_of_ms=s['as_of_ms']-1,
+                   high=103.,low=97.,close=forming_close)
+    t['primary']['30m']['points'].append(forming)
+    menu=prepare(s,c,t)
+    plan=next(p for p in menu['layouts']if p['side']==side and p['entry_kind']=='PULLBACK_LIMIT')
+    assert plan['entry_price']==expected
+
+
+@pytest.mark.parametrize('side,price', [('SHORT', 100.2), ('LONG', 99.9)])
+def test_pullback_keeps_same_price_when_confirmed_structure_also_supports_it(side,price):
+    s,c,t=sample()
+    t['primary']['30m']['points'][0]['close']=price
+    forming=deepcopy(t['primary']['30m']['points'][0])
+    forming.update(phase='FORMING',is_confirmed=False,as_of_ms=s['as_of_ms']-1,
+                   high=103.,low=97.)
+    t['primary']['30m']['points'].append(forming)
+    plan=next(p for p in prepare(s,c,t)['layouts']if p['side']==side and p['entry_kind']=='PULLBACK_LIMIT')
+    assert plan['entry_price']==price
+
+
+@pytest.mark.parametrize('side,close', [('SHORT', 100.2), ('LONG', 99.9)])
+def test_forming_close_alone_cannot_create_a_pullback(monkeypatch,side,close):
+    from live import scenario_entry_plans as m
+    s,c,t=sample()
+    points=[['P:30m:0:high',103.,'CONFIRMED',s['as_of_ms']-1],
+            ['P:30m:0:low',97.,'CONFIRMED',s['as_of_ms']-1],
+            ['P:30m:1:close',close,'FORMING',s['as_of_ms']-1]]
+    monkeypatch.setattr(m,'source_from_structure',lambda *args:dict(points=points))
+    plans=m.prepare(s,c,t)['layouts']
+    assert any(p['side']==side and p['entry_kind']=='CURRENT_LIMIT'for p in plans)
+    assert not any(p['side']==side and p['entry_kind']=='PULLBACK_LIMIT'for p in plans)
+
+
 def test_layout_keeps_prices_but_allows_exit_weights_and_subset():
     s,c,t=sample();menu=prepare(s,c,t)
     plan=next(p for p in menu['layouts'] if len(p['take_profits'])==2)
