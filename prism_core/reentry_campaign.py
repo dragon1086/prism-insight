@@ -103,9 +103,11 @@ SHAKEOUT_LOW_STOP = 0.99    # stop under the shakeout low
 MA20R_AVG_BARS = 20
 MA20R_LOW_STOP = 0.99
 MA20R_CHASE = 0.05          # fresh-quote band: ma20 < price <= ma20*1.05
-# Share of a normal day's volume traded by the decision time (14:00 KST / 13:50 ET) when no
-# ticker-specific intraday profile is supplied (quote["volume_share"]).
-VOLUME_SHARE_DEFAULT = {"KR": 0.80, "US": 0.70}
+# Share of a normal day's volume traded by the decision time (15:08 KST / 15:30 ET) when no
+# ticker-specific intraday profile is supplied (quote["volume_share"]). Medians measured 2026-11-16 on
+# the active watches' last 60 sessions of 5-minute bars (KR over the full daily volume incl. the closing
+# auction). The old 14:00/13:50 defaults 0.80/0.70 measured 0.68/0.59, i.e. the volume test was too strict.
+VOLUME_SHARE_DEFAULT = {"KR": 0.86, "US": 0.79}
 BREAKEVEN_AFTER = 0.10      # E1: stop to entry after a +10% close
 MA_EXIT_FROM_BAR = 3        # E1: MA20 close exit from bar 3
 HOLD_BARS = 40              # E1: time exit
