@@ -99,8 +99,8 @@ def test_regular_hours_only_never_in_auctions_and_an_order_deadline():
     assert LIVE.in_safe_window("US", US_1350) and LIVE.before_deadline("US", US_1350)
     assert not LIVE.in_safe_window("US", utc(19, 50))      # 15:50 ET closing-auction cutoffs
     assert not LIVE.in_safe_window("KR", datetime(2026, 10, 10, 5, 0, tzinfo=timezone.utc))   # Saturday
-    assert not LIVE.before_deadline("KR", utc(5, 40)) and LIVE.before_deadline("KR", utc(5, 39))   # 14:40 KST
-    assert not LIVE.before_deadline("US", utc(18, 25)) and LIVE.before_deadline("US", utc(18, 24))  # 14:25 EDT
+    assert not LIVE.before_deadline("KR", utc(6, 13)) and LIVE.before_deadline("KR", utc(6, 12))   # 15:13 KST
+    assert not LIVE.before_deadline("US", utc(19, 40)) and LIVE.before_deadline("US", utc(19, 39))  # 15:40 EDT
 
 
 def test_signal_price_bands_on_a_fresh_quote():
@@ -263,7 +263,7 @@ def test_daily_cap_of_two_per_market_in_rank_order(tmp_path, live_on):
 def test_no_buy_after_the_deadline_outside_hours_or_when_not_approved(tmp_path, live_on):
     executor = FakeExecutor()
     _, late = _process(tmp_path, [_record()], {"ev1": _item()}, executor,
-                       now=datetime(2026, 10, 7, 5, 45, tzinfo=timezone.utc))        # 14:45 KST
+                       now=datetime(2026, 10, 7, 6, 14, tzinfo=timezone.utc))        # 15:14 KST, after the 15:13 deadline
     assert late[0]["status"] == "SKIPPED_DEADLINE" and executor.calls == []
     _, results = _process(tmp_path, [_record()], {"ev1": _item()}, executor,
                           now=datetime(2026, 10, 7, 6, 20, tzinfo=timezone.utc))
@@ -349,7 +349,7 @@ def test_agent_errors_auction_hours_and_the_deadline_never_buy():
                                             now=datetime(2026, 10, 7, 6, 21, tzinfo=timezone.utc)))
     assert out["reason"] == "outside_regular_hours" and late.calls == []
     out = asyncio.run(LIVE.enter_with_agent(late, "KR", _entry(),
-                                            now=datetime(2026, 10, 7, 5, 41, tzinfo=timezone.utc)))
+                                            now=datetime(2026, 10, 7, 6, 14, tzinfo=timezone.utc)))
     assert out["reason"] == "deadline" and late.calls == []
     assert LIVE.outcome_status(out) == "SKIPPED_DEADLINE"
     assert LIVE.outcome_status({"bought": False, "reason": "no_micro_plan"}) == "SKIPPED_NO_MICRO_PLAN"

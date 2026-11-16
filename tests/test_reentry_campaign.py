@@ -429,14 +429,14 @@ def test_shakeout_recovery_needs_projected_volume_and_otherwise_returns_to_norma
     camp = C.replay(yc_setup(bars, 11500), bars, 69)["campaigns"]["L97"]
     assert all(t["trigger"] != "SHAKEOUT_RECLAIM" for t in camp["attempts"])
     assert all(t["date"] != bars[71]["date"] for t in camp["attempts"])
-    # live decision: cumulative volume / time-of-day share (KR default 0.80 at 14:00) vs the 20-day average
+    # live decision: cumulative volume / time-of-day share (KR default 0.86 at 15:08) vs the 20-day average
     bars = _bars(_yc_shakeout_rows())
     setup = yc_setup(bars, 11500)
     before = C.replay(setup, bars[:71], 69)
     nxt = before["next"]["L97"]
     assert nxt["mode"] == "SHAKEOUT" and nxt["window"]["low"] == 11300
-    assert C.projected_volume(1250, "KR") == pytest.approx(1562.5)
-    assert C.projected_volume(700, "US") == pytest.approx(1000.0)
+    assert C.projected_volume(1250, "KR") == pytest.approx(1250 / 0.86)
+    assert C.projected_volume(700, "US") == pytest.approx(700 / 0.79)
     assert C.projected_volume(700, "US", share=0.5) == pytest.approx(1400.0)
     kw = {"bars": bars[:71], "i": 71, "flags": before["flags"], "price": 12100.0, "day_low": 11480.0,
           "regime": "sideways", "window": nxt["window"]}
@@ -717,7 +717,7 @@ def test_runtime_shakeout_recovery_is_decided_per_rule(tmp_path, monkeypatch):
     decision = state["watches"][0]["decisions"][bars[71]["date"]]
     assert decision["by_rule"]["L97"]["trigger"] == "SHAKEOUT_RECLAIM"   # L97 is inside its window
     assert decision["by_rule"]["SS"]["trigger"] == "R1C"                 # SS line 11,400 was not broken
-    assert decision["volume_projected"] == pytest.approx(1562.5) and decision["volume_share"] == 0.8
+    assert decision["volume_projected"] == pytest.approx(1250 / 0.86) and decision["volume_share"] == 0.86
     item = json.loads((root / "reentry_v3_recheck_inputs_kr.jsonl").read_text())
     assert item["trigger"] == "SHAKEOUT_RECLAIM" and item["shakeout"]["shakeout_low"] == 11300
     assert item["stop_rule"] == "SHAKEOUT_LOW" and set(item["attempts"]) == {"L97", "SS"}

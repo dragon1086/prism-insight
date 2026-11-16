@@ -11,7 +11,7 @@ gate, holdings row and scenario, order intents, Telegram buy message, Redis/GCP 
 Safety (this module): kill switch REENTRY_V3_LIVE_ENABLED (default off) and
 REENTRY_V3_LIVE_MARKETS (default KR,US); only the primary L97 rule's signals; at most DAILY_CAP
 re-entry orders per market per session and one per ticker per session; regular hours only and
-before the order deadline (KR 14:40 KST, US 14:25 ET); one idempotency key per watch and session
+before the order deadline (KR 15:13 KST, US 15:40 ET); one idempotency key per watch and session
 written (fsync) before the order and never retried the same day, whatever happened; the signal
 price band is checked again on a fresh quote right before the order; any exception is logged,
 emitted and contained, and an ERROR/timeout is reconciled with the holdings tables. The order runs
@@ -41,8 +41,10 @@ PRIMARY_RULE = "L97"
 # US 09:30-16:00 ET (closing-auction order cutoffs from 15:50).
 SAFE_WINDOWS = {"KR": ("Asia/Seoul", dtime(9, 5), dtime(15, 15)),
                 "US": ("America/New_York", dtime(9, 35), dtime(15, 45))}
-# No re-entry order after this local time (before the regular afternoon batches KR 14:46 / US 14:30 ET).
-ORDER_DEADLINES = {"KR": ("Asia/Seoul", dtime(14, 40)), "US": ("America/New_York", dtime(14, 25))}
+# No re-entry order after this local time. 2026-11-16 (user decision): the decision run moved to KR 15:08 /
+# US 15:30 ET, after the regular afternoon batches finish (KR buys 14:57-15:05, US ends 15:12-15:16 ET)
+# and before the auction cutoffs, so the signal is judged close to the session close like the research.
+ORDER_DEADLINES = {"KR": ("Asia/Seoul", dtime(15, 13)), "US": ("America/New_York", dtime(15, 40))}
 SIGNALS = {"R1C": "REBREAK", "R2S": "RETEST", "SHAKEOUT_RECLAIM": "SHAKEOUT_RECLAIM", "MA20R": "MA20R"}
 SIGNAL_KO = {"REBREAK": "기준 가격 재돌파 매수", "RETEST": "기준 가격 눌림 지지 매수",
              "SHAKEOUT_RECLAIM": "흔들기 후 회복 매수", "MA20R": "20일선 회복 매수"}
@@ -166,7 +168,7 @@ def in_safe_window(market, now=None):
 
 
 def before_deadline(market, now=None):
-    """True before the re-entry order deadline (KR 14:40 KST, US 14:25 ET)."""
+    """True before the re-entry order deadline (KR 15:13 KST, US 15:40 ET)."""
     return _local(market, now, ORDER_DEADLINES).time() < ORDER_DEADLINES[market][1]
 
 
