@@ -758,7 +758,8 @@ class ScenarioExecution:
         if payload.get('action') not in {'OPEN', 'ADJUST'} or not (
                 payload.get('entries') or payload.get('take_profits')):
             return  # Never gate EXIT/cancel/SL-only protection on optional goal history.
-        validate_goal_plan(payload, self._registered_goal(payload, active))
+        validate_goal_plan(payload, self._registered_goal(payload, active),
+                           full_tp=payload.get('action') == 'ADJUST' and bool(payload.get('take_profits')))
 
     def _check_entry_convergence(self, payload):
         if not getattr(self, 'convergence_entry_enabled', False):

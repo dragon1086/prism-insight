@@ -138,7 +138,7 @@ def resolve_goal(goal, context):
     return dict(result, **deepcopy(point), canonical=canonical)
 
 
-def validate_goal_plan(plan, resolved):
+def validate_goal_plan(plan, resolved, *, full_tp=False):
     if not resolved or resolved['goal']['mode'] != 'BOUNDED_BEFORE' or plan.get('action') in {'WAIT', 'EXIT', 'REDUCE'}:
         return
     bound, side = resolved['price'], plan.get('side')
@@ -153,6 +153,9 @@ def validate_goal_plan(plan, resolved):
                 raise GoalConsistencyRejection('entry_goal_bound_exceeded',
                     dict(field=field, index=index, price=price, bound=bound, side=side,
                          goal=resolved['goal']))
+    if full_tp and sum((Decimal(str(t['fraction'])) for t in plan.get('take_profits', [])), Decimal(0)) != 1:
+        raise GoalConsistencyRejection('entry_goal_bound_requires_full_tp',
+            dict(goal=resolved['goal'], reason='bounded traversal cannot retain an unpriced tail'))
 
 
 def plan_goal(payload, context):
@@ -169,7 +172,9 @@ def validate_goal_pair(raw, effective, context):
     resolved = plan_goal(raw, context)
     for phase, plan in [('raw', raw)] + ([('effective', effective)] if effective is not None else []):
         try:
-            validate_goal_plan(plan, resolved)
+            validate_goal_plan(plan, resolved, full_tp=(
+                plan.get('action') == 'OPEN' and context.get('prepared_entry_plans_version') == 1
+                or plan.get('action') == 'ADJUST' and bool(plan.get('take_profits'))))
             if resolved and resolved['goal']['mode'] == 'REFERENCE_EXTENSION' and plan.get('action') == 'OPEN':
                 bound = resolved['price']
                 remainder = Decimal(1) - sum((Decimal(str(t['fraction'])) for t in raw['take_profits']), Decimal(0))
