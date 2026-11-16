@@ -37,7 +37,7 @@ def test_coupled_examples_include_native_rounding_costs_and_dust_at_stop():
     assert len(json.dumps(menu).encode())<=MAX_BYTES
     for p in menu['layouts']:
         assert sum(v['fraction']for v in p['take_profits'])==1
-        assert p['unpriced_runner_fraction']==0
+        assert p['default_unpriced_runner_fraction']==0
         assert p['fill_probability']=='UNKNOWN'and p['support_strength']=='NOT_CERTIFIED'
         raw=dict(action='OPEN',side=p['side'],hard_stop=p['hard_stop'],
             entries=[dict(id=p['id'],price=p['entry_price'])],take_profits=p['take_profits'],partial_stops=[])
@@ -50,13 +50,12 @@ def test_coupled_examples_include_native_rounding_costs_and_dust_at_stop():
     assert (s,c,t)==before
 
 
-@pytest.mark.parametrize('damage',['price','stop','fraction','side','target','chase'])
+@pytest.mark.parametrize('damage',['price','stop','side','target','chase'])
 def test_prices_and_splits_cannot_be_mixed_between_layouts(damage):
     s,c,t=sample();menu=prepare(s,c,t);p=offer(c,menu['layouts'][0]);schema=constrain(_action_allocation_branches(c,{'OPEN'}),menu)
     assert _matches(p,schema)
     if damage=='price':p['entries'][0]['price']+=.1
     if damage=='stop':p['hard_stop']+=.1
-    if damage=='fraction':p['take_profits'][0]['fraction']=.4
     if damage=='side':p['side']='SHORT'
     if damage=='target':p['take_profits'][0]['price']+=.1
     if damage=='chase':p['chase']['max_bps']=1
@@ -174,3 +173,42 @@ def test_stop_variants_do_not_crowd_out_feasible_entry_styles(side):
     plans=[p for p in menu['layouts']if p['side']==side]
     assert len(plans)<=3
     assert {p['entry_kind']for p in plans}=={'CURRENT_LIMIT','BREAKOUT_TRIGGER','PULLBACK_LIMIT'}
+
+
+def test_layout_keeps_prices_but_allows_exit_weights_and_subset():
+    s,c,t=sample();menu=prepare(s,c,t)
+    plan=next(p for p in menu['layouts'] if len(p['take_profits'])==2)
+    raw=offer(c,plan);schema=constrain(_action_allocation_branches(c,{'OPEN'}),menu)
+    raw['take_profits'][0]['fraction']=.1
+    raw['take_profits'][1]['fraction']=.7
+    assert _matches(raw,schema)
+    raw['take_profits']=raw['take_profits'][1:]
+    raw['take_profits'][0]['fraction']=1.
+    assert _matches(raw,schema)
+
+
+def test_no_sampled_allocation_does_not_remove_structural_prices(monkeypatch):
+    from live import scenario_entry_plans as m
+    s,c,t=sample();monkeypatch.setattr(m,'_preview',lambda *args:[])
+    menu=m.prepare(s,c,t)
+    assert menu['status']=='AVAILABLE' and menu['layouts']
+    assert all(p['sizing_examples']==[] for p in menu['layouts'])
+
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+def test_example_exit_weights_pass_actual_host_not_only_schema(side):
+    from live.scenario_calculated_review import calculate_economic_candidate
+    s,c,t=sample();menu=prepare(s,c,t)
+    tested=0
+    for p in menu['layouts']:
+        if p['side']!=side:continue
+        for example in p['sizing_examples']:
+            raw=offer(c,p);raw.pop('entry_readiness')
+            raw['confidence']=example['confidence']
+            raw['entries'][0]['allocation_fraction']=example['allocation_fraction']
+            raw['take_profits']=[dict(p['take_profits'][i],fraction=f) for i,f in zip(example['target_indices'],example['target_fractions'])]
+            receipt=calculate_economic_candidate(raw,c,candidate_id='c0')
+            assert receipt['eligible'],receipt.get('rejection')
+            assert receipt['entry_economics']['ratio']>=1.2
+            tested+=1
+    assert tested

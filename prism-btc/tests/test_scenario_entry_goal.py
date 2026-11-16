@@ -466,7 +466,7 @@ def test_later_adjust_uses_registered_bound_not_new_ma_or_new_thesis(tmp_path):
     raw.update(side='LONG', hard_stop=98, chase=dict(max_bps=0, max_reprices=0),
         entry_contract=None, thesis_assessment=dict(contract_id=original['contract_id'], status='INTACT', reason='Still original'))
     for price, expected in [(105, True), (107, False)]:
-        raw['take_profits'] = [dict(id='tp', price=price, fraction=.5)]
+        raw['take_profits'] = [dict(id='tp', price=price, fraction=1.)]
         receipt = calculate_candidate(raw, ctx, candidate_id='c0')
         assert receipt['eligible'] is expected, receipt
         if not expected:
@@ -833,7 +833,7 @@ def test_source_loss_after_selection_does_not_reject_goal_independent_protection
             raw['pending_renewal'] = None
         if kind == 'ADJUST':
             raw.update(side='LONG', hard_stop=99, chase=dict(max_bps=0, max_reprices=0),
-                take_profits=[dict(id='tp', price=105, fraction=.5)] if action == 'TP_ADJUST' else [])
+                take_profits=[dict(id='tp', price=105, fraction=1.)] if action == 'TP_ADJUST' else [])
         if action == 'CANCEL_WAIT':
             raw['cancel_entry_ids'] = [ctx['pending_entries'][0]['id']]
         return raw
@@ -870,3 +870,12 @@ def test_source_loss_after_selection_does_not_reject_goal_independent_protection
         if action == 'CANCEL_WAIT':
             assert 'pending_renewal_version' not in fresh and 'pending_renewal_offer' not in fresh
             assert checked['validated']['cancel_entry_ids'] == [ctx['pending_entries'][0]['id']]
+
+
+@pytest.mark.parametrize('action',['OPEN','ADJUST'])
+@pytest.mark.parametrize('fractions',[[],[.8],[.1,.7]])
+def test_bounded_goal_cannot_retain_unpriced_tail(action,fractions):
+    plan=dict(action=action,side='LONG',entries=[dict(price=90)],
+              take_profits=[dict(price=95+i,fraction=f) for i,f in enumerate(fractions)])
+    with pytest.raises(GoalConsistencyRejection,match='bound_requires_full_tp'):
+        validate_goal_plan(plan,resolve_goal(goal(),context()),full_tp=True)

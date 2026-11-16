@@ -26,7 +26,7 @@ from live.scenario_explanation import (enabled as explanation_enabled, rationale
 
 
 DRAFT_PROMPT = """Order-free proposal stage. Follow the API schema: wait_proposal is the WAIT alternative; candidates are mutually exclusive, never a combined portfolio. Offer only supported legal alternatives and explain current evidence, contrary evidence, purpose and invalidation concisely. Missing qualitative evidence permits no candidates; an economic concern with an otherwise grounded plan should reach host calculation.
-The host computes effective prices, quantities, costs and payoff. Do not calculate them. If prepared_entry_plans is supplied, use one coherent listed entry/SL/TP layout rather than mix prices; illustrations do not recommend confidence. Otherwise choose grounded structural prices under the original goal. Use each TP ID once. No output is an order or authority. First recovery observation stays WAIT when the host requires it.
+The host computes effective prices, quantities, costs and payoff. Do not calculate them. If prepared_entry_plans is supplied, use coherent entry/SL and listed TP prices from one layout; choose TP subset/fractions and any goal-compatible runner. Illustrations fix neither weights nor confidence. Otherwise choose grounded structural prices under the original goal. Use each TP ID once. No output is an order or authority. First recovery observation stays WAIT when the host requires it.
 When entry_readiness is requested, SUPPORTED_NOW needs present evidence for this entry; WAIT_FOR_EVIDENCE means another observation is still needed.
 """
 
