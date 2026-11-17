@@ -53,14 +53,14 @@ def _db(tmp_path):
         buy_price real, current_price real, target_price real, stop_loss real, scenario text);
     create table us_holding_decisions (id integer primary key, ticker text);
     create table loop_a_position_state (ticker text, market text);
-    create table positions (id text, market text, symbol text, status text, legacy_holding_id integer, entry_intent_id text);
+    create table positions (id text, market text, symbol text, status text, legacy_holding_id text, entry_intent_id text);
     create table us_trading_history (ticker text);
     insert into us_stock_holdings values (124, 'prod:1:01', 'BKH', 'Black Hills Corporation', 76.92, 86.7, 91.884, 82.68,
         '{"highest_price": 87.56}');
     insert into us_holding_decisions values (1, 'BKH');
     insert into loop_a_position_state values ('BKH', 'US'), ('BKH', 'KR');
-    insert into positions values ('legacy:US:124', 'US', 'BKH', 'OPEN', 124, 'intent-1'), ('old', 'US', 'BKH', 'CLOSED', 99, 'x'),
-        ('legacy:US:142', 'US', 'LLY', 'OPEN', 142, null);
+    insert into positions values ('legacy:US:124', 'US', 'BKH', 'OPEN', '124', 'intent-1'), ('old', 'US', 'BKH', 'CLOSED', '99', 'x'),
+        ('legacy:US:142', 'US', 'LLY', 'OPEN', '142', null);   -- legacy_holding_id is stored as text in production
     insert into us_stock_holdings values (142, 'prod:1:01', 'LLY', 'Eli Lilly', 1459.21, 1427.84, 1750.0, 1400.0, '{}');
     insert into us_trading_history values ('BKH');
     """)
