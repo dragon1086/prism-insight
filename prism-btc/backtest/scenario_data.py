@@ -162,6 +162,12 @@ class HistoricalScenarioData:
             if fact["forming"] is not None:
                 fact["forming"]["observation_kind"] = (
                     "synthetic_boundary" if tf in synthetic else "historical_completed_subbars")
+                # A previous-close placeholder has no observed forming MA/price path.
+                path = fact.get("ma_path")
+                if tf in synthetic and isinstance(path, dict) and path.get("forming_point") is not None:
+                    path["forming_point"] = None
+                    path["forming_gap"] = None
+                    path["available_components"] = [v for v in path["available_components"] if v != "forming"]
         result["historical_replay"] = {"source_interval_ms": self.interval_ms,
             "closed_source_through_ms": now_ms, "zero_progress_synthetic_timeframes": synthetic,
             "boundary_convention": "after_previous_close_before_next_trade"}

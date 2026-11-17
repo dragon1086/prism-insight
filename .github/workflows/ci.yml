@@ -382,6 +382,7 @@ jobs:
             prism-btc/tests/test_scenario_execution.py \
             prism-btc/tests/test_scenario_control.py \
             prism-btc/tests/test_scenario_data.py \
+            prism-btc/tests/test_scenario_boundary_levels.py \
             prism-btc/tests/test_scenario_dataset.py \
             prism-btc/tests/test_scenario_exchange.py \
             prism-btc/tests/test_scenario_replay.py \
