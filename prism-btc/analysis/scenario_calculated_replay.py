@@ -3,6 +3,7 @@
 The guard's ordinary replay_review remains pure. Only this economic runner
 replays advances and durable review events, once, before the guard is entered.
 """
+import gzip
 from copy import deepcopy
 import json
 import math
@@ -28,6 +29,17 @@ ECONOMIC_PROFILES = {"single-pass-economic-v4", "calculated-economic-v4", *RESEA
 REVIEW_PROFILES = {"calculated-economic-v4", *RESEARCH_PROFILES}
 
 
+def read_tape_text(path):
+    path = Path(path)
+    if path.suffix != '.gz':
+        return path.read_text(encoding='utf-8')
+    with gzip.open(path, 'rt', encoding='utf-8') as stream:
+        text = stream.read(96_000_001)
+    if len(text) > 96_000_000:
+        raise TapeMismatch('compressed_tape_too_large')
+    return text
+
+
 class EconomicTape:
     def __init__(self, path, mode, contract):
         self.path, self.mode, self.contract = Path(path), mode, deepcopy(contract)
@@ -37,10 +49,10 @@ class EconomicTape:
                       contract_hash=digest(contract))
         if mode == "record":
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.stream = self.path.open("x", encoding="utf-8")
+            self.stream = gzip.open(self.path,"xt",encoding="utf-8",compresslevel=9) if self.path.suffix==".gz" else self.path.open("x",encoding="utf-8")
             self._write(header)
         else:
-            lines = self.path.read_text(encoding="utf-8").splitlines()
+            lines = read_tape_text(self.path).splitlines()
             if not lines or json.loads(lines[0]) != header:
                 raise TapeMismatch("economic_tape_contract")
             for line in lines[1:]:

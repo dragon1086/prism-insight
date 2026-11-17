@@ -241,7 +241,7 @@ def validated_fee_seed(seed, start_ms):
 
 def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy_profile="current-live-v2",
                  initial_state="fresh-unblocked", *, observed_manifest=None,
-                 market_input_mode="historical", allow_input_gaps=False, initial_fee_context=None):
+                 market_input_mode="historical", allow_input_gaps=False, initial_fee_context=None, decision_slots_ms=None):
     if policy_profile not in POLICY_PROFILES:
         raise ValueError("explicit_replay_policy_profile_required")
     if initial_state not in {"fresh-unblocked","recovery-stage0"}:
@@ -255,6 +255,10 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
     if initial_fee_context is not None and policy_profile not in {'deployed-main-v3','deployed-cost-reference-v4','deployed-entry-plans-v5'}:
         raise ValueError('initial_fee_seed_requires_explicit_profile')
     fee_seed=validated_fee_seed(initial_fee_context,bundle['start_ms'])
+    if decision_slots_ms is not None and (not isinstance(decision_slots_ms,list) or not decision_slots_ms
+            or any(type(t) is not int or t%300000 or not bundle['start_ms']<=t<bundle['end_ms'] for t in decision_slots_ms)
+            or sorted(set(decision_slots_ms))!=decision_slots_ms or market_input_mode!='historical'):
+        raise ValueError('invalid_sampled_decision_schedule')
     package=ROOT/"prism-btc"
     sources={str(p.relative_to(package)):hashlib.sha256(p.read_bytes()).hexdigest()
              for p in sorted(package.rglob("*.py")) if "tests" not in p.relative_to(package).parts}
@@ -348,6 +352,9 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
             contract['broker_flags'].update(prepared_entry_plans_enabled=True,convergence_entry_enabled=True)
         contract['initial_fee_context']=fee_seed
         contract['fee_seed_scope']='OBSERVED_RATE_ASSUMPTION_PSEUDONYMOUS_OFFLINE_UID_NO_TRADES_OR_PNL'
+    if decision_slots_ms is not None:
+        contract['sampled_model_decision_slots_ms']=decision_slots_ms.copy()
+        contract['between_model_samples']='NATIVE_PROTECTION_AND_RECONCILIATION_ONLY_NO_FORCED_CLOSE'
     return contract
 
 
@@ -573,7 +580,7 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
                policy_profile="current-live-v2",initial_state="fresh-unblocked",clock_monotonic=None,
                observed_packet=None,observed_packet_sha256=None,market_input_mode="historical",
                allow_input_gaps=False,before_http=None,failure_callback=None,
-               before_decision=None,initial_fee_context=None):
+               before_decision=None,initial_fee_context=None,decision_slots_ms=None):
     """No production paths accepted; fresh DB per run and explicit data provenance."""
     if before_decision is not None and (not callable(before_decision) or mode=='frozen'):
         raise ValueError('external_decision_wait_requires_fresh_or_fixture')
@@ -616,14 +623,16 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
         raise ValueError("explicit_observed_input_mode_required")
     origin="fixture" if mode=="fixture" else "luna"
     if mode=="frozen":
-        header=json.loads(Path(tape_path).read_text().splitlines()[0])
+        from analysis.scenario_calculated_replay import read_tape_text
+        text=read_tape_text(tape_path) if policy_profile in ECONOMIC_PROFILES else Path(tape_path).read_text()
+        header=json.loads(text.splitlines()[0])
         if header["contract"].get("schema") != (4 if policy_profile in ECONOMIC_PROFILES else 3 if observed is not None else 2):
             raise TapeMismatch("legacy_tape_requires_original_code; record_explicit_legacy-no-recovery_profile_for_new_comparison")
         origin=header["contract"]["decision_origin"]
         if origin not in {"fixture","luna"}:raise ValueError("unknown_decision_origin")
     contract=contract_for(bundle,path,cost_multiplier,initial_equity,origin,policy_profile,initial_state,
         observed_manifest=observed.manifest() if observed is not None else None,
-        market_input_mode=market_input_mode,allow_input_gaps=allow_input_gaps,initial_fee_context=initial_fee_context)
+        market_input_mode=market_input_mode,allow_input_gaps=allow_input_gaps,initial_fee_context=initial_fee_context,decision_slots_ms=decision_slots_ms)
     output=Path(output).resolve()
     if output.exists():raise ValueError("never_overwrite_replay")
     if any(p in output.parts for p in ("state","logs","trading")):
@@ -685,7 +694,7 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
                                            "consecutive_losses":0,"completed_ids":[]})
             runtime._save(state)
     statuses=Counter();outcome_reasons=Counter();start=bundle["start_ms"];end=bundle["end_ms"]
-    decisions=list(range(start,end,300000))
+    decisions=decision_slots_ms if decision_slots_ms is not None else list(range(start,end,300000))
     stopped = None
     drain_status = "COMPLETE"
     if len(decisions)>max_decisions:raise ValueError("decision_budget_exceeded")
