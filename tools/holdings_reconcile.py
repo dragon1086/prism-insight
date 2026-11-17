@@ -267,14 +267,14 @@ def ledger_view(market, account_key, db_path):
         tables = {row[0] for row in conn.execute("select name from sqlite_master where type='table'")}
         simulator = set()
         if "positions" in tables:
-            simulator = {hid for hid, in conn.execute(
+            simulator = {str(hid) for hid, in conn.execute(   # stored as text ("142") next to an integer holdings id
                 "select legacy_holding_id from positions where market = ? and status = 'OPEN' and entry_intent_id is null",
                 [market])}
     finally:
         conn.close()
     out = {}
     for hid, t, p, n in rows:
-        if hid in simulator:
+        if str(hid) in simulator:
             logger.info("[HOLDINGS_RECONCILE][%s] %s is a simulator-only holding (no broker order): not compared", market, t)
             continue
         out[str(t).upper()] = {"buy_price": p, "company_name": n}
