@@ -76,6 +76,7 @@ class EconomicProposalRejection(ScenarioValidationError):
     def __init__(self, code, evidence=None):
         if code not in {"risk budget exceeded", "allocation_below_minimum",
                         "allocation_budget_exceeded", "allocation_total_budget_exceeded",
+                        "allocation_batch_risk_limit_exceeded",
                         "entry_below_minimum"}:
             raise ValueError("unknown_economic_rejection")
         super().__init__(code)
