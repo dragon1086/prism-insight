@@ -520,7 +520,7 @@ def test_real_linux_namespace_tears_down_descendants_without_touching_sentinel(t
                 try:
                     if path.read_text().rpartition(") ")[2].split()[0] == "Z":
                         break
-                except FileNotFoundError:
+                except (FileNotFoundError, ProcessLookupError):
                     break
                 assert time.monotonic() < deadline
                 time.sleep(.02)
