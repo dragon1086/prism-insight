@@ -40,7 +40,7 @@ def build(snapshot, context, structure):
         levels = {}
         extremes = set()
         for ref,price,phase,observed in source_from_structure(structure,context)['points']:
-            if phase!='CONFIRMED' or ref=='MARK' or not 0<_number(observed)<=asof:
+            if phase!='CONFIRMED' or ref=='MARK' or ref.startswith('P:15m:') or not 0<_number(observed)<=asof:
                 continue
             if ref.startswith('P:') and ref.rsplit(':',1)[-1] not in {'high','low','ma10','ma35'}:
                 continue

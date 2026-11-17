@@ -8,7 +8,7 @@ from decimal import Decimal, ROUND_DOWN
 from core.llm_scenario import target_quantities
 from engine.scenario_ma_context import _frame_points
 from engine.scenario_snapshot import TIMEFRAME_MS
-from live.scenario_analysis_frames import ANALYSIS_FRAMES
+from live.scenario_analysis_frames import AUTHORITY_FRAMES
 
 
 def digest(value):
@@ -33,7 +33,7 @@ def goal_schema():
     def obj(properties):
         return dict(type='object', properties=properties, required=list(properties),
                     additionalProperties=False)
-    ref = obj(dict(frame=dict(type='string', enum=list(ANALYSIS_FRAMES)),
+    ref = obj(dict(frame=dict(type='string', enum=list(AUTHORITY_FRAMES)),
                    phase=dict(type='string', enum=['confirmed', 'forming']),
                    ma=dict(type='string', enum=['ma10', 'ma35'])))
     return dict(anyOf=[
@@ -161,7 +161,7 @@ def validate_goal_plan(plan, resolved, *, full_tp=False):
 def plan_goal(payload, context):
     if payload.get('action') == 'OPEN' and context.get('entry_contract_version') == 2:
         reference = payload['entry_contract']['goal'].get('reference')
-        if isinstance(reference, dict) and reference.get('frame') not in ANALYSIS_FRAMES:
+        if isinstance(reference, dict) and reference.get('frame') not in AUTHORITY_FRAMES:
             raise ValueError('entry_goal_frame_not_allowed_for_new_open')
         return resolve_goal(payload['entry_contract']['goal'], context)
     record = context.get('registered_entry_contract')

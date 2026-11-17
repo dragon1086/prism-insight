@@ -309,6 +309,10 @@ jobs:
             prism-btc/tests/test_scenario_normalization_execution.py \
             prism-btc/tests/test_scenario_tp_ladder.py \
             prism-btc/tests/test_scenario_prompt_logic.py \
+            prism-btc/tests/test_scenario_entry_plans.py \
+            prism-btc/tests/test_scenario_timeframe_priority.py \
+            prism-btc/tests/test_scenario_analysis_frames.py \
+            prism-btc/tests/test_scenario_15m_restore.py \
             prism-btc/tests/test_scenario_entry_contract_runtime.py \
             prism-btc/tests/test_scenario_entry_contract_wire.py \
             prism-btc/tests/test_scenario_entry_contract_provenance.py \

@@ -68,7 +68,7 @@ def prepare(snapshot, context, structure):
         tick = _number(context['price_tick'])
         if tick <= 0:return unavailable
         points = [(ref,_number(price),phase) for ref,price,phase,at in source_from_structure(structure,context)['points']
-                  if phase in {'CONFIRMED','FORMING'} and 0<_number(at)<=_number(snapshot['as_of_ms'])]
+                  if not ref.startswith('P:15m:') and phase in {'CONFIRMED','FORMING'} and 0<_number(at)<=_number(snapshot['as_of_ms'])]
         def rounded(value, upward):
             return (value/tick).to_integral_value(rounding=ROUND_CEILING if upward else ROUND_FLOOR)*tick
         layouts=[]

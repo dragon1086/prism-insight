@@ -109,7 +109,7 @@ def test_mirrored_real_derived_gap_facts_remain_frame_and_phase_specific(side):
         calls.append(request)
         payload = restore_model_input(json.loads(request["user_prompt"]))
         primary = payload["contract_context"]["ma_structure"]["primary"]
-        assert '15m' not in primary  # Retired-frame expansion cannot become current confirmation.
+        assert '15m' in primary  # Timing evidence cannot override the primary-frame restriction.
         for frame in ("30m", "1h"):
             assert primary[frame]["confirmed_gap"]["state"] == "NARROWING"
             assert primary[frame]["forming_gap"]["state"] == "NARROWING"
