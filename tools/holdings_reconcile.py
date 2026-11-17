@@ -55,16 +55,41 @@ MARKET_TZ = {"KR": "Asia/Seoul", "US": "America/New_York"}
 
 # Tables that carry live positions by ticker; history tables (trading_history, order_intents,
 # *_adjustment_log, watchlist_history) keep the old code on purpose: the trace stays readable.
+# Literal statements only (no table or column names formatted into SQL): (table, count, update); the
+# market-scoped ones take [old, market] / [new, old, market].
+_SHARED = [
+    ("loop_a_position_state", "select count(*) from loop_a_position_state where ticker = ? and market = ?",
+     "update loop_a_position_state set ticker = ? where ticker = ? and market = ?"),
+    ("loop_b_position_state", "select count(*) from loop_b_position_state where ticker = ? and market = ?",
+     "update loop_b_position_state set ticker = ? where ticker = ? and market = ?"),
+    ("positions", "select count(*) from positions where symbol = ? and market = ? and status = 'OPEN'",
+     "update positions set symbol = ? where symbol = ? and market = ? and status = 'OPEN'"),
+]
 TABLES = {
-    "KR": [("stock_holdings", "ticker", None), ("holding_decisions", "ticker", None),
-           ("loop_a_position_state", "ticker", "market"), ("loop_b_position_state", "ticker", "market"),
-           ("positions", "symbol", "market")],
-    "US": [("us_stock_holdings", "ticker", None), ("us_holding_decisions", "ticker", None),
-           ("us_pending_orders", "ticker", None),
-           ("loop_a_position_state", "ticker", "market"), ("loop_b_position_state", "ticker", "market"),
-           ("positions", "symbol", "market")],
+    "KR": [("stock_holdings", "select count(*) from stock_holdings where ticker = ?",
+            "update stock_holdings set ticker = ? where ticker = ?"),
+           ("holding_decisions", "select count(*) from holding_decisions where ticker = ?",
+            "update holding_decisions set ticker = ? where ticker = ?")] + _SHARED,
+    "US": [("us_stock_holdings", "select count(*) from us_stock_holdings where ticker = ?",
+            "update us_stock_holdings set ticker = ? where ticker = ?"),
+           ("us_holding_decisions", "select count(*) from us_holding_decisions where ticker = ?",
+            "update us_holding_decisions set ticker = ? where ticker = ?"),
+           ("us_pending_orders", "select count(*) from us_pending_orders where ticker = ?",
+            "update us_pending_orders set ticker = ? where ticker = ?")] + _SHARED,
 }
 HOLDINGS_TABLE = {"KR": "stock_holdings", "US": "us_stock_holdings"}
+HOLDINGS_SQL = {
+    "KR": {"name": "update stock_holdings set company_name = ? where ticker = ?",
+           "scale": "update stock_holdings set buy_price = buy_price * ?, current_price = current_price * ?, "
+                    "target_price = target_price * ?, stop_loss = stop_loss * ? where ticker = ?",
+           "scenario": "select id, scenario from stock_holdings where ticker = ?",
+           "save": "update stock_holdings set scenario = ? where id = ?"},
+    "US": {"name": "update us_stock_holdings set company_name = ? where ticker = ?",
+           "scale": "update us_stock_holdings set buy_price = buy_price * ?, current_price = current_price * ?, "
+                    "target_price = target_price * ?, stop_loss = stop_loss * ? where ticker = ?",
+           "scenario": "select id, scenario from us_stock_holdings where ticker = ?",
+           "save": "update us_stock_holdings set scenario = ? where id = ?"},
+}
 RUNTIME_FILES = {
     "KR": ["core_hold_kr.json", "oneil_watchlist_state_kr_v1.json", "reentry_v3_state_kr.json"],
     "US": ["core_hold_us.json", "oneil_watchlist_state_v1.json", "us_eligibility_metadata.json",
@@ -140,27 +165,21 @@ def apply_rename(market, old, new, *, db_path, runtime_dir, ratio=None, name=Non
     conn = sqlite3.connect(str(db_path), timeout=30)
     try:
         existing = {row[0] for row in conn.execute("select name from sqlite_master where type='table'")}
-        for table, column, market_col in TABLES[market]:
+        for table, count_sql, update_sql in TABLES[market]:
             if table not in existing:
                 continue
-            where, params = f"{column} = ?", [old]
-            if market_col:
-                where += f" and {market_col} = ?"
-                params.append(market)
-            if table == "positions":
-                where += " and status = 'OPEN'"
-            n = conn.execute(f"select count(*) from {table} where {where}", params).fetchone()[0]
+            params = [old, market] if "market = ?" in count_sql else [old]
+            n = conn.execute(count_sql, params).fetchone()[0]
             if n and not dry_run:
-                conn.execute(f"update {table} set {column} = ? where {where}", [new, *params])
+                conn.execute(update_sql, [new, *params])
             changed[table] = n
-        holdings = HOLDINGS_TABLE[market]
+        holdings, sql = HOLDINGS_TABLE[market], HOLDINGS_SQL[market]
         if changed.get(holdings) and not dry_run:
             if name:
-                conn.execute(f"update {holdings} set company_name = ? where ticker = ?", [name, new])
+                conn.execute(sql["name"], [name, new])
             if ratio and ratio > 0:
-                sets = ", ".join(f"{c} = {c} * ?" for c in PRICE_COLUMNS)
-                conn.execute(f"update {holdings} set {sets} where ticker = ?", [ratio] * len(PRICE_COLUMNS) + [new])
-                for row_id, scenario in conn.execute(f"select id, scenario from {holdings} where ticker = ?", [new]):
+                conn.execute(sql["scale"], [ratio] * len(PRICE_COLUMNS) + [new])
+                for row_id, scenario in conn.execute(sql["scenario"], [new]).fetchall():
                     try:
                         data = json.loads(scenario or "{}")
                     except ValueError:
@@ -169,7 +188,7 @@ def apply_rename(market, old, new, *, db_path, runtime_dir, ratio=None, name=Non
                         data["highest_price"] = round(float(data["highest_price"]) * ratio, 6)
                     data["corporate_action"] = {"from": old, "to": new, "ratio": ratio,
                                                 "at": datetime.now(ZoneInfo("UTC")).isoformat()}
-                    conn.execute(f"update {holdings} set scenario = ? where id = ?", [json.dumps(data, ensure_ascii=False), row_id])
+                    conn.execute(sql["save"], [json.dumps(data, ensure_ascii=False), row_id])
         if not dry_run:
             conn.commit()
     finally:
@@ -239,8 +258,9 @@ async def broker_view(market, account, *, with_quotes, service_factory=_service)
 def ledger_view(market, account_key, db_path):
     conn = sqlite3.connect(str(db_path), timeout=30)
     try:
-        rows = conn.execute(f"select ticker, buy_price, company_name from {HOLDINGS_TABLE[market]} where account_key = ?",
-                            [account_key]).fetchall()
+        query = ("select ticker, buy_price, company_name from stock_holdings where account_key = ?" if market == "KR" else
+                 "select ticker, buy_price, company_name from us_stock_holdings where account_key = ?")
+        rows = conn.execute(query, [account_key]).fetchall()
     finally:
         conn.close()
     return {str(t).upper(): {"buy_price": p, "company_name": n} for t, p, n in rows}
