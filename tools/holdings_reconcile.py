@@ -256,14 +256,29 @@ async def broker_view(market, account, *, with_quotes, service_factory=_service)
 
 
 def ledger_view(market, account_key, db_path):
+    """Holdings the broker should hold. A strategy entry the real account never bought (micro-split budget
+    below one share: "simulator holding preserved") has an open position row without an entry intent; it
+    is left out, otherwise it would read as GONE every day."""
     conn = sqlite3.connect(str(db_path), timeout=30)
     try:
-        query = ("select ticker, buy_price, company_name from stock_holdings where account_key = ?" if market == "KR" else
-                 "select ticker, buy_price, company_name from us_stock_holdings where account_key = ?")
+        query = ("select id, ticker, buy_price, company_name from stock_holdings where account_key = ?" if market == "KR"
+                 else "select id, ticker, buy_price, company_name from us_stock_holdings where account_key = ?")
         rows = conn.execute(query, [account_key]).fetchall()
+        tables = {row[0] for row in conn.execute("select name from sqlite_master where type='table'")}
+        simulator = set()
+        if "positions" in tables:
+            simulator = {hid for hid, in conn.execute(
+                "select legacy_holding_id from positions where market = ? and status = 'OPEN' and entry_intent_id is null",
+                [market])}
     finally:
         conn.close()
-    return {str(t).upper(): {"buy_price": p, "company_name": n} for t, p, n in rows}
+    out = {}
+    for hid, t, p, n in rows:
+        if hid in simulator:
+            logger.info("[HOLDINGS_RECONCILE][%s] %s is a simulator-only holding (no broker order): not compared", market, t)
+            continue
+        out[str(t).upper()] = {"buy_price": p, "company_name": n}
+    return out
 
 
 def session_open(market, now=None):

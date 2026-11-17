@@ -53,13 +53,15 @@ def _db(tmp_path):
         buy_price real, current_price real, target_price real, stop_loss real, scenario text);
     create table us_holding_decisions (id integer primary key, ticker text);
     create table loop_a_position_state (ticker text, market text);
-    create table positions (id text, market text, symbol text, status text);
+    create table positions (id text, market text, symbol text, status text, legacy_holding_id integer, entry_intent_id text);
     create table us_trading_history (ticker text);
     insert into us_stock_holdings values (124, 'prod:1:01', 'BKH', 'Black Hills Corporation', 76.92, 86.7, 91.884, 82.68,
         '{"highest_price": 87.56}');
     insert into us_holding_decisions values (1, 'BKH');
     insert into loop_a_position_state values ('BKH', 'US'), ('BKH', 'KR');
-    insert into positions values ('legacy:US:124', 'US', 'BKH', 'OPEN'), ('old', 'US', 'BKH', 'CLOSED');
+    insert into positions values ('legacy:US:124', 'US', 'BKH', 'OPEN', 124, 'intent-1'), ('old', 'US', 'BKH', 'CLOSED', 99, 'x'),
+        ('legacy:US:142', 'US', 'LLY', 'OPEN', 142, null);
+    insert into us_stock_holdings values (142, 'prod:1:01', 'LLY', 'Eli Lilly', 1459.21, 1427.84, 1750.0, 1400.0, '{}');
     insert into us_trading_history values ('BKH');
     """)
     conn.commit()
@@ -77,7 +79,7 @@ def test_apply_rename_touches_live_tables_and_state_files_but_not_history(tmp_pa
     assert changed == {"us_stock_holdings": 1, "us_holding_decisions": 1, "loop_a_position_state": 1, "positions": 1,
                        "core_hold_us.json": 2}
     conn = sqlite3.connect(db)
-    assert conn.execute("select ticker, company_name, buy_price from us_stock_holdings").fetchone() == \
+    assert conn.execute("select ticker, company_name, buy_price from us_stock_holdings where id = 124").fetchone() == \
         ("HZN", "Bright Horizon Energy Corporation", 76.92)
     assert conn.execute("select ticker from loop_a_position_state where market='KR'").fetchone() == ("BKH",)
     assert conn.execute("select symbol from positions where status='CLOSED'").fetchone() == ("BKH",)
@@ -98,7 +100,7 @@ def test_dry_run_changes_nothing(tmp_path):
     db, rt = _db(tmp_path)
     changed = HR.apply_rename("US", "BKH", "HZN", db_path=db, runtime_dir=rt, dry_run=True)
     assert changed["us_stock_holdings"] == 1
-    assert sqlite3.connect(db).execute("select ticker from us_stock_holdings").fetchone() == ("BKH",)
+    assert sqlite3.connect(db).execute("select ticker from us_stock_holdings where id = 124").fetchone() == ("BKH",)
 
 
 class _Service:
@@ -133,12 +135,19 @@ def test_run_applies_the_one_to_one_rename_and_alerts_once_per_day(tmp_path):
                                         accounts=[account], service_factory=factory, now=now, sender=sent.append))
     assert len(alerts) == 1 and "종목코드 변경(1:1) 자동 반영: BKH → HZN" in alerts[0] and "10→10주" in alerts[0] and "반영:" in alerts[0]
     assert json.loads(state.read_text())["snapshot|US|prod:1:01"]["quantities"] == {"HZN": 10.0}
-    assert sqlite3.connect(db).execute("select ticker from us_stock_holdings").fetchone() == ("HZN",)
+    assert sqlite3.connect(db).execute("select ticker from us_stock_holdings where id = 124").fetchone() == ("HZN",)
     assert sent and sent[0].startswith("[주의] 보유 종목 대조")
     # second run the same day: the ledger now matches the broker, nothing to report
     report, alerts = asyncio.run(HR.run("US", db_path=db, runtime_dir=rt, state_path=tmp_path / "state.json",
                                         accounts=[account], service_factory=factory, now=now, sender=sent.append))
     assert report == [] and alerts == []
+
+
+def test_simulator_only_holdings_are_not_compared_with_the_broker(tmp_path):
+    db, rt = _db(tmp_path)
+    ledger = HR.ledger_view("US", "prod:1:01", db)
+    assert set(ledger) == {"BKH"}          # LLY: open position without an entry intent (budget below one share)
+    assert HR.classify(ledger, {"BKH": {"avg_price": 76.9, "quantity": 10}}, previous={"BKH": 10}) == []
 
 
 def test_run_keeps_a_failed_balance_inquiry_as_missing(tmp_path):
@@ -154,4 +163,4 @@ def test_run_keeps_a_failed_balance_inquiry_as_missing(tmp_path):
                                         accounts=[account], service_factory=lambda m, n: Broken([]), sender=sent.append,
                                         now=datetime(2026, 11, 18, 9, 50, tzinfo=ZoneInfo("America/New_York"))))
     assert len(report) == 1 and "증권사 잔고 조회 실패" in report[0]
-    assert sqlite3.connect(db).execute("select ticker from us_stock_holdings").fetchone() == ("BKH",)   # not GONE
+    assert sqlite3.connect(db).execute("select ticker from us_stock_holdings where id = 124").fetchone() == ("BKH",)   # not GONE
