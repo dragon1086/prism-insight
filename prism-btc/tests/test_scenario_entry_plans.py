@@ -253,3 +253,18 @@ def test_example_exit_weights_pass_actual_host_not_only_schema(side):
             assert receipt['entry_economics']['ratio']>=1.2
             tested+=1
     assert tested
+
+
+@pytest.mark.parametrize('side,nearest_stop', [('LONG',94.9),('SHORT',105.1)])
+def test_cost_supported_stop_variant_is_not_hidden_by_unassessed_same_style(monkeypatch,side,nearest_stop):
+    from live import scenario_entry_plans as m
+    s,c,t=sample();before=deepcopy((s,c,t));original=m._preview
+    def preview(raw,context):
+        if raw['side']==side and raw['hard_stop']==nearest_stop:return []
+        return original(raw,context)
+    monkeypatch.setattr(m,'_preview',preview)
+    plans=[p for p in m.prepare(s,c,t)['layouts']if p['side']==side]
+    assert [p['entry_kind']for p in plans]==['CURRENT_LIMIT','BREAKOUT_TRIGGER','PULLBACK_LIMIT']
+    assert all(p['sizing_examples']for p in plans)
+    assert all(p['hard_stop']!=nearest_stop for p in plans)
+    assert (s,c,t)==before
