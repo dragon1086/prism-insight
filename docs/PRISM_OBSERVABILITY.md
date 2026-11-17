@@ -60,6 +60,32 @@ Jobs and their heartbeat lines are listed in `JOBS` (the loops' own summary line
 the heartbeat. Without a readable journal such a job is skipped, never alerted. Rollback:
 `OPS_WATCHDOG_ENABLED=false` or remove the cron line. State: `runtime/ops_watchdog_state.json`.
 
+## Holdings reconcile (corporate actions)
+
+`tools/holdings_reconcile.py` (db-server cron, KR 09:06 KST and US 09:36 ET on weekdays, added
+2026-11-18 after Black Hills became Bright Horizon Energy on 11/16: KIS renamed the position to HZN
+the same day, our tables kept BKH, the KIS quote for BKH froze at the 11/13 close and the hard-stop
+loop watched that frozen price for two sessions) compares each configured account's broker balance
+(inquiry TR only, never an order) with the ledger's holdings and classifies the difference:
+
+- `RENAME` (one ledger ticker gone, one broker ticker new, same share count as the previous run's
+  snapshot, broker average price within 5% of our buy price): applied automatically to the live
+  tables (`*_stock_holdings`, `*_holding_decisions`, `us_pending_orders`, `loop_a/b_position_state`,
+  open `positions`) and the runtime state files (core hold, O'Neil watchlist, US eligibility,
+  re-entry v3 state); history tables and the ClickStack ledger keep the old code (`legacy_holding_id`
+  links them). Reported to the maintenance chat with the rows changed.
+- `RENAME_RATIO` (share count changed, or no snapshot yet, or prices differ: a 0.98-for-1 merger moves
+  the price only 2%, so the share count decides), `SPLIT` (same ticker, count or price ratio changed),
+  `GONE` (not at the broker: cash merger, delisting, a sale outside the system), `OUTSIDE` (broker
+  ticker the ledger does not know: manual buy, spin-off shares), `AMBIGUOUS` (several at once),
+  `STALE_QUOTE` (0.00% change and zero volume during the session): reported only, with the exact
+  `--apply-rename OLD NEW --ratio R` command where one applies. The ratio scales `buy_price`,
+  `current_price`, `target_price`, `stop_loss` and the scenario `highest_price`, and records
+  `scenario.corporate_action`. `MISSING` stays missing: a failed balance inquiry classifies nothing.
+- Dedupe: one alert per finding per market day (`OUTSIDE` once). State and the broker share-count
+  snapshot: `runtime/holdings_reconcile_state.json`. Rollback: `HOLDINGS_RECONCILE_ENABLED=false` or
+  remove the cron lines. Tests: `tests/test_holdings_reconcile.py`.
+
 ## Deployment topology
 
 - `db-server`: PRISM pipeline, JSONL spool, shipper, SSH local-forward tunnel.
