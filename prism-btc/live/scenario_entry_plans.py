@@ -132,6 +132,8 @@ def prepare(snapshot, context, structure):
             candidates=[p for p in layouts if p['side']==side]
             # Reserve a place for each feasible entry style before duplicating stops.
             styles=list(dict.fromkeys(p['entry_kind']for p in candidates))
+            # Prefer demonstrated cost feasibility without dropping an unassessed style.
+            candidates.sort(key=lambda p:not bool(p['sizing_examples']))
             diverse=[next(p for p in candidates if p['entry_kind']==kind)for kind in styles]
             selected.extend((diverse+[p for p in candidates if p not in diverse])[:3])
         layouts=selected
