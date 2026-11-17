@@ -75,7 +75,7 @@ def source_from_structure(structure, context):
     points = []
     if _number(context.get('mark_price')) and _number(context.get('account_captured_at')):
         points.append(['MARK', context['mark_price'], 'MARK', context['account_captured_at'] * 1000])
-    for frame in ('30m', '1h'):
+    for frame in ('15m', '30m', '1h'):
         for index, point in enumerate((structure.get('primary', {}).get(frame, {}).get('points') or [])[:4]):
             phase = point.get('phase')
             if (phase not in {'CONFIRMED', 'FORMING'} or not _number(point.get('as_of_ms'))
@@ -90,7 +90,7 @@ def source_from_structure(structure, context):
                 or not _number(level.get('as_of_ms')) or type(level.get('is_confirmed')) is not bool):
             continue
         points.append(['MA:' + ref, level['price'], 'CONFIRMED' if level['is_confirmed'] else 'FORMING', level['as_of_ms']])
-    body = dict(version=1, points=points[:57])
+    body = dict(version=1, points=points[:77])
     return dict(body, sha256=digest(body))
 
 
@@ -142,7 +142,7 @@ def compile_explanation(raw, context, plan, *, scope, snapshot=None):
     if valid:
         for row in source['points']:
             if (isinstance(row, list) and len(row) == 4 and isinstance(row[0], str)
-                    and (row[0] == 'MARK' or row[0].startswith(('P:30m:', 'P:1h:', 'MA:4h.', 'MA:12h.', 'MA:1d.', 'MA:1w.')))
+                    and (row[0] == 'MARK' or row[0].startswith(('P:15m:', 'P:30m:', 'P:1h:', 'MA:4h.', 'MA:12h.', 'MA:1d.', 'MA:1w.')))
                     and _number(row[1]) and row[2] in {'MARK', 'CONFIRMED', 'FORMING'} and _number(row[3])):
                 levels[row[0]] = dict(ref=row[0], price=row[1], phase=row[2], as_of_ms=row[3])
     data = raw if isinstance(raw, dict) else {}
@@ -210,7 +210,7 @@ def compile_explanation(raw, context, plan, *, scope, snapshot=None):
 PROMPT = """Holding explanations follow the structured rationale schema. interpretation is
 unverified qualitative opinion; evidence_refs and comparisons identify frozen facts,
 not newly calculated prices. Never put literal values/relations in comparison objects.
-Use explanation_source references: MARK, P:30m|1h:index:field, or MA:level_id.
+Use explanation_source references: MARK, P:15m|30m|1h:index:field, or MA:level_id.
 Respect each point's phase/time; no 15m analysis. If the catalog is factored, point
 IDs refer to the supplied ma_structure primary points/levels and account Mark.
 WAIT/REDUCE/EXIT targets use CURRENT:TP:<current target id>; ADJUST uses its own

@@ -3,9 +3,10 @@ from copy import deepcopy
 import math
 import re
 
-ANALYSIS_FRAMES = ('30m', '1h', '4h', '12h', '1d', '1w')
+ANALYSIS_FRAMES = ('15m', '30m', '1h', '4h', '12h', '1d', '1w')
+AUTHORITY_FRAMES = tuple(frame for frame in ANALYSIS_FRAMES if frame != '15m')
 PRIMARY_FRAMES = ('30m', '1h')
-_RETIRED_TEXT = re.compile(r'(?<![a-z0-9])15[\s_-]*(?:m(?:in(?:ute)?s?)?|분(?:봉)?)(?![a-z0-9])', re.IGNORECASE)
+_RETIRED_TEXT = re.compile(r'(?<![a-z0-9])5[\s_-]*(?:m(?:in(?:ute)?s?)?|분(?:봉)?)(?![a-z0-9])', re.IGNORECASE)
 _OPINIONS = {'reason', 'rationale', 'counterevidence', 'invalidation', 'summary', 'note'}
 
 
@@ -28,7 +29,7 @@ def allowed_evidence_path(path):
         return False
     parts = path.split('.')
     return (not ('volume_acceleration' in parts or 'same_progress_profile' in parts)
-            and (not path.startswith('timeframes.') or len(parts) > 1 and parts[1] in ANALYSIS_FRAMES))
+            and (not path.startswith('timeframes.') or len(parts) > 1 and parts[1] in AUTHORITY_FRAMES))
 
 
 def _schema_frames(value, *, field=None, recovery=False):
@@ -103,7 +104,7 @@ def analysis_model_view(payload):
             primary.pop('volume_4d_30m', None)
     structure = ctx.get('ma_structure')
     if isinstance(structure, dict):
-        structure['primary'] = {k:v for k,v in structure.get('primary', {}).items() if k in PRIMARY_FRAMES}
+        structure['primary'] = {k:v for k,v in structure.get('primary', {}).items() if k in ('15m', *PRIMARY_FRAMES)}
         if isinstance(structure.get('higher_frames'), dict):
             structure['higher_frames'] = {k:v for k,v in structure['higher_frames'].items() if k in ANALYSIS_FRAMES}
         if isinstance(structure.get('levels'), dict):
@@ -112,9 +113,9 @@ def analysis_model_view(payload):
                 if isinstance(structure.get(key), list):
                     structure[key] = [ref for ref in structure[key] if ref in structure['levels']]
         if 'status' in structure:
-            retained = list(structure.get('primary', {}).values()) + list(structure.get('higher_frames', {}).values())
+            retained = [v for k,v in structure.get('primary', {}).items() if k in PRIMARY_FRAMES] + list(structure.get('higher_frames', {}).values())
             structure['status'] = 'available' if any(row.get('status') == 'available' for row in retained) else 'unavailable'
-        structure.get('decision_priority', {})['timing_only'] = []
+        structure.get('decision_priority', {})['timing_only'] = '15m' if '15m' in market.get('timeframes', {}) else []
     facts = ctx.get('current_primary_frame_facts')
     if isinstance(facts, dict):
         ctx['current_primary_frame_facts'] = {k:v for k,v in facts.items() if k in PRIMARY_FRAMES}
@@ -131,7 +132,7 @@ def analysis_model_view(payload):
                 'current_plan', 'recent_actions', 'recent_waits'):
         _omit_retired_opinions(ctx.get(key))
     _schema_frames(result.get('response_contract'))
-    ctx['analysis_frame_policy'] = dict(version=1, frames=list(ANALYSIS_FRAMES),
-        scope='CURRENT_JUDGMENT_ONLY_NO_15M_OR_15M_DERIVED_TIMING',
+    ctx['analysis_frame_policy'] = dict(version=2, frames=list(ANALYSIS_FRAMES),
+        scope='MINIMUM_15M_TIMING_PRIMARY_30M_1H_AUTHORITY_UNCHANGED',
         history='Original contracts/IDs/goal prices/failure rules are immutable history, not current lower-frame evidence.')
     return result

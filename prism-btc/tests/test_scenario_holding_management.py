@@ -192,4 +192,4 @@ def test_compact_confirmed_holding_policy_is_pinned():
     context = dict(scenario_id='held', positions=[dict(price=100, quantity=1)],
                    pending_entries=[], accounting_status='confirmed', protection_ok=True)
     prompt = holding_management_instructions(SYSTEM_PROMPT + MA_STRUCTURE_PROMPT, context)
-    assert hashlib.sha256(prompt.encode()).hexdigest() == '22348125f2827b9e0242abf0a3259f58423f6fc5c868894942236142da62c3d2'
+    assert hashlib.sha256(prompt.encode()).hexdigest() == 'efaffc650e7efe91a576350d1265ed9b6face61c575742f089360ab6ec6774c8'

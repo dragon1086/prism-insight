@@ -1,4 +1,4 @@
-"""Retired lower-frame facts never enter new model judgment inputs."""
+"""15m timing remains visible while lower frames and authority changes stay excluded."""
 from copy import deepcopy
 import json
 
@@ -41,29 +41,30 @@ def source():
                 'enum':['timeframes.15m.forming.close','timeframes.30m.forming.close']}}}}]}}})
 
 
-def test_model_view_removes_direct_and_derived_15m_without_source_mutation():
+def test_model_view_retains_15m_timing_without_source_mutation():
     raw=source()
     before=deepcopy(raw)
     view=analysis_model_view(raw)
     assert raw==before
-    assert set(view['market_snapshot']['timeframes'])=={'30m','1h'}
+    assert set(view['market_snapshot']['timeframes'])=={'15m','30m','1h'}
     for frame in view['market_snapshot']['timeframes'].values():
         assert 'volume_acceleration' not in frame['forming']
         assert 'same_progress_profile' not in frame['forming']['volume_projection']
         assert frame['forming']['volume_projection']['projected_final']==10
     ctx=view['contract_context']
-    assert '15m' not in ctx['ma_structure']['primary']
-    assert ctx['ma_structure']['decision_priority']['timing_only']==[]
+    assert '15m' in ctx['ma_structure']['primary']
+    assert ctx['ma_structure']['decision_priority']['timing_only']=='15m'
     assert '15m' not in ctx['current_primary_frame_facts']
     assert all('timeframes.15m.forming.close' not in ctx['recovery'][key] for key in ('baseline','current','changed_evidence'))
     assert view['response_contract']['properties']['frame']['enum']==['30m','1h']
     assert view['response_contract']['properties']['recovery']['anyOf'][0]['properties']['changed_evidence']['items']['enum']==['timeframes.30m.forming.close']
 
 
-def test_lower_frame_perturbation_cannot_change_current_judgment_facts():
+def test_5m_perturbation_cannot_change_current_judgment_facts():
     raw=source()
+    raw['market_snapshot']['timeframes']['5m']=deepcopy(raw['market_snapshot']['timeframes']['15m'])
     altered=deepcopy(raw)
-    altered['market_snapshot']['timeframes']['15m']['forming']['ohlcv']['close']=999999
+    altered['market_snapshot']['timeframes']['5m']['forming']['ohlcv']['close']=999999
     for frame in altered['market_snapshot']['timeframes'].values():
         frame['forming']['volume_acceleration']['recent_15m_volume']=999999
         frame['forming']['volume_projection']['same_progress_profile']['current_volume']=999999
@@ -109,7 +110,7 @@ def test_original_numeric_codec_keeps_15m_but_new_wire_evidence_does_not():
     assert schema['items']['enum']==['timeframes.30m.forming.close']
 
 
-def test_calculated_flat_and_active_requests_have_no_live_15m():
+def test_calculated_flat_and_active_requests_keep_15m_timing():
     from live.scenario_calculated_review import _model_payload
     from live.scenario_model_input import restore_model_input
     from tests.test_scenario_calculated_review import context
@@ -118,8 +119,7 @@ def test_calculated_flat_and_active_requests_have_no_live_15m():
         ctx=context()
         ctx.update(scenario_id=scenario,recovery=raw['contract_context']['recovery'])
         result=restore_model_input(_model_payload(raw['market_snapshot'],ctx,{}))
-        assert '15m' not in result['market_snapshot']['timeframes']
-        assert '15m' not in result['contract_context']['ma_structure']['primary']
+        assert '15m' in result['market_snapshot']['timeframes']
         assert '15m' not in result['contract_context'].get('entry_display',{}).get('confirmed_close_tail',{})
         assert '15m' not in json.dumps(result['contract_context']['recovery'])
 
@@ -184,8 +184,8 @@ def test_retired_historical_opinions_are_omitted_without_mutating_registered_con
         'goal':{'reference':{'frame':'15m'}},'explicit_failure':{'price':123}}}
     ctx=raw['contract_context']
     ctx['registered_entry_contract']=deepcopy(contract)
-    ctx['previous_thesis_assessment']={'status':'WEAKENING','reason':'15분봉 반등 2.99x'}
-    ctx['position_flow']={'thesis_transitions':[{'reason':'15m drop 88','price':123}]}
+    ctx['previous_thesis_assessment']={'status':'WEAKENING','reason':'5분봉 반등 2.99x'}
+    ctx['position_flow']={'thesis_transitions':[{'reason':'5m drop 88','price':123}]}
     ctx['current_plan']={'action':'WAIT','rationale':'15-minute weakness','entry_contract':deepcopy(contract)}
     ctx['review_memory']={'items':[{'id':'keep','reason':'30m support 15000'}]}
     before=deepcopy(raw)
@@ -239,7 +239,7 @@ def test_legacy_single_call_uses_same_current_frame_boundary():
         return SimpleNamespace(text=json.dumps(wire(ctx)))
     propose(market,ctx,{},generate=generate,clock=lambda:1000)
     actual=restore_model_input(json.loads(calls[0]['user_prompt']))
-    assert '15m' not in actual['market_snapshot']['timeframes']
+    assert '15m' in actual['market_snapshot']['timeframes']
     assert '15m' not in actual['contract_context']['current_primary_frame_facts']
     assert market==before
 
@@ -257,7 +257,7 @@ def test_collection_issue_details_are_not_signals_and_invalid_source_stays_inval
     before=deepcopy(raw)
     view=analysis_model_view(raw)['market_snapshot']
     assert view['valid'] is False and view['as_of_ms']==123
-    assert view['issues']==['NON_ANALYSIS_COLLECTION_ISSUE_DETAIL_OMITTED','30m:missing_forming']
+    assert view['issues']==['15m:stale_confirmed_history','30m:missing_forming']
     assert raw==before
 
 

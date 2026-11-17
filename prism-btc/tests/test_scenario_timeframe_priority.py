@@ -11,15 +11,15 @@ from tests.test_scenario_prompt_logic import context
 
 def test_priority_and_missing_frames_are_explicit_in_model_payload():
     snap = snapshot()
-    for frame in ('1h', '4h', '12h', '1d', '1w'):
+    for frame in ('15m', '1h', '4h', '12h', '1d', '1w'):
         snap['timeframes'].update(snapshot(frame)['timeframes'])
     original = deepcopy(snap)
     ctx = dict(context(), now=NOW/1000, mark_price=100)
     data = restore_model_input(_model_payload(snap, ctx, {}))['contract_context']['ma_structure']
     assert data['decision_priority'] == dict(
         descending=['1h', '30m', '4h', '12h', '1d', '1w'],
-        timing_only=[], interpretation='QUALITATIVE_EMPHASIS_NOT_PROBABILITY_OR_VETO')
-    assert '15m' not in data['primary']
+        timing_only='15m', interpretation='QUALITATIVE_EMPHASIS_NOT_PROBABILITY_OR_VETO')
+    assert '15m' in data['primary']
     for frame in ('4h', '12h', '1d', '1w'):
         higher = data['higher_frames'][frame]
         assert higher['status'] == 'available'
