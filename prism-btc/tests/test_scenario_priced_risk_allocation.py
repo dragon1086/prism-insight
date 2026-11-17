@@ -34,9 +34,9 @@ def test_fixed_5310_budget_crossing_is_prevented_before_pricing():
     raw.update(confidence=.58,hard_stop=83520,chase=dict(max_bps=0,max_reprices=0))
     raw['entries']=[dict(id='long_initial',price=83890,trigger_price=None,allocation_fraction=.65)]
     plan,receipt=allocate_entry_risk(raw,ctx)
-    assert receipt['entries'][0]['allocation_budget']==pytest.approx(17.7334015276899)
+    assert receipt['entries'][0]['allocation_budget']==pytest.approx(14.11146010161)
     assert plan['entries'][0]['price']==83890
-    assert plan['entries'][0]['quantity']==.024
+    assert plan['entries'][0]['quantity']==.019
     effective=deepcopy(plan)
     effective['entries'][0]['price']=83897.3
     validate_allocation_prices(effective,receipt,ctx)

@@ -706,7 +706,7 @@ def _base_model_payload(snapshot, context, response_contract, *, calculated_cand
     return augmented if _size(augmented) <= _MODEL_INPUT_LIMIT else baseline
 
 
-ALLOCATION_SINGLE_PROMPT = """Allocation mode: new entries use allocation_fraction, not BTC quantity. Fractions allocate remaining confidence-limited NEW risk, not equity, margin or holdings; total new-entry fractions must not exceed one. The host owns sizing, costs and lot rounding; do not inflate confidence/fractions to pass. OPEN target fractions use the initial batch; new ADJUST targets use the actual remainder. Never rewrite observed positions. REDUCE uses its separate fields. Failed minimums/budgets are rejected, not repaired.
+ALLOCATION_SINGLE_PROMPT = """Allocation mode: new entries use allocation_fraction, not BTC quantity. Fractions allocate remaining confidence-limited NEW risk, not equity, margin or holdings; total new-entry fractions must not exceed one. The host owns sizing, costs and lot rounding and may impose a smaller aggregate NEW-entry batch risk ceiling; do not inflate confidence/fractions to pass or compensate. OPEN target fractions use the initial batch; new ADJUST targets use the actual remainder. Never rewrite observed positions. REDUCE uses its separate fields. Failed minimums/budgets are rejected, not repaired.
 """
 
 

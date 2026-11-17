@@ -25,9 +25,9 @@ def test_regression_is_hypothetical_allocation_not_rewritten_model_response():
     original = deepcopy(p)
     plan, receipt = allocate_entry_risk(p, context())
     assert p == original
-    assert plan["entries"][0]["quantity"] == .036
-    assert receipt["new_risk_ceiling"] == 37.5
-    assert receipt["entries"][0]["computed_risk"] == pytest.approx(36.75672)
+    assert plan["entries"][0]["quantity"] == .014
+    assert receipt["new_risk_ceiling"] == 15
+    assert receipt["entries"][0]["computed_risk"] == pytest.approx(14.29428)
     validate_allocation_prices(plan, receipt, context())
 
 
@@ -141,7 +141,7 @@ def test_decimal_step_and_no_entries_preserve_plan():
     p, c = proposal(), context()
     c.update(quantity_step=.003, minimum_quantity=.003)
     plan, r = allocate_entry_risk(p, c)
-    assert plan["entries"][0]["quantity"] == .036
+    assert plan["entries"][0]["quantity"] == .012
     validate_allocation_prices(plan, r, c)
     p.update(action="WAIT", side=None, hard_stop=None, entries=[])
     plan, r = allocate_entry_risk(p, c)
