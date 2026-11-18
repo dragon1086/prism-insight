@@ -56,3 +56,42 @@ def test_compressed_and_plain_tapes_preserve_exact_text(tmp_path):
     with gzip.open(packed, 'wt', encoding='utf-8') as stream:
         stream.write(text)
     assert read_tape_text(plain) == read_tape_text(packed) == text
+
+
+def test_window_schedule_rechecks_the_entire_window_and_keeps_warmup():
+    from analysis.scenario_replay import window_decision_slots
+    bundle = dict(start_ms=0, end_ms=10800000)
+    windows = [dict(start_ms=1800000,end_ms=5400000),
+               dict(start_ms=7200000,end_ms=9000000)]
+    before = deepcopy(windows)
+    assert window_decision_slots(bundle,windows) == [1500000,1800000,3600000,5400000,6900000,7200000,9000000]
+    assert windows == before
+
+
+@pytest.mark.parametrize('windows', [[],[dict(start_ms=True,end_ms=1800000)],
+    [dict(start_ms=0,end_ms=1800000)],[dict(start_ms=1800000,end_ms=1800000)],
+    [dict(start_ms=1800001,end_ms=3600001)],[dict(start_ms=1800000,end_ms=3900000)],
+    [dict(start_ms=1800000,end_ms=10800000)],None])
+def test_invalid_window_schedule_is_rejected(windows):
+    from analysis.scenario_replay import window_decision_slots
+    with pytest.raises(ValueError,match='invalid_review_windows'):
+        window_decision_slots(dict(start_ms=0,end_ms=10800000),windows)
+
+
+def test_sampled_economic_coverage_never_claims_full_period_model_evaluation(tmp_path):
+    bundle, market = inputs(900000)
+    slots = [bundle['start_ms'], bundle['start_ms']+600000]
+    tape=tmp_path/'economic.tape'
+    with network_boundary('frozen')as denied:
+        recorded=run_replay(bundle,market,tmp_path/'recorded',mode='fixture',tape_path=tape,
+            policy_profile='single-pass-economic-v4',policy=wait_policy,
+            decision_slots_ms=slots,clock_monotonic=lambda:0.)
+        frozen=run_replay(bundle,market,tmp_path/'frozen',mode='frozen',tape_path=tape,
+            policy_profile='single-pass-economic-v4',decision_slots_ms=slots)
+    assert not denied
+    c=recorded['coverage']
+    assert c['review_scope']=='REGISTERED_SAMPLED_SCHEDULE'
+    assert c['full_period_5m_slots']==3 and c['model_review_records']==2
+    assert c['slots_without_model_review']==[]
+    assert not c['full_period_model_record_coverage']
+    assert recorded['result_hash']==frozen['result_hash']
