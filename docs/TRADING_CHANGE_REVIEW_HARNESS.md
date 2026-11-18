@@ -252,6 +252,14 @@ data or a falsifiable test.
 7. **Make the effect observable and reversible.** Log a stable reason code,
    preserve enough identifiers for later outcome analysis, and keep rollback
    to one small code change or feature flag.
+8. **Keep the research engine in step (user rule 2026-11-18).** The full-ops
+   research engine (local `tasks/research-20261117/full-ops/`, `acct4.py` +
+   `FIDELITY_CHECKLIST_ko.md`) is the baseline for strategy research and copies
+   production rules. When a change alters first size, adds, pyramid rows,
+   re-entry, sell lines, slots, batch times or a LIVE flag, update the engine
+   in the same task, rerun its `revalidate.sh` until the scorecard passes, and
+   update `tests/test_research_engine_contract.py`. Research run on an engine
+   that lags production is not evidence.
 
 ## Gotcha: local evidence is not a global gate
 
