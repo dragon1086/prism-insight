@@ -32,9 +32,20 @@ class RuntimeReadinessError(ValueError):
 
 
 _REMOTE_READINESS = r"""
-import hashlib,json,shlex,subprocess,sys,time
+import hashlib,json,shlex,sqlite3,subprocess,sys,time
+from contextlib import closing
 from pathlib import Path
 head,cron_hash=sys.argv[1:3]
+def model_healthy(db=Path('/root/prism-insight/stock_tracking_db.sqlite')):
+    try:
+        with closing(sqlite3.connect('file:'+str(db)+'?mode=ro',uri=True,timeout=1)) as conn:
+            conn.execute('pragma query_only=ON')
+            row=conn.execute('SELECT active FROM llm_scenario_model_incident WHERE id=1').fetchone()
+            if row is None:
+                return True
+            return row[0]==0 if type(row[0]) is int and row[0] in (0,1) else None
+    except sqlite3.Error:
+        return None
 def idle(proc_root=Path('/proc')):
     try:
         for p in proc_root.iterdir():
@@ -90,7 +101,7 @@ try:
     actual_head=subprocess.check_output(['git','-C','/root/prism-insight','rev-parse','HEAD'],stderr=subprocess.DEVNULL,timeout=5).decode().strip()
     cron=subprocess.check_output(['crontab','-l'],stderr=subprocess.DEVNULL,timeout=5)
     print(json.dumps({'head_ok':actual_head==head,'cron_ok':hashlib.sha256(cron).hexdigest()==cron_hash,
-                      'schedule_ok':schedule_ok(cron),'idle':idle(),'checked_at':time.time()}))
+                      'schedule_ok':schedule_ok(cron),'idle':idle(),'model_healthy':model_healthy(),'checked_at':time.time()}))
 except Exception:
     raise SystemExit(1)
 """
@@ -139,8 +150,9 @@ def _runtime_readiness(phase, timeout, *, _clock=time.time, _run=subprocess.run,
         facts = json.loads(raw)
     except (AttributeError, TypeError, ValueError, UnicodeError):
         raise RuntimeReadinessError('remote_response_invalid') from None
-    if (not isinstance(facts, dict) or set(facts) != {'head_ok', 'cron_ok', 'schedule_ok', 'idle', 'checked_at'}
+    if (not isinstance(facts, dict) or set(facts) != {'head_ok', 'cron_ok', 'schedule_ok', 'idle', 'model_healthy', 'checked_at'}
             or any(type(facts[k]) is not bool for k in ('head_ok', 'cron_ok', 'schedule_ok', 'idle'))
+            or facts['model_healthy'] is not None and type(facts['model_healthy']) is not bool
             or type(facts['checked_at']) not in (int, float) or not math.isfinite(facts['checked_at'])):
         raise RuntimeReadinessError('remote_response_invalid')
     after = _clock() if not remote_clock else None
@@ -156,6 +168,10 @@ def _runtime_readiness(phase, timeout, *, _clock=time.time, _run=subprocess.run,
         raise RuntimeReadinessError('unsupported_decision_schedule')
     if not facts['idle']:
         raise RuntimeReadinessError('decision_running')
+    if facts['model_healthy'] is None:
+        raise RuntimeReadinessError('production_model_health_unknown')
+    if not facts['model_healthy']:
+        raise RuntimeReadinessError('production_model_incident_active')
     if remote_clock:
         checked = _monotonic()
         if any(type(v)not in(int,float)or not math.isfinite(v)for v in (checked,mono_before)):
@@ -170,20 +186,20 @@ def _runtime_readiness(phase, timeout, *, _clock=time.time, _run=subprocess.run,
                     checked_at=facts['checked_at'], remote_checked_at=facts['checked_at'],
                     minimum_seconds=minimum, checked_monotonic=checked, roundtrip_seconds=elapsed,
                     remaining_seconds_lower_bound=remaining, clock_policy='REMOTE_BOUNDED_V1',
-                    **{k:facts[k]for k in ('head_ok','cron_ok','schedule_ok','idle')})
+                    **{k:facts[k]for k in ('head_ok','cron_ok','schedule_ok','idle','model_healthy')})
     if 300 - after % 300 < minimum or 300 - facts['checked_at'] % 300 < minimum:
         raise RuntimeReadinessError('scheduled_tick_near')
     return dict(status='PASSED', phase=phase, expected_head=head, crontab_sha256=cron,
                 checked_at=after, remote_checked_at=facts['checked_at'], minimum_seconds=minimum,
                 local_remaining_seconds=300 - after % 300, remote_remaining_seconds=300 - facts['checked_at'] % 300,
-                head_ok=True, cron_ok=True, schedule_ok=True, idle=True)
+                head_ok=True, cron_ok=True, schedule_ok=True, idle=True, model_healthy=True)
 
 
 def _readiness_still_safe(proof, phase, timeout, *, _clock=time.time, _monotonic=time.monotonic):
     if isinstance(proof, dict) and proof.get('clock_policy') == 'REMOTE_BOUNDED_V1':
         numeric=('checked_at','remote_checked_at','checked_monotonic','roundtrip_seconds','remaining_seconds_lower_bound')
         if (proof.get('status')!='PASSED' or proof.get('phase')!=phase
-                or any(proof.get(k)is not True for k in ('head_ok','cron_ok','schedule_ok','idle'))
+                or any(proof.get(k)is not True for k in ('head_ok','cron_ok','schedule_ok','idle','model_healthy'))
                 or not isinstance(proof.get('expected_head'),str) or not re.fullmatch(r'[0-9a-f]{40}',proof['expected_head'])
                 or not isinstance(proof.get('crontab_sha256'),str) or not re.fullmatch(r'[0-9a-f]{64}',proof['crontab_sha256'])
                 or any(type(proof.get(k))not in(int,float)or not math.isfinite(proof[k])for k in numeric)
@@ -201,7 +217,7 @@ def _readiness_still_safe(proof, phase, timeout, *, _clock=time.time, _monotonic
             raise RuntimeReadinessError('schedule_changed_after_check')
         return
     if (not isinstance(proof, dict) or proof.get('status') != 'PASSED'
-            or any(proof.get(key) is not True for key in ('head_ok', 'cron_ok', 'schedule_ok', 'idle'))
+            or any(proof.get(key) is not True for key in ('head_ok', 'cron_ok', 'schedule_ok', 'idle', 'model_healthy'))
             or proof.get('phase') != phase
             or not isinstance(proof.get('expected_head'), str) or not re.fullmatch(r'[0-9a-f]{40}', proof['expected_head'])
             or not isinstance(proof.get('crontab_sha256'), str) or not re.fullmatch(r'[0-9a-f]{64}', proof['crontab_sha256'])
