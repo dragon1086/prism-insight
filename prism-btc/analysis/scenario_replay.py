@@ -239,6 +239,25 @@ def validated_fee_seed(seed, start_ms):
     return deepcopy(seed)
 
 
+def window_decision_slots(bundle, windows):
+    """Freeze 30m reviews throughout each window, with a normal tick before it."""
+    if not isinstance(windows, list) or not windows:
+        raise ValueError('invalid_review_windows')
+    slots = set()
+    for window in windows:
+        if not isinstance(window, dict):
+            raise ValueError('invalid_review_windows')
+        start, end = window.get('start_ms'), window.get('end_ms')
+        if (type(start) is not int or type(end) is not int
+                or start % 300000 or end % 300000
+                or not bundle['start_ms'] <= start - 300000 < start < end < bundle['end_ms']
+                or (end - start) % 1800000):
+            raise ValueError('invalid_review_windows')
+        slots.add(start - 300000)
+        slots.update(range(start, end + 1, 1800000))
+    return sorted(slots)
+
+
 def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy_profile="current-live-v2",
                  initial_state="fresh-unblocked", *, observed_manifest=None,
                  market_input_mode="historical", allow_input_gaps=False, initial_fee_context=None, decision_slots_ms=None):
@@ -821,7 +840,15 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
             report["runtime_event_hash"] = _runtime_event_hash(conn)
             report["execution_status"] = "STOPPED" if stopped else "COMPLETE"
             report["failure_evidence"] = stopped
+            processed = set(decisions[:sum(statuses.values())])
+            recorded = {tick['at_ms'] for tick in tape.ticks
+                        if tick.get('decision') and tick['at_ms'] in processed}
+            period_slots = set(range(start, end, 300000))
             report["coverage"] = dict(planned_slots=len(decisions),processed_slots=sum(statuses.values()),
+                review_scope='FULL_5M_SCHEDULE' if decision_slots_ms is None else 'REGISTERED_SAMPLED_SCHEDULE',
+                full_period_5m_slots=len(period_slots),model_review_records=len(recorded),
+                slots_without_model_review=sorted(set(decisions)-recorded),
+                full_period_model_record_coverage=recorded==period_slots,
                 model_free_drain_status=drain_status,model_free_drain_end_ms=end,
                 final_economic_time_ms=session.ts_ms,eligible=stopped is None and drain_status=="COMPLETE")
             if stopped:
