@@ -12,7 +12,7 @@ from contextlib import suppress
 from time import perf_counter_ns as _phase_clock_ns
 from pathlib import Path
 
-from live.scenario_management_quarantine import digest, _append, _events, ENDPOINT
+from live.scenario_management_quarantine import digest, _append, _events, _iter_events, ENDPOINT
 from live.shared_entry_coordinator import mutation_lock
 
 KIND = 'incident_epoch_v1'
@@ -223,13 +223,16 @@ def monitor(broker, *, refresh=False):
     token = _MONITOR_CALL_TIMING.set(timing)
     try:
         observed_bodies = []
-        all_cursors = _events(broker.conn, FINANCE_CURSOR)
+        all_cursors = _iter_events(broker.conn, FINANCE_CURSOR)
         mark('cursor_load')
         values = receipts(broker.conn)
         mark('receipt_load')
+        latest_cursors = {}
+        approved_epochs = {r['epoch_id'] for r in values}
         for cursor in all_cursors:
             require(cursor.get('sha256') == digest(cursor.get('body'))
-                    and cursor['body']['epoch_id'] in {r['epoch_id'] for r in values}, 'finance_cursor_corrupt')
+                    and cursor['body']['epoch_id'] in approved_epochs, 'finance_cursor_corrupt')
+            latest_cursors[cursor['body']['epoch_id']] = cursor
         mark('cursor_validate')
         for value in values:
             children = broker.children(value['scenario_id'])
@@ -238,8 +241,7 @@ def monitor(broker, *, refresh=False):
             broker._query_child(child)
             mark('child_query')
             require(0 <= broker.clock()-started <= 10, 'monitor_child_lookup_deadline')
-            cursors = [r for r in all_cursors if r['body']['epoch_id'] == value['epoch_id']]
-            previous = cursors[-1] if cursors else None
+            previous = latest_cursors.get(value['epoch_id'])
             if previous:
                 require(previous['sha256'] == digest(previous['body'])
                         and previous['body']['epoch_id'] == value['epoch_id'], 'finance_cursor_corrupt')
