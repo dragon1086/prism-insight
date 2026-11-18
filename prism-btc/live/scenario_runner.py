@@ -54,6 +54,34 @@ def run_once(conn, broker, *, execute=False, protect_only=False,
                          entry_contract_enabled=entry_contract_enabled, convergence_entry_enabled=convergence_entry_enabled)
 
 
+def _provider_retry_at(conn, now):
+    """Read only confirmed provider advice from the latest failed decision."""
+    from live.scenario_review_storage import review_text
+    from utils.btc_review_event_references import read_event
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('llm_scenario_decisions','llm_scenario_review_events')")}
+    if len(tables) != 2:
+        return None
+    row = conn.execute('SELECT slot,outcome FROM llm_scenario_decisions ORDER BY slot DESC LIMIT 1').fetchone()
+    if not row or not row[1]:
+        return None
+    outcome = json.loads(review_text(row[1]))
+    if outcome.get('reason') != 'llm_call_failed' or outcome.get('failure_detail') not in {'overloaded','rate_limited','http_429','http_503'}:
+        return None
+    for sequence, body in conn.execute('SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence DESC LIMIT 8', (row[0],)):
+        event = read_event(body, conn, row[0], sequence, decode_legacy=review_text)
+        event = json.loads(event) if isinstance(event, str) else event
+        if event.get('kind') != 'MODEL_ERROR':
+            continue
+        wait, failed_at = event.get('retry_after_seconds'), event.get('failed_at')
+        if wait is None:
+            return None
+        if (type(wait) is not int or not 0 < wait <= 86400 or type(failed_at) not in (int,float)
+                or not math.isfinite(failed_at) or not 0 < failed_at <= now + 120):
+            raise ValueError('provider_retry_evidence_invalid')
+        return failed_at + wait
+    return None
+
+
 def _run_once(conn, broker, *, execute=False, protect_only=False,
               snapshot=collect_snapshot, proposal=propose, calculated_review=False, entry_contract_enabled=False,
              convergence_entry_enabled=False):
@@ -103,6 +131,21 @@ def _run_once(conn, broker, *, execute=False, protect_only=False,
             return {"status":"blocked","reason":"protection_unconfirmed","model_called":False}
     if not execute:
         return {"status":"execution_disabled","reason":"explicit_activation_required"}
+    retry_at, unreadable = None, False
+    now = time.time()
+    if calculated_review:
+        try:
+            retry_at = _provider_retry_at(conn, now)
+        except Exception:
+            unreadable = True
+    if unreadable or retry_at is not None and now < retry_at:
+        result = dict(_run_once(conn, broker, protect_only=True), model_deferred=True)
+        if result['status'] == 'protection_checked':
+            result.update(status='blocked' if unreadable else 'model_cooldown',
+                          reason='provider_retry_evidence_invalid' if unreadable else 'provider_requested_wait')
+            if not unreadable:
+                result['retry_at'] = retry_at
+        return result
     runtime=ScenarioRuntime(conn,broker,
         lambda snap,ctx:proposal(snap,ctx,response_contract(ctx)),snapshot,
         recovery_enabled=True,automatic_normalization_enabled=True,
@@ -204,8 +247,8 @@ def notify_runtime_status(conn,result,*,clock=time.time):
         model_failed=result.get("status")=="blocked" and (result.get("reason") in {
             "llm_output_contract_failed", "llm_call_failed", "llm_input_preparation_failed"}
             or review_failed)
-        model_validated=result.get("status")=="wait" or (
-            result.get("status")=="intent_pending" and result.get("reason")=="awaiting_exact_evidence")
+        model_validated=result.get('model_deferred') is not True and (result.get("status")=="wait" or (
+            result.get("status")=="intent_pending" and result.get("reason")=="awaiting_exact_evidence"))
         if model_failed and (not model_row or not model_row[2]):
             from live.scenario_oauth import safe_failure_reason
             identity="model-error-"+uuid.uuid4().hex

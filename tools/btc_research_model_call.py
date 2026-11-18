@@ -274,16 +274,6 @@ class GuardedModelCall:
             bounded = raw[:MAX_BYTES + 1]
             event("HTTP_RESPONSE", http_status=status, raw_response=bounded.decode("utf-8", errors="replace"),
                   raw_sha256=hashlib.sha256(bounded).hexdigest(), truncated=len(raw) > MAX_BYTES)
-            try:
-                body = json.loads(bounded)
-            except (ValueError, UnicodeDecodeError):
-                return
-            if isinstance(body, dict):
-                detail = body.get("error")
-                code = detail.get("code") if isinstance(detail, dict) else None
-                if (body.get("status") in ("failed", "cancelled")
-                        or code in ("terminal_error", "authentication_error", "invalid_token", "invalid_grant")):
-                    raise ValueError("explicit_terminal_response")
 
         def guarded_open(request, timeout):
             nonlocal attempt_id, request_sha256, actual_calls, opener_entries, http_status, runtime_guard_reason

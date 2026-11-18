@@ -724,3 +724,19 @@ def test_new_incomplete_reason_round_trips_through_exact_failure_tape():
     assert tape['outcome']['status']=='FAILED'
     assert replay_review(tape,research_review,snapshot,c,contract,bindings=bindings)==tape['outcome']
     assert any(o.get('event',{}).get('failure_detail')=='stream_incomplete'for o in tape['operations'])
+
+
+@pytest.mark.parametrize('wait',[321,None])
+def test_provider_wait_metadata_reaches_sealed_error_event_without_headers(wait):
+    from functools import partial
+    from analysis.scenario_review_tape import record_review
+    from live.scenario_oauth import ScenarioOAuthFailure
+    from tests.test_scenario_entry_plans import sample
+    s,c,_=sample();events=[]
+    def fail(**q):raise ScenarioOAuthFailure('overloaded',wait)
+    t=record_review(partial(research_review,research_mode='economic-reject-calculated-v1'),s,c,response_contract(c),generate=fail,record=events.append,clock=lambda:c['now'])
+    assert t['outcome']['status']=='FAILED'
+    event=next(e for e in events if e['kind']=='MODEL_ERROR')
+    assert event['failure_detail']=='overloaded'and'headers'not in event
+    if wait is None:assert'retry_after_seconds'not in event
+    else:assert event['retry_after_seconds']==321 and event['failed_at']==c['now']

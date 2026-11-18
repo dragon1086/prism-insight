@@ -989,6 +989,9 @@ def research_review(snapshot, context, response_contract, *, generate, record,
                 actual_request_sha256=actual_request_hash, elapsed_seconds=clock() - actual_started)
             if detail is not None:
                 error_event['failure_detail'] = detail
+            wait = getattr(exc, 'retry_after_seconds', None)
+            if type(wait) is int and 0 < wait <= 86400:
+                error_event.update(retry_after_seconds=wait, failed_at=actual_started + error_event['elapsed_seconds'])
             record(deepcopy(error_event))
             raise ValueError("research_model_call_failed" + (':' + detail if detail else '')) from None
         from live.scenario_oauth import usage_counts

@@ -479,3 +479,28 @@ def test_incomplete_reason_is_closed_and_never_retried(reason,category):
     with pytest.raises(ValueError,match='scenario_oauth_failed:'+category)as e:call(opened)
     assert len(calls)==1
     assert 'SENSITIVE_OUTPUT_7401'not in str(e.value)
+
+
+def test_confirmed_overload_preserves_safe_retry_after_without_retry(monkeypatch):
+    monkeypatch.delenv('PRISM_BTC_SCENARIO_OAUTH_URL',raising=False);opened=[]
+    def open_url(*args,**kwargs):
+        opened.append(1)
+        return Response(dict(status='failed',error=dict(code='server_is_overloaded',message='secret provider text',headers={'retry-after':'321','retry-after-ms':'321000'})))
+    with pytest.raises(ValueError)as failure:call(open_url,retry_transport=False)
+    assert str(failure.value)=='scenario_oauth_failed:overloaded'
+    assert failure.value.retry_after_seconds==321 and opened==[1]
+    assert 'secret'not in str(failure.value)
+
+
+def test_completed_with_error_is_never_accepted(monkeypatch):
+    monkeypatch.delenv('PRISM_BTC_SCENARIO_OAUTH_URL',raising=False)
+    value=dict(result(),error=dict(code='server_is_overloaded',headers={'retry-after':'321'}))
+    with pytest.raises(ValueError,match='overloaded'):call(lambda *a,**k:Response(value),retry_transport=False)
+
+
+@pytest.mark.parametrize('headers,expected',[({'Retry-After':'321','Retry-After-MS':'321001'},322),
+    ({'retry-after':True},None),({'retry-after':'-1'},None),({'retry-after':'secret'},None),
+    ({'retry-after':'99999999'},None),({},None),(None,None)])
+def test_retry_after_is_bounded_numeric_and_unknown_is_not_zero(headers,expected):
+    from live.scenario_oauth import retry_after_seconds
+    assert retry_after_seconds(headers)==expected

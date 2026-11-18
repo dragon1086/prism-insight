@@ -549,6 +549,8 @@ def render_notice(event: dict) -> str:
                 reason = 'AI 응답 생성 한도에 도달했습니다.'
             elif detail in {'content_filter', 'steered'}:
                 reason = 'AI 서비스에서 응답 처리가 중단됐습니다.'
+            elif detail == 'overloaded':
+                reason = 'AI 서버가 혼잡해 이번 응답을 완료하지 못했습니다.'
             elif detail == 'incomplete':
                 reason = 'AI 서비스가 완성된 응답을 반환하지 못했습니다.'
             elif detail == 'model_mismatch':
