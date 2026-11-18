@@ -95,3 +95,67 @@ def test_sampled_economic_coverage_never_claims_full_period_model_evaluation(tmp
     assert c['slots_without_model_review']==[]
     assert not c['full_period_model_record_coverage']
     assert recorded['result_hash']==frozen['result_hash']
+
+
+
+def test_holding_reviews_run_between_entry_samples_only_while_filled(tmp_path):
+    from analysis.scenario_replay import run_replay,network_boundary
+    from tests.test_scenario_replay import inputs,wait_policy
+    bundle,market=inputs(1200000);start=bundle['start_ms'];seen=[]
+    entries=[start,start+900000];management=[start+300000,start+600000]
+    def policy(snapshot,context):
+        seen.append(int(context['now']*1000)//300000*300000)
+        base=dict(wait_policy(snapshot,context),scenario_id=context['scenario_id']or'held-fixture',
+                  action_id='a-'+str(context['now']),expires_at=context['now']+600)
+        if context['scenario_id']:return dict(base,action='EXIT')
+        if len(seen)>1:return base
+        return dict(base,action='OPEN',side='LONG',leverage=10,confidence=.5,hard_stop=98,
+                    entries=[dict(id='e1',price=100,quantity=.1)],take_profits=[],partial_stops=[],
+                    chase=dict(max_bps=0,max_reprices=0))
+    kwargs=dict(decision_slots_ms=entries,holding_review_slots_ms=management)
+    with network_boundary('frozen')as denied:
+        first=run_replay(bundle,market,tmp_path/'record',mode='fixture',tape_path=tmp_path/'tape',policy=policy,**kwargs)
+        frozen=run_replay(bundle,market,tmp_path/'frozen',mode='frozen',tape_path=tmp_path/'tape',**kwargs)
+    assert not denied and seen==[start,start+300000,start+900000]
+    schedule=first['conditional_holding_schedule']
+    assert schedule['executed_holding_slots_ms']==[start+300000]
+    assert schedule['skipped_flat_holding_slots_ms']==[start+600000]
+    assert first['economic']['completed_scenarios']==1 and first['economic']['open_quantity']==0
+    assert first['result_hash']==frozen['result_hash']
+
+
+@pytest.mark.parametrize('holding',[[],[True],[1],[0,0]])
+def test_holding_schedule_requires_valid_registered_entry_schedule(holding):
+    from analysis.scenario_replay import contract_for
+    from tests.test_scenario_replay import inputs
+    bundle,_=inputs()
+    with pytest.raises(ValueError):
+        contract_for(bundle,'OHLC',1,10000,holding_review_slots_ms=holding)
+
+
+
+def test_flat_conditional_slots_are_not_missing_model_reviews(tmp_path):
+    bundle,market=inputs(900000);start=bundle['start_ms'];tape=tmp_path/'tape'
+    kwargs=dict(policy_profile='single-pass-economic-v4',decision_slots_ms=[start,start+600000],
+                holding_review_slots_ms=[start+300000])
+    with network_boundary('frozen')as denied:
+        recorded=run_replay(bundle,market,tmp_path/'record',mode='fixture',tape_path=tape,
+                            policy=wait_policy,clock_monotonic=lambda:0.,**kwargs)
+        frozen=run_replay(bundle,market,tmp_path/'frozen',mode='frozen',tape_path=tape,**kwargs)
+    assert not denied and recorded['result_hash']==frozen['result_hash']
+    assert recorded['coverage']['processed_slots']==2
+    assert recorded['coverage']['slots_without_model_review']==[]
+    assert recorded['coverage']['eligible'] is True
+    schedule=recorded['conditional_holding_schedule']
+    assert schedule['skipped_flat_holding_slots_ms']==[start+300000]
+    assert schedule['unprocessed_candidate_slots_ms']==[]
+    assert schedule['full_live_review_cadence'] is False
+
+
+@pytest.mark.parametrize('damage',['empty','boolean','unaligned','duplicate','outside'])
+def test_invalid_holding_slots_with_valid_entries_are_rejected(damage):
+    bundle,_=inputs();start=bundle['start_ms']
+    bad={'empty':[],'boolean':[True],'unaligned':[start+1],
+         'duplicate':[start,start],'outside':[bundle['end_ms']]}[damage]
+    with pytest.raises(ValueError,match='invalid_conditional_holding_schedule'):
+        contract_for(bundle,'OHLC',1,10000,decision_slots_ms=[start],holding_review_slots_ms=bad)

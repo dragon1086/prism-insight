@@ -260,7 +260,7 @@ def window_decision_slots(bundle, windows):
 
 def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy_profile="current-live-v2",
                  initial_state="fresh-unblocked", *, observed_manifest=None,
-                 market_input_mode="historical", allow_input_gaps=False, initial_fee_context=None, decision_slots_ms=None):
+                 market_input_mode="historical", allow_input_gaps=False, initial_fee_context=None, decision_slots_ms=None, holding_review_slots_ms=None):
     if policy_profile not in POLICY_PROFILES:
         raise ValueError("explicit_replay_policy_profile_required")
     if initial_state not in {"fresh-unblocked","recovery-stage0"}:
@@ -278,6 +278,11 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
             or any(type(t) is not int or t%300000 or not bundle['start_ms']<=t<bundle['end_ms'] for t in decision_slots_ms)
             or sorted(set(decision_slots_ms))!=decision_slots_ms or market_input_mode!='historical'):
         raise ValueError('invalid_sampled_decision_schedule')
+    if holding_review_slots_ms is not None and (decision_slots_ms is None
+            or not isinstance(holding_review_slots_ms,list) or not holding_review_slots_ms
+            or any(type(t) is not int or t%300000 or not bundle['start_ms']<=t<bundle['end_ms'] for t in holding_review_slots_ms)
+            or sorted(set(holding_review_slots_ms))!=holding_review_slots_ms):
+        raise ValueError('invalid_conditional_holding_schedule')
     package=ROOT/"prism-btc"
     sources={str(p.relative_to(package)):hashlib.sha256(p.read_bytes()).hexdigest()
              for p in sorted(package.rglob("*.py")) if "tests" not in p.relative_to(package).parts}
@@ -374,6 +379,9 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
     if decision_slots_ms is not None:
         contract['sampled_model_decision_slots_ms']=decision_slots_ms.copy()
         contract['between_model_samples']='NATIVE_PROTECTION_AND_RECONCILIATION_ONLY_NO_FORCED_CLOSE'
+    if holding_review_slots_ms is not None:
+        contract['conditional_holding_review_slots_ms']=holding_review_slots_ms.copy()
+        contract['between_model_samples']='NATIVE_PROTECTION_WITH_REGISTERED_FILLED_POSITION_REVIEWS_NO_FORCED_CLOSE'
     return contract
 
 
@@ -599,7 +607,7 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
                policy_profile="current-live-v2",initial_state="fresh-unblocked",clock_monotonic=None,
                observed_packet=None,observed_packet_sha256=None,market_input_mode="historical",
                allow_input_gaps=False,before_http=None,failure_callback=None,
-               before_decision=None,initial_fee_context=None,decision_slots_ms=None):
+               before_decision=None,initial_fee_context=None,decision_slots_ms=None,holding_review_slots_ms=None):
     """No production paths accepted; fresh DB per run and explicit data provenance."""
     if before_decision is not None and (not callable(before_decision) or mode=='frozen'):
         raise ValueError('external_decision_wait_requires_fresh_or_fixture')
@@ -651,7 +659,7 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
         if origin not in {"fixture","luna"}:raise ValueError("unknown_decision_origin")
     contract=contract_for(bundle,path,cost_multiplier,initial_equity,origin,policy_profile,initial_state,
         observed_manifest=observed.manifest() if observed is not None else None,
-        market_input_mode=market_input_mode,allow_input_gaps=allow_input_gaps,initial_fee_context=initial_fee_context,decision_slots_ms=decision_slots_ms)
+        market_input_mode=market_input_mode,allow_input_gaps=allow_input_gaps,initial_fee_context=initial_fee_context,decision_slots_ms=decision_slots_ms,holding_review_slots_ms=holding_review_slots_ms)
     output=Path(output).resolve()
     if output.exists():raise ValueError("never_overwrite_replay")
     if any(p in output.parts for p in ("state","logs","trading")):
@@ -714,6 +722,9 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
             runtime._save(state)
     statuses=Counter();outcome_reasons=Counter();start=bundle["start_ms"];end=bundle["end_ms"]
     decisions=decision_slots_ms if decision_slots_ms is not None else list(range(start,end,300000))
+    entry_slots=set(decisions)
+    if holding_review_slots_ms is not None:decisions=sorted(entry_slots|set(holding_review_slots_ms))
+    executed_slots=[];executed_holding=[];skipped_flat_holding=[]
     stopped = None
     drain_status = "COMPLETE"
     if len(decisions)>max_decisions:raise ValueError("decision_budget_exceeded")
@@ -722,9 +733,17 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
             release = at if schedule is None else schedule[i]["available_at_ms"]
             if not at <= release < min(at+300000,end):
                 raise ValueError("observed_release_outside_decision_window")
-            if before_decision is not None:
+            if before_decision is not None and holding_review_slots_ms is None:
                 before_decision(dict(index=i,at_ms=at,policy_profile=policy_profile))
             driver.advance_to(release)
+            if holding_review_slots_ms is not None:
+                if at not in entry_slots and not session.position:
+                    skipped_flat_holding.append(at)
+                    continue
+                if before_decision is not None:
+                    before_decision(dict(index=len(executed_slots),at_ms=at,policy_profile=policy_profile))
+                if at not in entry_slots:executed_holding.append(at)
+            executed_slots.append(at)
             if schedule is not None and schedule[i]["status"] == "MISSING":
                 statuses["INPUT_GAP"] += 1
                 outcome_reasons["INPUT_GAP:observed_snapshot_missing"] += 1
@@ -840,19 +859,27 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
             report["runtime_event_hash"] = _runtime_event_hash(conn)
             report["execution_status"] = "STOPPED" if stopped else "COMPLETE"
             report["failure_evidence"] = stopped
-            processed = set(decisions[:sum(statuses.values())])
+            processed = set(executed_slots)
             recorded = {tick['at_ms'] for tick in tape.ticks
                         if tick.get('decision') and tick['at_ms'] in processed}
             period_slots = set(range(start, end, 300000))
             report["coverage"] = dict(planned_slots=len(decisions),processed_slots=sum(statuses.values()),
-                review_scope='FULL_5M_SCHEDULE' if decision_slots_ms is None else 'REGISTERED_SAMPLED_SCHEDULE',
+                review_scope=('REGISTERED_ENTRY_AND_CONDITIONAL_HOLDING_SCHEDULE' if holding_review_slots_ms is not None else 'FULL_5M_SCHEDULE' if decision_slots_ms is None else 'REGISTERED_SAMPLED_SCHEDULE'),
                 full_period_5m_slots=len(period_slots),model_review_records=len(recorded),
-                slots_without_model_review=sorted(set(decisions)-recorded),
+                slots_without_model_review=sorted((processed if holding_review_slots_ms is not None else set(decisions))-recorded),
                 full_period_model_record_coverage=recorded==period_slots,
                 model_free_drain_status=drain_status,model_free_drain_end_ms=end,
                 final_economic_time_ms=session.ts_ms,eligible=stopped is None and drain_status=="COMPLETE")
             if stopped:
                 report["readiness"]["insufficiency_reasons"].append("STOPPED_TECHNICAL_FAILURE")
+        if holding_review_slots_ms is not None:
+            report['conditional_holding_schedule']=dict(
+                eligibility='CONFIRMED_OFFLINE_FILLED_POSITION_AFTER_NATIVE_RECONCILIATION',
+                entry_slots_ms=decision_slots_ms,holding_candidate_slots_ms=holding_review_slots_ms,
+                executed_holding_slots_ms=executed_holding,skipped_flat_holding_slots_ms=skipped_flat_holding,
+                executed_decision_slots_ms=executed_slots,
+                unprocessed_candidate_slots_ms=sorted(set(decisions)-set(executed_slots)-set(skipped_flat_holding)),
+                full_live_review_cadence=False)
         if policy_profile in REJECTION_PROFILES:
             from live.scenario_review_storage import review_text
             from utils.btc_review_event_references import read_event
