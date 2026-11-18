@@ -316,7 +316,7 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
         if policy_profile in {"economic-reject-goal-v2", "deployed-main-v3", "deployed-cost-reference-v4", "deployed-entry-plans-v5"}:
             contract["identity_scheme"] = "EXACT_REPLAY_UUID5_CALLSITE_PID0_V2"
         if policy_profile in REVIEW_PROFILES:
-            from live.scenario_calculated_review import DRAFT_PROMPT, PREPARED_ENTRY_DRAFT_PROMPT, SELECT_PROMPT, research_review
+            from live.scenario_calculated_review import DRAFT_PROMPT, SELECT_PROMPT, research_review
             from live.scenario_provenance import review_policy_binding
             contract["review_binding"] = review_policy_binding()
             contract["context_contracts"]["calculated_review_version"] = 1
@@ -368,6 +368,7 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
         if policy_profile in {'deployed-cost-reference-v4','deployed-entry-plans-v5'}:
             contract['broker_flags']['entry_fee_reference_enabled']=True
         if policy_profile=='deployed-entry-plans-v5':
+            from live.scenario_calculated_review import PREPARED_ENTRY_DRAFT_PROMPT
             contract['broker_flags'].update(prepared_entry_plans_enabled=True,convergence_entry_enabled=True)
             contract['phase_contracts']['DRAFT_PREPARED_ENTRY'] = hashlib.sha256(PREPARED_ENTRY_DRAFT_PROMPT.encode()).hexdigest()
         contract['initial_fee_context']=fee_seed
