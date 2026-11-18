@@ -288,3 +288,31 @@ def test_runner_first_observation_then_host_sized_decision_with_row_factory(tmp_
             assert final["stability_scope"] == "COHERENT_FINAL_OBSERVATION_EXECUTOR_FRESH_PREFLIGHT_REQUIRED"
     finally:
         conn.close()
+
+
+def test_operational_overload_event_drives_next_tick_protection_only(tmp_path,monkeypatch):
+    from live import scenario_oauth
+    from live.scenario_runtime import ScenarioRuntime
+    now=float(int(ScenarioRuntime.__init__.__kwdefaults__['clock']()))
+    broker=Broker(now);requests=[]
+    conn=sqlite3.connect(tmp_path/'cooldown-pipeline.db');conn.row_factory=sqlite3.Row
+    def generate(**q):
+        requests.append(q)
+        raise scenario_oauth.ScenarioOAuthFailure('overloaded',321)
+    monkeypatch.setattr(scenario_oauth,'generate_scenario',generate)
+    monkeypatch.setattr(runner.time,'time',lambda:now)
+    failure=runner.run_once(conn,broker,execute=True,calculated_review=True,
+        snapshot=lambda:dict(valid=True,as_of_ms=now*1000),proposal=lambda *a:pytest.fail('no legacy fallback'))
+    assert failure['reason']=='llm_call_failed'and failure['failure_detail']=='overloaded'
+    runner.notify_runtime_status(conn,failure,clock=lambda:now)
+    retry_at=runner._provider_retry_at(conn,now+1)
+    assert now+321<=retry_at<now+323
+    broker.reconcile=lambda:dict(protection_confirmed=True)
+    monkeypatch.setattr(runner.time,'time',lambda:retry_at-1)
+    deferred=runner.run_once(conn,broker,execute=True,calculated_review=True,
+        snapshot=lambda:pytest.fail('no model snapshot during provider wait'))
+    runner.notify_runtime_status(conn,deferred,clock=lambda:retry_at-1)
+    assert deferred['status']=='model_cooldown'and deferred['model_deferred']is True
+    assert len(requests)==1 and broker.executed==[]
+    assert conn.execute('SELECT active FROM llm_scenario_model_incident').fetchone()[0]==1
+    conn.close()

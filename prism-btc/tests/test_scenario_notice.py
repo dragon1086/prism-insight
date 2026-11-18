@@ -519,7 +519,7 @@ def test_model_error_requires_safe_reason_code():
 
 @pytest.mark.parametrize('detail,text', [('http_429','요청 제한'),('http_401','인증'),
     ('http_502','일시적인 오류'),('timeout','제한을 초과'),('incomplete','완성된 응답'),
-    ('connection','연결하지 못'),('invalid_response','응답 형식')])
+    ('connection','연결하지 못'),('invalid_response','응답 형식'),('overloaded','혼잡')])
 def test_transport_notice_explains_safe_failure_without_inventing_exchange_problem(detail,text):
     result=render_notice(dict(kind='MODEL_ERROR',timestamp=1000,reason_code='llm_call_failed',
         transport_reason=detail,details='secret upstream text'))

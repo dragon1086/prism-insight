@@ -286,3 +286,11 @@ def test_two_arms_cap_race_never_more_than_one_http(tmp_path):
     assert len(opened) <= 1
     assert g.snapshot()["reserved_attempts"] <= 1
     assert g.snapshot()["actual_http_calls"] == len(opened)
+
+
+def test_guard_preserves_overload_category_instead_of_masking_it(tmp_path):
+    body=json.dumps(dict(status='failed',error=dict(code='server_is_overloaded',headers={'retry-after':'321'}))).encode()
+    g,call,events,opened=setup(tmp_path,open_url=lambda *a,**k:Response(body))
+    with pytest.raises(ValueError,match='scenario_oauth_failed:overloaded')as error:call(**request())
+    assert error.value.retry_after_seconds==321
+    assert g.snapshot()['actual_http_calls']==1 and g.snapshot()['stopped']
