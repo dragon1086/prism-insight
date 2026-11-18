@@ -90,6 +90,7 @@ def test_two_phase_runtime_uses_menu_and_replays_with_original_host_checks(monke
         from live.scenario_model_input import restore_model_input
         calls.append(q);body=restore_model_input(json.loads(q['user_prompt']))
         if 'wait_proposal'in q['response_schema']['properties']:
+            assert 'A continuation entry does not require a reversal signal' in q['system_prompt']
             menu=body['prepared_entry_plans'];p=offer(c,next(v for v in menu['layouts']if v['side']==side));wait=wire(c,'WAIT');wait['expires_at']=c['now']+60
             p['entry_readiness']=dict(status=readiness,reason='Low participation needs a new reversal observation.'if readiness=='WAIT_FOR_EVIDENCE'else'Price structure already supports entry despite low volume.')
             result=dict(wait_proposal=wait,candidates=[p],no_candidate_reason='')
@@ -97,6 +98,7 @@ def test_two_phase_runtime_uses_menu_and_replays_with_original_host_checks(monke
                 result['candidates'].append(offer(c,next(v for v in menu['layouts']if v['id']!=p['entries'][0]['id'])))
             assert body['response_contract']['authority'].startswith('API response_schema')
         else:
+            assert 'A continuation entry does not require a reversal signal' not in q['system_prompt']
             assert body['prepared_entry_plan_sources']
             chosen=next(v for v in body['calculated_candidates']['candidates']if v['eligible'])
             result=dict(selection_token=chosen['id']+':'+model_receipt_hash(chosen),rationale='구조와 검산 검토')
@@ -268,3 +270,30 @@ def test_cost_supported_stop_variant_is_not_hidden_by_unassessed_same_style(monk
     assert all(p['sizing_examples']for p in plans)
     assert all(p['hard_stop']!=nearest_stop for p in plans)
     assert (s,c,t)==before
+
+
+def test_unavailable_prepared_menu_keeps_original_draft_prompt(monkeypatch):
+    from live import scenario_calculated_review as m
+    s,c,t=sample();calls=[]
+    monkeypatch.setattr(m,'build_ma_structure_context',lambda *args:t)
+    from live import scenario_entry_plans
+    monkeypatch.setattr(scenario_entry_plans,'prepare',lambda *args:dict(status='UNAVAILABLE',layouts=[]))
+    def generate(**q):
+        calls.append(q)
+        wait=wire(c,'WAIT');wait['expires_at']=c['now']+60
+        return SimpleNamespace(text=json.dumps(dict(wait_proposal=wait,candidates=[],no_candidate_reason='No supported entry.')))
+    tape=record_review(partial(research_review,research_mode='economic-reject-calculated-v1'),s,c,response_contract(c),generate=generate,record=lambda e:None,clock=lambda:c['now'])
+    assert tape['outcome']['status']=='COMPLETE'
+    assert len(calls)==1 and calls[0]['system_prompt'].endswith(m.DRAFT_PROMPT)
+    assert 'A continuation entry does not require a reversal signal'not in calls[0]['system_prompt']
+
+
+def test_replay_binds_scoped_draft_hash_without_changing_selection_prompt():
+    import hashlib
+    from analysis.scenario_replay import contract_for
+    from tests.test_scenario_replay import inputs
+    from live.scenario_calculated_review import PREPARED_ENTRY_DRAFT_PROMPT,DRAFT_PROMPT,SELECT_PROMPT
+    bundle,_=inputs()
+    c=contract_for(bundle,'OHLC',1,10000,policy_profile='deployed-entry-plans-v5')
+    assert c['phase_contracts']['DRAFT_PREPARED_ENTRY']==hashlib.sha256(PREPARED_ENTRY_DRAFT_PROMPT.encode()).hexdigest()
+    assert 'A continuation entry does not require a reversal signal'not in DRAFT_PROMPT+SELECT_PROMPT

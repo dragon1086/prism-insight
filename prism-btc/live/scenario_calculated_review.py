@@ -30,6 +30,10 @@ The host computes effective prices, quantities, costs and payoff. Do not calcula
 When entry_readiness is requested, SUPPORTED_NOW needs present evidence for this entry; WAIT_FOR_EVIDENCE means another observation is still needed.
 """
 
+PREPARED_ENTRY_DRAFT_PROMPT = DRAFT_PROMPT.replace(
+    'When entry_readiness is requested, SUPPORTED_NOW needs present evidence for this entry; WAIT_FOR_EVIDENCE means another observation is still needed.',
+    'For entry_readiness, assess current 30m/1h price/MA structure with 15m timing. A continuation entry does not require a reversal signal. Lower volume than the prior bar, a nearby extreme, or R-projected targets alone is not an automatic WAIT rule: assess present progress, actual adverse reaction, target plausibility and intervening obstacles together. R projections certify neither support nor target reach; arithmetic examples grant no edge or permission. SUPPORTED_NOW needs current evidence and invalidation; WAIT_FOR_EVIDENCE must identify the missing observation that would change the decision. Reassess each new input when that observation arrives; do not carry an old WAIT forward automatically. Host recovery, convergence, original goal, cost, sizing and protection constraints remain binding.')
+
 SELECT_PROMPT = """Order-free selection stage. Choose one offered schema selection_token (candidate ID/full receipt hash). Eligible only; WAIT must be selectable. Never rewrite prices, quantities, confidence, direction or original goal in rationale. FAILED requires the offered EXIT.
 DRAFT owns the market thesis; check its effective plan against purpose, location, executable path and whole-trade outcomes. Do not start a second independent directional forecast. Reject for a specific material contradiction or inadequate opportunity, not an unhit future TP. Conditional payoff is not probability or target-reach evidence.
 Read calculation_field_units and displayed assumptions. Never recompute arithmetic or combine mutually exclusive paths. Distinguish actual fees, assumptions and reserves. Unknown future fees alone do not force WAIT when the host supplies a cost basis. Funding/unknown execution remain unknown.
@@ -1084,6 +1088,7 @@ def research_review(snapshot, context, response_contract, *, generate, record,
             proposed_payload=_model_payload(frozen_snapshot,frozen_context,contract,prepared_plans=menu)
             if len(_encoded(proposed_payload).encode())<=100_000:
                 draft_schema,payload,prepared=offered,proposed_payload,menu
+                draft_prompt = PREPARED_ENTRY_DRAFT_PROMPT
     draft = call("candidate", draft_prompt, payload, draft_schema)
     category = "FIRST_OBSERVATION" if first_observation else "CANDIDATES_PROVIDED" if draft["candidates"] else "NO_CANDIDATES_SUPPLIED"
     if not explanation_enabled(context) and (len(draft["no_candidate_reason"]) > 2000 or (not draft["candidates"] and not draft["no_candidate_reason"].strip())):
