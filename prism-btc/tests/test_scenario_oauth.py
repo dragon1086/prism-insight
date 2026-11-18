@@ -504,3 +504,10 @@ def test_completed_with_error_is_never_accepted(monkeypatch):
 def test_retry_after_is_bounded_numeric_and_unknown_is_not_zero(headers,expected):
     from live.scenario_oauth import retry_after_seconds
     assert retry_after_seconds(headers)==expected
+
+
+def test_completed_with_incomplete_details_is_never_accepted(monkeypatch):
+    monkeypatch.delenv('PRISM_BTC_SCENARIO_OAUTH_URL',raising=False)
+    value=dict(result(),incomplete_details=dict(reason='max_output_tokens'))
+    with pytest.raises(ValueError,match='scenario_oauth_failed:output_limit'):
+        call(lambda *a,**k:Response(value),retry_transport=False)

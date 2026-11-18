@@ -186,7 +186,8 @@ def generate_scenario(*, system_prompt, user_prompt, model, reasoning_effort,
         if len(raw)>MAX_BYTES:
             raise ValueError("oauth_response_size")
         result=json.loads(raw)
-        if result.get("status") != "completed" or result.get('error') is not None:
+        if (result.get("status") != "completed" or result.get('error') is not None
+                or result.get('incomplete_details') is not None):
             error = result.get('error')
             code = error.get('code') if isinstance(error, dict) else None
             reason = {'server_error':'upstream_error', 'server_is_overloaded':'overloaded', 'rate_limit_exceeded':'rate_limited',
