@@ -71,6 +71,9 @@ review / LIVE review).
 - If the rule is approved by an LLM in production, judge it with an LLM replay, not a
   deterministic replay alone.
 - Deduplicate virtual samples by (market, ticker, rule, date) before aggregating.
+- When the change alters a rule the full-ops research engine copies (first size, adds, pyramid rows,
+  re-entry, sell lines, slots, batch times, LIVE flags), update the engine and rerun its `revalidate.sh`
+  in the same task (harness "Required sequence" step 8; `tests/test_research_engine_contract.py` fails until then).
 - Add one rejected counterexample and one retained valid example as tests. Verify unrelated
   triggers are unchanged.
 - Log a stable reason code. Keep rollback to one flag or one small change.
