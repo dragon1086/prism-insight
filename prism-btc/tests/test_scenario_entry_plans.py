@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 import pytest
 
-from live.scenario_entry_plans import prepare, constrain, _preview, MAX_BYTES
+from live.scenario_entry_plans import prepare, constrain, _preview, MAX_PLANS, MAX_BYTES
 from live.scenario_calculated_review import _action_allocation_branches, research_review
 from live.scenario_contract import _matches
 from live.scenario_preview import response_contract
@@ -32,7 +32,7 @@ def offer(c,p):
 
 def test_coupled_examples_include_native_rounding_costs_and_dust_at_stop():
     s,c,t=sample();before=deepcopy((s,c,t));menu=prepare(s,c,t)
-    assert menu['status']=='AVAILABLE' and 0<len(menu['layouts'])<=6
+    assert menu['status']=='AVAILABLE' and 0<len(menu['layouts'])<=MAX_PLANS
     assert {p['side']for p in menu['layouts']}=={'LONG','SHORT'}
     assert len(json.dumps(menu).encode())<=MAX_BYTES
     for p in menu['layouts']:
@@ -171,7 +171,7 @@ def test_stop_variants_do_not_crowd_out_feasible_entry_styles(side):
     t['primary']['30m']['points'].append(forming)
     menu=prepare(s,c,t)
     plans=[p for p in menu['layouts']if p['side']==side]
-    assert len(plans)<=3
+    assert len(plans)<=MAX_PLANS//2
     assert {p['entry_kind']for p in plans}=={'CURRENT_LIMIT','BREAKOUT_TRIGGER','PULLBACK_LIMIT'}
 
 
@@ -263,8 +263,34 @@ def test_cost_supported_stop_variant_is_not_hidden_by_unassessed_same_style(monk
         if raw['side']==side and raw['hard_stop']==nearest_stop:return []
         return original(raw,context)
     monkeypatch.setattr(m,'_preview',preview)
-    plans=[p for p in m.prepare(s,c,t)['layouts']if p['side']==side]
+    plans=[p for p in m.prepare(s,c,t)['layouts']if p['side']==side][:3]
     assert [p['entry_kind']for p in plans]==['CURRENT_LIMIT','BREAKOUT_TRIGGER','PULLBACK_LIMIT']
     assert all(p['sizing_examples']for p in plans)
     assert all(p['hard_stop']!=nearest_stop for p in plans)
     assert (s,c,t)==before
+
+
+
+def test_extra_stops_preserve_every_original_plan_and_cost_example(monkeypatch):
+    from live import scenario_entry_plans as m
+    s,c,t=sample();before=deepcopy((s,c,t))
+    monkeypatch.setattr(m,'MAX_PLANS',6);original=m.prepare(s,c,t)
+    monkeypatch.setattr(m,'MAX_PLANS',12);expanded=m.prepare(s,c,t)
+    assert expanded['layouts'][:len(original['layouts'])]==original['layouts']
+    assert len(expanded['layouts'])>len(original['layouts'])
+    assert expanded['meaning']==original['meaning']
+    assert len(json.dumps(expanded,ensure_ascii=False,allow_nan=False).encode())<=m.MAX_BYTES
+    for side in ('LONG','SHORT'):
+        assert len({p['hard_stop']for p in expanded['layouts']
+                    if p['side']==side and p['entry_kind']=='CURRENT_LIMIT'})==2
+    assert (s,c,t)==before
+
+
+def test_extra_stops_cannot_overflow_and_remove_the_original_menu(monkeypatch):
+    from live import scenario_entry_plans as m
+    s,c,t=sample();monkeypatch.setattr(m,'MAX_PLANS',6);original=m.prepare(s,c,t)
+    size=len(json.dumps(original,ensure_ascii=False,allow_nan=False).encode())
+    monkeypatch.setattr(m,'MAX_PLANS',12);monkeypatch.setattr(m,'MAX_BYTES',size)
+    assert m.prepare(s,c,t)==original
+    monkeypatch.setattr(m,'MAX_BYTES',size-1)
+    assert m.prepare(s,c,t)['status']=='UNAVAILABLE'

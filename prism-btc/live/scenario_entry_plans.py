@@ -10,7 +10,7 @@ from live.scenario_entry_economics import assess
 from live.scenario_explanation import source_from_structure
 from live.scenario_risk_allocation import allocate_entry_risk
 
-MAX_PLANS = 6
+MAX_PLANS = 12
 MAX_BYTES = 12000
 
 
@@ -136,10 +136,20 @@ def prepare(snapshot, context, structure):
             candidates.sort(key=lambda p:not bool(p['sizing_examples']))
             diverse=[next(p for p in candidates if p['entry_kind']==kind)for kind in styles]
             selected.extend((diverse+[p for p in candidates if p not in diverse])[:3])
+        alternatives=[p for p in layouts if p not in selected]
+        alternatives.sort(key=lambda p:('CURRENT_LIMIT','BREAKOUT_TRIGGER','PULLBACK_LIMIT').index(p['entry_kind']))
         layouts=selected
         result=dict(version=1,status='AVAILABLE'if layouts else'UNAVAILABLE',layouts=layouts[:MAX_PLANS],
             meaning='Coupled price choices, not permission or win probabilities. Target fractions/count are choices, not fixed defaults. Examples are neither confidence advice nor exhaustive feasibility. Empty examples mean unassessed. Host rechecks chosen confidence/allocation, lot rounding including dust at SL, goal, risk and fresh execution. Partial stops keep their original qualitative contract; no risk credit. R projections are not observed support.')
-        return result if len(json.dumps(result,ensure_ascii=False,allow_nan=False).encode())<=MAX_BYTES else unavailable
+        if len(json.dumps(result,ensure_ascii=False,allow_nan=False).encode())>MAX_BYTES:
+            return unavailable
+        # Never discard existing choices or examples to fit an optional stop alternative.
+        for plan in alternatives:
+            if len(result['layouts'])>=MAX_PLANS:break
+            result['layouts'].append(plan)
+            if len(json.dumps(result,ensure_ascii=False,allow_nan=False).encode())>MAX_BYTES:
+                result['layouts'].pop()
+        return result
     except (KeyError,TypeError,ValueError,ArithmeticError,OverflowError):
         return unavailable
 
