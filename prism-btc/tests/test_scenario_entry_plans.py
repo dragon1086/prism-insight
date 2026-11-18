@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 import pytest
 
-from live.scenario_entry_plans import prepare, constrain, _preview, MAX_BYTES
+from live.scenario_entry_plans import prepare, constrain, _preview, MAX_BYTES, MAX_PLANS
 from live.scenario_calculated_review import _action_allocation_branches, research_review
 from live.scenario_contract import _matches
 from live.scenario_preview import response_contract
@@ -32,7 +32,7 @@ def offer(c,p):
 
 def test_coupled_examples_include_native_rounding_costs_and_dust_at_stop():
     s,c,t=sample();before=deepcopy((s,c,t));menu=prepare(s,c,t)
-    assert menu['status']=='AVAILABLE' and 0<len(menu['layouts'])<=6
+    assert menu['status']=='AVAILABLE' and 0<len(menu['layouts'])<=MAX_PLANS
     assert {p['side']for p in menu['layouts']}=={'LONG','SHORT'}
     assert len(json.dumps(menu).encode())<=MAX_BYTES
     for p in menu['layouts']:
@@ -42,7 +42,7 @@ def test_coupled_examples_include_native_rounding_costs_and_dust_at_stop():
         raw=dict(action='OPEN',side=p['side'],hard_stop=p['hard_stop'],
             entries=[dict(id=p['id'],price=p['entry_price'])],take_profits=p['take_profits'],partial_stops=[])
         if p['trigger_price']is not None:raw['entries'][0]['trigger_price']=p['trigger_price']
-        assert _preview(raw,c)==p['sizing_examples']
+        assert _preview(raw,c)[:1]==p['sizing_examples']
         for v in p['sizing_examples']:
             assert v['ratio']>=1.2 and v['reserved_risk']<=c['initial_equity']*.02
             assert all(q>=c['minimum_quantity']for q in v['target_quantities'])
@@ -94,7 +94,7 @@ def test_two_phase_runtime_uses_menu_and_replays_with_original_host_checks(monke
             p['entry_readiness']=dict(status=readiness,reason='Low participation needs a new reversal observation.'if readiness=='WAIT_FOR_EVIDENCE'else'Price structure already supports entry despite low volume.')
             result=dict(wait_proposal=wait,candidates=[p],no_candidate_reason='')
             if with_peer:
-                result['candidates'].append(offer(c,next(v for v in menu['layouts']if v['id']!=p['entries'][0]['id'])))
+                result['candidates'].append(offer(c,next(v for v in menu['layouts']if v['side']==side and v['entry_kind']=='BREAKOUT_TRIGGER')))
             assert body['response_contract']['authority'].startswith('API response_schema')
         else:
             assert body['prepared_entry_plan_sources']
@@ -171,7 +171,7 @@ def test_stop_variants_do_not_crowd_out_feasible_entry_styles(side):
     t['primary']['30m']['points'].append(forming)
     menu=prepare(s,c,t)
     plans=[p for p in menu['layouts']if p['side']==side]
-    assert len(plans)<=3
+    assert len(plans)<=MAX_PLANS//2
     assert {p['entry_kind']for p in plans}=={'CURRENT_LIMIT','BREAKOUT_TRIGGER','PULLBACK_LIMIT'}
 
 
@@ -264,7 +264,23 @@ def test_cost_supported_stop_variant_is_not_hidden_by_unassessed_same_style(monk
         return original(raw,context)
     monkeypatch.setattr(m,'_preview',preview)
     plans=[p for p in m.prepare(s,c,t)['layouts']if p['side']==side]
-    assert [p['entry_kind']for p in plans]==['CURRENT_LIMIT','BREAKOUT_TRIGGER','PULLBACK_LIMIT']
-    assert all(p['sizing_examples']for p in plans)
-    assert all(p['hard_stop']!=nearest_stop for p in plans)
+    assert list(dict.fromkeys(p['entry_kind']for p in plans))==['CURRENT_LIMIT','BREAKOUT_TRIGGER','PULLBACK_LIMIT']
+    for kind in ['CURRENT_LIMIT','BREAKOUT_TRIGGER','PULLBACK_LIMIT']:
+        first=next(p for p in plans if p['entry_kind']==kind)
+        assert first['sizing_examples'] and first['hard_stop']!=nearest_stop
+    assert (s,c,t)==before
+
+
+def test_each_original_structural_stop_variant_is_visible_without_losing_old_plans():
+    s,c,t=sample();before=deepcopy((s,c,t));menu=prepare(s,c,t)
+    assert len(menu['layouts'])==11
+    assert {p['id']for p in menu['layouts']}=={'plan-'+str(i)for i in range(11)}
+    assert {'plan-0','plan-2','plan-4','plan-6','plan-8','plan-10'}<={p['id']for p in menu['layouts']}
+    for side in ['LONG','SHORT']:
+        for kind in ['CURRENT_LIMIT','BREAKOUT_TRIGGER','PULLBACK_LIMIT']:
+            plans=[p for p in menu['layouts']if p['side']==side and p['entry_kind']==kind]
+            assert 1<=len(plans)<=2 and len({p['hard_stop']for p in plans})==len(plans)
+            if kind!='PULLBACK_LIMIT' or side=='LONG':assert len(plans)==2
+            assert all(len(p['sizing_examples'])<=1 for p in plans)
+    assert len(json.dumps(menu,ensure_ascii=False).encode())<=MAX_BYTES
     assert (s,c,t)==before

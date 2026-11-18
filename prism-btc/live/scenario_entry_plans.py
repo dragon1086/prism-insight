@@ -10,7 +10,7 @@ from live.scenario_entry_economics import assess
 from live.scenario_explanation import source_from_structure
 from live.scenario_risk_allocation import allocate_entry_risk
 
-MAX_PLANS = 6
+MAX_PLANS = 12
 MAX_BYTES = 12000
 
 
@@ -124,21 +124,21 @@ def prepare(snapshot, context, structure):
                         stop_ref=anchor[0],stop_phase=anchor[2],price_risk_per_btc=float(distance),stop_distance_atr30=stop_atr,
                         raw_target_R=[float(sign*(_number(t['price'])-price)/distance)for t in tps],
                         trigger_price=row.get('trigger_price'),hard_stop=float(stop),take_profits=tps,
-                        target_basis=basis,default_unpriced_runner_fraction=0.,sizing_examples=examples,
+                        target_basis=basis,default_unpriced_runner_fraction=0.,sizing_examples=examples[:1],
                         support_strength='NOT_CERTIFIED',fill_probability='UNKNOWN'))
                     break  # Preserve structural/entry-style choices, not a ranking of returns.
         selected=[]
         for side in ('LONG','SHORT'):
             candidates=[p for p in layouts if p['side']==side]
-            # Reserve a place for each feasible entry style before duplicating stops.
+            # Keep both original stop variants without losing an entry style.
             styles=list(dict.fromkeys(p['entry_kind']for p in candidates))
             # Prefer demonstrated cost feasibility without dropping an unassessed style.
             candidates.sort(key=lambda p:not bool(p['sizing_examples']))
-            diverse=[next(p for p in candidates if p['entry_kind']==kind)for kind in styles]
-            selected.extend((diverse+[p for p in candidates if p not in diverse])[:3])
+            for kind in styles:
+                selected.extend([p for p in candidates if p['entry_kind']==kind][:2])
         layouts=selected
         result=dict(version=1,status='AVAILABLE'if layouts else'UNAVAILABLE',layouts=layouts[:MAX_PLANS],
-            meaning='Coupled price choices, not permission or win probabilities. Target fractions/count are choices, not fixed defaults. Examples are neither confidence advice nor exhaustive feasibility. Empty examples mean unassessed. Host rechecks chosen confidence/allocation, lot rounding including dust at SL, goal, risk and fresh execution. Partial stops keep their original qualitative contract; no risk credit. R projections are not observed support.')
+            meaning='Coupled price choices, not permission or win probabilities. Target fractions/count are choices, not fixed defaults. At most two existing structural stop variants per entry style are shown, with one sizing illustration each. Examples are neither confidence advice nor exhaustive feasibility. Empty examples mean unassessed. Host rechecks chosen confidence/allocation, lot rounding including dust at SL, goal, risk and fresh execution. Partial stops keep their original qualitative contract; no risk credit. R projections are not observed support.')
         return result if len(json.dumps(result,ensure_ascii=False,allow_nan=False).encode())<=MAX_BYTES else unavailable
     except (KeyError,TypeError,ValueError,ArithmeticError,OverflowError):
         return unavailable
