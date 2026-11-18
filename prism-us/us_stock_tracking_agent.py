@@ -401,19 +401,17 @@ async def get_current_stock_price(cursor, ticker: str, account_key: str | None =
             if current_price > 0:
                 logger.info(f"{ticker} current price: ${current_price:.2f}")
                 return float(current_price)
-            else:
-                logger.warning(f"Cannot get price for {ticker}")
-                return _get_last_price_from_db(cursor, ticker, account_key=account_key)
-
+            # KIS reports transient backend errors (e.g. OPSQ0008) as an empty quote, not an
+            # exception: retry those too (2026-11-19, PANW/SLS buy reviews skipped on one blip).
+            logger.warning(f"Cannot get price for {ticker} (attempt {attempt + 1}/{MAX_RETRIES})")
         except Exception as e:
             logger.error(f"Error querying current price for {ticker} "
                          f"(attempt {attempt + 1}/{MAX_RETRIES}): {str(e)}")
-            if attempt < MAX_RETRIES - 1:
-                wait = 2 * (attempt + 1)  # 2s, 4s
-                logger.warning(f"{ticker} price query retry in {wait}s")
-                await asyncio.sleep(wait)
-            else:
-                return _get_last_price_from_db(cursor, ticker, account_key=account_key)
+        if attempt < MAX_RETRIES - 1:
+            wait = 2 * (attempt + 1)  # 2s, 4s
+            logger.warning(f"{ticker} price query retry in {wait}s")
+            await asyncio.sleep(wait)
+    return _get_last_price_from_db(cursor, ticker, account_key=account_key)
 
 
 def _get_last_price_from_db(cursor, ticker: str, account_key: str | None = None) -> float:
