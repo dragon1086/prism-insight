@@ -1139,7 +1139,7 @@ def test_monitor_phase_timing_identifies_slow_cursor_without_sensitive_data(flat
     i = flat_incident
     transition(i)
     broker = restarted(i)
-    original = policy._events
+    original = policy._iter_events
     ticks = [1_000_000_000]
 
     def events(conn, kind):
@@ -1149,7 +1149,7 @@ def test_monitor_phase_timing_identifies_slow_cursor_without_sensitive_data(flat
             i['now'][0] += 11
         return result
 
-    monkeypatch.setattr(policy, '_events', events)
+    monkeypatch.setattr(policy, '_iter_events', events)
     monkeypatch.setattr(policy, '_phase_clock_ns', lambda: ticks[0])
     caplog.set_level(logging.WARNING, logger=policy.__name__)
     assert policy.monitor(broker, refresh=True) is None
