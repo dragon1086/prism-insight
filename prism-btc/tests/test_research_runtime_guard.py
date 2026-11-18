@@ -26,12 +26,12 @@ def clock(*values):
     return lambda: next(values)
 
 
-def runner(*, head=True, cron=True, schedule=True, idle=True, remote=BASE + 10.2, code=0):
+def runner(*, head=True, cron=True, schedule=True, idle=True, healthy=True, remote=BASE + 10.2, code=0):
     calls = []
     def run(argv, **kwargs):
         calls.append((argv, kwargs))
         return SimpleNamespace(returncode=code, stdout=json.dumps(
-            {'head_ok': head, 'cron_ok': cron, 'schedule_ok': schedule, 'idle': idle, 'checked_at': remote}))
+            {'head_ok': head, 'cron_ok': cron, 'schedule_ok': schedule, 'idle': idle, 'model_healthy': healthy, 'checked_at': remote}))
     return run, calls
 
 
@@ -50,7 +50,8 @@ def test_remote_clock_keeps_head_cron_idle_and_conservative_deadline_without_loc
 
 @pytest.mark.parametrize('flags,reason', [({'head':False},'server_head_changed'),
     ({'cron':False},'crontab_changed'),({'schedule':False},'unsupported_decision_schedule'),
-    ({'idle':False},'decision_running')])
+    ({'idle':False},'decision_running'),({'healthy':False},'production_model_incident_active'),
+    ({'healthy':None},'production_model_health_unknown')])
 def test_remote_clock_never_bypasses_other_guards(flags,reason):
     with pytest.raises(transport.RuntimeReadinessError,match=reason):remote_proof(**flags)
 
@@ -71,7 +72,7 @@ def test_remote_clock_subtracts_roundtrip_and_dispatch_delay_at_boundary():
 
 def test_remote_proof_tampering_and_old_dispatch_are_rejected():
     proof=remote_proof()
-    for key,value in [('roundtrip_seconds',0.),('idle',False),('minimum_seconds',100),('checked_at',1.)]:
+    for key,value in [('roundtrip_seconds',0.),('idle',False),('model_healthy',False),('minimum_seconds',100),('checked_at',1.)]:
         bad=dict(proof,**{key:value})
         with pytest.raises(transport.RuntimeReadinessError,match='invalid_readiness_proof'):
             transport._readiness_still_safe(bad,'DRAFT',75,_monotonic=lambda:101.)
@@ -150,7 +151,7 @@ def test_crossing_boundary_during_remote_check_does_not_reuse_old_proof():
 
 
 def test_recording_delay_can_invalidate_readiness_before_http():
-    proof = {'status':'PASSED','head_ok':True,'cron_ok':True,'schedule_ok':True,'idle':True,'phase':'DRAFT','expected_head':HEAD,'crontab_sha256':CRON,
+    proof = {'status':'PASSED','head_ok':True,'cron_ok':True,'schedule_ok':True,'idle':True,'model_healthy':True,'phase':'DRAFT','expected_head':HEAD,'crontab_sha256':CRON,
              'checked_at':BASE+10,'remote_checked_at':BASE+10,'local_remaining_seconds':290,
              'remote_remaining_seconds':290,'minimum_seconds':190}
     transport._readiness_still_safe(proof, 'DRAFT', 75, _clock=clock(BASE+20))
@@ -337,3 +338,29 @@ def test_stubbed_caller_preflight_cannot_bypass_actual_remote_busy_check(tmp_pat
         call(**request({'wait_proposal':{}}))
     assert len(ssh_calls)==1 and not opened and guard.snapshot()['actual_http_calls']==0
     assert guard.snapshot()['stopped'] and events[-1]['runtime_guard_reason']=='decision_running'
+
+
+@pytest.mark.parametrize('healthy,reason',[(False,'production_model_incident_active'),(None,'production_model_health_unknown')])
+def test_active_or_unknown_production_model_incident_blocks_research(healthy,reason):
+    run,_=runner()
+    def response(*args,**kwargs):
+        result=run(*args,**kwargs);facts=json.loads(result.stdout);facts['model_healthy']=healthy
+        return SimpleNamespace(returncode=0,stdout=json.dumps(facts))
+    with pytest.raises(transport.RuntimeReadinessError,match=reason):
+        transport._runtime_readiness('DRAFT',75,_clock=clock(BASE+10,BASE+10.4),_run=response,_environ=ENV)
+
+
+def test_incident_reader_is_read_only_and_missing_stays_unknown(tmp_path):
+    import sqlite3
+    ns={}
+    exec(transport._REMOTE_READINESS.split('try:\n    actual_head=',1)[0].replace('head,cron_hash=sys.argv[1:3]',"head,cron_hash='fixture','fixture'"),ns)
+    check=ns['model_healthy'];path=tmp_path/'state.sqlite'
+    assert check(path)is None and not path.exists()
+    with sqlite3.connect(path)as c:
+        c.execute('CREATE TABLE llm_scenario_model_incident(id INTEGER PRIMARY KEY,active INTEGER)')
+        c.execute('INSERT INTO llm_scenario_model_incident VALUES(1,1)')
+    assert check(path)is False
+    with sqlite3.connect(path)as c:c.execute('UPDATE llm_scenario_model_incident SET active=0')
+    assert check(path)is True
+    with sqlite3.connect(path)as c:c.execute('UPDATE llm_scenario_model_incident SET active=2')
+    assert check(path)is None

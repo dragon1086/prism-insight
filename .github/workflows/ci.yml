@@ -334,6 +334,8 @@ jobs:
             prism-btc/tests/test_scenario_incident_epoch.py \
             prism-btc/tests/test_scenario_monitor_timing.py \
             prism-btc/tests/test_research_call_guard.py \
+            prism-btc/tests/test_research_model_call.py \
+            prism-btc/tests/test_research_runtime_guard.py \
             prism-btc/tests/test_incident_epoch_legacy_blocker.py \
             prism-btc/tests/test_review_policy_imports.py \
             prism-btc/tests/test_scenario_model_input.py \
