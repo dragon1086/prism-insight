@@ -522,3 +522,25 @@ async def test_failed_codex_preserves_serialized_legacy_fallback(monkeypatch):
         assert all(result["decision"] == "entry" for result in results)
     finally:
         agent.conn.close()
+
+
+@pytest.mark.asyncio
+async def test_empty_quote_is_retried_before_the_db_fallback(monkeypatch):
+    """A KIS backend blip (OPSQ0008) surfaces as an empty quote; one blip must not skip a buy review
+    whose price is not in the DB yet (PANW/SLS, 2026-11-19)."""
+    import prism_core.us_market_data as md
+    calls = []
+
+    def quote(ticker, allow_previous_close=False):
+        calls.append(ticker)
+        return 123.4 if len(calls) == 2 else None      # first call: KIS blip, second: price
+
+    monkeypatch.setattr(md, "current_quote", quote)
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    assert await mod.get_current_stock_price(MagicMock(), "PANW") == 123.4
+    assert len(calls) == 2
+    calls.clear()
+    monkeypatch.setattr(md, "current_quote", lambda ticker, allow_previous_close=False: calls.append(ticker))  # always empty
+    cursor = MagicMock(); cursor.fetchone.return_value = None
+    assert await mod.get_current_stock_price(cursor, "PANW") == 0
+    assert len(calls) == 3
