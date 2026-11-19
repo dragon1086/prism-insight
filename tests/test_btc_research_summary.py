@@ -98,6 +98,13 @@ def test_missing_evidence_is_not_zero_or_a_pass():
     assert "미확인" in summary.render(facts)
 
 
+def test_period_uses_registered_timestamps_not_file_times():
+    value = report()
+    value["contract"] = dict(start_ms=1794582000000, end_ms=1794841200000)
+    text = summary.render(summary.summarize(value))
+    assert "2026-11-14 00:00 ~ 2026-11-17 00:00 KST (종료 미포함)" in text
+
+
 def test_registered_prior_calls_are_separate_from_current_ledger(tmp_path):
     current, cached = tmp_path / "current", tmp_path / "cached"
     tape(current)
@@ -128,6 +135,7 @@ def test_stopped_partial_results_and_generation_errors_remain_visible(tmp_path):
     assert facts["failed_reviews"] == 1 and facts["open_quantity"] == .01
     text = summary.render(facts)
     assert "STOPPED" in text and "private model text" not in text
+    assert text.index("원 실행이 중단됐습니다") < text.index("| 항목 |")
 
 
 @pytest.mark.parametrize("key", summary.HASH_FIELDS)
@@ -139,6 +147,8 @@ def test_any_reported_hash_difference_remains_failed(key):
     assert facts["comparison"]["status"] == "FAILED"
     assert facts["comparison"]["differences"] == [key]
     assert "FAILED" in summary.render(facts)
+    text = summary.render(facts)
+    assert text.index("검증 완료 성과로 사용하지 않습니다") < text.index("| 항목 |")
 
 
 def test_matching_hashes_are_only_report_comparison_not_new_replay():

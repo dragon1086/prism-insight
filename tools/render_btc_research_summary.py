@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 import gzip
 import hashlib
 import json
@@ -183,6 +184,9 @@ def summarize(report, *, tape=None, study=None, frozen=None, exchange=None):
     require(report.get("mode") in {None, "SYNTHETIC_FIXTURE", "HISTORICAL_LLM_RESEARCH"}
             and metadata.get("mode") in {None, "fresh", "frozen", "fixture"}
             and report.get("execution_status") in {None, "COMPLETE", "STOPPED"}, "summary_report_mode")
+    contract = report.get("contract", {})
+    start, end = count(contract.get("start_ms")), count(contract.get("end_ms"))
+    require(start is None or end is None or start < end, "summary_period")
     closed, wins, losses = [count(economic.get(k)) for k in ("completed_scenarios", "wins", "losses")]
     if None not in (closed, wins, losses):
         require(wins + losses <= closed, "summary_trade_counts")
@@ -225,7 +229,7 @@ def summarize(report, *, tape=None, study=None, frozen=None, exchange=None):
     calls = study_facts(study, recorded) if study is not None else {}
     unclosed = economic.get("unclosed_scenario")
     require(unclosed is None or type(unclosed) is bool, "summary_invalid_unclosed_status")
-    return dict(mode=report.get("mode"), execution_mode=metadata.get("mode"),
+    return dict(mode=report.get("mode"), execution_mode=metadata.get("mode"), start_ms=start, end_ms=end,
         execution_status=report.get("execution_status"),
         planned_slots=count(report.get("coverage", {}).get("planned_slots")),
         reviews=recorded["reviews"] if recorded is not None else None,
@@ -259,6 +263,11 @@ def render(facts):
     modes = {None: "미확인", "SYNTHETIC_FIXTURE": "합성 기능 검사",
              "HISTORICAL_LLM_RESEARCH": "과거 AI 연구", "fresh": "실행(재사용 포함 가능)",
              "frozen": "저장 응답 재생", "fixture": "합성 검사"}
+    period = "미확인"
+    if facts["start_ms"] is not None and facts["end_ms"] is not None:
+        kst = timezone(timedelta(hours=9))
+        period = " ~ ".join(datetime.fromtimestamp(facts[k] / 1000, kst).strftime("%Y-%m-%d %H:%M")
+                            for k in ("start_ms", "end_ms")) + " KST (종료 미포함)"
     payoff = (number(facts["mean_winner"] / abs(facts["mean_loser"]))
               if facts["mean_winner"] is not None and facts["mean_loser"] else None)
     win_rate = (100 * facts["wins"] / facts["closed"]
@@ -266,7 +275,8 @@ def render(facts):
     breakeven = (facts["closed"] - facts["wins"] - facts["losses"]
                  if None not in (facts["closed"], facts["wins"], facts["losses"]) else None)
     rows = [
-        ("연구 종류 / 실행 방식", f"{modes[facts['mode']]} / {modes[facts['execution_mode']] }"),
+        ("대상 기간", period),
+        ("연구 종류 / 실행 방식", f"{modes[facts['mode']]} / {modes[facts['execution_mode']]}"),
         ("원본 실행 상태", value(facts["execution_status"])),
         ("계획 시점 / 테이프 판단 기록", f"{value(facts['planned_slots'])} / {value(facts['reviews'])}"),
         ("완료 응답 / 생성단계 오류 / 응답 누락", " / ".join(value(facts[k]) for k in
@@ -294,10 +304,18 @@ def render(facts):
         ("미확인 대조 항목", ", ".join(check["missing"]) or "없음"),
     ]
     if facts["stages"] is not None:
-        rows.insert(3, ("판단별 생성단계 수", ", ".join(
+        rows.insert(4, ("판단별 생성단계 수", ", ".join(
             f"{n}단계 {total}회" for n, total in sorted(facts["stages"].items()))))
+    warnings = []
+    if facts["execution_status"] == "STOPPED":
+        warnings.append("⚠️ 원 실행이 중단됐습니다. 아래는 기록된 일부 결과입니다.")
+    if check["status"] == "FAILED":
+        warnings.append("⚠️ 제공된 재생 보고서와 불일치합니다. 검증 완료 성과로 사용하지 않습니다.")
+    elif check["status"] == "MISSING":
+        warnings.append("재생 보고서 대조 근거는 미확인 또는 불완전합니다.")
     return ("# BTC 연구 결과 요약\n\n기존 모의연구 자료의 읽기 전용 표시입니다. "
-            "새 AI 호출·주문·재생 검증은 실행하지 않았습니다. 실계좌 수익이나 수익성 승인표가 아닙니다.\n\n"
+            "새 AI 호출·주문·재생 검증은 실행하지 않았습니다. 실계좌 수익이나 수익성 승인표가 아닙니다.\n\n" +
+            ("\n".join(warnings) + "\n\n" if warnings else "") +
             "| 항목 | 기록 |\n|---|---|\n" +
             "\n".join(f"| {name} | {text} |" for name, text in rows) +
             "\n\n연구 장부 수치는 연구 전체 범위입니다. 저장 응답 수를 신규 호출 수로 세지 않습니다. "
