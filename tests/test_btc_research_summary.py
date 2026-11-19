@@ -105,6 +105,17 @@ def test_period_uses_registered_timestamps_not_file_times():
     assert "2026-11-14 00:00 ~ 2026-11-17 00:00 KST (종료 미포함)" in text
 
 
+def test_intentionally_skipped_flat_candidates_are_not_missing_ai_reviews():
+    value = report()
+    value["conditional_holding_schedule"] = dict(entry_slots_ms=[1], executed_holding_slots_ms=[2],
+        skipped_flat_holding_slots_ms=[3, 4, 5], unprocessed_candidate_slots_ms=[])
+    value["coverage"].update(planned_slots=5, slots_without_model_review=[])
+    facts = summary.summarize(value)
+    text = summary.render(facts)
+    assert "미보유로 생략한 보유 후보 / 미처리 후보 | 3 / 0" in text
+    assert facts["missing_review_slots"] == 0
+
+
 def test_registered_prior_calls_are_separate_from_current_ledger(tmp_path):
     current, cached = tmp_path / "current", tmp_path / "cached"
     tape(current)
@@ -276,7 +287,7 @@ def test_standalone_cli_runs_from_outside_repo_and_never_changes_input(tmp_path)
         "--run", str(tmp_path), "--tape", str(path)], cwd=tmp_path,
         capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
-    assert "테이프 판단 기록 | 9 / 2" in result.stdout
+    assert "후보 시점 / 테이프 판단 기록 | 9 / 2" in result.stdout
     assert "미확인" in result.stdout
     assert tree_hashes(tmp_path) == before
 

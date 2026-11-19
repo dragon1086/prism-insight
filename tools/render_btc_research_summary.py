@@ -47,6 +47,14 @@ def number(value):
     return value
 
 
+def slot_count(value):
+    if value is None:
+        return None
+    require(isinstance(value, list) and all(type(v) is int and v >= 0 for v in value)
+            and len(set(value)) == len(value), "summary_slot_list")
+    return len(value)
+
+
 def tape_facts(path, contract_hash=None):
     """Count recorded operations, never rerun a model or a trading decision."""
     result = dict(reviews=0, failed_reviews=0, replies=0, generation_errors=0,
@@ -227,11 +235,19 @@ def summarize(report, *, tape=None, study=None, frozen=None, exchange=None):
     if recorded is not None and declared is not None:
         require(count(declared) == recorded["reviews"], "summary_review_count_mismatch")
     calls = study_facts(study, recorded) if study is not None else {}
+    holding = report.get("conditional_holding_schedule")
+    if holding is not None:
+        require(isinstance(holding, dict), "summary_holding_schedule")
+        holding = {key: slot_count(holding.get(key)) for key in (
+            "entry_slots_ms", "executed_holding_slots_ms", "skipped_flat_holding_slots_ms",
+            "unprocessed_candidate_slots_ms")}
     unclosed = economic.get("unclosed_scenario")
     require(unclosed is None or type(unclosed) is bool, "summary_invalid_unclosed_status")
     return dict(mode=report.get("mode"), execution_mode=metadata.get("mode"), start_ms=start, end_ms=end,
         execution_status=report.get("execution_status"),
         planned_slots=count(report.get("coverage", {}).get("planned_slots")),
+        holding_schedule=holding,
+        missing_review_slots=slot_count(report.get("coverage", {}).get("slots_without_model_review")),
         reviews=recorded["reviews"] if recorded is not None else None,
         replies=recorded["replies"] if recorded is not None else None,
         failed_reviews=recorded["failed_reviews"] if recorded is not None else None,
@@ -278,7 +294,8 @@ def render(facts):
         ("대상 기간", period),
         ("연구 종류 / 실행 방식", f"{modes[facts['mode']]} / {modes[facts['execution_mode']]}"),
         ("원본 실행 상태", value(facts["execution_status"])),
-        ("계획 시점 / 테이프 판단 기록", f"{value(facts['planned_slots'])} / {value(facts['reviews'])}"),
+        ("후보 시점 / 테이프 판단 기록", f"{value(facts['planned_slots'])} / {value(facts['reviews'])}"),
+        ("실행 대상 판단 기록 누락", value(facts["missing_review_slots"])),
         ("완료 응답 / 생성단계 오류 / 응답 누락", " / ".join(value(facts[k]) for k in
             ("replies", "generation_errors", "missing_responses"))),
         ("실패한 판단 기록", value(facts["failed_reviews"])),
@@ -306,6 +323,12 @@ def render(facts):
     if facts["stages"] is not None:
         rows.insert(4, ("판단별 생성단계 수", ", ".join(
             f"{n}단계 {total}회" for n, total in sorted(facts["stages"].items()))))
+    if facts["holding_schedule"] is not None:
+        holding = facts["holding_schedule"]
+        rows.insert(4, ("기본 검토 시각 / 실제 추가 보유 검토", " / ".join(value(holding[k]) for k in
+            ("entry_slots_ms", "executed_holding_slots_ms"))))
+        rows.insert(5, ("미보유로 생략한 보유 후보 / 미처리 후보", " / ".join(value(holding[k]) for k in
+            ("skipped_flat_holding_slots_ms", "unprocessed_candidate_slots_ms"))))
     warnings = []
     if facts["execution_status"] == "STOPPED":
         warnings.append("⚠️ 원 실행이 중단됐습니다. 아래는 기록된 일부 결과입니다.")
