@@ -25,7 +25,7 @@ Markdown을 표준 출력으로 내보낸다. 필요하면 별도 새 파일에 
 - `cache-certificate.json` + `cache-used.json`: 원 테이프 파일 해시·완료 응답 수·사용된 요청 해시·응답/usage 일치를 대조한다. `tape_path`는 절대 경로 또는 study 상대 경로다.
 - 과거 응답 미보존은 인증서의 `missing_response_attempts`가 있을 때만 표시한다.
 
-연구 장부 전체 호출 수는 개별 실행의 호출 수가 아니다. 개별 실행 HTTP는 원본
+연구 장부 전체 호출 수는 개별 실행의 호출 수가 아니다. `prior_sealed_actual_http`가 있으면 이전 등록분과 현재 장부를 구별해 누적값을 표시한다. 이전분은 등록값이며, 미확인 HTTP가 있으면 누적 합계는 미확인이다. 개별 실행 HTTP는 원본
 `execution_metadata.actual_model_calls`가 있을 때만 표시한다. 메타데이터가 모르면
 장부 전체 값을 개별 실행 값으로 대신 넣지 않는다. 재사용 기록 대조도 새로운 HTTP 호출이 아니다.
 합성 응답이나 frozen 실행의 저장 응답을 새 AI 판단으로 보고하지 않는다.
@@ -33,7 +33,7 @@ Markdown을 표준 출력으로 내보낸다. 필요하면 별도 새 파일에 
 ## 표시 계약
 
 - 계획된 시점, 실제 테이프 판단 수, 단계 수, 텍스트 응답·생성단계 오류·응답 누락을 구별한다. 생성 오류가 곧 실제 서비스 HTTP 오류라는 뜻은 아니다.
-- 체결 기록은 `execution_inventory`의 `execType=Trade`를 execId로 중복 제거한다. 같은 ID의 상충 기록은 거절한다. 원장 없이는 종료 거래 수로 체결 수를 추측하지 않는다.
+- 체결 기록은 `execution_inventory`, 없으면 해당 실행의 `exchange.json.executions`를 사용한다. exchange 파일은 원본 `exchange_hash`와 일치하고 simulation=true여야 한다. `execType=Trade`를 execId로 중복 제거한다. 같은 ID의 상충 기록은 거절한다. 원장 없이는 종료 거래 수로 체결 수를 추측하지 않는다.
 - 종료 거래·승·패·손익0, 이긴 거래 평균 수익률·진 거래 평균 손실률·손익비, 비용 후 순손익·수수료·펀딩·최대낙폭을 나눠 표시한다. 수익률 평균은 원본 `closed_trade_detail.net_return_on_initial_notional`이 완전할 때만 계산한다.
 - 미청산 수량, 미완료 주문 계획, 미확인 거래소 주문, 미종료 시나리오를 구별한다. 수량0만으로 정산 완료라고 하지 않는다.
 - `--frozen-report`는 이미 존재하는 frozen/HTTP0 보고서다. 계약·테이프·거래소·최종 상태·시계·실행 원장·결과 해시와 손익, 있으면 개별 거래·잔고 내역을 비교한다. 불일치는 `FAILED`, 근거 누락은 `MISSING`이다.

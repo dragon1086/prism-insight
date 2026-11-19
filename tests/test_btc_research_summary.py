@@ -57,8 +57,11 @@ def tree_hashes(path):
             for p in path.rglob("*") if p.is_file()}
 
 
-def study(path, cached):
-    dump(path / "registry.json", {"max_http": 2})
+def study(path, cached, prior=None):
+    registry = {"max_http": 2}
+    if prior is not None:
+        registry["prior_sealed_actual_http"] = prior
+    dump(path / "registry.json", registry)
     guard = CallGuard(path / "http-guard",
         hashlib.sha256((path / "registry.json").read_bytes()).hexdigest(), 2)
     for _ in range(2):
@@ -93,6 +96,16 @@ def test_missing_evidence_is_not_zero_or_a_pass():
     assert facts["reviews"] is None and facts["report_http"] is None
     assert facts["comparison"]["status"] == "MISSING"
     assert "미확인" in summary.render(facts)
+
+
+def test_registered_prior_calls_are_separate_from_current_ledger(tmp_path):
+    current, cached = tmp_path / "current", tmp_path / "cached"
+    tape(current)
+    tape(cached, groups=((0,),))
+    study(tmp_path, cached, prior=48)
+    calls = summary.summarize(report(), tape=current, study=tmp_path)["study"]
+    assert calls["http"] == 2 and calls["registered_prior_http"] == 48
+    assert calls["cumulative_http"] == 50
 
 
 def test_frozen_execution_is_not_a_new_model_call():
@@ -212,6 +225,20 @@ def test_fill_deduplication_and_conflicting_identity():
     source["execution_inventory"][-1]["execQty"] = "different"
     with pytest.raises(ValueError, match="fill_identity"):
         summary.summarize(source)
+
+
+def test_standard_exchange_artifact_supplies_fills_only_when_hash_matches(tmp_path, capsys):
+    source = report()
+    exchange = dict(simulation=True, executions=source.pop("execution_inventory"))
+    source["exchange_hash"] = summary.digest(exchange)
+    dump(tmp_path / "report.json", source)
+    dump(tmp_path / "exchange.json", exchange)
+    assert summary.main(["--run", str(tmp_path)]) == 0
+    assert "재생 체결 기록 / 종료 거래 | 4 / 2" in capsys.readouterr().out
+    exchange["executions"] = []
+    dump(tmp_path / "exchange.json", exchange)
+    assert summary.main(["--run", str(tmp_path)]) == 1
+    assert "summary_exchange_hash" in capsys.readouterr().err
 
 
 def test_zero_trades_are_not_missing_trades():

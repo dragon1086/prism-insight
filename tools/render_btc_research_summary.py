@@ -117,9 +117,17 @@ def study_facts(directory, recorded):
             raise ValueError("summary_call_ledger_invalid") from None
         result.update(http=count(state["actual_http_calls"]),
                       unknown_http=count(state["unknown_http_attempts"]))
+        prior = count(registry.get("prior_sealed_actual_http"))
+        if prior is not None:
+            result["registered_prior_http"] = prior
+            result["cumulative_http"] = (prior + result["http"]
+                if not state["inflight"] and result["unknown_http"] == 0 else None)
     certificate_path, used_path = directory / "cache-certificate.json", directory / "cache-used.json"
     if certificate_path.exists():
         certificate = read_json(certificate_path)
+        if result.get("registered_prior_http") is not None and "prior_actual_http" in certificate:
+            require(count(certificate["prior_actual_http"]) == result["registered_prior_http"],
+                    "summary_prior_http_mismatch")
         result["prior_missing_responses"] = count(certificate.get("missing_response_attempts"))
         if recorded is not None and used_path.exists():
             source = Path(certificate["tape_path"])
@@ -167,7 +175,7 @@ def comparison(report, frozen):
                 differences=different, missing=missing)
 
 
-def summarize(report, *, tape=None, study=None, frozen=None):
+def summarize(report, *, tape=None, study=None, frozen=None, exchange=None):
     require(isinstance(report, dict) and report.get("simulated_only") is True,
             "summary_simulated_report_required")
     economic, metadata = report.get("economic", {}), report.get("execution_metadata", {})
@@ -193,6 +201,11 @@ def summarize(report, *, tape=None, study=None, frozen=None):
             means[name] = (number(sum(values) / len(values))
                            if values and None not in values and None not in nets else None)
     inventory = report.get("execution_inventory")
+    if exchange is not None:
+        require(isinstance(exchange, dict) and exchange.get("simulation") is True
+                and digest(exchange) == report.get("exchange_hash"), "summary_exchange_hash")
+        if inventory is None:
+            inventory = exchange.get("executions")
     fills = None
     if inventory is not None:
         require(isinstance(inventory, list), "summary_inventory_type")
@@ -261,6 +274,7 @@ def render(facts):
         ("실패한 판단 기록", value(facts["failed_reviews"])),
         ("보고서에 기록된 해당 실행 HTTP", value(facts["report_http"])),
         ("연구 장부 전체 확정 HTTP / 미확인 시도", f"{value(calls.get('http'))} / {value(calls.get('unknown_http'))}"),
+        ("이전 등록 HTTP / 등록분 포함 누적 HTTP", f"{value(calls.get('registered_prior_http'))} / {value(calls.get('cumulative_http'))}"),
         ("기존 응답 일치(재사용 기록 대조)", value(calls.get("cached_matches"))),
         ("이전 원응답 미보존", value(calls.get("prior_missing_responses"))),
         ("재생 체결 기록 / 종료 거래", f"{value(facts['fills'])} / {value(facts['closed'])}"),
@@ -298,8 +312,10 @@ def main(argv=None):
     parser.add_argument("--frozen-report", type=Path, help="existing frozen report.json; no replay is run")
     args = parser.parse_args(argv)
     try:
+        exchange = args.run / "exchange.json"
         facts = summarize(read_json(args.run / "report.json"), tape=args.tape, study=args.study,
-                          frozen=read_json(args.frozen_report) if args.frozen_report else None)
+                          frozen=read_json(args.frozen_report) if args.frozen_report else None,
+                          exchange=read_json(exchange) if exchange.exists() else None)
         print(render(facts), end="")
     except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError) as error:
         code = str(error)
