@@ -261,6 +261,7 @@ jobs:
 
       - name: Run tests
         run: |
+          python -m pytest tests/test_btc_research_summary.py -q
           python -m pytest cores/llm/tests/ -q
           python -m pytest --noconftest tests/test_buy_codex_settings.py \
             tests/test_trading_scenario_contract.py tests/test_codex_oauth_fast_backend.py \
