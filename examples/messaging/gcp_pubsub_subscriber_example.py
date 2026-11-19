@@ -91,11 +91,11 @@ def is_market_hours(market: str = "KR") -> bool:
     if market == "US":
         return is_us_market_hours()
 
-    # Korea: 09:00~15:30 KST
-    now = datetime.now().time()
-    market_open = time(9, 0)
-    market_close = time(15, 30)
-    return market_open <= now <= market_close
+    # Korea: 09:00~15:30 KST (KRX_SESSION_OVERRIDE moves it on special days, e.g. exam day)
+    from prism_core.time_windows import regular_session
+    now = datetime.now()
+    market_open, market_close = regular_session(now.date())
+    return market_open <= now.time() <= market_close
 
 
 _US_CMD_MODULE = None
