@@ -41,6 +41,8 @@ def wire(ctx, action):
         partial_stops=[], cancel_entry_ids=[], side="LONG" if active else None,
         hard_stop=82900 if active else None,
         chase=dict(max_bps=0, max_reprices=0) if active else None)
+    if ctx.get("immediate_reduce_version") == 1:
+        result["reduce_fraction"] = .5 if action == "REDUCE" else None
     if ctx.get("recovery_contract_version") in (1, 2):
         result["recovery"] = None
     return result
@@ -66,7 +68,7 @@ def taped(ctx=None, action="OPEN"):
 
     envelope = record_review(research_review, snapshot, ctx, contract, generate=generate,
         record=lambda event: None, clock=lambda: 1000, bindings={"code": "test"})
-    assert envelope["outcome"]["status"] == "COMPLETE", envelope
+    assert envelope["outcome"]["status"] == "COMPLETE", envelope["outcome"]
     return snapshot, ctx, contract, envelope
 
 
@@ -269,3 +271,28 @@ def test_final_explanation_returned_without_mutating_original_candidate():
     assert result["validated"]["rationale"] == selected["raw_proposal"]["rationale"]
     assert args[3]['outcome']['result']['selection']['rationale'] == "계산 검토 완료"
     assert receipt_hash(selected["raw_proposal"]) == original_hash == selected["raw_sha256"]
+
+
+@pytest.mark.parametrize("original_blocked,fresh_blocked", [(False, True), (True, False)])
+def test_reduce_survives_recovery_entry_gate_change(original_blocked, fresh_blocked):
+    ctx = dict(context(), scenario_id="active", revision=1, side="LONG",
+               previous_hard_stop=82800, positions=[dict(price=83300, quantity=.02)],
+               immediate_reduce_version=1, unknown_intents=[], market_maximum_quantity=1,
+               recovery_hard_blocked=original_blocked)
+    args = taped(ctx, "REDUCE")
+    fresh = dict(ctx, now=1001, account_captured_at=1001,
+                 recovery_hard_blocked=fresh_blocked)
+    assert check(args, fresh)["validated"]["action"] == "REDUCE"
+    for key, value in [("account_version", "changed"),
+                       ("positions", [dict(price=83300, quantity=.01)]),
+                       ("protection_ok", False), ("accounting_status", "pending"),
+                       ("new_risk_blocked", True), ("recovery_hard_blocked", 1)]:
+        with pytest.raises(ValueError):
+            check(args, dict(fresh, **{key: value}))
+
+
+def test_open_still_rejects_recovery_entry_gate_change():
+    args = taped(dict(context(), recovery_hard_blocked=False))
+    with pytest.raises(ValueError, match="review_guard_context_changed:recovery_hard_blocked"):
+        check(args, dict(args[1], now=1001, account_captured_at=1001,
+                         recovery_hard_blocked=True))

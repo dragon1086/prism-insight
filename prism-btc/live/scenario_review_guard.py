@@ -139,6 +139,9 @@ def guard_review(snapshot, original_context, response_contract, envelope, fresh_
                 or (original[key] != fresh[key] and (actionable or key != "new_risk_blocked"))):
             raise ValueError("review_guard_context_changed:" + key)
     for key in _OPTIONAL_STABLE:
+        # An entry recovery gate cannot veto an otherwise fresh reduce-only action.
+        if key == "recovery_hard_blocked" and selected_plan["action"] == "REDUCE":
+            continue
         if key == 'immediate_reduce_available' and selected_plan['action'] != 'REDUCE':
             continue
         if goal_independent and key == 'entry_goal_untrusted':
