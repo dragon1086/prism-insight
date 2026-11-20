@@ -39,6 +39,7 @@ export interface RealTradingSummary {
   deposit: number
   total_cash: number  // D+2 포함 총 현금
   available_amount: number
+  total_assets?: number  // US: trade-date total incl. sells still settling
 }
 
 export interface Summary {

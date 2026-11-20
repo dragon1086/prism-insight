@@ -60,8 +60,8 @@ export function PerformanceChart({ data, prismPerformance = [], holdings = [], s
   })
 
   // 실전 투자 수익률
-  const realTotalAssets = (summary?.real_trading?.total_eval_amount || 0) +
-                          (summary?.real_trading?.available_amount || 0)
+  const realTotalAssets = summary?.real_trading?.total_assets ||
+                          (summary?.real_trading?.total_eval_amount || 0) + (summary?.real_trading?.available_amount || 0)
   const realReturn = season2StartAmount > 0
     ? ((realTotalAssets - season2StartAmount) / season2StartAmount) * 100
     : 0
