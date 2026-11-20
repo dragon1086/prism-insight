@@ -115,8 +115,8 @@ def build_ma_structure_context(snapshot: dict, context: dict) -> dict:
               "long_upward_obstacles": [], "short_downward_obstacles": [],
               "equal_reference_levels": [], "levels": {},
               "levels_price_basis": "LAST_TRADE_OHLC_SMA", "reference": None,
-              "decision_priority": {"descending": ["1h", "30m", "4h", "12h", "1d", "1w"],
-                  "timing_only": "15m", "interpretation": "QUALITATIVE_EMPHASIS_NOT_PROBABILITY_OR_VETO"},
+              "decision_priority": {"descending": ["1h", "30m", "4h", "1d", "1w"],
+                  "timing_only": [], "interpretation": "QUALITATIVE_EMPHASIS_NOT_PROBABILITY_OR_VETO"},
               "extrema_interpretation": "RECENT_BAR_EXTREMES_NOT_CONFIRMED_SWING_OR_SUPPORT_RESISTANCE"}
     as_of, now = snapshot.get("as_of_ms"), context.get("now")
     if not _number(as_of) or not _number(now) or as_of > now * 1000:
@@ -152,7 +152,15 @@ def build_ma_structure_context(snapshot: dict, context: dict) -> dict:
             transitions = []
             for before, after in zip(points, points[1:]):
                 gap_change = after["absolute_gap_price"] - before["absolute_gap_price"]
+                relative_crossings = {}
+                for ma in ("ma10", "ma35"):
+                    sides = ["ABOVE" if p["close"] > p[ma] else "BELOW" if p["close"] < p[ma] else "EQUAL"
+                             for p in (before, after)]
+                    if sides[0] != sides[1]:
+                        relative_crossings[ma] = "_TO_".join(sides)
                 transitions.append({"from_as_of_ms": before["as_of_ms"], "to_as_of_ms": after["as_of_ms"],
+                    "from_open_time_ms": before["open_time_ms"], "to_open_time_ms": after["open_time_ms"],
+                    "relative_crossings": relative_crossings,
                     "from_position": before["price_position"], "to_position": after["price_position"],
                     "from_ma_order": before["ma_order"], "to_ma_order": after["ma_order"],
                     "bar_steps": (after["open_time_ms"] - before["open_time_ms"]) / duration,

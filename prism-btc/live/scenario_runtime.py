@@ -140,7 +140,7 @@ def _valid_open_entry(row):
 def snapshot_input_time(snapshot):
     """Use the oldest primary observation, not the end of a sequential fetch."""
     times = [snapshot.get("as_of_ms")]
-    for tf in ("15m", "30m", "1h"):
+    for tf in ("30m", "1h"):
         forming = snapshot.get("timeframes", {}).get(tf, {}).get("forming")
         if isinstance(forming, dict):
             times.append(forming.get("observed_at_ms"))
@@ -886,8 +886,17 @@ class ScenarioRuntime:
                             and bool(current['recovery']['baseline_input_id'])
                             and type(current['recovery'].get('baseline_slot')) is int
                             and current['recovery']['baseline_slot'] < slot):
+                        # Record bounded public MA facts even while entry is restricted; no model or state promotion.
+                        from engine.scenario_ma_context import build_ma_structure_context
+                        from live.scenario_analysis_frames import PRIMARY_FRAMES
+                        structure = build_ma_structure_context(snap, dict(now=now))
+                        observations = dict(scope='PRIMARY_MA_CONTEXT_NOT_MODEL_REVIEW_OR_ORDER_AUTHORITY',
+                            snapshot_as_of_ms=snap['as_of_ms'], decision_priority=structure['decision_priority'],
+                            entry_convergence=ctx['entry_convergence'],
+                            primary={tf:structure['primary'][tf] for tf in PRIMARY_FRAMES})
                         # No entry is legal under the existing gate; do not ask a model to invent one.
                         return dict(status='observation_only', reason='entry_convergence_restricted',
+                                    market_observation_facts=observations,
                                     model_called=False, market_observation_only=True,
                                     market_observation_status='observed', verified_flat=True,
                                     observed_at_ms=int(captured*1000))

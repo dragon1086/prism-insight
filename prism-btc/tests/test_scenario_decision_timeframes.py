@@ -6,7 +6,7 @@ import pandas as pd
 from engine.scenario_snapshot import TIMEFRAME_MS, build_scenario_snapshot
 
 
-def test_decision_timeframes_exclude_five_minutes():
+def test_raw_history_codec_still_accepts_original_timeframes():
     assert list(TIMEFRAME_MS) == ['15m', '30m', '1h', '4h', '12h', '1d', '1w']
 
 
@@ -36,17 +36,17 @@ def test_legacy_five_minute_input_cannot_leak_into_snapshot():
     assert not re.search(r'(?<![0-9])5m', json.dumps(changed))
 
 
-def test_fifteen_minute_freshness_and_input_time_are_required():
+def test_thirty_minute_freshness_and_input_time_are_required():
     from tests.test_scenario_snapshot import frames, NOW
     from live.scenario_runtime import snapshot_input_time
     now = NOW+300_000
     h, p = frames(now)
     observed = {tf: now for tf in TIMEFRAME_MS}
-    observed['15m'] = now-30_000
+    observed['30m'] = now-30_000
     result = build_scenario_snapshot(h, now, provisional_tf_data=p, observed_at_by_tf_ms=observed)
     assert result['valid']
     assert snapshot_input_time(result) == (now-30_000)/1000
-    observed['15m'] = now-120_001
+    observed['30m'] = now-120_001
     assert not build_scenario_snapshot(h, now, provisional_tf_data=p, observed_at_by_tf_ms=observed)['valid']
 
 
@@ -65,3 +65,15 @@ def test_weekly_replay_uses_same_monday_grid_and_never_fills_missing_prefix():
     after = data.snapshot(int((monday+pd.Timedelta(minutes=15)).timestamp()*1000))
     assert after['timeframes']['1w']['forming']['ohlcv']['volume'] == 15
     assert after['timeframes']['1w']['forming']['elapsed_ms'] == 900_000
+
+
+def test_retired_fifteen_minute_timestamp_cannot_expire_current_primary_input():
+    from tests.test_scenario_snapshot import frames,NOW
+    from live.scenario_runtime import snapshot_input_time
+    now=NOW+300000
+    history,forming=frames(now)
+    observed={tf:now for tf in TIMEFRAME_MS}
+    observed['15m']=now-120001
+    result=build_scenario_snapshot(history,now,provisional_tf_data=forming,observed_at_by_tf_ms=observed)
+    assert result['valid'] and snapshot_input_time(result)==now/1000
+    assert result['timeframes']['15m']['status']!='ok'

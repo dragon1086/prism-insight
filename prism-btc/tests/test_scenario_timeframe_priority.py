@@ -17,10 +17,10 @@ def test_priority_and_missing_frames_are_explicit_in_model_payload():
     ctx = dict(context(), now=NOW/1000, mark_price=100)
     data = restore_model_input(_model_payload(snap, ctx, {}))['contract_context']['ma_structure']
     assert data['decision_priority'] == dict(
-        descending=['1h', '30m', '4h', '12h', '1d', '1w'],
-        timing_only='15m', interpretation='QUALITATIVE_EMPHASIS_NOT_PROBABILITY_OR_VETO')
-    assert '15m' in data['primary']
-    for frame in ('4h', '12h', '1d', '1w'):
+        descending=['1h', '30m', '4h', '1d', '1w'],
+        timing_only=[], interpretation='QUALITATIVE_EMPHASIS_NOT_PROBABILITY_OR_VETO')
+    assert '15m' not in data['primary']
+    for frame in ('4h', '1d', '1w'):
         higher = data['higher_frames'][frame]
         assert higher['status'] == 'available'
         assert higher['latest_structure']['ma_order'] == 'BULLISH'
@@ -31,7 +31,7 @@ def test_priority_and_missing_frames_are_explicit_in_model_payload():
 
 def test_missing_higher_frames_not_invented_from_priority():
     data = build_ma_structure_context(snapshot(), dict(now=NOW/1000, mark_price=100))
-    for frame in ('4h', '12h', '1d', '1w'):
+    for frame in ('4h', '1d', '1w'):
         assert data['higher_frames'][frame]['latest_structure'] is None
         assert data['higher_frames'][frame]['status'] == 'unavailable'
 

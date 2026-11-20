@@ -30,3 +30,22 @@ def test_collection_failure_no_model_or_orders():
 def test_invalid_hypothetical_equity(equity):
     with pytest.raises(ValueError):
         preview(equity)
+
+
+def test_live_collection_uses_exact_requested_priority_without_lower_frames():
+    import pandas as pd
+    from tests.test_scenario_snapshot import frames,NOW
+    from live.scenario_analysis_frames import analysis_model_view,ANALYSIS_FRAMES
+    now=NOW+300000
+    history,forming=frames(now)
+    requested=[]
+    def fetch(tf):
+        requested.append(tf)
+        rows=pd.concat([history[tf],forming[tf]])
+        return [[int(at.timestamp()*1000),*[str(row[k])for k in ['open','high','low','close','volume']],'0']for at,row in rows.iterrows()]
+    snap=collect_snapshot(fetch=fetch,clock=lambda:now/1000)
+    assert requested==['1h','30m','4h','1d','1w']
+    assert snap['valid']
+    view=analysis_model_view(dict(market_snapshot=snap,contract_context={}))
+    assert list(view['market_snapshot']['timeframes'])==list(ANALYSIS_FRAMES)
+    assert view['contract_context']['analysis_frame_policy']['version']==3

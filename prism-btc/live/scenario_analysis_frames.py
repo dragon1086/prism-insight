@@ -3,10 +3,10 @@ from copy import deepcopy
 import math
 import re
 
-ANALYSIS_FRAMES = ('15m', '30m', '1h', '4h', '12h', '1d', '1w')
-AUTHORITY_FRAMES = tuple(frame for frame in ANALYSIS_FRAMES if frame != '15m')
-PRIMARY_FRAMES = ('30m', '1h')
-_RETIRED_TEXT = re.compile(r'(?<![a-z0-9])5[\s_-]*(?:m(?:in(?:ute)?s?)?|분(?:봉)?)(?![a-z0-9])', re.IGNORECASE)
+ANALYSIS_FRAMES = ('1h', '30m', '4h', '1d', '1w')
+AUTHORITY_FRAMES = ANALYSIS_FRAMES
+PRIMARY_FRAMES = ('1h', '30m')
+_RETIRED_TEXT = re.compile(r'(?<![a-z0-9])(?:(?:[1-9]|[12][0-9])[\s_-]*(?:m(?:in(?:ute)?s?)?|분(?:봉)?)|12[\s_-]*(?:h(?:ours?)?|시간(?:봉)?))(?![a-z0-9])', re.IGNORECASE)
 _OPINIONS = {'reason', 'rationale', 'counterevidence', 'invalidation', 'summary', 'note'}
 
 
@@ -35,7 +35,7 @@ def allowed_evidence_path(path):
 def _schema_frames(value, *, field=None, recovery=False):
     if isinstance(value, dict):
         if field == 'frame' and isinstance(value.get('enum'), list):
-            value['enum'] = [v for v in value['enum'] if v != '15m']
+            value['enum'] = [v for v in value['enum'] if v in AUTHORITY_FRAMES]
         if recovery and field == 'changed_evidence':
             items = value.get('items')
             if isinstance(items, dict) and isinstance(items.get('enum'), list):
@@ -60,7 +60,7 @@ def analysis_model_view(payload):
             if isinstance(issue, str) and _RETIRED_TEXT.search(issue) else issue for issue in market['issues']]
     frames = market.get('timeframes')
     if isinstance(frames, dict):
-        market['timeframes'] = {k:v for k,v in frames.items() if k in ANALYSIS_FRAMES}
+        market['timeframes'] = {k:frames[k] for k in ANALYSIS_FRAMES if k in frames}
         for frame in market['timeframes'].values():
             forming = frame.get('forming') if isinstance(frame, dict) else None
             if isinstance(forming, dict):
@@ -104,7 +104,7 @@ def analysis_model_view(payload):
             primary.pop('volume_4d_30m', None)
     structure = ctx.get('ma_structure')
     if isinstance(structure, dict):
-        structure['primary'] = {k:v for k,v in structure.get('primary', {}).items() if k in ('15m', *PRIMARY_FRAMES)}
+        structure['primary'] = {k:v for k,v in structure.get('primary', {}).items() if k in PRIMARY_FRAMES}
         if isinstance(structure.get('higher_frames'), dict):
             structure['higher_frames'] = {k:v for k,v in structure['higher_frames'].items() if k in ANALYSIS_FRAMES}
         if isinstance(structure.get('levels'), dict):
@@ -115,7 +115,7 @@ def analysis_model_view(payload):
         if 'status' in structure:
             retained = [v for k,v in structure.get('primary', {}).items() if k in PRIMARY_FRAMES] + list(structure.get('higher_frames', {}).values())
             structure['status'] = 'available' if any(row.get('status') == 'available' for row in retained) else 'unavailable'
-        structure.get('decision_priority', {})['timing_only'] = '15m' if '15m' in market.get('timeframes', {}) else []
+        structure.get('decision_priority', {})['timing_only'] = []
     facts = ctx.get('current_primary_frame_facts')
     if isinstance(facts, dict):
         ctx['current_primary_frame_facts'] = {k:v for k,v in facts.items() if k in PRIMARY_FRAMES}
@@ -132,7 +132,7 @@ def analysis_model_view(payload):
                 'current_plan', 'recent_actions', 'recent_waits'):
         _omit_retired_opinions(ctx.get(key))
     _schema_frames(result.get('response_contract'))
-    ctx['analysis_frame_policy'] = dict(version=2, frames=list(ANALYSIS_FRAMES),
-        scope='MINIMUM_15M_TIMING_PRIMARY_30M_1H_AUTHORITY_UNCHANGED',
+    ctx['analysis_frame_policy'] = dict(version=3, frames=list(ANALYSIS_FRAMES),
+        scope='MINIMUM_30M_PRIORITY_1H_30M_4H_1D_1W',
         history='Original contracts/IDs/goal prices/failure rules are immutable history, not current lower-frame evidence.')
     return result

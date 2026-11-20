@@ -16,7 +16,7 @@ def test_reviewed_core_policy_versions_are_pinned():
     import hashlib
     from live import scenario_llm, scenario_calculated_review
     # 2026-11-15: one scoped policy; numerical/authorization contracts unchanged.
-    expected = {'SYSTEM_PROMPT': '9df7f82f5511d151edc9ac7e5e46bf92760d0d7ebe275a8a2df3e481be257e67', 'MA_STRUCTURE_PROMPT': '5bbeb2ea98cdbb4d6b5895e2a1195b4f013f5d7592f1f4ea389470e81adce66e', 'FLAT_ENTRY_PROMPT': 'fb7bf55e4d019a1a2d9b4869466562e1dfac1597410bb7cbc6d03dd7ba917f6c', 'ENTRY_CONTRACT_PROMPT': 'f39ac4ce3692c8738e8380b675c82bc2a6c6dc5112071068361329a2efc601cf', 'HOLDING_MANAGEMENT_PROMPT': '2c7b0d1b6f8dde2d12c49229a3c3d5664fd658d834a09501260ec3acbf825cc3', 'PENDING_WAIT_PROMPT': 'e33d342b20482b59ce52ddec0b09969e2dc9439b8b1cf576e39001e4596022a5', 'DRAFT_PROMPT': 'c7c571bf4bd7cdaa5d9c463e1dab8273a85e0f66700937b2e13c2cf22592b3f3', 'SELECT_PROMPT': '4d62f5fcf2b34c5b34eb3bab984541594ca8735d07f73d3584eeae14a1651826'}
+    expected = {'SYSTEM_PROMPT': '9df7f82f5511d151edc9ac7e5e46bf92760d0d7ebe275a8a2df3e481be257e67', 'MA_STRUCTURE_PROMPT': '805a1b1e7650c16569a6c270e03b11c1a4ce182c237e8c60ce406725f387c5b9', 'FLAT_ENTRY_PROMPT': 'c9d0e63711837fa2bda665870581eb1aa1fc9bb6ceed5c90adede9f2632301ca', 'ENTRY_CONTRACT_PROMPT': 'f39ac4ce3692c8738e8380b675c82bc2a6c6dc5112071068361329a2efc601cf', 'HOLDING_MANAGEMENT_PROMPT': '01ac18497abe668a64ae39b9f6a892ac113039ffc78799253af7feaa5608c634', 'PENDING_WAIT_PROMPT': 'e33d342b20482b59ce52ddec0b09969e2dc9439b8b1cf576e39001e4596022a5', 'DRAFT_PROMPT': 'c7c571bf4bd7cdaa5d9c463e1dab8273a85e0f66700937b2e13c2cf22592b3f3', 'SELECT_PROMPT': '4d62f5fcf2b34c5b34eb3bab984541594ca8735d07f73d3584eeae14a1651826'}
     for name, digest in expected.items():
         module = scenario_calculated_review if name in ('DRAFT_PROMPT','SELECT_PROMPT') else scenario_llm
         assert hashlib.sha256(getattr(module,name).encode()).hexdigest() == digest
@@ -299,7 +299,7 @@ def test_management_framing_preserves_both_trend_runner_and_failure_responses():
     from live.scenario_llm import system_instructions
     ctx=context(True);ctx.update(accounting_status='confirmed',protection_ok=True,pending_entries=[])
     text=' '.join(system_instructions(ctx).split())
-    for rule in ('no 5m or shorter trading analysis','Evaluation cadence is not a candle timeframe',
+    for rule in ('no shorter-frame or 12h judgment','Evaluation cadence is not a candle timeframe',
                  'preserve meaningful exposure','normal pullbacks','WEAKENING/RANGE',
                  'partial TP','genuine invalidation never waits','Use REDUCE only when offered'):
         if rule=='Use REDUCE only when offered':
@@ -413,7 +413,7 @@ def test_assembled_entry_framing_is_flat_only_and_preserves_inputs(active, monke
         assert policy == SYSTEM_PROMPT + MA_STRUCTURE_PROMPT
         delivered = json.loads(calls[0]['user_prompt'])['contract_context']
         assert delivered.pop('ma_structure')['status'] == 'unavailable'
-        assert delivered.pop('analysis_frame_policy')['frames'] == ['15m','30m','1h','4h','12h','1d','1w']
+        assert delivered.pop('analysis_frame_policy')['frames'] == ['1h','30m','4h','1d','1w']
         assert delivered == {key: value for key, value in ctx.items() if key != 'seen_action_ids'}
     else:
         text = ' '.join(policy.split())
@@ -671,7 +671,7 @@ def test_full_recovery_payload_with_seven_frames_preserves_headroom():
     expected_view=analysis_model_view({'market_snapshot':snapshot,'contract_context':ctx})
     assert delivered['market_snapshot'] == expected_view['market_snapshot']
     assert delivered['contract_context']['recovery'] == expected_view['contract_context']['recovery']
-    assert len(delivered['contract_context']['ma_structure']['levels']) == 16
+    assert len(delivered['contract_context']['ma_structure']['levels']) == 12
     assert json.dumps([snapshot, ctx], sort_keys=True) == original_inputs
 
 

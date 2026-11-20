@@ -319,6 +319,14 @@ def test_real_recovery_sequence_observes_without_model_and_resumes_on_expansion(
     assert 'recovery'not in r._context(r.state())
     before=r.state();out=r.tick()
     assert out['status']=='observation_only'and out['model_called']is False
+    facts=out['market_observation_facts']
+    assert facts['scope']=='PRIMARY_MA_CONTEXT_NOT_MODEL_REVIEW_OR_ORDER_AUTHORITY'
+    assert list(facts['primary'])==['1h','30m']
+    assert facts['decision_priority']['descending']==['1h','30m','4h','1d','1w']
+    assert facts['entry_convergence']['status']=='BLOCKED'
+    assert all(row['state']=='NARROWING'for row in facts['entry_convergence']['frames'].values())
+    assert all(row['confirmed_gap']is None for row in facts['primary'].values())  # Fixture has no aggregate provenance; unknown is not zero.
+    assert len(json.dumps(facts).encode())<=12000
     assert len(calls)==1 and broker.executed==[] and r.state()==before
     assert r.conn.execute('SELECT snapshot,context FROM llm_scenario_decisions ORDER BY slot DESC LIMIT 1').fetchone()==(None,None)
     assert r.conn.execute('SELECT COUNT(*)FROM llm_scenario_review_tapes').fetchone()[0]==1
@@ -330,3 +338,37 @@ def test_real_recovery_sequence_observes_without_model_and_resumes_on_expansion(
     r.snapshot=lambda:market(1)
     resumed=r.tick()
     assert resumed['status']=='wait'and len(calls)==2 and broker.executed==[]
+
+
+def test_convergence_observation_records_real_gap_statistics_without_model_or_state_change(tmp_path):
+    import math
+    from tests.test_scenario_review_runtime import observing_runtime
+    from tests.test_scenario_snapshot import frames
+    from engine.scenario_snapshot import build_scenario_snapshot
+    r,broker,calls,_=observing_runtime(tmp_path,empty=True)
+    r.convergence_entry_enabled=True
+    def market():
+        at=int(r.test_clock[0]*1000)
+        history,forming=frames(at)
+        for tf in ['1h','30m']:
+            prices=[100+10*(1-math.exp(-i/10))for i in range(len(history[tf]))]
+            for name in ['open','close']:history[tf][name]=prices
+            history[tf]['high']=[x+1 for x in prices]
+            history[tf]['low']=[x-1 for x in prices]
+            last=100+10*(1-math.exp(-len(prices)/10))
+            for name in ['open','close']:forming[tf][name]=last
+            forming[tf]['high'],forming[tf]['low']=last+1,last-1
+        return build_scenario_snapshot(history,at,provisional_tf_data=forming,observed_at_ms=at)
+    r.snapshot=market
+    assert r.tick()['status']=='wait'and len(calls)==1
+    r.test_clock[0]+=300;broker.ctx['account_captured_at']=r.test_clock[0]
+    before=r.state();result=r.tick();facts=result['market_observation_facts']
+    assert result['status']=='observation_only'and result['model_called']is False
+    assert len(calls)==1 and not broker.executed and r.state()==before
+    for row in facts['primary'].values():
+        assert row['confirmed_gap']['state']=='NARROWING'
+        assert row['confirmed_gap']['consecutive_narrowing_bars']>0
+        assert all('relative_crossings'in t for t in row['transitions'])
+    assert len(json.dumps(facts).encode())<=12000
+    recorded=json.loads(r.conn.execute('SELECT outcome FROM llm_scenario_decisions ORDER BY slot DESC LIMIT 1').fetchone()[0])
+    assert recorded['market_observation_facts']==facts

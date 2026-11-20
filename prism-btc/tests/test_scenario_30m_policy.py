@@ -4,16 +4,16 @@ from live.scenario_analysis_frames import analysis_model_view, allowed_evidence_
 from tests.test_scenario_analysis_frames import source
 
 
-def test_15m_timing_is_visible_and_5m_is_excluded_without_mutating_history():
+def test_15m_and_5m_are_excluded_without_mutating_history():
     raw=source()
     raw['market_snapshot']['timeframes']['5m']=deepcopy(raw['market_snapshot']['timeframes']['15m'])
     before=deepcopy(raw)
     view=analysis_model_view(raw)
     assert raw==before
-    assert '15m' in view['market_snapshot']['timeframes']
+    assert '15m' not in view['market_snapshot']['timeframes']
     assert '5m' not in view['market_snapshot']['timeframes']
-    assert '15m' in view['contract_context']['ma_structure']['primary']
-    assert view['contract_context']['ma_structure']['decision_priority']['timing_only']=='15m'
+    assert '15m' not in view['contract_context']['ma_structure']['primary']
+    assert view['contract_context']['ma_structure']['decision_priority']['timing_only']==[]
 
 
 def test_timing_view_does_not_grant_new_recovery_or_goal_authority():
@@ -33,11 +33,11 @@ def test_15m_reference_points_do_not_change_prepared_entry_prices():
     t['primary']['15m']=deepcopy(t['primary']['30m'])
     for p in t['primary']['15m']['points']:
         p.update(high=100.4,low=99.8,ma10=100.2,ma35=100.3)
-    assert any(p[0].startswith('P:15m:') for p in source_from_structure(t,c)['points'])
+    assert not any(p[0].startswith('P:15m:') for p in source_from_structure(t,c)['points'])
     assert prepare(s,c,t)==before
 
 
-def test_valid_15m_structure_reaches_flat_and_holding_model_requests():
+def test_15m_structure_cannot_reach_flat_and_holding_model_requests():
     from live.scenario_calculated_review import _model_payload
     from live.scenario_model_input import restore_model_input
     from tests.test_scenario_ma_context import snapshot, NOW
@@ -48,11 +48,11 @@ def test_valid_15m_structure_reaches_flat_and_holding_model_requests():
             market['timeframes'].update(snapshot(tf)['timeframes'])
         ctx=dict(context(holding),now=NOW/1000,mark_price=100.)
         payload=restore_model_input(_model_payload(market,ctx,{}))
-        assert '15m' in payload['market_snapshot']['timeframes']
-        assert payload['contract_context']['ma_structure']['primary']['15m']['status']=='available'
+        assert '15m' not in payload['market_snapshot']['timeframes']
+        assert '15m' not in payload['contract_context']['ma_structure']['primary']
 
 
-def test_15m_explanation_references_are_checked_against_the_retained_snapshot():
+def test_15m_explanation_references_are_not_current_evidence():
     from engine.scenario_ma_context import build_ma_structure_context
     from live.scenario_explanation import source_from_structure, compile_explanation
     from tests.test_scenario_explanation import fixture
@@ -65,5 +65,4 @@ def test_15m_explanation_references_are_checked_against_the_retained_snapshot():
              evidence_refs=['P:15m:0:low'],comparisons=[])
     receipt=compile_explanation(raw,ctx,dict(action='WAIT'),scope='WAIT',snapshot=snap)
     assert receipt['source_status']=='VERIFIED'
-    assert receipt['evidence'][0]['ref']=='P:15m:0:low'
-    assert receipt['evidence'][0]['price']==80551.8
+    assert receipt['evidence']==[None]

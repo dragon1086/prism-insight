@@ -33,7 +33,7 @@ def test_mirrored_structural_inputs_keep_both_phases_and_host_contract(side, pat
         assert policy.count(MARKER) == 1
         for clause in (
             'location, not direction', 'A widening gap alone is not a strong trend',
-            'genuine early 30m move', 'Convergence in either primary frame',
+            'Priority is 1h > 30m > 4h > 1d > 1w', 'Curb new risk during convergence',
             'not an automatic veto', 'Forming bars are provisional',
             'Do not stretch TP or squeeze SL merely to pass host economics',
             'A better limit price, small position or high conditional ratio does not repair a weak setup',
@@ -64,7 +64,7 @@ def test_active_and_pending_prompts_do_not_receive_flat_entry_change(side, phase
         assert MARKER not in " ".join(call["system_prompt"].split())
         assert FLAT_ENTRY_PROMPT not in call["system_prompt"]
         policy = " ".join(call["system_prompt"].split())
-        assert "Convergence in either primary frame" in policy
+        assert "Curb new risk during convergence" in policy
         assert "every entry retains native Full SL" in policy
 
 
@@ -109,7 +109,7 @@ def test_mirrored_real_derived_gap_facts_remain_frame_and_phase_specific(side):
         calls.append(request)
         payload = restore_model_input(json.loads(request["user_prompt"]))
         primary = payload["contract_context"]["ma_structure"]["primary"]
-        assert '15m' in primary  # Timing evidence cannot override the primary-frame restriction.
+        assert '15m' not in primary  # Retired evidence cannot reach the judgment or override this gate.
         for frame in ("30m", "1h"):
             assert primary[frame]["confirmed_gap"]["state"] == "NARROWING"
             assert primary[frame]["forming_gap"]["state"] == "NARROWING"

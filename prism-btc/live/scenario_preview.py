@@ -18,6 +18,7 @@ from core.llm_scenario import validate_scenario
 from engine.scenario_snapshot import TIMEFRAME_MS, build_scenario_snapshot, candle_start
 from live.scenario_llm import propose
 from live import scenario_llm
+from live.scenario_analysis_frames import ANALYSIS_FRAMES
 
 
 def response_contract(context):
@@ -104,14 +105,14 @@ def collect_snapshot(*, fetch=None, clock=time.time):
     if fetch is None:
         from collector.bybit_public import _get_klines
         from engine.config import TF_INTERVAL_MAP
-        intervals = {**TF_INTERVAL_MAP, "15m": "15"}
+        intervals = TF_INTERVAL_MAP
         def fetch(tf):
-            return _get_klines(intervals[tf], limit=1000 if tf=="15m" else 193 if tf=="30m" else 100,
+            return _get_klines(intervals[tf], limit=193 if tf=="30m" else 100,
                                retries=3, retry_rate_limit_only=True)
     started = clock()
     frames = {}
     received = {}
-    for tf in TIMEFRAME_MS:
+    for tf in ANALYSIS_FRAMES:
         rows = fetch(tf)
         received[tf] = clock()
         if not rows:
