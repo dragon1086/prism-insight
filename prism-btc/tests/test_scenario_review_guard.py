@@ -282,15 +282,19 @@ def test_reduce_survives_recovery_entry_gate_change(original_blocked, fresh_bloc
     ctx = dict(context(), scenario_id="active", revision=1, side="LONG",
                previous_hard_stop=82800, positions=[dict(price=83300, quantity=.02)],
                immediate_reduce_version=1, unknown_intents=[], market_maximum_quantity=1,
-               recovery_hard_blocked=original_blocked)
+               recovery_hard_blocked=original_blocked, new_risk_blocked=original_blocked)
     args = taped(ctx, "REDUCE")
     fresh = dict(ctx, now=1001, account_captured_at=1001,
-                 recovery_hard_blocked=fresh_blocked)
-    assert check(args, fresh)["validated"]["action"] == "REDUCE"
+                 recovery_hard_blocked=fresh_blocked, new_risk_blocked=fresh_blocked,
+                 stop_policy={"widening_eligible": False})
+    result = check(args, fresh)
+    assert result["validated"]["action"] == "REDUCE"
+    assert set(result["receipt"]["entry_only_state_changes"]) == {
+        "new_risk_blocked", "recovery_hard_blocked", "stop_policy"}
     for key, value in [("account_version", "changed"),
                        ("positions", [dict(price=83300, quantity=.01)]),
                        ("protection_ok", False), ("accounting_status", "pending"),
-                       ("new_risk_blocked", True), ("recovery_hard_blocked", 1)]:
+                       ("new_risk_blocked", 1), ("recovery_hard_blocked", 1)]:
         with pytest.raises(ValueError):
             check(args, dict(fresh, **{key: value}))
 
@@ -308,16 +312,19 @@ def test_tightening_survives_recovery_gate_change_with_other_safety_checks(side,
     ctx = dict(context(), scenario_id="active", revision=1, side=side,
                previous_hard_stop=84000 if side == "SHORT" else 82800,
                positions=[dict(price=83300, quantity=.02)], current_plan=dict(partial_stops=[]),
-               recovery_hard_blocked=old_flag, unknown_intents=False)
+               recovery_hard_blocked=old_flag, new_risk_blocked=old_flag, unknown_intents=False)
     args = taped(ctx, "ADJUST")
-    fresh = dict(ctx, now=1001, account_captured_at=1001, recovery_hard_blocked=new_flag)
+    fresh = dict(ctx, now=1001, account_captured_at=1001, recovery_hard_blocked=new_flag,
+                 new_risk_blocked=new_flag, stop_policy={"widening_eligible": False})
     result = check(args, fresh)
     assert result["validated"]["hard_stop"] == (83700 if side == "SHORT" else 82900)
+    assert set(result["receipt"]["entry_only_state_changes"]) == {
+        "new_risk_blocked", "recovery_hard_blocked", "stop_policy"}
     assert result["validated"] == check(args)["validated"]
     for key, value in [("account_version", "changed"),
                        ("positions", [dict(price=83300, quantity=.01)]),
                        ("protection_ok", False), ("accounting_status", "pending"),
-                       ("new_risk_blocked", True), ("recovery_hard_blocked", 1),
+                       ("new_risk_blocked", 1), ("recovery_hard_blocked", 1),
                        ("unknown_intents", ["unresolved"]),
                        ("pending_entries", [dict(id="new", price=83300, quantity=.01)])]:
         with pytest.raises(ValueError):
@@ -326,7 +333,8 @@ def test_tightening_survives_recovery_gate_change_with_other_safety_checks(side,
 
 @pytest.mark.parametrize("kind", ["same_stop", "widening", "new_entry", "old_partial_stop",
                                   "unknown_old_plan", "unknown_intent"])
-def test_other_adjustments_still_reject_changed_recovery_gate(kind):
+@pytest.mark.parametrize("gate", ["recovery_hard_blocked", "new_risk_blocked", "stop_policy"])
+def test_other_adjustments_still_reject_changed_recovery_gate(kind, gate):
     ctx = dict(context(), scenario_id="active", revision=1, side="LONG",
                previous_hard_stop=82800, positions=[dict(price=83300, quantity=.02)],
                recovery_hard_blocked=False, current_plan=dict(partial_stops=[]), unknown_intents=False)
@@ -348,5 +356,7 @@ def test_other_adjustments_still_reject_changed_recovery_gate(kind):
     else:
         ctx["unknown_intents"] = ["unresolved"]
     args = taped(ctx, "ADJUST", candidate=raw)
-    with pytest.raises(ValueError, match="review_guard_context_changed:recovery_hard_blocked"):
-        check(args, dict(ctx, now=1001, account_captured_at=1001, recovery_hard_blocked=True))
+    fresh = dict(ctx, now=1001, account_captured_at=1001)
+    fresh[gate] = {"widening_eligible": False} if gate == "stop_policy" else True
+    with pytest.raises(ValueError, match="review_guard_context_changed:" + gate):
+        check(args, fresh)
