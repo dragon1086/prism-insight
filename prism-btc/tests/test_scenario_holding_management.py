@@ -192,12 +192,12 @@ def test_compact_confirmed_holding_policy_is_pinned():
     context = dict(scenario_id='held', positions=[dict(price=100, quantity=1)],
                    pending_entries=[], accounting_status='confirmed', protection_ok=True)
     prompt = holding_management_instructions(SYSTEM_PROMPT + MA_STRUCTURE_PROMPT, context)
-    assert hashlib.sha256(prompt.encode()).hexdigest() == '543269f87c17e1a77147f99ae26fdd47aa8c198186227ac13754bbbb8a81e844'
+    assert hashlib.sha256(prompt.encode()).hexdigest() == '2dfaf39764dcc2cce03a900aebd8a36e7be50192f8067418383152ffc2f5cae7'
 
 
 def test_holding_compares_early_reaction_and_whole_trade_giveback_without_forced_exit():
     from live.scenario_llm import HOLDING_MANAGEMENT_PROMPT
-    assert '15m reaction timing' in HOLDING_MANAGEMENT_PROMPT
+    assert '30m progress/reaction timing' in HOLDING_MANAGEMENT_PROMPT
     assert 'does not require retaining all remaining exposure' in HOLDING_MANAGEMENT_PROMPT
     assert 'without waiting for a confirmed 1h MA10 close' in HOLDING_MANAGEMENT_PROMPT
     assert 'not an automatic breakeven or exit-on-pullback rule' in HOLDING_MANAGEMENT_PROMPT

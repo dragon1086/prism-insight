@@ -16,7 +16,7 @@ from engine.indicators import atr, sma
 TIMEFRAME_MS = {"15m": 900_000, "30m": 1_800_000, "1h": 3_600_000,
                 "4h": 14_400_000, "12h": 43_200_000, "1d": 86_400_000,
                 "1w": 604_800_000}
-REQUIRED_TIMEFRAMES = ("15m", "30m", "1h")
+REQUIRED_TIMEFRAMES = ("30m", "1h")
 MONDAY_ANCHOR_MS = 345_600_000
 
 
@@ -248,7 +248,7 @@ def build_scenario_snapshot(
     observed_at_by_tf_ms: Mapping[str, int] | None = None,
     volume_history_30m: pd.DataFrame | None = None,
 ) -> dict:
-    """Build required 15m/30m/1h and optional context facts at a bounded clock.
+    """Build required 30m/1h and optional raw/history context facts at a bounded clock.
 
     ``valid`` requires complete MA history plus fresh explicit forming snapshots
     on all required decision frames. Missing context is reported but not a trading gate.

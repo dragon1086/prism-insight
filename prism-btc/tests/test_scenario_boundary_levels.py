@@ -28,4 +28,4 @@ def test_only_observed_forming_bars_enter_structure_and_price_catalogue(index):
         assert any(p['phase'] == 'FORMING' for p in points) is not synthetic
         assert any(p['phase'] == 'CONFIRMED' for p in points)
         assert any(ref.startswith('P:'+frame+':') and phase == 'FORMING'
-                   for ref,price,phase,at in source['points']) is not synthetic
+                   for ref,price,phase,at in source['points']) is (not synthetic and frame != '15m')

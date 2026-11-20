@@ -644,7 +644,7 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
                     captured = market.snapshot(item["slot"]*300000)
                     if (not captured.get("valid") or any(
                         item["available_at_ms"]-captured["timeframes"][tf]["forming"]["observed_at_ms"] > 120000
-                        for tf in ("15m","30m","1h"))):
+                        for tf in ("30m","1h"))):
                         raise ValueError("reconstructed_snapshot_stale_at_observed_schedule")
     else:
         raise ValueError("explicit_observed_input_mode_required")

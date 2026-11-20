@@ -291,3 +291,31 @@ def test_malformed_ohlc_is_not_a_price_obstacle(changes):
     facts = build(s)['primary']['30m']
     assert not any(p['is_confirmed'] for p in facts['points'])
     assert facts['nearby_confirmed_extrema'] == {'high_above_mark': None, 'low_below_mark': None, 'at_mark': []}
+
+
+@pytest.mark.parametrize('frame', ['30m', '1h'])
+@pytest.mark.parametrize('before_close,after_close,expected', [
+    (90,110,{'ma10':'BELOW_TO_ABOVE','ma35':'BELOW_TO_ABOVE'}),
+    (110,90,{'ma10':'ABOVE_TO_BELOW','ma35':'ABOVE_TO_BELOW'}),
+    (100,110,{'ma10':'BELOW_TO_ABOVE'}),
+    (100,90,{'ma35':'ABOVE_TO_BELOW'}),
+])
+def test_relative_ma_crossings_preserve_level_direction_and_candle_identity(frame,before_close,after_close,expected):
+    before=point(frame,2,close=before_close)
+    after=point(frame,1,close=after_close,confirmed=False)
+    s=snapshot(frame,before=before,after=after)
+    original=copy.deepcopy(s)
+    t=build(s)['primary'][frame]['transitions'][0]
+    assert t['relative_crossings']==expected
+    assert t['close_change_price']==after_close-before_close
+    assert t['from_open_time_ms']==before['open_time_ms']
+    assert t['to_open_time_ms']==after['open_time_ms'] and t['provisional']
+    assert s==original
+
+
+def test_ma_movement_past_flat_price_is_relative_change_not_price_breakout():
+    s=snapshot(before=point('30m',2,close=100,fast=105,slow=95),
+               after=point('30m',1,close=100,fast=99,slow=95,confirmed=False))
+    t=build(s)['primary']['30m']['transitions'][0]
+    assert t['relative_crossings']=={'ma10':'BELOW_TO_ABOVE'}
+    assert t['close_change_price']==0 and t['ma10_change_price']==-6

@@ -562,3 +562,22 @@ def test_observed_missing_packet_never_invents_wait_or_model_call(tmp_path):
     assert first["model_decisions"] == 1
     assert "OBSERVED_INPUT_COVERAGE_INELIGIBLE" in first["readiness"]["insufficiency_reasons"]
     assert first["result_hash"] == frozen["result_hash"]
+
+
+def test_current_five_frame_capture_keeps_legacy_packet_shape_without_retired_requirements(tmp_path):
+    from tests.test_scenario_snapshot import frames
+    from engine.scenario_snapshot import build_scenario_snapshot
+    data=packet()
+    for row in data['rows']:
+        at=row['snapshot']['as_of_ms']
+        history,forming=frames(at)
+        for tf in ['15m','12h']:
+            history.pop(tf);forming.pop(tf)
+        row['snapshot']=build_scenario_snapshot(history,at,provisional_tf_data=forming,observed_at_ms=at)
+        assert row['snapshot']['valid']
+        assert row['snapshot']['timeframes']['15m']['forming']is None
+        assert row['snapshot']['timeframes']['12h']['forming']is None
+    data=reseal(data)
+    provider=ObservedScenarioData(*write_packet(tmp_path,data))
+    for row in data['rows']:
+        assert provider.snapshot(row['available_at_ms'])==row['snapshot']

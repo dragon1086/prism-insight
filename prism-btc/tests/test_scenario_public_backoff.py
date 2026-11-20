@@ -78,12 +78,13 @@ def test_legacy_default_still_sleeps_after_last_failure(transport):
 
 
 @pytest.mark.parametrize("offset,elapsed,expected", [
-    (100, 1, None), (899.5, 1, "candle_boundary_crossed_during_collection"),
+    (100, 1, None), (899.5, 1, None), (1799.5, 1, "candle_boundary_crossed_during_collection"),
     (100, 61, "collection_too_slow"),
 ])
-def test_real_seven_timeframe_collection_preserves_freshness_gates(monkeypatch, offset, elapsed, expected):
+def test_real_five_timeframe_collection_preserves_freshness_gates(monkeypatch, offset, elapsed, expected):
     from engine.scenario_snapshot import TIMEFRAME_MS, candle_start
     from engine.config import TF_INTERVAL_MAP
+    from live.scenario_analysis_frames import ANALYSIS_FRAMES
     import live.scenario_preview as preview_module
     intervals = {**TF_INTERVAL_MAP, "15m": "15"}
     lookup = {intervals[tf]: tf for tf in TIMEFRAME_MS}
@@ -115,8 +116,8 @@ def test_real_seven_timeframe_collection_preserves_freshness_gates(monkeypatch, 
         assert snapshot["valid"] is True
         assert snapshot["as_of_ms"] == int((initial + elapsed)*1000)
         assert snapshot["timeframes"]["30m"]["forming"]["observed_at_ms"] == snapshot["as_of_ms"]
-    assert sleeps == [1] and len(calls) == 8 and not model_calls
-    assert [call["interval"] for call in calls[1:]] == [intervals[tf] for tf in TIMEFRAME_MS]
+    assert sleeps == [1] and len(calls) == 6 and not model_calls
+    assert [call["interval"] for call in calls[1:]] == [intervals[tf] for tf in ANALYSIS_FRAMES]
     assert all(call["limit"] == (1000 if call["interval"] == intervals["15m"] else 193 if call["interval"] == intervals["30m"] else 100) for call in calls)
 
 
