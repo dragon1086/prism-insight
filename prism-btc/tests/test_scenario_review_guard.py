@@ -34,21 +34,25 @@ def context():
 
 def wire(ctx, action):
     active = action in {"OPEN", "ADJUST"}
+    side = ctx.get("side") or "LONG"
+    short = side == "SHORT"
     result = dict(**identity_fields(ctx), action=action, confidence=.7, expires_at=1200,
         rationale="구조와 계산 검토", leverage=10,
         entries=[dict(id="e", price=83410, quantity=.01)] if action == "OPEN" else [],
-        take_profits=[dict(id="tp", price=84000, fraction=.5)] if active else [],
-        partial_stops=[], cancel_entry_ids=[], side="LONG" if active else None,
-        hard_stop=82900 if active else None,
+        take_profits=[dict(id="tp", price=82800 if short else 84000, fraction=.5)] if active else [],
+        partial_stops=[], cancel_entry_ids=[], side=side if active else None,
+        hard_stop=(83700 if short else 82900) if active else None,
         chase=dict(max_bps=0, max_reprices=0) if active else None)
     if ctx.get("immediate_reduce_version") == 1:
         result["reduce_fraction"] = .5 if action == "REDUCE" else None
     if ctx.get("recovery_contract_version") in (1, 2):
         result["recovery"] = None
+    if (ctx.get("stop_policy") or {}).get("version") == 1:
+        result["stop_revision"] = None
     return result
 
 
-def taped(ctx=None, action="OPEN"):
+def taped(ctx=None, action="OPEN", *, candidate=None):
     ctx = ctx or context()
     snapshot, calls = dict(valid=True, as_of_ms=1000000), []
     contract = response_contract(ctx)
@@ -57,7 +61,7 @@ def taped(ctx=None, action="OPEN"):
         calls.append(request)
         if len(calls) == 1:
             result = dict(wait_proposal=wire(ctx, "WAIT"),
-                candidates=[] if action == "WAIT" else [wire(ctx, action)],
+                candidates=[] if action == "WAIT" else [wire(ctx, action) if candidate is None else candidate],
                 no_candidate_reason="근거 없음" if action == "WAIT" else "")
         else:
             bundle = json.loads(request["user_prompt"])["calculated_candidates"]
@@ -278,15 +282,19 @@ def test_reduce_survives_recovery_entry_gate_change(original_blocked, fresh_bloc
     ctx = dict(context(), scenario_id="active", revision=1, side="LONG",
                previous_hard_stop=82800, positions=[dict(price=83300, quantity=.02)],
                immediate_reduce_version=1, unknown_intents=[], market_maximum_quantity=1,
-               recovery_hard_blocked=original_blocked)
+               recovery_hard_blocked=original_blocked, new_risk_blocked=original_blocked)
     args = taped(ctx, "REDUCE")
     fresh = dict(ctx, now=1001, account_captured_at=1001,
-                 recovery_hard_blocked=fresh_blocked)
-    assert check(args, fresh)["validated"]["action"] == "REDUCE"
+                 recovery_hard_blocked=fresh_blocked, new_risk_blocked=fresh_blocked,
+                 stop_policy={"widening_eligible": False})
+    result = check(args, fresh)
+    assert result["validated"]["action"] == "REDUCE"
+    assert set(result["receipt"]["entry_only_state_changes"]) == {
+        "new_risk_blocked", "recovery_hard_blocked", "stop_policy"}
     for key, value in [("account_version", "changed"),
                        ("positions", [dict(price=83300, quantity=.01)]),
                        ("protection_ok", False), ("accounting_status", "pending"),
-                       ("new_risk_blocked", True), ("recovery_hard_blocked", 1)]:
+                       ("new_risk_blocked", 1), ("recovery_hard_blocked", 1)]:
         with pytest.raises(ValueError):
             check(args, dict(fresh, **{key: value}))
 
@@ -296,3 +304,59 @@ def test_open_still_rejects_recovery_entry_gate_change():
     with pytest.raises(ValueError, match="review_guard_context_changed:recovery_hard_blocked"):
         check(args, dict(args[1], now=1001, account_captured_at=1001,
                          recovery_hard_blocked=True))
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("old_flag,new_flag", [(False, True), (True, False)])
+def test_tightening_survives_recovery_gate_change_with_other_safety_checks(side, old_flag, new_flag):
+    ctx = dict(context(), scenario_id="active", revision=1, side=side,
+               previous_hard_stop=84000 if side == "SHORT" else 82800,
+               positions=[dict(price=83300, quantity=.02)], current_plan=dict(partial_stops=[]),
+               recovery_hard_blocked=old_flag, new_risk_blocked=old_flag, unknown_intents=False)
+    args = taped(ctx, "ADJUST")
+    fresh = dict(ctx, now=1001, account_captured_at=1001, recovery_hard_blocked=new_flag,
+                 new_risk_blocked=new_flag, stop_policy={"widening_eligible": False})
+    result = check(args, fresh)
+    assert result["validated"]["hard_stop"] == (83700 if side == "SHORT" else 82900)
+    assert set(result["receipt"]["entry_only_state_changes"]) == {
+        "new_risk_blocked", "recovery_hard_blocked", "stop_policy"}
+    assert result["validated"] == check(args)["validated"]
+    for key, value in [("account_version", "changed"),
+                       ("positions", [dict(price=83300, quantity=.01)]),
+                       ("protection_ok", False), ("accounting_status", "pending"),
+                       ("new_risk_blocked", 1), ("recovery_hard_blocked", 1),
+                       ("unknown_intents", ["unresolved"]),
+                       ("pending_entries", [dict(id="new", price=83300, quantity=.01)])]:
+        with pytest.raises(ValueError):
+            check(args, dict(fresh, **{key: value}))
+
+
+@pytest.mark.parametrize("kind", ["same_stop", "widening", "new_entry", "old_partial_stop",
+                                  "unknown_old_plan", "unknown_intent"])
+@pytest.mark.parametrize("gate", ["recovery_hard_blocked", "new_risk_blocked", "stop_policy"])
+def test_other_adjustments_still_reject_changed_recovery_gate(kind, gate):
+    ctx = dict(context(), scenario_id="active", revision=1, side="LONG",
+               previous_hard_stop=82800, positions=[dict(price=83300, quantity=.02)],
+               recovery_hard_blocked=False, current_plan=dict(partial_stops=[]), unknown_intents=False)
+    raw = wire(ctx, "ADJUST")
+    if kind == "same_stop":
+        ctx["previous_hard_stop"] = raw["hard_stop"]
+    elif kind == "widening":
+        ctx["previous_hard_stop"] = 83000
+        ctx["stop_policy"] = dict(version=1, anchor_available=True, initial_hard_stop=82500,
+                                  initial_action_id="original", widening_eligible=True)
+        raw["stop_revision"] = dict(reason="Observed structure", structure_reference="30m confirmed low",
+                                    input_id=ctx["input_id"])
+    elif kind == "new_entry":
+        raw["entries"] = [dict(id="new", price=83410, quantity=.001)]
+    elif kind == "old_partial_stop":
+        ctx["current_plan"]["partial_stops"] = [dict(id="old", price=83200, fraction=.5)]
+    elif kind == "unknown_old_plan":
+        ctx["current_plan"] = None
+    else:
+        ctx["unknown_intents"] = ["unresolved"]
+    args = taped(ctx, "ADJUST", candidate=raw)
+    fresh = dict(ctx, now=1001, account_captured_at=1001)
+    fresh[gate] = {"widening_eligible": False} if gate == "stop_policy" else True
+    with pytest.raises(ValueError, match="review_guard_context_changed:" + gate):
+        check(args, fresh)

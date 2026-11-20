@@ -5,6 +5,7 @@ import math
 
 from analysis.scenario_review_tape import replay_review
 from core.scenario_limit_prices import validate_execution_prices
+from core.scenario_stop_policy import is_widening
 from live.scenario_calculated_review import (
     ECONOMIC_REJECT_MODES, _supplied_instrument_filters, receipt_hash, research_review,
 )
@@ -109,6 +110,20 @@ def guard_review(snapshot, original_context, response_contract, envelope, fresh_
     actionable = selected["raw_proposal"]["action"] in {"OPEN", "ADJUST", "REDUCE"} or renewal
     original, fresh = deepcopy(original_context), deepcopy(fresh_context)
     selected_plan = selected['raw_proposal']
+    plan = selected.get("effective_plan") or {}
+    previous_plan = original.get("current_plan")
+    # Reuse the replayed core plan: no new exposure and a strictly stronger stop.
+    tightening_adjust = (selected_plan["action"] == "ADJUST" and not renewal
+        and bool(original.get("positions")) and not original.get("pending_entries")
+        and (original.get("unknown_intents") is False or original.get("unknown_intents") == [])
+        and isinstance(previous_plan, dict) and previous_plan.get("partial_stops") == []
+        and not plan.get("entries") and not plan.get("cancel_entry_ids")
+        and not plan.get("partial_stops") and original.get("side") in {"LONG", "SHORT"}
+        and plan.get("side") == original["side"]
+        and plan["hard_stop"] != original["previous_hard_stop"]
+        and not is_widening(original["side"], plan["hard_stop"], original["previous_hard_stop"]))
+    risk_reducing = selected_plan["action"] == "REDUCE" or tightening_adjust
+    entry_gate_sensitive = actionable and not risk_reducing
     goal_independent = (original.get('entry_contract_version') == 2 and not renewal
         and (selected_plan['action'] in {'WAIT', 'EXIT', 'REDUCE'}
              or (selected_plan['action'] == 'ADJUST' and not selected_plan.get('entries')
@@ -136,12 +151,9 @@ def guard_review(snapshot, original_context, response_contract, envelope, fresh_
         raise ValueError("review_guard_stale_account")
     for key in _REQUIRED_STABLE:
         if (key not in original or key not in fresh
-                or (original[key] != fresh[key] and (actionable or key != "new_risk_blocked"))):
+                or (original[key] != fresh[key] and (entry_gate_sensitive or key != "new_risk_blocked"))):
             raise ValueError("review_guard_context_changed:" + key)
     for key in _OPTIONAL_STABLE:
-        # An entry recovery gate cannot veto an otherwise fresh reduce-only action.
-        if key == "recovery_hard_blocked" and selected_plan["action"] == "REDUCE":
-            continue
         if key == 'immediate_reduce_available' and selected_plan['action'] != 'REDUCE':
             continue
         if goal_independent and key == 'entry_goal_untrusted':
@@ -149,7 +161,8 @@ def guard_review(snapshot, original_context, response_contract, envelope, fresh_
         if (goal_independent and fresh.get('entry_goal_untrusted') is True
                 and key in {'pending_renewal_version', 'pending_renewal_offer'} and key not in fresh):
             continue  # A disappearing unused offer grants no new authority.
-        if not actionable and key in {"recovery_hard_blocked", "stop_policy"}:
+        # Entry/widening permissions do not authorize or veto verified de-risking.
+        if (not actionable or risk_reducing) and key in {"recovery_hard_blocked", "stop_policy"}:
             continue
         if (key in original) != (key in fresh) or original.get(key) != fresh.get(key):
             raise ValueError("review_guard_context_changed:" + key)
@@ -215,5 +228,10 @@ def guard_review(snapshot, original_context, response_contract, envelope, fresh_
         original_context_sha256=receipt_hash(original), fresh_context_sha256=receipt_hash(fresh),
         payload_sha256=receipt_hash(payload), validated_sha256=receipt_hash(validated),
         execution_authorized=False, orders_submitted=0)
+    if risk_reducing:
+        changed_entry_state = [key for key in ("new_risk_blocked", "recovery_hard_blocked", "stop_policy")
+            if (key in original) != (key in fresh) or original.get(key) != fresh.get(key)]
+        if changed_entry_state:
+            receipt["entry_only_state_changes"] = changed_entry_state
     receipt["sha256"] = receipt_hash(receipt)
     return dict(payload=deepcopy(payload), validated=deepcopy(validated), receipt=receipt)
