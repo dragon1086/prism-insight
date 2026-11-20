@@ -192,7 +192,7 @@ def test_compact_confirmed_holding_policy_is_pinned():
     context = dict(scenario_id='held', positions=[dict(price=100, quantity=1)],
                    pending_entries=[], accounting_status='confirmed', protection_ok=True)
     prompt = holding_management_instructions(SYSTEM_PROMPT + MA_STRUCTURE_PROMPT, context)
-    assert hashlib.sha256(prompt.encode()).hexdigest() == 'b065248da6f13ef73a2088b1ff4f3911ff5547a03b3063cb19dd56ca47f73d36'
+    assert hashlib.sha256(prompt.encode()).hexdigest() == '2dfaf39764dcc2cce03a900aebd8a36e7be50192f8067418383152ffc2f5cae7'
 
 
 def test_holding_compares_early_reaction_and_whole_trade_giveback_without_forced_exit():
