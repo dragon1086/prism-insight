@@ -212,8 +212,11 @@ class USDashboardDataGenerator:
             'total_profit_amount': total_profit,
             'total_profit_rate': (total_profit / total_cost * 100) if total_cost > 0 else 0,
             'deposit': account_summary.get('total_eval_amount', 0) + account_summary.get('usd_cash', 0),
-            'total_cash': account_summary.get('usd_cash', 0),
-            'available_amount': account_summary.get('available_amount', 0)
+            # Settled cash plus sells/buys still settling, so a recent sell does not vanish from cash
+            'total_cash': account_summary.get('usd_cash', 0) + account_summary.get('net_unsettled_usd', 0),
+            'available_amount': account_summary.get('available_amount', 0),
+            # Trade-date total assets from the broker module (stock + cash + net unsettled)
+            'total_assets': account_summary.get('total_asset_usd', 0),
         }
 
     def connect_db(self):

@@ -26,3 +26,16 @@ def test_index_fetch_error_reuses_previous_series(tmp_path, monkeypatch):
 
 def test_missing_previous_file_returns_empty(tmp_path):
     assert gen.USDashboardDataGenerator._previous_market_condition(tmp_path / "absent.json") == []
+
+
+def test_real_summary_counts_sale_proceeds_still_settling():
+    """11/20: a sell's proceeds were settling, so eval + settled cash showed $9,330.94 instead of $10,199.07."""
+    portfolio = [{"value": 2035.71, "profit": -15.5}]
+    account = {"usd_cash": 7295.23, "available_amount": 7295.23, "net_unsettled_usd": 868.13, "total_asset_usd": 10199.07}
+    generator = gen.USDashboardDataGenerator.__new__(gen.USDashboardDataGenerator)
+
+    summary = generator.calculate_real_trading_summary(portfolio, account)
+
+    assert summary["total_assets"] == 10199.07
+    assert round(summary["total_cash"], 2) == 8163.36
+    assert summary["available_amount"] == 7295.23
