@@ -829,6 +829,11 @@ class ScenarioRuntime:
                 self.conn.commit()  # Crash during LLM deliberately burns this slot.
                 claimed.append(slot)
                 version = state["version"]
+            # Read history before capturing market facts, outside the execution mutex.
+            stage = "closed_history"
+            from live.scenario_position_flow import build_closed_continuity
+            history_started_at = self.clock()
+            closed_history = build_closed_continuity(self.conn, state, history_started_at)
             stage = "snapshot_collection"
             snap = self.snapshot()
             stage = "snapshot_validation"
@@ -839,10 +844,6 @@ class ScenarioRuntime:
             ctx.update(now=self.clock(), input_id=input_id, input_captured_at=captured,
                        max_input_age_seconds=120)
             stage = "snapshot_persist"
-            # Historical audit reads can be slow; do not hold the execution mutex.
-            from live.scenario_position_flow import build_closed_continuity
-            history_started_at = self.clock()
-            closed_history = build_closed_continuity(self.conn, state, history_started_at)
             with _snapshot_mutation_lock(self.conn, snapshot_lock):
                 current = self.state()
                 now = self.clock()
