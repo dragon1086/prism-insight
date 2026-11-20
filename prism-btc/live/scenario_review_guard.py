@@ -5,6 +5,7 @@ import math
 
 from analysis.scenario_review_tape import replay_review
 from core.scenario_limit_prices import validate_execution_prices
+from core.scenario_stop_policy import is_widening
 from live.scenario_calculated_review import (
     ECONOMIC_REJECT_MODES, _supplied_instrument_filters, receipt_hash, research_review,
 )
@@ -109,6 +110,15 @@ def guard_review(snapshot, original_context, response_contract, envelope, fresh_
     actionable = selected["raw_proposal"]["action"] in {"OPEN", "ADJUST", "REDUCE"} or renewal
     original, fresh = deepcopy(original_context), deepcopy(fresh_context)
     selected_plan = selected['raw_proposal']
+    plan = selected.get("effective_plan") or {}
+    # Reuse the replayed core plan: no new exposure and a strictly stronger stop.
+    tightening_adjust = (selected_plan["action"] == "ADJUST" and not renewal
+        and bool(original.get("positions")) and not original.get("pending_entries")
+        and not plan.get("entries") and not plan.get("cancel_entry_ids")
+        and not plan.get("partial_stops") and original.get("side") in {"LONG", "SHORT"}
+        and plan.get("side") == original["side"]
+        and plan["hard_stop"] != original["previous_hard_stop"]
+        and not is_widening(original["side"], plan["hard_stop"], original["previous_hard_stop"]))
     goal_independent = (original.get('entry_contract_version') == 2 and not renewal
         and (selected_plan['action'] in {'WAIT', 'EXIT', 'REDUCE'}
              or (selected_plan['action'] == 'ADJUST' and not selected_plan.get('entries')
@@ -139,8 +149,8 @@ def guard_review(snapshot, original_context, response_contract, envelope, fresh_
                 or (original[key] != fresh[key] and (actionable or key != "new_risk_blocked"))):
             raise ValueError("review_guard_context_changed:" + key)
     for key in _OPTIONAL_STABLE:
-        # An entry recovery gate cannot veto an otherwise fresh reduce-only action.
-        if key == "recovery_hard_blocked" and selected_plan["action"] == "REDUCE":
+        # Entry recovery state cannot veto an otherwise fresh risk reduction.
+        if key == "recovery_hard_blocked" and (selected_plan["action"] == "REDUCE" or tightening_adjust):
             continue
         if key == 'immediate_reduce_available' and selected_plan['action'] != 'REDUCE':
             continue
