@@ -108,15 +108,17 @@ def test_exit_scan_is_bounded_and_does_not_reuse_stale_opinion(closed):
     assert build_closed_continuity(conn,state,1200)['exit_opinion']['status']=='UNAVAILABLE'
 
 
-def test_retired_opinion_is_omitted_but_original_contract_stays_historical(closed):
+@pytest.mark.parametrize('frame', ['5m', '15m'])
+def test_retired_opinion_is_omitted_but_original_contract_stays_historical(closed, frame):
     from live.scenario_analysis_frames import analysis_model_view
     conn,state,_,_=closed
     history=build_closed_continuity(conn,state,1200)
-    history['exit_opinion']['rationale']='15m crossed with 2.99x volume'
+    history['exit_opinion']['rationale']=frame+' crossed with 2.99x volume'
     original=deepcopy(history)
     view=analysis_model_view(dict(contract_context=dict(last_closed_trade=history)))
     delivered=view['contract_context']['last_closed_trade']
-    assert delivered['exit_opinion']['rationale']=='OMITTED_RETIRED_TIMEFRAME_OPINION'
+    expected = 'OMITTED_RETIRED_TIMEFRAME_OPINION' if frame == '5m' else history['exit_opinion']['rationale']
+    assert delivered['exit_opinion']['rationale'] == expected
     assert delivered['original_contract']==history['original_contract']
     assert history==original
 

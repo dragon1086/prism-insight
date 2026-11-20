@@ -216,3 +216,83 @@ def test_uncontended_legacy_contract_does_not_gain_account_age_gate(setup):  # n
     r.propose=lambda s,c:(calls.append(True) or wait_proposal(s,c))
     assert r.tick()['status']=='wait'
     assert calls==[True] and not b.executed
+
+
+def test_slow_history_precedes_real_market_capture_without_extending_age_limits(setup, monkeypatch):  # noqa: F811
+    import live.scenario_position_flow as flow
+    r, b, now, _ = setup
+    initial = now[0]
+    captured = []
+    b.context = lambda: dict(b.ctx, account_captured_at=now[0])
+    def history(*_):
+        now[0] += 65
+        return dict(version=1, status='MISSING')
+    def snapshot():
+        captured.append(now[0])
+        return dict(valid=True, as_of_ms=now[0]*1000)
+    def model(s, c):
+        now[0] += 60
+        return wait_proposal(s, c)
+    monkeypatch.setattr(flow, 'build_closed_continuity', history)
+    r.snapshot, r.propose = snapshot, model
+    result = r.tick()
+    assert result['status'] == 'wait'
+    assert captured == [initial+65] and not b.executed
+    import json
+    recorded = json.loads(r.conn.execute('SELECT context FROM llm_scenario_decisions').fetchone()[0])
+    assert recorded['input_captured_at'] == initial+65
+    assert recorded['account_captured_at'] == initial
+    assert recorded['max_input_age_seconds'] == 120
+
+
+def test_fresh_market_after_slow_history_cannot_refresh_expired_account(setup, monkeypatch):  # noqa: F811
+    import live.scenario_position_flow as flow
+    r, b, now, _ = setup
+    b.ctx['account_captured_at'] = now[0]
+    def history(*_):
+        now[0] += 121
+        return dict(version=1, status='MISSING')
+    monkeypatch.setattr(flow, 'build_closed_continuity', history)
+    r.propose = lambda *_: pytest.fail('expired original account cannot call model')
+    result = r.tick()
+    assert result['reason'] == 'snapshot_account_stale'
+    assert result['model_called'] is False and not b.executed
+
+
+def test_history_state_change_still_rejects_new_market_snapshot(setup, monkeypatch):  # noqa: F811
+    import live.scenario_position_flow as flow
+    r, b, _, _ = setup
+    def history(*_):
+        state = r.state()
+        state['version'] += 1
+        r._save(state)
+        return dict(version=1, status='MISSING')
+    monkeypatch.setattr(flow, 'build_closed_continuity', history)
+    r.propose = lambda *_: pytest.fail('changed state cannot call model')
+    result = r.tick()
+    assert result['reason'] == 'snapshot_state_changed'
+    assert not b.executed
+
+
+def test_other_process_can_protect_while_history_is_read(setup, monkeypatch):  # noqa: F811
+    import live.scenario_position_flow as flow
+    r, b, now, path = setup
+    b.ctx['account_captured_at'] = now[0]
+    parent, child = multiprocessing.get_context('spawn').Pipe()
+    process = multiprocessing.get_context('spawn').Process(target=hold_lock, args=(str(path), child))
+    def history(*_):
+        process.start()
+        assert parent.poll(10) and parent.recv()
+        return dict(version=1, status='MISSING')
+    monkeypatch.setattr(flow, 'build_closed_continuity', history)
+    r.propose = wait_proposal
+    try:
+        assert r.tick()['status'] == 'wait'
+        assert not b.executed
+    finally:
+        process.join(10)
+        if process.is_alive():
+            process.terminate()
+            process.join()
+        parent.close()
+        child.close()
