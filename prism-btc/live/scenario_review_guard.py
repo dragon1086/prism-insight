@@ -111,9 +111,11 @@ def guard_review(snapshot, original_context, response_contract, envelope, fresh_
     original, fresh = deepcopy(original_context), deepcopy(fresh_context)
     selected_plan = selected['raw_proposal']
     plan = selected.get("effective_plan") or {}
+    previous_plan = original.get("current_plan")
     # Reuse the replayed core plan: no new exposure and a strictly stronger stop.
     tightening_adjust = (selected_plan["action"] == "ADJUST" and not renewal
         and bool(original.get("positions")) and not original.get("pending_entries")
+        and isinstance(previous_plan, dict) and previous_plan.get("partial_stops") == []
         and not plan.get("entries") and not plan.get("cancel_entry_ids")
         and not plan.get("partial_stops") and original.get("side") in {"LONG", "SHORT"}
         and plan.get("side") == original["side"]

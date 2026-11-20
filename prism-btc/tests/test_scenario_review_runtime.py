@@ -483,10 +483,24 @@ def test_slow_final_durable_record_cannot_extend_original_deadline(tmp_path, rec
     r._record_calculated_review = delayed_record
     outcome = r.tick()
     assert outcome["status"] == "blocked", outcome
+    assert outcome["failure_code"] == "review_deadline_failure"
+    assert outcome["failure_detail"] == "review_final_deadline"
     assert len(calls) == 2 and not broker.executed
     assert r.conn.execute("SELECT COUNT(*) FROM llm_scenario_intents").fetchone()[0] == 0
     if recovery:
         assert r.conn.execute("SELECT COUNT(*) FROM llm_scenario_recovery_events WHERE kind='DECISION'").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("recovery", [False, True])
+def test_stale_input_keeps_its_exact_safe_failure_detail(tmp_path, recovery):
+    def after_review(context):
+        r.test_clock[0] += 121
+        context["account_captured_at"] = r.test_clock[0]
+    r, broker, calls = runtime(tmp_path, recovery=recovery, change=after_review)
+    result = r.tick()
+    assert result["failure_code"] == "review_deadline_failure"
+    assert result["failure_detail"] == "review_guard_stale_input"
+    assert len(calls) == 2 and not broker.executed
 
 
 @pytest.mark.parametrize("field,value,elapsed", [

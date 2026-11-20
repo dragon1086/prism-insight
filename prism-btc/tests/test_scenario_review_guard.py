@@ -307,7 +307,8 @@ def test_open_still_rejects_recovery_entry_gate_change():
 def test_tightening_survives_recovery_gate_change_with_other_safety_checks(side, old_flag, new_flag):
     ctx = dict(context(), scenario_id="active", revision=1, side=side,
                previous_hard_stop=84000 if side == "SHORT" else 82800,
-               positions=[dict(price=83300, quantity=.02)], recovery_hard_blocked=old_flag)
+               positions=[dict(price=83300, quantity=.02)], current_plan=dict(partial_stops=[]),
+               recovery_hard_blocked=old_flag)
     args = taped(ctx, "ADJUST")
     fresh = dict(ctx, now=1001, account_captured_at=1001, recovery_hard_blocked=new_flag)
     result = check(args, fresh)
@@ -322,11 +323,11 @@ def test_tightening_survives_recovery_gate_change_with_other_safety_checks(side,
             check(args, dict(fresh, **{key: value}))
 
 
-@pytest.mark.parametrize("kind", ["same_stop", "widening", "new_entry"])
+@pytest.mark.parametrize("kind", ["same_stop", "widening", "new_entry", "old_partial_stop", "unknown_old_plan"])
 def test_other_adjustments_still_reject_changed_recovery_gate(kind):
     ctx = dict(context(), scenario_id="active", revision=1, side="LONG",
                previous_hard_stop=82800, positions=[dict(price=83300, quantity=.02)],
-               recovery_hard_blocked=False)
+               recovery_hard_blocked=False, current_plan=dict(partial_stops=[]))
     raw = wire(ctx, "ADJUST")
     if kind == "same_stop":
         ctx["previous_hard_stop"] = raw["hard_stop"]
@@ -336,8 +337,12 @@ def test_other_adjustments_still_reject_changed_recovery_gate(kind):
                                   initial_action_id="original", widening_eligible=True)
         raw["stop_revision"] = dict(reason="Observed structure", structure_reference="30m confirmed low",
                                     input_id=ctx["input_id"])
-    else:
+    elif kind == "new_entry":
         raw["entries"] = [dict(id="new", price=83410, quantity=.001)]
+    elif kind == "old_partial_stop":
+        ctx["current_plan"]["partial_stops"] = [dict(id="old", price=83200, fraction=.5)]
+    else:
+        ctx["current_plan"] = None
     args = taped(ctx, "ADJUST", candidate=raw)
     with pytest.raises(ValueError, match="review_guard_context_changed:recovery_hard_blocked"):
         check(args, dict(ctx, now=1001, account_captured_at=1001, recovery_hard_blocked=True))

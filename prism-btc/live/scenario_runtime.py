@@ -1365,6 +1365,7 @@ class ScenarioRuntime:
                 elif review_code in {"review_final_deadline", "review_guard_stale_input",
                         "review_guard_stale_review_clock", "review_guard_invalid_time"}:
                     outcome["failure_code"] = "review_deadline_failure"
+                    outcome["failure_detail"] = review_code
                 elif review_code.startswith("review_"):
                     outcome["failure_code"] = "review_contract_failure"
             from core.llm_scenario import ScenarioValidationError
