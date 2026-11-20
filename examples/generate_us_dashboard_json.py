@@ -542,7 +542,7 @@ class USDashboardDataGenerator:
 
             if sp500_df.empty or nasdaq_df.empty:
                 logger.warning("Failed to fetch US index data from KIS.")
-                return []
+                return self._previous_market_condition()
 
             # Merge data
             market_data = []
@@ -574,7 +574,18 @@ class USDashboardDataGenerator:
 
         except Exception as e:
             logger.error(f"Error fetching US market index data: {str(e)}")
+            return self._previous_market_condition()
+
+    @staticmethod
+    def _previous_market_condition(path: Path = SCRIPT_DIR / "dashboard" / "public" / "us_dashboard_data.json") -> List[Dict]:
+        """Reuse the last published index series so a transient KIS error does not blank the benchmark and return chart."""
+        try:
+            rows = json.loads(path.read_text(encoding="utf-8")).get("market_condition") or []
+        except (OSError, ValueError) as e:
+            logger.warning(f"No previous US index data to reuse: {e}")
             return []
+        logger.warning(f"Reusing previous US index data: {len(rows)} days (last {rows[-1]['date'] if rows else 'none'})")
+        return rows
 
     def get_us_trading_insights(self, conn) -> Dict:
         """Get trading insights data (unified across KR/US markets)"""
