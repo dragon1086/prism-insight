@@ -353,6 +353,7 @@ jobs:
             prism-btc/tests/test_scenario_calculated_replay.py \
             prism-btc/tests/test_scenario_fixed_benchmark.py \
             prism-btc/tests/test_scenario_review_guard.py \
+            prism-btc/tests/test_scenario_review_runtime.py \
             prism-btc/tests/test_scenario_risk_allocation.py \
             prism-btc/tests/test_scenario_new_risk_ceiling.py \
             prism-btc/tests/test_scenario_allocation_chase.py \
