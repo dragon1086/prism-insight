@@ -165,7 +165,8 @@ def cmd_ticker(args) -> None:
         # watchlist/micro-split side events get their own one-event traces; hide them unless --all
         " HAVING {all:UInt8} OR countIf(LogAttributes['event.name'] IN"
         " ('candidate.evaluated', 'entry.executed', 'holding.evaluated', 'exit.executed')"
-        " OR startsWith(LogAttributes['event.name'], 'reentry')) > 0"
+        " OR startsWith(LogAttributes['event.name'], 'reentry')"
+        " OR startsWith(LogAttributes['event.name'], 'btc.scenario.')) > 0"
         " ORDER BY min(Timestamp) DESC LIMIT {limit:UInt16}",
         {"ticker": args.ticker, "days": args.days, "limit": args.limit, "all": int(args.all)}, local=args.local)
     if not rows:

@@ -66,6 +66,7 @@ def test_recent_ticker_excludes_far_future_events(monkeypatch):
     args = type('A', (), {'ticker': 'BTCUSDT', 'days': 3, 'limit': 10, 'all': False, 'local': False})()
     cq.cmd_ticker(args)
     assert 'Timestamp <= now() + INTERVAL 5 MINUTE' in captured[0]
+    assert "OR startsWith(LogAttributes['event.name'], 'btc.scenario.')" in captured[0]
 
 
 @pytest.mark.parametrize("target", ["-oProxyCommand=sh", "a b", ""])
