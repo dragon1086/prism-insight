@@ -1151,6 +1151,23 @@ class USStockTrackingAgent:
                             (self._account_scope()[0],))
         return [row[0] for row in self.cursor.fetchall()]
 
+    def _rows_full(self, current_slots: int, scenario) -> bool:
+        """Hard new-entry cap: MAX_SLOTS rows, or in a bull regime with BULL_MONEY_SLOT_MARKETS on,
+        invested weight + one slot <= MAX_SLOTS under 16 rows (prism_core.micro_split_live.rows_full)."""
+        from prism_core.micro_split_live import rows_full
+        return rows_full(current_slots, self.max_slots, market="US",
+                         regime=(scenario or {}).get("_deterministic_market_regime"),
+                         scenarios=self._holding_scenarios)
+
+    def _row_cap_now(self) -> int:
+        """Row limit to show in the BUY prompt and portfolio message (16 in money mode, else MAX_SLOTS)."""
+        from prism_core.micro_split_live import row_cap
+        try:
+            regime = self._stamp_scenario_market_regime({}).get("_deterministic_market_regime")
+        except Exception:  # noqa: BLE001 - display only
+            regime = None
+        return row_cap("US", regime, self.max_slots)
+
     def _weighted_slots_if_capped(self, current_slots: int, slot_limit: int) -> float:
         """Slot-weighted usage, read only when the row count already reaches the AI cap.
 
@@ -1541,7 +1558,7 @@ class USStockTrackingAgent:
             _usage = usage_line(current_slots, [h.get("scenario") for h in holdings], self.max_slots,
                                 getattr(self, "language", "ko"))
             portfolio_info = f"""
-            Current holdings: {current_slots}/{self.max_slots}
+            Current holdings: {current_slots}/{self._row_cap_now()}
             {_usage}
             Sector distribution: {json.dumps(sector_distribution, ensure_ascii=False)}
             Investment period distribution: {json.dumps(investment_periods, ensure_ascii=False)}
@@ -2041,7 +2058,7 @@ class USStockTrackingAgent:
 
             # Check available slots
             current_slots = await self._get_current_slots_count()
-            if current_slots >= self.max_slots:
+            if self._rows_full(current_slots, scenario):
                 logger.warning(f"Holdings already at maximum ({self.max_slots})")
                 return LegacyPositionWriteResult(False, None)
             # 2026-10-19: the AI cap is compared with slot-weighted usage (legacy rows = 1), not row count.
@@ -2497,7 +2514,7 @@ class USStockTrackingAgent:
                     sector_distribution['Other'] = sector_distribution.get('Other', 0) + 1
 
             portfolio_info = (
-                f"Current Holdings: {len(holdings)}/{self.max_slots}\n"
+                f"Current Holdings: {len(holdings)}/{self._row_cap_now()}\n"
                 f"Sector Distribution: {json.dumps(sector_distribution)}\n"
                 f"Investment Period Distribution: {json.dumps(investment_periods)}"
             )
@@ -4157,7 +4174,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             message = f"📊 프리즘 US 시뮬레이터 | 실시간 포트폴리오 ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n\n"
 
             # 1. Portfolio summary
-            message += f"🔸 현재 보유: {len(holdings) if holdings else 0}/{self.max_slots}개\n"
+            message += f"🔸 현재 보유: {len(holdings) if holdings else 0}/{self._row_cap_now()}개\n"
             from prism_core.micro_split_live import allocation_line, used_slots
             _used = used_slots([h.get("scenario") for h in holdings or []])
             from prism_core.runner_hold import local_today as runner_local_today
@@ -4479,7 +4496,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     )
                     # 2026-10-19: hard row cap unchanged; the AI cap is compared with slot-weighted usage.
                     weighted_slots = self._weighted_slots_if_capped(current_slots, scenario_slot_limit)
-                    if current_slots >= self.max_slots or weighted_slots >= scenario_slot_limit:
+                    rows_full = self._rows_full(current_slots, scenario)
+                    if rows_full or weighted_slots >= scenario_slot_limit:
                         # User-facing reason must NOT include the account label (leaks
                         # masked account number to broadcast channels). Keep detail in logs only.
                         reason = (
@@ -4497,7 +4515,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             from prism_core import pyramid_ledger
                             state.setdefault("skip_detail", {
                                 "skip_reason_codes": ["SLOT_FULL"], "slot_limit": (
-                                    "MAX_SLOTS" if current_slots >= self.max_slots else "AI_CAP"),
+                                    "MAX_SLOTS" if rows_full else "AI_CAP"),
                                 **pyramid_ledger.slot_context(pyramid_ledger._account_rows(self, "US"), self.max_slots)})
                         continue
 
@@ -4907,7 +4925,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         planned_allocation=allocation, decision_id=source_decision_id)
                 # Free-row reserve before sizing, so a blocked row never records an add plan.
                 _row_ok, _row_reason = micro_split_live.pyramid_slot_check(
-                    self, market="US", ticker=ticker, logger=logger)
+                    self, market="US", ticker=ticker, logger=logger,
+                    regime=scenario.get("_deterministic_market_regime"))
                 if not _row_ok:
                     _pyramid_gate(False, _row_reason)
                     state["skip_reason"] = state["skip_reason"] or "pyramid_row_blocked"
@@ -5242,7 +5261,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             scenario_slot_limit = _scenario_slot_limit(scenario, hard_max=self.max_slots)
             # Same as the BUY path (2026-10-19): hard row cap unchanged, the AI cap is compared with
             # slot-weighted usage, so partial micro-split rows do not block a re-entry early.
-            if (current_slots >= self.max_slots
+            if (self._rows_full(current_slots, scenario)
                     or self._weighted_slots_if_capped(current_slots, scenario_slot_limit) >= scenario_slot_limit):
                 return {"bought": False, "reason": "max_slots"}
             if not await self._check_sector_diversity(sector, is_pyramiding_add=False):

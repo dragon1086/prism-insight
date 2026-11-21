@@ -731,6 +731,23 @@ class StockTrackingAgent:
         self.cursor.execute("SELECT scenario FROM stock_holdings WHERE account_key = ?", (self._account_scope()[0],))
         return [row[0] for row in self.cursor.fetchall()]
 
+    def _rows_full(self, current_slots: int, scenario) -> bool:
+        """Hard new-entry cap: MAX_SLOTS rows, or in a bull regime with BULL_MONEY_SLOT_MARKETS on,
+        invested weight + one slot <= MAX_SLOTS under 16 rows (prism_core.micro_split_live.rows_full)."""
+        from prism_core.micro_split_live import rows_full
+        return rows_full(current_slots, self.max_slots, market="KR",
+                         regime=(scenario or {}).get("_deterministic_market_regime"),
+                         scenarios=self._holding_scenarios)
+
+    def _row_cap_now(self) -> int:
+        """Row limit to show in the BUY prompt and portfolio message (16 in money mode, else MAX_SLOTS)."""
+        from prism_core.micro_split_live import row_cap
+        try:
+            regime = self._stamp_scenario_market_regime({}).get("_deterministic_market_regime")
+        except Exception:  # noqa: BLE001 - display only
+            regime = None
+        return row_cap("KR", regime, self.max_slots)
+
     def _weighted_slots_if_capped(self, current_slots: int, slot_limit) -> float:
         """Slot-weighted usage, read only when the row count already reaches the AI cap.
 
@@ -1241,7 +1258,7 @@ class StockTrackingAgent:
             from prism_core.micro_split_live import usage_line
             _usage = usage_line(current_slots, [h.get("scenario") for h in holdings], self.max_slots, self.language)
             portfolio_info = f"""
-            Current holdings: {current_slots}/{self.max_slots}
+            Current holdings: {current_slots}/{self._row_cap_now()}
             {_usage}
             Sector distribution: {json.dumps(sector_distribution, ensure_ascii=False)}
             Investment period distribution: {json.dumps(investment_periods, ensure_ascii=False)}
@@ -2797,7 +2814,7 @@ class StockTrackingAgent:
 
             # Check available slots
             current_slots = await self._get_current_slots_count()
-            if current_slots >= self.max_slots:
+            if self._rows_full(current_slots, scenario):
                 logger.warning(f"Holdings already at maximum ({self.max_slots})")
                 if not is_add:  # a new name crowded out (ledger only)
                     from prism_core import pyramid_ledger
@@ -4266,7 +4283,7 @@ class StockTrackingAgent:
             message = f"📊 프리즘 시뮬레이터 | 실시간 포트폴리오 ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n\n"
 
             # 1. Portfolio summary
-            message += f"🔸 현재 보유: {len(holdings) if holdings else 0}/{self.max_slots}개\n"
+            message += f"🔸 현재 보유: {len(holdings) if holdings else 0}/{self._row_cap_now()}개\n"
             from prism_core.micro_split_live import allocation_line, used_slots
             _used = used_slots([h.get("scenario") for h in holdings or []])
             from prism_core.runner_hold import local_today as runner_local_today
@@ -4452,7 +4469,7 @@ class StockTrackingAgent:
                         continue
 
                     current_slots = await self._get_current_slots_count()
-                    if current_slots >= self.max_slots:
+                    if self._rows_full(current_slots, scenario):
                         # User-facing reason must NOT include the account label (leaks
                         # masked account number to broadcast channels). Keep detail in logs only.
                         reason = "Max slots reached (portfolio full)"

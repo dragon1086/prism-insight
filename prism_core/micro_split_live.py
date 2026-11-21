@@ -54,7 +54,7 @@ def _setting(name, default):
     return value
 
 
-def pyramid_reserve_check(row_tickers, max_slots):
+def pyramid_reserve_check(row_tickers, max_slots, used=None):
     """(ok, reason) for opening one more pyramid row, counted in holding ROWS like the MAX_SLOTS
     new-entry limit. free_after = max_slots - (rows + 1). While the account holds fewer than
     PYRAMID_RESERVE_BELOW_TICKERS (default 8) distinct tickers, free_after must stay >=
@@ -65,7 +65,14 @@ def pyramid_reserve_check(row_tickers, max_slots):
         reserve = _setting("PYRAMID_RESERVE_SLOTS", PYRAMID_RESERVE_DEFAULT)
         below = _setting("PYRAMID_RESERVE_BELOW_TICKERS", PYRAMID_RESERVE_BELOW_DEFAULT)
         tickers = list(row_tickers)
-        free_after = int(max_slots) - (len(tickers) + 1)
+        if used is None:
+            free_after = int(max_slots) - (len(tickers) + 1)
+        else:  # money mode: invested weight plus one full slot for the new row, rows under the row cap
+            if len(tickers) + 1 > MONEY_SLOT_ROW_CAP:
+                return False, f"PYRAMID_MAX_SLOTS:rows={len(tickers)}/{MONEY_SLOT_ROW_CAP}"
+            free_after = int(max_slots) - (float(used) + 1)
+            if free_after < -1e-9:
+                return False, f"PYRAMID_MAX_SLOTS:used={float(used):.2f}/{max_slots}"
     except (TypeError, ValueError):
         return False, "PYRAMID_RESERVE_SLOTS:UNKNOWN"
     names = len({str(t) for t in tickers})
@@ -77,12 +84,17 @@ def pyramid_reserve_check(row_tickers, max_slots):
     return True, f"PYRAMID_RESERVE_SLOTS_OK:free_after={free_after}>={required} (tickers={names})"
 
 
-def pyramid_slot_check(agent, *, market, ticker, logger=None):
-    """Reserve rule for the active account, run BEFORE sizing (no add plan for a blocked row): (ok, reason)."""
+def pyramid_slot_check(agent, *, market, ticker, logger=None, regime=None):
+    """Reserve rule for the active account, run BEFORE sizing (no add plan for a blocked row): (ok, reason).
+    In money mode (``money_slot_mode``) the same rule counts invested weight: ``used`` slots replace rows."""
     try:
-        rows = _own_cursor(agent).execute(_ACCOUNT_TICKERS_SQL[str(market).upper()],
-                                          (agent._account_scope()[0],)).fetchall()
-        ok, reason = pyramid_reserve_check([row[0] for row in rows], agent.max_slots)
+        cursor, scope = _own_cursor(agent), (agent._account_scope()[0],)
+        rows = cursor.execute(_ACCOUNT_TICKERS_SQL[str(market).upper()], scope).fetchall()
+        if money_slot_mode(market, regime):
+            used = used_slots(r[0] for r in cursor.execute(_ACCOUNT_SCENARIOS_SQL[str(market).upper()], scope))
+            ok, reason = pyramid_reserve_check([row[0] for row in rows], agent.max_slots, used=used)
+        else:
+            ok, reason = pyramid_reserve_check([row[0] for row in rows], agent.max_slots)
     except Exception:  # noqa: BLE001 - unknown usage fails closed
         ok, reason = False, "PYRAMID_RESERVE_SLOTS:UNKNOWN"
     if logger:
@@ -922,6 +934,12 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
             return {"status": "PLAN_CHANGED"}
         before = float(block["allocation"])
         delta = _dec(decision["target_allocation"]) - _dec(block["allocation"])
+        if market in money_slot_markets():  # rows may exceed MAX_SLOTS, so the add itself keeps weight <= MAX_SLOTS
+            used = used_slots(r[0] for r in agent.cursor.execute(_ACCOUNT_SCENARIOS_SQL[market],
+                                                                 (campaign["account_key"],)).fetchall())
+            if used + float(delta) > getattr(agent, "max_slots", 10) + 1e-9:
+                agent.conn.rollback()
+                return {"status": "MONEY_SLOT_CAP", "used_slots": round(used, 4), "delta": float(delta)}
         price = float(_dec(decision["price"]))
         extra = {k: meta.get(k) for k in ("scenario_id", "scenario_type", "lens", "plan_hash", "session",
                                           "trigger_price")}
@@ -1052,6 +1070,46 @@ def allocation_line(scenario, *, profit_rate=None, current_price=None, market="K
 def used_slots(scenarios):
     """Sum of slot allocations over holdings (each legacy row counts as 1)."""
     return sum(slot_fraction(s) for s in scenarios)
+
+
+# Bull-regime money-based slots (H-1121, 2026-11-21): for markets in BULL_MONEY_SLOT_MARKETS, while the
+# computed regime is bull, the hard cap counts invested weight instead of rows: a new row needs room for
+# one full slot (weight + 1 <= MAX_SLOTS) and at most MONEY_SLOT_ROW_CAP rows. Elsewhere unchanged.
+MONEY_SLOT_ROW_CAP = 16
+_MONEY_SLOT_BULL = {"parabolic", "strong_bull", "moderate_bull"}
+_ACCOUNT_SCENARIOS_SQL = {"KR": "SELECT scenario FROM stock_holdings WHERE account_key = ?",
+                          "US": "SELECT scenario FROM us_stock_holdings WHERE account_key = ?"}
+
+
+def money_slot_markets():
+    return {m.strip().upper() for m in os.getenv("BULL_MONEY_SLOT_MARKETS", "").split(",") if m.strip()}
+
+
+def money_slot_mode(market, regime):
+    """True while the money-based cap replaces the row cap (flag on for the market and a bull regime)."""
+    return (str(market or "").upper() in money_slot_markets()
+            and str(regime or "").strip().lower() in _MONEY_SLOT_BULL)
+
+
+def row_cap(market, regime, hard_max):
+    """Row limit shown to the BUY prompt and messages: MONEY_SLOT_ROW_CAP in money mode, else MAX_SLOTS."""
+    return MONEY_SLOT_ROW_CAP if money_slot_mode(market, regime) else hard_max
+
+
+def rows_full(rows, hard_max, *, market, regime, scenarios):
+    """Hard new-entry cap. Below MAX_SLOTS rows nothing changes (each row weighs at most one slot).
+    At or above it a new row is allowed only in money mode, under the row cap, with room for one full
+    slot. ``scenarios`` is a callable returning the account's holding scenarios; a failed read is full.
+    shortcut: reserves a full slot although first legs are 0.3-0.8 slot, pass the planned weight if the
+    last partial slot matters."""
+    if rows < hard_max:
+        return False
+    if not money_slot_mode(market, regime) or rows >= MONEY_SLOT_ROW_CAP:
+        return True
+    try:
+        return used_slots(scenarios()) + 1 > hard_max + 1e-9
+    except Exception:  # noqa: BLE001 - unknown usage keeps the row cap
+        return True
 
 
 def ai_cap_reached(holding_scenarios, max_portfolio_size):
