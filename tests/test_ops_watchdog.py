@@ -379,6 +379,29 @@ def test_disk_alert_fires_above_the_limit_holds_repeats_and_resets(tmp_path, mon
     assert len(sent) == 2                                                  # a new episode alerts again
 
 
+def test_ledger_alert_fires_when_shipper_checkpoint_stalls_with_pending_events(tmp_path, monkeypatch):
+    # 2026-11-18..21: one unconfirmed batch after a disk-full moment stopped ClickStack shipping for 3 days.
+    import os
+    state = _setup(tmp_path, monkeypatch)
+    sent, t0 = [], datetime(2026, 11, 21, 12, 0, tzinfo=KST)
+    send = lambda m: sent.append(m) or True  # noqa: E731
+    spool, checkpoint = tmp_path / "logs/prism_events.jsonl", tmp_path / "logs/prism_events.checkpoint.json"
+    spool.write_text('{"event_id": "a"}\n' * 1000)
+    checkpoint.write_text(json.dumps({"inode": spool.stat().st_ino, "offset": 0}))
+    os.utime(checkpoint, (t0.timestamp() - 3 * 3600,) * 2)               # checkpoint still for 3 hours
+    W.run(t0, state_path=state, sender=send)
+    assert len(sent) == 1 and sent[0].startswith("[장애] PRISM 매매 원장(ClickStack) 전송 멈춤") and "3.0시간째" in sent[0]
+    W.run(t0.replace(minute=5), state_path=state, sender=send)
+    assert len(sent) == 1                                                  # held back inside REPEAT_HOURS
+    checkpoint.write_text(json.dumps({"inode": spool.stat().st_ino, "offset": spool.stat().st_size}))
+    os.utime(checkpoint, (t0.timestamp(),) * 2)                            # caught up
+    W.run(t0.replace(minute=10), state_path=state, sender=send)
+    assert len(sent) == 1 and "ledger_alert" not in json.loads(state.read_text())
+    os.utime(checkpoint, (t0.timestamp() - 600,) * 2)                      # idle but nothing pending: quiet
+    W.run(t0.replace(minute=15), state_path=state, sender=send)
+    assert len(sent) == 1
+
+
 def test_summary_and_notice_only_alerts_are_off_by_default(tmp_path, monkeypatch):
     # 2026-11-07 (user): the maintenance chat keeps real failures only; the biweekly review replaces the rest.
     state = _setup(tmp_path, monkeypatch)
