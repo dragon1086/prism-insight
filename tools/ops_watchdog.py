@@ -14,6 +14,8 @@ The same problem is held back for REPEAT_HOURS and then re-sent with its count. 
 runs again sends [복구]. Once a day (SUMMARY_AT, KST) a summary shows what ran, which also proves the
 watchdog itself is alive: no summary in the morning means the watchdog is down.
 
+A stalled ClickStack shipper (events pending, checkpoint still for LEDGER_STALE_MIN) also sends [장애].
+
 Since 2026-11-07 (user decision) the chat gets only [장애]/[복구] and the disk alert by default: the daily
 summary and [주의]-only messages read like bug hunting and were replaced by the biweekly review
 (tools/two_week_review.py --every 14), which also reports when the watchdog last ran. Turn them back on with
@@ -55,6 +57,7 @@ MAX_READ_BYTES = 50 * 1024 * 1024
 EXAMPLES_PER_GROUP = 3
 MESSAGE_LIMIT = 3400
 DISK_ALERT_PCT = float(os.getenv("OPS_WATCHDOG_DISK_ALERT_PCT", "90"))
+LEDGER_STALE_MIN = float(os.getenv("OPS_WATCHDOG_LEDGER_STALE_MIN", "30"))
 JOURNAL_MAX_ENTRIES = 5000             # per unit and run (oldest first); the rest is read on the next run
 JOURNAL_TIMEOUT_S = 30
 B3_CONTRACT = '"contract": "b3-ae-worker-v1"'   # the B3 worker's tick line (printed every minute, all day)
@@ -519,6 +522,9 @@ def run(now_kst=None, *, state_path=STATE_PATH, sender=None, dry_run=False, jobs
     disk = disk_alert(state, now_kst)
     if disk:
         messages.append(disk)
+    ledger = ledger_alert(state, now_kst)
+    if ledger:
+        messages.append(ledger)
     if not _flag("OPS_WATCHDOG_NOTICES_ENABLED", False):
         to_send = [item for item in to_send if item[0]["severity"] == "장애"]
     alert = build_alert(to_send, stale_new, recovered, now_kst, jobs)
@@ -568,6 +574,41 @@ def disk_alert(state, now_kst):
             f"■ 디스크 {pct:.0f}% 사용 (남은 공간 {free_gb:.1f}GB, 기준 {DISK_ALERT_PCT:g}%)\n"
             f"  가득 차면 AI 판단·뉴스 검색이 시작되지 않습니다. 큰 파일: du -xh --max-depth=1 / | sort -rh | head\n"
             f"{REPEAT_HOURS:g}시간 뒤에도 기준 이상이면 다시 보냅니다.")
+
+
+def ledger_backlog(now_ts):
+    """(unsent bytes, minutes since the shipper's checkpoint moved), or None without a spool on this host."""
+    spool = ROOT / "logs" / "prism_events.jsonl"
+    checkpoint = spool.with_suffix(".checkpoint.json")
+    try:
+        stat = spool.stat()
+    except FileNotFoundError:
+        return None
+    try:
+        value = json.loads(checkpoint.read_text(encoding="utf-8"))
+        offset = int(value["offset"]) if int(value["inode"]) == stat.st_ino else 0
+        moved = checkpoint.stat().st_mtime
+    except (OSError, ValueError, KeyError, TypeError):
+        offset, moved = 0, stat.st_mtime
+    return max(stat.st_size - offset, 0), (now_ts - moved) / 60
+
+
+def ledger_alert(state, now_kst):
+    """The shipper saves its checkpoint every few seconds; pending events with a still checkpoint mean
+    ClickStack stopped receiving (11/18-11/21: a disk-full moment left one batch unconfirmed, 3 days unseen)."""
+    backlog = ledger_backlog(now_kst.timestamp())
+    last = state.get("ledger_alert")
+    if not backlog or not backlog[0] or backlog[1] < LEDGER_STALE_MIN:
+        state.pop("ledger_alert", None)
+        return None
+    if last and now_kst - datetime.fromisoformat(last) < timedelta(hours=REPEAT_HOURS):
+        return None
+    state["ledger_alert"] = now_kst.isoformat()
+    pending, minutes = backlog
+    return (f"[장애] PRISM 매매 원장(ClickStack) 전송 멈춤 {now_kst:%m/%d %H:%M} KST\n"
+            f"■ {minutes / 60:.1f}시간째 전송 진행 없음, 보내지 못한 기록 {pending / 1e6:.1f}MB (기록은 서버에 보존됨)\n"
+            f"  확인: journalctl -u prism-observability-shipper -n 20 (operator_review_required면 수동 확인 필요)\n"
+            f"{REPEAT_HOURS:g}시간 뒤에도 멈춰 있으면 다시 보냅니다.")
 
 
 def _source(job):
