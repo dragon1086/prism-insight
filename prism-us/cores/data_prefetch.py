@@ -1202,7 +1202,8 @@ def prefetch_us_macro_intelligence_data(reference_date: str = None) -> dict:
 # 정보로만 주입하고, regime의 기계적 강등은 하지 않는다. (강등은 매수+매도 양쪽을 뒤집어
 # US melt-up에서 조기청산 손실을 유발했고, 시장별 임계는 과최적화 위험이 컸다.) 분산일을
 # 어떻게 가중할지(신규매수 보수화 등)는 프롬프트에서 LLM이 판단한다 — O'Neil 본래의 재량적 용법.
-# 분산일 파라미터 (O'Neil/IBD). drop=-0.2% 종가, 거래량 전일 초과, 25거래일 윈도우, +5% 회복 만료.
+# 분산일 수는 cores/market_pulse.py 상태기계 하나가 센다(게이트와 같은 값, #P1). 아래 상수는 그 기계의
+# 기준(O'Neil/IBD: 종가 -0.2%, 거래량 전일 초과, 25거래일 윈도우, +5% 회복 만료)을 설명용으로 남긴 것이다.
 DISTRIBUTION_WINDOW = 25
 DISTRIBUTION_DROP_PCT = 0.2
 DISTRIBUTION_RECOVERY_PCT = 5.0
@@ -1259,75 +1260,45 @@ def _high_vol_drawdown_override(closes, regime: str, confidence: float):
     return regime, confidence, None
 
 
-def _count_distribution_days(df, close_col, volume_col=None,
-                             window: int = DISTRIBUTION_WINDOW,
-                             drop_threshold_pct: float = DISTRIBUTION_DROP_PCT,
-                             recovery_pct: float = DISTRIBUTION_RECOVERY_PCT):
-    """O'Neil 분산일 카운트 (결정론적).
+def _root_regime_policy():
+    """Root cores/regime_policy.py, loaded by path (prism-us/cores shadows `cores`)."""
+    import sys as _sys
+    rp = _sys.modules.get("prism_root_regime_policy")
+    if rp is None:
+        path = Path(__file__).resolve().parents[2] / "cores" / "regime_policy.py"
+        spec = importlib.util.spec_from_file_location("prism_root_regime_policy", path)
+        rp = importlib.util.module_from_spec(spec)
+        _sys.modules[spec.name] = rp  # register before exec (frozen dataclass, py3.14)
+        spec.loader.exec_module(rp)
+    return rp
 
-    분산일 = 지수가 전일 종가 대비 >= drop_threshold_pct% 하락 마감 AND 거래량이 전일 초과.
-    만료: (1) window 거래일 경과 시 윈도우 밖으로 자동 제외, (2) 분산일 이후 어떤 종가가
-    그 분산일 종가 대비 +recovery_pct% 이상 상승하면 카운트에서 제거.
 
-    Returns:
-        {"count": int, "window": int, "raw_count": int} 또는 거래량 불가 시 None.
+def _pulse_bars(rp, df, col):
+    mp = rp._load_root_cores("market_pulse")
+    vol = next((c for c in ("Volume", "volume") if c in df.columns), None)
+    return rp._df_to_bars(df.dropna(subset=[col]), col, vol, mp.DailyBar)
+
+
+def _inject_distribution_days(index_summary, df, close_col, nasdaq_df=None) -> None:
+    """Market Pulse 분산일 수를 index_summary에 정보로 주입(강등 없음).
+
+    게이트가 읽는 값과 같은 기계(regime_policy.replay_distribution_days)를 같은 바에 재생한다:
+    두 지수 모드(기본)면 S&P 500·나스닥 중 작은 값(#833), `spx` 모드면 S&P 500만.
+    거래량 없음·30거래일 미만·오류면 None. regime/confidence는 변경하지 않는다.
     """
-    try:
-        d = df.sort_index()
-        if volume_col is None:
-            for c in ["Volume", "거래량", "volume"]:
-                if c in d.columns:
-                    volume_col = c
-                    break
-        if volume_col is None or close_col not in d.columns:
-            return None
-        closes = d[close_col].astype(float).values
-        vols = d[volume_col].astype(float).values
-        n = len(closes)
-        if n < 2:
-            return None
-        import math as _math
-        valid_vol = [v for v in vols if not _math.isnan(v) and v > 0]
-        if not valid_vol:
-            return None
-        start = max(1, n - window)
-        raw = 0
-        kept = 0
-        running_max_after = -1.0
-        flags = []
-        for i in range(n - 1, start - 1, -1):
-            prev_c = closes[i - 1]
-            cur_c = closes[i]
-            if prev_c <= 0:
-                flags.append((i, False, running_max_after))
-                running_max_after = max(running_max_after, cur_c)
-                continue
-            pct = (cur_c - prev_c) / prev_c * 100.0
-            vol_up = vols[i] > vols[i - 1]
-            is_dist = (pct <= -drop_threshold_pct) and vol_up
-            flags.append((i, is_dist, running_max_after))
-            running_max_after = max(running_max_after, cur_c)
-        for (i, is_dist, max_after) in flags:
-            if not is_dist:
-                continue
-            raw += 1
-            if max_after >= closes[i] * (1 + recovery_pct / 100.0):
-                continue
-            kept += 1
-        return {"count": kept, "window": window, "raw_count": raw}
-    except Exception:
-        return None
-
-
-def _inject_distribution_days(index_summary, df, close_col) -> None:
-    """분산일 카운트를 결정론적으로 계산해 index_summary에 정보로 주입(강등 없음).
-
-    거래량 결측/불가 시 distribution_days=None. regime/confidence는 변경하지 않는다.
-    """
-    dist = _count_distribution_days(df, close_col)
     index_summary["distribution_window"] = DISTRIBUTION_WINDOW
-    index_summary["distribution_days"] = None if dist is None else dist["count"]
-
+    index_summary["distribution_days"] = None
+    try:
+        rp = _root_regime_policy()
+        second = None
+        if nasdaq_df is not None and not nasdaq_df.empty and rp.us_pulse_index_mode() == "dual":
+            nd_close = next((c for c in ("Close", "close", "Adj Close") if c in nasdaq_df.columns), None)
+            if nd_close is not None:
+                second = _pulse_bars(rp, nasdaq_df.sort_index(), nd_close)
+        index_summary["distribution_days"] = rp.replay_distribution_days(
+            _pulse_bars(rp, df.sort_index(), close_col), second)
+    except Exception as e:
+        logger.warning(f"[regime] distribution days unavailable: {e}")
 
 def _compute_us_swing_state(
     sp500_df: pd.DataFrame,
@@ -1405,22 +1376,10 @@ from prism_core.us_regime_k8b import index_label as _k8b_index_label  # noqa: E4
 
 def _k8b_ibd_state(sp500_df, sp_close: str, nasdaq_df, nd_close: str) -> str:
     """Combined US Market Pulse state, replayed like research labels.py (C1)."""
-    import sys as _sys
-    rp = _sys.modules.get("prism_root_regime_policy")
-    if rp is None:
-        path = Path(__file__).resolve().parents[2] / "cores" / "regime_policy.py"
-        spec = importlib.util.spec_from_file_location("prism_root_regime_policy", path)
-        rp = importlib.util.module_from_spec(spec)
-        _sys.modules[spec.name] = rp  # register before exec (frozen dataclass, py3.14)
-        spec.loader.exec_module(rp)
-    mp = rp._load_root_cores("market_pulse")
-
-    def bars(df, col):
-        vol = next((c for c in ("Volume", "volume") if c in df.columns), None)
-        return rp._df_to_bars(df.dropna(subset=[col]), col, vol, mp.DailyBar)
-
+    rp = _root_regime_policy()
     combined, _ = rp.combined_us_states(
-        bars(sp500_df, sp_close), bars(nasdaq_df, nd_close), mp.MarketPulse
+        _pulse_bars(rp, sp500_df, sp_close), _pulse_bars(rp, nasdaq_df, nd_close),
+        rp._load_root_cores("market_pulse").MarketPulse,
     )
     return combined[-1]
 
@@ -1642,7 +1601,7 @@ def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, v
         index_summary["vix_level"] = vix_level
 
     # O'Neil 분산일 결정론 카운트를 index_summary에 정보로 주입(강등 없음 — LLM이 프롬프트에서 판단)
-    _inject_distribution_days(index_summary, sp500_df, close_col)
+    _inject_distribution_days(index_summary, sp500_df, close_col, nasdaq_df)
 
     # 고변동·낙폭 override (모드: active[기본]/shadow/off). KR 과 동일 시맨틱.
     #   shadow = 강등 '판단'만 계산·로깅, regime 은 그대로(긴급 관찰용).

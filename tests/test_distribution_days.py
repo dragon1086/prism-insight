@@ -1,8 +1,8 @@
-"""O'Neil 분산일(Distribution Day) 결정론 카운트 단위테스트 (KR cores).
+"""index_summary 분산일 = 게이트가 보는 Market Pulse 기계값 (KR cores).
 
-분산일 정의(-0.2% 종가/거래량↑), 회복 만료(+5%), 윈도우 경과 만료, 거래량 결측 graceful,
-그리고 index_summary 정보 주입(_inject_distribution_days; regime 강등 없음)을 합성데이터로 검증.
-US cores(prism-us) 헬퍼는 동일 구현이므로 prism-us/tests에 스모크 테스트만 둔다.
+분산일 판정 규칙 자체(-0.2% 종가·거래량↑, +5% 회복 만료, 25세션 창)는 tests/test_market_pulse.py가
+검증한다. 여기서는 리포트 경로(_inject_distribution_days)가 같은 기계를 재생해 같은 값을 넣는지,
+FTD 뒤 창 리셋이 반영되는지, 모르는 값은 None으로 남는지, high/low 채움을 확인한다.
 """
 import os
 import sys
@@ -12,99 +12,97 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cores.data_prefetch import (  # noqa: E402
-    _count_distribution_days,
-    _inject_distribution_days,
-    DISTRIBUTION_WINDOW,
-)
+from cores import regime_policy as rp  # noqa: E402
+from cores.data_prefetch import DISTRIBUTION_WINDOW, _inject_distribution_days  # noqa: E402
+from cores.market_pulse import CORRECTION, UPTREND, DailyBar, MarketPulse  # noqa: E402
 
 
-def _mk(closes, vols):
+def _mk(closes, vols, close="Close", volume="Volume"):
     idx = pd.date_range("2024-01-01", periods=len(closes), freq="D")
-    return pd.DataFrame({"Close": closes, "Volume": vols}, index=idx)
+    return pd.DataFrame({close: closes, volume: vols}, index=idx)
 
 
-def test_clear_distribution_days_counted():
-    # 4 consecutive ~-1% down days on rising volume → 4 distribution days
-    r = _count_distribution_days(_mk([100, 99, 98, 97, 96], [10, 11, 12, 13, 14]), "Close")
-    assert r["count"] == 4
-    assert r["raw_count"] == 4
+def _flat(n=30):
+    return [100.0] * n, [10.0] * n
 
 
-def test_down_but_volume_not_rising_is_not_distribution():
-    r = _count_distribution_days(_mk([100, 99, 98, 97, 96], [14, 13, 12, 11, 10]), "Close")
-    assert r["count"] == 0
+def _six_dd_then_ftd():
+    closes, vols = _flat()
+    for i in range(6):                                   # 6 distribution days -> CORRECTION
+        closes.append(round(closes[-1] * 0.99, 6))
+        vols.append(11.0 + i)
+    for _ in range(3):                                   # rally days 1-3 on light volume
+        closes.append(round(closes[-1] * 1.005, 6))
+        vols.append(10.0)
+    closes.append(round(closes[-1] * 1.02, 6))           # day 4 +2% on higher volume = FTD
+    vols.append(20.0)
+    return closes, vols
 
 
-def test_drop_below_threshold_not_counted():
-    # -0.05% drops are below the -0.2% threshold → ignored
-    r = _count_distribution_days(_mk([100, 99.95, 99.9, 99.85], [10, 11, 12, 13]), "Close")
-    assert r["count"] == 0
+def _replay(closes, vols):
+    mp = MarketPulse()
+    states = [mp.feed(DailyBar(f"d{i}", c, v)) for i, (c, v) in enumerate(zip(closes, vols))]
+    return states, mp.distribution_days
 
 
-def test_recovery_5pct_expires_distribution_day():
-    # day1 -2% on rising vol = distribution; day2 closes +12% (> 98*1.05) → expires it
-    r = _count_distribution_days(_mk([100, 98, 110], [10, 11, 12]), "Close")
-    assert r["raw_count"] == 1
-    assert r["count"] == 0
-
-
-def test_recovery_just_below_5pct_keeps_distribution_day():
-    # day1 -2% (close 98) on rising vol; later max close 102 < 98*1.05(=102.9) → kept
-    r = _count_distribution_days(_mk([100, 98, 102], [10, 11, 12]), "Close")
-    assert r["count"] == 1
-
-
-def test_missing_volume_returns_none():
-    df = pd.DataFrame({"Close": [100, 99, 98]}, index=pd.date_range("2024-01-01", periods=3))
-    assert _count_distribution_days(df, "Close") is None
-
-
-def test_all_zero_volume_returns_none():
-    r = _count_distribution_days(_mk([100, 99, 98], [0, 0, 0]), "Close")
-    assert r is None
-
-
-def test_window_caps_old_distribution_days():
-    # 40 down-on-rising-volume days; recovery disabled → only last `window` counted
-    closes, vols = [100], [10]
-    for _ in range(40):
-        closes.append(round(closes[-1] * 0.99, 4))
-        vols.append(vols[-1] + 1)
-    r = _count_distribution_days(_mk(closes, vols), "Close", recovery_pct=1e9)
-    assert r["count"] == DISTRIBUTION_WINDOW
-
-
-def test_korean_volume_column_detected():
-    idx = pd.date_range("2024-01-01", periods=5, freq="D")
-    df = pd.DataFrame({"종가": [100, 99, 98, 97, 96], "거래량": [10, 11, 12, 13, 14]}, index=idx)
-    r = _count_distribution_days(df, "종가")
-    assert r["count"] == 4
-
-
-# --- information injection (no regime demotion) -----------------------------
-
-def test_inject_sets_distribution_days_and_window():
+def test_inject_matches_pulse_machine():
+    closes, vols = _flat()
+    closes += [99.0, 98.0, 97.0, 96.0]
+    vols += [11.0, 12.0, 13.0, 14.0]
     summary = {}
-    _inject_distribution_days(summary, _mk([100, 99, 98, 97, 96], [10, 11, 12, 13, 14]), "Close")
-    assert summary["distribution_days"] == 4
+    _inject_distribution_days(summary, _mk(closes, vols), "Close")
+    assert summary["distribution_days"] == _replay(closes, vols)[1] == 4
     assert summary["distribution_window"] == DISTRIBUTION_WINDOW
 
 
-def test_inject_missing_volume_sets_none():
+def test_follow_through_resets_count_like_the_gate():
+    # The removed legacy counter had no FTD reset and reported 6 here.
+    closes, vols = _six_dd_then_ftd()
+    states, machine_dd = _replay(closes, vols)
+    assert CORRECTION in states and states[-1] == UPTREND
     summary = {}
-    df = pd.DataFrame({"Close": [100, 99, 98]}, index=pd.date_range("2024-01-01", periods=3))
-    _inject_distribution_days(summary, df, "Close")
+    _inject_distribution_days(summary, _mk(closes, vols), "Close")
+    assert summary["distribution_days"] == machine_dd == 0
+
+
+def test_korean_columns_detected():
+    closes, vols = _flat()
+    closes += [99.0, 98.0]
+    vols += [11.0, 12.0]
+    summary = {}
+    _inject_distribution_days(summary, _mk(closes, vols, "종가", "거래량"), "종가")
+    assert summary["distribution_days"] == 2
+
+
+@pytest.mark.parametrize("frame", [
+    pd.DataFrame({"Close": [100.0] * 40}, index=pd.date_range("2024-01-01", periods=40)),
+    _mk([100.0] * 40, [0.0] * 40),
+    _mk([100.0, 99.0, 98.0], [10.0, 11.0, 12.0]),       # under 30 sessions, like the gate
+])
+def test_unknown_stays_none(frame):
+    summary = {}
+    _inject_distribution_days(summary, frame, "Close")
     assert summary["distribution_days"] is None
     assert summary["distribution_window"] == DISTRIBUTION_WINDOW
 
 
 def test_inject_does_not_add_demotion_fields():
-    # 결정론 강등은 제거됨 → demotion/threshold 관련 필드를 절대 만들지 않는다
     summary = {}
-    _inject_distribution_days(summary, _mk([100, 99, 98, 97, 96], [10, 11, 12, 13, 14]), "Close")
+    _inject_distribution_days(summary, _mk(*_flat()), "Close")
     assert "distribution_demoted_from" not in summary
     assert "distribution_threshold" not in summary
+
+
+def test_df_to_bars_fills_high_low_when_present():
+    idx = pd.date_range("2026-11-19", periods=2, freq="D")
+    kis = pd.DataFrame({"Open": [5090.04, 4928.51], "High": [5137.89, 4971.31], "Low": [4963.61, 0.0],
+                        "Close": [5137.89, 4869.96], "Volume": [195695, 206729]}, index=idx)
+    bars = rp._df_to_bars(kis, "Close", "Volume", DailyBar)
+    assert (bars[0].high, bars[0].low) == (5137.89, 4963.61)
+    assert bars[1].low is None                           # non-positive => unknown
+    plain = rp._df_to_bars(kis[["Close", "Volume"]], "Close", "Volume", DailyBar)
+    assert (plain[0].high, plain[0].low) == (None, None)
+    assert [(b.date, b.close, b.volume) for b in bars] == [(b.date, b.close, b.volume) for b in plain]
 
 
 if __name__ == "__main__":

@@ -1,8 +1,6 @@
-"""US cores 분산일 헬퍼 스모크 테스트.
+"""US index_summary 분산일 = 게이트가 보는 Market Pulse 값(두 지수면 작은 값, #833).
 
-알고리즘 자체는 KR(tests/test_distribution_days.py)에서 전수 검증한다.
-여기서는 prism-us/cores.data_prefetch 의 동일 구현이 import 되고, 카운트/정보 주입이
-동작하는지(regime 강등 없음)만 확인한다.
+규칙 자체는 tests/test_market_pulse.py, KR 주입은 tests/test_distribution_days.py가 검증한다.
 """
 import os
 import sys
@@ -13,34 +11,42 @@ import pytest
 # prism-us 디렉터리를 우선 경로에 둬 cores=prism-us/cores 로 해석되게 함
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cores.data_prefetch import (  # noqa: E402
-    _count_distribution_days,
-    _inject_distribution_days,
-    DISTRIBUTION_WINDOW,
-)
+from cores.data_prefetch import DISTRIBUTION_WINDOW, _inject_distribution_days  # noqa: E402
 
 
-def _mk(closes, vols):
+def _mk(tail_closes, tail_vols):
+    closes = [100.0] * 30 + list(tail_closes)
+    vols = [10.0] * 30 + list(tail_vols)
     idx = pd.date_range("2024-01-01", periods=len(closes), freq="D")
     return pd.DataFrame({"Close": closes, "Volume": vols}, index=idx)
 
 
-def test_us_counts_distribution_days():
-    r = _count_distribution_days(_mk([100, 99, 98, 97, 96], [10, 11, 12, 13, 14]), "Close")
-    assert r["count"] == 4
+SPX = _mk([99, 98, 97, 96], [11, 12, 13, 14])            # 4 distribution days
+NDX = _mk([99, 98, 98.5, 98.6], [11, 12, 13, 14])        # 2 distribution days
 
 
-def test_us_inject_sets_count_no_demotion():
+def _dd(*args):
     summary = {}
-    _inject_distribution_days(summary, _mk([100, 99, 98, 97, 96], [10, 11, 12, 13, 14]), "Close")
-    assert summary["distribution_days"] == 4
+    _inject_distribution_days(summary, *args)
     assert summary["distribution_window"] == DISTRIBUTION_WINDOW
     assert "distribution_demoted_from" not in summary
+    return summary["distribution_days"]
 
 
-def test_us_missing_volume_none():
-    df = pd.DataFrame({"Close": [100, 99, 98]}, index=pd.date_range("2024-01-01", periods=3))
-    assert _count_distribution_days(df, "Close") is None
+def test_dual_mode_reports_smaller_count(monkeypatch):
+    monkeypatch.delenv("US_MARKET_PULSE_INDEX_MODE", raising=False)
+    assert _dd(SPX, "Close", NDX) == 2
+    assert _dd(SPX, "Close") == 4                        # NASDAQ missing keeps S&P 500
+
+
+def test_spx_mode_keeps_sp500_count(monkeypatch):
+    monkeypatch.setenv("US_MARKET_PULSE_INDEX_MODE", "spx")
+    assert _dd(SPX, "Close", NDX) == 4
+
+
+def test_missing_volume_none():
+    df = pd.DataFrame({"Close": [100.0] * 40}, index=pd.date_range("2024-01-01", periods=40))
+    assert _dd(df, "Close", NDX) is None
 
 
 if __name__ == "__main__":
