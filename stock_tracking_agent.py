@@ -3027,6 +3027,7 @@ class StockTrackingAgent:
                 required_score_override=_micro_split_gate_score(scenario),
                 score_exempt=_reentry_rule_approved(scenario),
                 t1_exempt=_reentry_rule_approved(scenario),
+                market="KR",
             )
             if result.get("score_policy"):
                 logger.info("[ENTRY_SCORE_POLICY][KR] regime=%s pulse=%s policy=%s", computed_regime, pulse, result["score_policy"])

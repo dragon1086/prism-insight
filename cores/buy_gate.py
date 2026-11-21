@@ -13,6 +13,7 @@ scenarios impossible to replay.
 from __future__ import annotations
 
 import math
+import os
 import re
 from typing import Any, Mapping
 
@@ -44,6 +45,13 @@ _VOLATILITY_VALUE = (
 )
 _ATR_RE = re.compile(r"\bATR20\s*[:=]\s*" + _VOLATILITY_VALUE, re.IGNORECASE)
 _ADR_RE = re.compile(r"\bADR20\s*[:=]\s*" + _VOLATILITY_VALUE, re.IGNORECASE)
+
+# "- 52주 확정 최고가(당일 봉 제외, 확정 250거래일): 1,234.56 | ..." (prism_core.breakout_facts)
+_HIGH52_RE = re.compile(r"52주 확정 최고가\([^)]*\):\s*([0-9][0-9,]*(?:\.[0-9]+)?)")
+# Outside a bull regime, a regular new buy more than 25% below its confirmed 52-week high is refused
+# (user-approved LIVE 2026-11-21, H-1121-nonbull-52w). Rollback = empty NONBULL_52W_GATE_MARKETS.
+NONBULL_52W_MIN_RATIO = 0.75
+_BULL_REGIMES = {"parabolic", "strong_bull", "moderate_bull"}
 
 _DISTRIBUTION_CAUTION = 6
 _REGIME_STEP_DOWN = {
@@ -105,6 +113,10 @@ def _volatility_from_text(text: str) -> tuple[float | None, float | None]:
     )
 
 
+def nonbull_52w_gate_markets() -> set[str]:
+    return {m.strip().upper() for m in os.getenv("NONBULL_52W_GATE_MARKETS", "").split(",") if m.strip()}
+
+
 def effective_buy_regime(regime: Any, distribution_days: int | None) -> tuple[str | None, bool]:
     """Return the computed regime after the deterministic distribution caution."""
     base = normalize_regime(regime)
@@ -128,6 +140,7 @@ def evaluate_production_buy_gate(
     required_score_override: float | None = None,
     score_exempt: bool = False,
     t1_exempt: bool = False,
+    market: str | None = None,
 ) -> dict[str, Any]:
     """Evaluate one candidate immediately before the simulator buy call.
 
@@ -140,6 +153,12 @@ def evaluate_production_buy_gate(
     ``t1_exempt`` turns the T1 trend gate (close below the 50-day line) into a
     recorded, non-blocking finding for a rule-approved re-entry (user decision
     2026-10-10); T2 and every other gate are unchanged.
+
+    ``market`` ("KR"/"US") enables the non-bull 52-week gate when listed in
+    NONBULL_52W_GATE_MARKETS: a regular new buy (not an add, not a rule-approved
+    re-entry) is refused while the computed regime is not bullish and the price
+    is below 75% of the confirmed 52-week high in the trend facts. An unknown
+    high stays unknown and does not block.
 
     ``market_regime`` must be the programmatically computed regime.  A missing
     regime is a hard stop for a new buy: a data outage may reduce opportunity,
@@ -294,6 +313,19 @@ def evaluate_production_buy_gate(
     if t2 and t2.group(1).lower() == "true":
         findings.append(_finding("individual_trend_t2", "T2 individual trend gate is hit"))
 
+    high52_ratio = None
+    high52 = _HIGH52_RE.search(facts)
+    high52_value = _number(high52.group(1)) if high52 else None
+    if high52_value and price is not None and price > 0:
+        high52_ratio = price / max(high52_value, price)
+        if (not is_add and not score_exempt and computed_regime is not None
+                and computed_regime not in _BULL_REGIMES and high52_ratio < NONBULL_52W_MIN_RATIO
+                and str(market or "").upper() in nonbull_52w_gate_markets()):
+            findings.append(_finding(
+                "nonbull_far_below_52w_high",
+                f"price is {high52_ratio * 100:.1f}% of the 52-week high (< {NONBULL_52W_MIN_RATIO * 100:.0f}%) in {computed_regime}",
+            ))
+
     if distribution_caution:
         findings.append(_finding(
             "distribution_day_caution",
@@ -314,6 +346,7 @@ def evaluate_production_buy_gate(
         "distribution_caution": distribution_caution,
         "score_policy": score_policy,
         "recomputed_rr": recomputed_rr,
+        "high52_ratio": high52_ratio,
         "findings": findings,
         "hard_findings": hard_findings,
         "shadow_findings": shadow_findings,

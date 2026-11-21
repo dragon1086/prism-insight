@@ -2917,6 +2917,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 required_score_override=_micro_split_gate_score(scenario),
                 score_exempt=_reentry_rule_approved(scenario),
                 t1_exempt=_reentry_rule_approved(scenario),
+                market="US",
             )
             if result.get("score_policy"):
                 logger.info("[ENTRY_SCORE_POLICY][US] regime=%s pulse=%s policy=%s", computed_regime, pulse, result["score_policy"])
