@@ -49,3 +49,11 @@ def test_reentry_and_slots():
     assert (reentry_v3_live.DAILY_CAP, reentry_campaign.MAX_ATTEMPTS) == (2, 3), WHY
     for path in ("stock_tracking_agent.py", "prism-us/us_stock_tracking_agent.py"):
         assert re.search(r"^\s+MAX_SLOTS = 10\b", (ROOT / path).read_text(encoding="utf-8"), re.M), WHY
+
+
+def test_rules_live_since_20261121():
+    """Non-bull 52-week gate and bull-regime money slots (H-1121); the engine mirrors both in ops_now.py."""
+    from cores import buy_gate
+    assert buy_gate.NONBULL_52W_MIN_RATIO == 0.75, WHY
+    assert micro_split_live.MONEY_SLOT_ROW_CAP == 16, WHY
+    assert micro_split_live._MONEY_SLOT_BULL == buy_gate._BULL_REGIMES == {"parabolic", "strong_bull", "moderate_bull"}, WHY
