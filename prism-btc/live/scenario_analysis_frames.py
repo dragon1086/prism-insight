@@ -69,6 +69,10 @@ def analysis_model_view(payload):
                 if isinstance(projection, dict):
                     projection.pop('same_progress_profile', None)
     ctx = result.get('contract_context', {})
+    flow = ctx.get('position_flow')
+    if isinstance(flow, dict):
+        # Tick-speed summaries bypass the user's30m minimum judgment boundary.
+        flow.pop('mark_pace', None)
     # Keep one current-risk authority; promotion arithmetic remains host-only.
     ctx.pop('seen_action_ids', None)
     if isinstance(ctx.get('current_plan'), dict):

@@ -314,6 +314,7 @@ jobs:
             prism-btc/tests/test_scenario_entry_plans.py \
             prism-btc/tests/test_scenario_timeframe_priority.py \
             prism-btc/tests/test_scenario_analysis_frames.py \
+            prism-btc/tests/test_scenario_mark_pace_policy.py \
             prism-btc/tests/test_scenario_30m_policy.py \
             prism-btc/tests/test_scenario_entry_contract_runtime.py \
             prism-btc/tests/test_scenario_entry_contract_wire.py \
