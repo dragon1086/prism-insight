@@ -87,9 +87,14 @@ def render_buy_message(*, market: str, company_name: str, ticker: str, current_p
 
     if add_entry:
         entry_no, new_avg = add_entry
+        from prism_core.micro_split_live import record as micro_record
+        micro = micro_record(scenario)
+        # A micro-split pyramid row (2026-11-08) starts at a fraction of its own slot.
+        slot_note = (f"피라미딩 독립 행 · 이번 행 비중 {round(float(micro['allocation']) * 100)}% (1슬롯 기준)"
+                     if micro is not None else "독립 슬롯 1개 사용")
         lines = [f"📈 추가 진입 ({entry_no}차) | {company_name} ({ticker})",
                  f"💵 이번 진입가 {_price(current_price, market)} · 누적 평단가 {_price(new_avg, market)}",
-                 "⚠️ 포트폴리오 비중이 늘었습니다 (독립 슬롯 1개 사용)"]
+                 f"⚠️ 포트폴리오 비중이 늘었습니다 ({slot_note})"]
     else:
         lines = [f"📈 신규 매수 | {company_name} ({ticker})",
                  f"💵 매수가 {_price(current_price, market)}"]

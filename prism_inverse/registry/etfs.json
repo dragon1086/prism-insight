@@ -1,0 +1,470 @@
+{
+ "_note": "Candidate inverse ETFs (3x excluded). Eligibility is re-checked every run; this list only bounds the choice. Surveyed 2026-11-09 (design §3). Exchanges are KIS codes: never guessed at runtime.",
+ "etfs": [
+  {
+   "code": "114800",
+   "market": "KR",
+   "name": "KODEX 인버스",
+   "multiplier": -1,
+   "scope": "index",
+   "underlying": {
+    "market": "KR",
+    "code": "069500",
+    "kind": "etf",
+    "exchange": null
+   },
+   "listed": "2009-09-16",
+   "exchange": null
+  },
+  {
+   "code": "123310",
+   "market": "KR",
+   "name": "TIGER 인버스",
+   "multiplier": -1,
+   "scope": "index",
+   "underlying": {
+    "market": "KR",
+    "code": "069500",
+    "kind": "etf",
+    "exchange": null
+   },
+   "listed": "2010-03-29",
+   "exchange": null
+  },
+  {
+   "code": "252670",
+   "market": "KR",
+   "name": "KODEX 200선물인버스2X",
+   "multiplier": -2,
+   "scope": "index",
+   "underlying": {
+    "market": "KR",
+    "code": "069500",
+    "kind": "etf",
+    "exchange": null
+   },
+   "listed": "2016-09-22",
+   "exchange": null
+  },
+  {
+   "code": "252710",
+   "market": "KR",
+   "name": "TIGER 200선물인버스2X",
+   "multiplier": -2,
+   "scope": "index",
+   "underlying": {
+    "market": "KR",
+    "code": "069500",
+    "kind": "etf",
+    "exchange": null
+   },
+   "listed": "2016-09-22",
+   "exchange": null
+  },
+  {
+   "code": "251340",
+   "market": "KR",
+   "name": "KODEX 코스닥150선물인버스",
+   "multiplier": -1,
+   "scope": "index",
+   "underlying": {
+    "market": "KR",
+    "code": "229200",
+    "kind": "etf",
+    "exchange": null
+   },
+   "listed": "2016-08-10",
+   "exchange": null
+  },
+  {
+   "code": "465350",
+   "market": "KR",
+   "name": "RISE 2차전지TOP10인버스(합성)",
+   "multiplier": -1,
+   "scope": "sector",
+   "underlying": {
+    "market": "KR",
+    "code": "465330",
+    "kind": "etf",
+    "exchange": null
+   },
+   "listed": "2023-09-12",
+   "exchange": null
+  },
+  {
+   "code": "0197X0",
+   "market": "KR",
+   "name": "SOL SK하이닉스선물단일종목인버스2X",
+   "multiplier": -2,
+   "scope": "stock",
+   "underlying": {
+    "market": "KR",
+    "code": "000660",
+    "kind": "stock",
+    "exchange": null
+   },
+   "listed": "2026-05-27",
+   "exchange": null
+  },
+  {
+   "code": "0193L0",
+   "market": "KR",
+   "name": "PLUS 삼성전자선물단일종목인버스2X",
+   "multiplier": -2,
+   "scope": "stock",
+   "underlying": {
+    "market": "KR",
+    "code": "005930",
+    "kind": "stock",
+    "exchange": null
+   },
+   "listed": "2026-05-27",
+   "exchange": null
+  },
+  {
+   "code": "SH",
+   "market": "US",
+   "name": "SH",
+   "multiplier": -1,
+   "scope": "index",
+   "underlying": {
+    "market": "US",
+    "code": "SPY",
+    "kind": "etf",
+    "exchange": "AMS"
+   },
+   "listed": "2006-06-21",
+   "exchange": "AMS"
+  },
+  {
+   "code": "SDS",
+   "market": "US",
+   "name": "SDS",
+   "multiplier": -2,
+   "scope": "index",
+   "underlying": {
+    "market": "US",
+    "code": "SPY",
+    "kind": "etf",
+    "exchange": "AMS"
+   },
+   "listed": "2006-07-13",
+   "exchange": "AMS"
+  },
+  {
+   "code": "PSQ",
+   "market": "US",
+   "name": "PSQ",
+   "multiplier": -1,
+   "scope": "index",
+   "underlying": {
+    "market": "US",
+    "code": "QQQ",
+    "kind": "etf",
+    "exchange": "NAS"
+   },
+   "listed": "2006-06-21",
+   "exchange": "AMS"
+  },
+  {
+   "code": "QID",
+   "market": "US",
+   "name": "QID",
+   "multiplier": -2,
+   "scope": "index",
+   "underlying": {
+    "market": "US",
+    "code": "QQQ",
+    "kind": "etf",
+    "exchange": "NAS"
+   },
+   "listed": "2006-07-13",
+   "exchange": "AMS"
+  },
+  {
+   "code": "RWM",
+   "market": "US",
+   "name": "RWM",
+   "multiplier": -1,
+   "scope": "index",
+   "underlying": {
+    "market": "US",
+    "code": "IWM",
+    "kind": "etf",
+    "exchange": "AMS"
+   },
+   "listed": "2007-01-25",
+   "exchange": "AMS"
+  },
+  {
+   "code": "TWM",
+   "market": "US",
+   "name": "TWM",
+   "multiplier": -2,
+   "scope": "index",
+   "underlying": {
+    "market": "US",
+    "code": "IWM",
+    "kind": "etf",
+    "exchange": "AMS"
+   },
+   "listed": "2007-01-25",
+   "exchange": "AMS"
+  },
+  {
+   "code": "DOG",
+   "market": "US",
+   "name": "DOG",
+   "multiplier": -1,
+   "scope": "index",
+   "underlying": {
+    "market": "US",
+    "code": "DIA",
+    "kind": "etf",
+    "exchange": "AMS"
+   },
+   "listed": "2006-06-21",
+   "exchange": "AMS"
+  },
+  {
+   "code": "DXD",
+   "market": "US",
+   "name": "DXD",
+   "multiplier": -2,
+   "scope": "index",
+   "underlying": {
+    "market": "US",
+    "code": "DIA",
+    "kind": "etf",
+    "exchange": "AMS"
+   },
+   "listed": "2006-07-13",
+   "exchange": "AMS"
+  },
+  {
+   "code": "SSG",
+   "market": "US",
+   "name": "SSG",
+   "multiplier": -2,
+   "scope": "sector",
+   "underlying": {
+    "market": "US",
+    "code": "SOXX",
+    "kind": "etf",
+    "exchange": "NAS"
+   },
+   "listed": "2007-02-01",
+   "exchange": "AMS"
+  },
+  {
+   "code": "DUG",
+   "market": "US",
+   "name": "DUG",
+   "multiplier": -2,
+   "scope": "sector",
+   "underlying": {
+    "market": "US",
+    "code": "IYE",
+    "kind": "etf",
+    "exchange": "AMS"
+   },
+   "listed": "2007-02-01",
+   "exchange": "AMS"
+  },
+  {
+   "code": "NVDD",
+   "market": "US",
+   "name": "NVDD",
+   "multiplier": -1,
+   "scope": "stock",
+   "underlying": {
+    "market": "US",
+    "code": "NVDA",
+    "kind": "stock",
+    "exchange": "NAS"
+   },
+   "listed": "2023-09-13",
+   "exchange": "NAS"
+  },
+  {
+   "code": "NVD",
+   "market": "US",
+   "name": "NVD",
+   "multiplier": -2,
+   "scope": "stock",
+   "underlying": {
+    "market": "US",
+    "code": "NVDA",
+    "kind": "stock",
+    "exchange": "NAS"
+   },
+   "listed": "2023-08-22",
+   "exchange": "NAS"
+  },
+  {
+   "code": "TSLS",
+   "market": "US",
+   "name": "TSLS",
+   "multiplier": -1,
+   "scope": "stock",
+   "underlying": {
+    "market": "US",
+    "code": "TSLA",
+    "kind": "stock",
+    "exchange": "NAS"
+   },
+   "listed": "2022-08-10",
+   "exchange": "NAS"
+  },
+  {
+   "code": "TSLQ",
+   "market": "US",
+   "name": "TSLQ",
+   "multiplier": -2,
+   "scope": "stock",
+   "underlying": {
+    "market": "US",
+    "code": "TSLA",
+    "kind": "stock",
+    "exchange": "NAS"
+   },
+   "listed": "2022-07-14",
+   "exchange": "NAS"
+  },
+  {
+   "code": "TSDD",
+   "market": "US",
+   "name": "TSDD",
+   "multiplier": -2,
+   "scope": "stock",
+   "underlying": {
+    "market": "US",
+    "code": "TSLA",
+    "kind": "stock",
+    "exchange": "NAS"
+   },
+   "listed": "2023-08-28",
+   "exchange": "NAS"
+  },
+  {
+   "code": "AMZD",
+   "market": "US",
+   "name": "AMZD",
+   "multiplier": -1,
+   "scope": "stock",
+   "underlying": {
+    "market": "US",
+    "code": "AMZN",
+    "kind": "stock",
+    "exchange": "NAS"
+   },
+   "listed": "2022-09-08",
+   "exchange": "NAS"
+  },
+  {
+   "code": "PLTD",
+   "market": "US",
+   "name": "PLTD",
+   "multiplier": -1,
+   "scope": "stock",
+   "underlying": {
+    "market": "US",
+    "code": "PLTR",
+    "kind": "stock",
+    "exchange": "NAS"
+   },
+   "listed": "2024-12-12",
+   "exchange": "NAS"
+  },
+  {
+   "code": "MUD",
+   "market": "US",
+   "name": "MUD",
+   "multiplier": -1,
+   "scope": "stock",
+   "underlying": {
+    "market": "US",
+    "code": "MU",
+    "kind": "stock",
+    "exchange": "NAS"
+   },
+   "listed": "2024-10-18",
+   "exchange": "NAS"
+  },
+  {
+   "code": "AAPD",
+   "market": "US",
+   "name": "AAPD",
+   "multiplier": -1,
+   "scope": "stock",
+   "underlying": {
+    "market": "US",
+    "code": "AAPL",
+    "kind": "stock",
+    "exchange": "NAS"
+   },
+   "listed": "2022-08-10",
+   "exchange": "NAS"
+  },
+  {
+   "code": "MSFD",
+   "market": "US",
+   "name": "MSFD",
+   "multiplier": -1,
+   "scope": "stock",
+   "underlying": {
+    "market": "US",
+    "code": "MSFT",
+    "kind": "stock",
+    "exchange": "NAS"
+   },
+   "listed": "2022-09-08",
+   "exchange": "NAS"
+  },
+  {
+   "code": "GGLS",
+   "market": "US",
+   "name": "GGLS",
+   "multiplier": -1,
+   "scope": "stock",
+   "underlying": {
+    "market": "US",
+    "code": "GOOGL",
+    "kind": "stock",
+    "exchange": "NAS"
+   },
+   "listed": "2022-09-16",
+   "exchange": "NAS"
+  },
+  {
+   "code": "METD",
+   "market": "US",
+   "name": "METD",
+   "multiplier": -1,
+   "scope": "stock",
+   "underlying": {
+    "market": "US",
+    "code": "META",
+    "kind": "stock",
+    "exchange": "NAS"
+   },
+   "listed": "2024-06-11",
+   "exchange": "NAS"
+  },
+  {
+   "code": "AMDD",
+   "market": "US",
+   "name": "AMDD",
+   "multiplier": -1,
+   "scope": "stock",
+   "underlying": {
+    "market": "US",
+    "code": "AMD",
+    "kind": "stock",
+    "exchange": "NAS"
+   },
+   "listed": "2025-02-12",
+   "exchange": "NAS"
+  }
+ ]
+}

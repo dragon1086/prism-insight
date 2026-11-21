@@ -361,10 +361,62 @@ def test_us_add_uses_cents_and_the_plain_holding_query(sub):
 
 
 def test_plan_add_amount_edges(sub):
-    assert sub.plan_add_amount(unit_amount=0, delta_fraction=0.5, allocation_after=0.8, held_quantity=1,
-                               price=10)[0] == 0
-    assert sub.plan_add_amount(unit_amount=1000, delta_fraction=0.001, allocation_after=0.4, held_quantity=1,
-                               price=10)[1] == "add amount below one share"
-    assert sub.plan_add_amount(unit_amount=1000.0, delta_fraction=0.333, allocation_after=1.0, held_quantity=1,
-                               price=10, market="US") == (333.0, None)
+    assert sub.plan_add_amount(unit_amount=0, allocation_after=0.8, held_quantity=1, price=10)[0] == 0
+    assert sub.plan_add_amount(unit_amount=1000.0, allocation_after=1.0, held_quantity=1,
+                               price=10, market="US") == (990.0, None)
     assert sub._position_fraction({}) == 1.0  # old BUY signals without the field stay a full slot
+
+
+def test_add_fills_the_gap_to_the_allocation_not_only_the_delta(sub):
+    # 2026-11-14 JNJ: entry 0.8 x $1,000 bought 2 x $284.55; the 0.8 -> 0.9 add ($100) was below one
+    # share, so the rounding gap never closed. The gap to $900 ($324.94) buys one more share.
+    assert sub.plan_add_amount(unit_amount=1000.0, allocation_after=0.9, held_quantity=2,
+                               price=287.53, market="US") == (324.94, None)
+    # AAPL: 2 x $360 = $720 of $900; one more share ($1,080) would pass the allocation -> no order.
+    amount, why = sub.plan_add_amount(unit_amount=1000.0, allocation_after=0.9, held_quantity=2,
+                                      price=360.0, market="US")
+    assert amount == 0 and "already at PRISM's allocation" in why
+
+
+# ---------------------------------------------------------------- pyramid rows (2026-11-08)
+
+def test_pyramid_row_add_targets_the_ticker_total(sub):
+    # PRISM holds row 1 (1.0 slot) + row 2 (0.4 -> 0.6). We hold 140 shares = 1.4 slots: the row's own
+    # 0.6 target looked filled and every pyramid-row add was skipped; the ticker total (1.6) is not.
+    trader = _Trader(held=140)
+    signal = _signal(signal_id="p1", allocation_before=0.4, allocation_after=0.6, delta_fraction=0.2,
+                     ticker_allocation_before=1.4, ticker_allocation_after=1.6, ticker_rows=2)
+    assert _follow(sub, signal, trader)["success"] is True
+    assert trader.buys[0]["buy_amount"] == 200_000
+
+
+def test_invalid_or_missing_ticker_totals_fall_back_to_the_row(sub):
+    assert sub._ticker_target({}, 0.6) == (0.6, 1)
+    assert sub._ticker_target({"ticker_allocation_after": 4.5, "ticker_rows": 4}, 0.6) == (0.6, 1)
+    assert sub._ticker_target({"ticker_allocation_after": 0.5, "ticker_rows": 2}, 0.6) == (0.6, 1)
+    assert sub._ticker_target({"ticker_allocation_after": "1.6", "ticker_rows": "2"}, 0.6) == (1.6, 2)
+    alerts = []
+    full = _Trader(held=140)
+    result = _follow(sub, _signal(signal_id="p2", allocation_before=0.4, allocation_after=0.6, delta_fraction=0.2),
+                     full, alerts=alerts)
+    assert result["skipped"] and full.buys == []      # an older signal keeps the old, safe behaviour
+    # never above the rows PRISM holds, even if the total says more
+    assert sub.plan_add_amount(unit_amount=1000, allocation_after=3.5, held_quantity=290,
+                               price=10, slot_rows=3) == (100, None)     # 3 slots - 2,900 held
+
+
+def test_partial_sell_uses_the_exact_fraction_when_sent(sub):
+    assert sub.partial_sell_quantity(10, 2, 0.6) == 6       # PRISM sold 6 of 10: we sell 60%, not 1/2
+    assert sub.partial_sell_quantity(10, 2, None) == 5      # older signal: denominator
+    assert sub.partial_sell_quantity(3, 2, 0.3) == 0        # below one share: kept for the final sweep
+    assert sub._sell_fraction({"sell_fraction": 1.0}) is None and sub._sell_fraction({"sell_fraction": "0.25"}) == 0.25
+
+
+def test_add_signal_carries_the_ticker_total_of_pyramid_rows(tmp_path, monkeypatch):
+    agent = _add_agent(tmp_path, [{"account_key": "acc2", "name": "primary"}])
+    agent.conn.execute("INSERT INTO stock_holdings VALUES (3, '005930', '삼성전자', 'acc2', '{}', 9000, 8500)")
+    agent.conn.commit()                                     # an earlier legacy row = 1.0 slot
+    _, (signal,) = _run_add(agent, monkeypatch)
+    fields = signal["fields"]
+    assert (fields["ticker_allocation_before"], fields["ticker_allocation_after"], fields["ticker_rows"]) == (
+        1.5, 1.8, 2)

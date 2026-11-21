@@ -11,7 +11,7 @@ gate, holdings row and scenario, order intents, Telegram buy message, Redis/GCP 
 Safety (this module): kill switch REENTRY_V3_LIVE_ENABLED (default off) and
 REENTRY_V3_LIVE_MARKETS (default KR,US); only the primary L97 rule's signals; at most DAILY_CAP
 re-entry orders per market per session and one per ticker per session; regular hours only and
-before the order deadline (KR 14:40 KST, US 14:25 ET); one idempotency key per watch and session
+before the order deadline (KR 15:13 KST, US 15:40 ET); one idempotency key per watch and session
 written (fsync) before the order and never retried the same day, whatever happened; the signal
 price band is checked again on a fresh quote right before the order; any exception is logged,
 emitted and contained, and an ERROR/timeout is reconciled with the holdings tables. The order runs
@@ -41,15 +41,18 @@ PRIMARY_RULE = "L97"
 # US 09:30-16:00 ET (closing-auction order cutoffs from 15:50).
 SAFE_WINDOWS = {"KR": ("Asia/Seoul", dtime(9, 5), dtime(15, 15)),
                 "US": ("America/New_York", dtime(9, 35), dtime(15, 45))}
-# No re-entry order after this local time (before the regular afternoon batches KR 14:46 / US 14:30 ET).
-ORDER_DEADLINES = {"KR": ("Asia/Seoul", dtime(14, 40)), "US": ("America/New_York", dtime(14, 25))}
-SIGNALS = {"R1C": "REBREAK", "R2S": "RETEST", "SHAKEOUT_RECLAIM": "SHAKEOUT_RECLAIM"}
+# No re-entry order after this local time. 2026-11-16 (user decision): the decision run moved to KR 15:08 /
+# US 15:30 ET, after the regular afternoon batches finish (KR buys 14:57-15:05, US ends 15:12-15:16 ET)
+# and before the auction cutoffs, so the signal is judged close to the session close like the research.
+ORDER_DEADLINES = {"KR": ("Asia/Seoul", dtime(15, 13)), "US": ("America/New_York", dtime(15, 40))}
+SIGNALS = {"R1C": "REBREAK", "R2S": "RETEST", "SHAKEOUT_RECLAIM": "SHAKEOUT_RECLAIM", "MA20R": "MA20R"}
 SIGNAL_KO = {"REBREAK": "기준 가격 재돌파 매수", "RETEST": "기준 가격 눌림 지지 매수",
-             "SHAKEOUT_RECLAIM": "흔들기 후 회복 매수"}
+             "SHAKEOUT_RECLAIM": "흔들기 후 회복 매수", "MA20R": "20일선 회복 매수"}
 SIGNAL_WHY_KO = {
     "REBREAK": "{level} 위로 다시 올라섰습니다",
     "RETEST": "{level}까지 내려왔다가 지지를 받고 버텼습니다",
     "SHAKEOUT_RECLAIM": "{level} 아래로 크게 흔들린 뒤 거래량을 동반해 다시 회복했습니다",
+    "MA20R": "거래량을 동반해 20일 이동평균선 위로 다시 올라섰습니다",
 }
 SOURCE_SENTENCE_KO = {"STOP_EXIT": "이전에 손절했던 종목입니다.",
                       "LOCATION_SKIP": "이전 분석에서 매수를 보류했던 종목입니다.",
@@ -58,7 +61,10 @@ APPROVE = {"진입", "enter", "entry"}
 SUBPROCESS_TIMEOUT = 600
 # Status of an outcome reason (the rest is BOUGHT / NOT_BOUGHT / ERROR).
 REASON_STATUS = {"deadline": "SKIPPED_DEADLINE", "no_micro_plan": "SKIPPED_NO_MICRO_PLAN",
-                 "outside_band": "SKIPPED_BAND", "entry_lock_busy": "SKIPPED_LOCK"}
+                 "outside_band": "SKIPPED_BAND", "entry_lock_busy": "SKIPPED_LOCK", "no_target": "SKIPPED_NO_TARGET",
+                 "below_ma50": "SKIPPED_BELOW_MA50", "k8b_early_bull": "SKIPPED_K8B_EARLY_BULL"}
+# H-1110 (2026-11-10, user decision, US): no re-entry during the first sessions of a K8b bull label.
+K8B_EARLY_BULL_SESSIONS = 20
 
 
 def _flag(name, default):
@@ -72,6 +78,41 @@ def live_markets():
 def live_enabled(market):
     """Kill switch: REENTRY_V3_LIVE_ENABLED=true (default false) and the market in REENTRY_V3_LIVE_MARKETS."""
     return _flag("REENTRY_V3_LIVE_ENABLED", "false") and str(market).upper() in live_markets()
+
+
+def ma50_gate_markets():
+    """H-1110-reentry-trend-gate LIVE (2026-11-10, user decision, KR only): no re-entry below the 50-day line."""
+    return {m.strip().upper() for m in os.getenv("REENTRY_V3_MA50_GATE_MARKETS", "").split(",") if m.strip()}
+
+
+def ma50_with_price(bars, price):
+    """50-day average with the decision price as today's close (the research gate), or None (MISSING)."""
+    closes = [b.get("close") for b in (bars or [])[-49:]]
+    if len(closes) < 49 or not price or not all(isinstance(c, (int, float)) and c > 0 for c in closes):
+        return None
+    return round((sum(closes) + price) / 50, 6)
+
+
+def below_ma50(market, item):
+    """True when the market's gate is on and the frozen decision price is under its 50-day line.
+
+    An item without the value (older inputs, short history) is not blocked: MISSING is not a failure."""
+    ma50 = item.get("ma50")
+    return (str(market).upper() in ma50_gate_markets() and isinstance(ma50, (int, float))
+            and item.get("decision_price") is not None and item["decision_price"] < ma50)
+
+
+def k8b_early_bull_markets():
+    return {m.strip().upper() for m in os.getenv("REENTRY_V3_K8B_EARLY_BULL_MARKETS", "").split(",") if m.strip()}
+
+
+def k8b_early_bull(market, item):
+    """True when the market's gate is on and the prior-session K8b label has been bull for 1..20 sessions.
+
+    No K8b value (older inputs, index history unavailable) never blocks: MISSING is not a failure."""
+    age = (item.get("k8b") or {}).get("bull_age")
+    return (str(market).upper() in k8b_early_bull_markets() and isinstance(age, int)
+            and 1 <= age <= K8B_EARLY_BULL_SESSIONS)
 
 
 def deterministic_enabled():
@@ -91,8 +132,9 @@ def deterministic_record(item, market, now=None):
     original = item.get("original") or {}
     meta = {"signal": signal, "level": item["level"]["L"], "source": item["source"],
             "level_basis": item["level"].get("basis"),
-            "band_level": (((item.get("campaign") or {}).get("windows") or {}).get(PRIMARY_RULE) or {}).get("R"),
-            "band_basis": (item.get("campaign") or {}).get("reclaim_basis")}
+            "band_level": item.get("ma20") or (((item.get("campaign") or {}).get("windows") or {})
+                                               .get(live_rule(item)) or {}).get("R"),
+            "band_basis": "ma20" if item.get("ma20") else (item.get("campaign") or {}).get("reclaim_basis")}
     why = SIGNAL_WHY_KO[signal].format(level=level_phrase(meta, market))
     scenario = {"decision": "진입", "investment_period": "중기",
                 "rationale": (f"재진입 규칙 신호로 매수합니다(AI 재점검 없음). "
@@ -126,19 +168,20 @@ def in_safe_window(market, now=None):
 
 
 def before_deadline(market, now=None):
-    """True before the re-entry order deadline (KR 14:40 KST, US 14:25 ET)."""
+    """True before the re-entry order deadline (KR 15:13 KST, US 15:40 ET)."""
     return _local(market, now, ORDER_DEADLINES).time() < ORDER_DEADLINES[market][1]
 
 
 def price_in_band(signal, level, price):
-    """The signal's price band on a fresh quote: REBREAK L<p<=1.03L, RETEST L<=p<=1.05L, SHAKEOUT L<p<=1.05L."""
+    """The signal's price band on a fresh quote: REBREAK L<p<=1.03L, RETEST L<=p<=1.05L, SHAKEOUT L<p<=1.05L,
+    MA20R ma20<p<=1.05*ma20 (level = the 20-session average)."""
     if not level or not price:
         return False
     if signal == "REBREAK":
         return level < price <= level * 1.03
     if signal == "RETEST":
         return level <= price <= level * 1.05
-    if signal == "SHAKEOUT_RECLAIM":
+    if signal in ("SHAKEOUT_RECLAIM", "MA20R"):
         return level < price <= level * 1.05
     return False
 
@@ -157,9 +200,19 @@ def approved(record):
             and str((record.get("scenario") or {}).get("decision", "")).strip().lower() in APPROVE)
 
 
+def live_rule(item):
+    """The campaign rule the item was frozen under (MA20R where REENTRY_V3_MA20R_LIVE_MARKETS names the market)."""
+    return item.get("live_rule") or PRIMARY_RULE
+
+
+def primary_rule(market):
+    from prism_core.reentry_campaign import policy_for
+    return policy_for(market)["primary_rule"]
+
+
 def live_rank_key(item):
     """Deterministic order for the daily cap: earlier attempt, then higher deterministic R/R, then ticker."""
-    attempt = (item.get("attempts") or {}).get(PRIMARY_RULE, {}).get("attempt", 9)
+    attempt = (item.get("attempts") or {}).get(live_rule(item), {}).get("attempt", 9)
     rr = item.get("rr")
     return (attempt, -(rr if isinstance(rr, (int, float)) else -1.0), str(item.get("ticker")))
 
@@ -179,17 +232,19 @@ def build_scenario(item, record, market):
     """The recheck's BUY JSON plus re-entry metadata, the capped re-entry stop and the BUY-rule target."""
     scenario = dict(record.get("scenario") or {})
     signal = SIGNALS[item["trigger"]]
-    attempt = (item.get("attempts") or {}).get(PRIMARY_RULE, {}).get("attempt", 1)
-    window = ((item.get("campaign") or {}).get("windows") or {}).get(PRIMARY_RULE) or {}
+    rule = live_rule(item)
+    attempt = (item.get("attempts") or {}).get(rule, {}).get("attempt", 1)
+    window = ((item.get("campaign") or {}).get("windows") or {}).get(rule) or {}
     scenario["reentry"] = {
         "version": LIVE_VERSION, "signal": signal, "signal_ko": SIGNAL_KO[signal], "attempt": attempt,
         "max_attempts": 3, "attempt_label": f"{attempt}/3", "level": item["level"]["L"],
         "level_basis": item["level"]["basis"], "watch_id": item["watch_ref"], "source": item["source"],
         "trigger_date": item["trigger_date"], "decision_price": item["decision_price"],
-        "decision_time": item["decision_time"], "event_id": item["event_id"], "rule": PRIMARY_RULE,
+        "decision_time": item["decision_time"], "event_id": item["event_id"], "rule": rule,
         "stop_rule": item.get("stop_rule"), "target_rule": item.get("target_rule"),
-        "band_level": window.get("R") or item["level"]["L"],
-        "band_basis": (item.get("campaign") or {}).get("reclaim_basis") if window.get("R") else "L",
+        "band_level": item.get("ma20") or window.get("R") or item["level"]["L"],
+        "band_basis": ("ma20" if item.get("ma20") else
+                       (item.get("campaign") or {}).get("reclaim_basis") if window.get("R") else "L"),
         "approval": record.get("approval") or "llm",
     }
     scenario["stop_loss"] = item["stop"]
@@ -200,6 +255,7 @@ def build_scenario(item, record, market):
     scenario["_decision_id"] = f"reentry_v3:{item['event_id']}"
     # Observation only: lets the ledger point this position back to the original decision.
     scenario["reentry"]["origin_decision_id"] = (item.get("original") or {}).get("decision_id")
+    scenario["reentry"]["k8b"] = item.get("k8b")      # prior-session K8b label and bull age (US), for the size record
     return scenario
 
 
@@ -356,8 +412,8 @@ def plan(market, decision_day, records, items, journal, now):
         item = items.get(record.get("event_id"))
         if item is None or item.get("trigger_date") != decision_day or not approved(record):
             continue
-        if item.get("live_rule") != PRIMARY_RULE:
-            continue                     # SS-rule signals are a parallel record only
+        if item.get("live_rule") != primary_rule(market):
+            continue                     # SS-rule (and, where MA20R trades, L97) signals are a record only
         candidates.append((live_rank_key(item), item, record))
     to_submit, skipped = [], []
     for _, item, record in sorted(candidates, key=lambda c: c[0]):
@@ -367,6 +423,14 @@ def plan(market, decision_day, records, items, journal, now):
             reason = "duplicate"
         elif item["ticker"] in tickers_today or item["ticker"] in {e["ticker"] for e in to_submit}:
             reason = "ticker_already_today"
+        elif not item.get("target"):
+            # A shakeout reclaim fires without a BUY target (target_rule "unsupported"); the BUY scenario
+            # contract and the final R/R gate need one, so it never buys (SPOT 2026-10-30 raised instead).
+            reason = "no_target"
+        elif below_ma50(market, item):
+            reason = "below_ma50"        # before the daily cap so a blocked signal never uses a slot
+        elif k8b_early_bull(market, item):
+            reason = "k8b_early_bull"
         elif len(to_submit) >= remaining:
             reason = "daily_cap"
         elif not in_safe_window(market, now):

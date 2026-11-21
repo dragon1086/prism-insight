@@ -73,7 +73,7 @@ def test_default_research_client_never_retries(transport_journal):
         raise http_error()
     with pytest.raises(ValueError, match='scenario_oauth_failed'):
         generate_scenario(system_prompt='test', user_prompt='test', model='gpt-6-luna',
-            reasoning_effort='high', fast_tier=True, timeout=75, open_url=open_url,
+            reasoning_effort='high', fast_tier=False, timeout=75, open_url=open_url,
             response_schema={'type': 'object'})
     assert len(calls) == 1
     assert transport_journal == []
@@ -249,8 +249,42 @@ def test_original_deadline_and_late_success(monkeypatch, elapsed, retry):
 def call(open_url,**kw):
     kw.setdefault('retry_transport', True)
     return generate_scenario(system_prompt='test',user_prompt='test',model='gpt-6-luna',
-        reasoning_effort='high',fast_tier=True,timeout=75,open_url=open_url,
+        reasoning_effort='high',fast_tier=False,timeout=75,open_url=open_url,
         response_schema={'type':'object','properties':{},'required':[], 'additionalProperties':False},**kw)
+
+
+@pytest.mark.parametrize('status', [400, 401, 429, 502, 503])
+def test_no_retry_transport_failure_retains_only_safe_http_status(monkeypatch, status):
+    monkeypatch.delenv('PRISM_BTC_SCENARIO_OAUTH_URL', raising=False)
+    calls=[]
+    def open_url(*args, **kwargs):
+        calls.append(1)
+        raise http_error(status, 'secret upstream account text')
+    with pytest.raises(ValueError) as exc:
+        call(open_url, retry_transport=False)
+    assert str(exc.value)==f'scenario_oauth_failed:http_{status}'
+    assert calls==[1]
+
+
+@pytest.mark.parametrize('code,reason', [('server_error','upstream_error'),
+    ('usage_limit_reached','rate_limited'), ('unknown secret text','incomplete')])
+def test_http_200_failed_response_is_distinct_from_schema_failure(monkeypatch, code, reason):
+    monkeypatch.delenv('PRISM_BTC_SCENARIO_OAUTH_URL', raising=False)
+    body=dict(status='failed', error=dict(code=code,message='secret provider details'))
+    with pytest.raises(ValueError) as exc:
+        call(lambda *args,**kwargs:Response(body),retry_transport=False)
+    assert str(exc.value)=='scenario_oauth_failed:'+reason
+
+
+def test_connection_and_timeout_do_not_include_exception_text(monkeypatch):
+    from urllib.error import URLError
+    monkeypatch.delenv('PRISM_BTC_SCENARIO_OAUTH_URL', raising=False)
+    for error,reason in [(URLError('secret address'),'connection'), (TimeoutError('secret'),'timeout')]:
+        def open_url(*args,**kwargs):
+            raise error
+        with pytest.raises(ValueError) as exc:
+            call(open_url,retry_transport=False)
+        assert str(exc.value)=='scenario_oauth_failed:'+reason
 
 
 class Response:
@@ -262,7 +296,7 @@ class Response:
     def read(self,limit):return json.dumps(self.result).encode()
 
 
-@pytest.mark.parametrize('model,effort', [('gpt-6.1-sol','low'), ('gpt-6-luna','high'), ('gpt-6-luna','xhigh')])
+@pytest.mark.parametrize('model,effort', [('gpt-6.1-terra','low'), ('gpt-6.1-sol','low'), ('gpt-6-luna','high'), ('gpt-6-luna','xhigh')])
 def test_exact_approved_model_effort_pairs_keep_no_tools_and_no_default_retry(monkeypatch, model, effort):
     monkeypatch.delenv('PRISM_BTC_SCENARIO_OAUTH_URL', raising=False)
     calls = []
@@ -274,17 +308,17 @@ def test_exact_approved_model_effort_pairs_keep_no_tools_and_no_default_retry(mo
         assert timeout <= 75
         return Response(dict(result(), model=model))
     assert generate_scenario(system_prompt='test', user_prompt='test', model=model,
-        reasoning_effort=effort, fast_tier=True, timeout=75, open_url=open_url,
+        reasoning_effort=effort, fast_tier=False, timeout=75, open_url=open_url,
         response_schema={'type':'object'}).text == '{}'
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize('model,effort', [('gpt-6.1-sol','high'), ('gpt-6.1-sol','xhigh'),
+@pytest.mark.parametrize('model,effort', [('gpt-6.1-terra','high'), ('gpt-6.1-sol','high'), ('gpt-6.1-sol','xhigh'),
     ('gpt-6-luna','low'), ('gpt-6.1-sol','medium'), ('other','low')])
 def test_crossed_model_effort_pairs_are_rejected_before_transport(model, effort):
     with pytest.raises(ValueError, match='scenario_model_policy'):
         generate_scenario(system_prompt='test', user_prompt='test', model=model,
-            reasoning_effort=effort, fast_tier=True, timeout=75,
+            reasoning_effort=effort, fast_tier=False, timeout=75,
             open_url=lambda *_args, **_kw: pytest.fail('transport must not run'), response_schema={'type':'object'})
 
 
@@ -296,18 +330,18 @@ def test_sol_response_model_must_match_without_fallback(monkeypatch):
         return Response(result())  # Legacy Luna response cannot satisfy a Sol request.
     with pytest.raises(ValueError, match='scenario_oauth_failed'):
         generate_scenario(system_prompt='test', user_prompt='test', model='gpt-6.1-sol',
-            reasoning_effort='low', fast_tier=True, timeout=75, open_url=open_url, response_schema={'type':'object'})
+            reasoning_effort='low', fast_tier=False, timeout=75, open_url=open_url, response_schema={'type':'object'})
     assert len(calls)==1
 
 
 def test_operating_default_is_sol_low_for_both_calculated_phases():
     from live.scenario_llm import MODEL, EFFORT, TIMEOUT_SECONDS
     from tests.test_scenario_calculated_review import run
-    assert (MODEL, EFFORT, TIMEOUT_SECONDS) == ('gpt-6.1-sol', 'low', 75)
+    assert (MODEL, EFFORT, TIMEOUT_SECONDS) == ('gpt-6.1-terra', 'low', 75)
     _, _, calls = run()
     assert len(calls) == 2
-    assert all((c['model'], c['reasoning_effort'], c['retry_transport']) == ('gpt-6.1-sol','low',False) for c in calls)
-    assert all('combine transitions only when their respective before/after source values match' in c['system_prompt'] for c in calls)
+    assert all((c['model'], c['reasoning_effort'], c['retry_transport']) == ('gpt-6.1-terra','low',False) for c in calls)
+    assert all('Keep each frame, phase and timestamp separate' in c['system_prompt'] for c in calls)
 
 
 def test_sol_transport_failure_does_not_retry_or_fallback(monkeypatch):
@@ -318,15 +352,15 @@ def test_sol_transport_failure_does_not_retry_or_fallback(monkeypatch):
         raise http_error()
     with pytest.raises(ValueError, match='scenario_oauth_failed'):
         generate_scenario(system_prompt='test', user_prompt='test', model='gpt-6.1-sol',
-            reasoning_effort='low', fast_tier=True, timeout=75, open_url=open_url, response_schema={'type':'object'})
+            reasoning_effort='low', fast_tier=False, timeout=75, open_url=open_url, response_schema={'type':'object'})
     assert calls == ['gpt-6.1-sol']
 
 
 @pytest.mark.parametrize('override,code', [({'timeout':76},'scenario_timeout_policy'),
-    ({'fast_tier':False},'scenario_model_policy'), ({'mcp_profile':'tools'},'scenario_model_policy')])
+    ({'fast_tier':True},'scenario_model_policy'), ({'mcp_profile':'tools'},'scenario_model_policy')])
 def test_sol_does_not_expand_timeout_or_tool_authority(override, code):
     arguments=dict(system_prompt='test',user_prompt='test',model='gpt-6.1-sol',reasoning_effort='low',
-        fast_tier=True,timeout=75,response_schema={'type':'object'},
+        fast_tier=False,timeout=75,response_schema={'type':'object'},
         open_url=lambda *_a, **_kw: pytest.fail('transport must not run'))
     arguments.update(override)
     with pytest.raises(ValueError,match=code):
@@ -342,7 +376,7 @@ def test_request_has_no_tools_no_keys_and_exact_model_tier(monkeypatch):
     def open_url(req,timeout):
         p=json.loads(req.data)
         assert p['tools']==[] and p['tool_choice']=='none'
-        assert p['model']=='gpt-6-luna' and p['service_tier']=='priority'
+        assert p['model']=='gpt-6-luna' and 'service_tier' not in p
         assert p['reasoning']=={'effort':'high'}
         assert p['text']['format']['type']=='json_schema'
         assert p['text']['format']['strict'] is True
@@ -362,21 +396,21 @@ def test_same_model_supports_only_approved_high_and_xhigh_payload(monkeypatch, e
         assert 0 < timeout <= 75
         return Response(result())
     response = generate_scenario(system_prompt='same', user_prompt='same',
-        model='gpt-6-luna', reasoning_effort=effort, fast_tier=True, timeout=75,
+        model='gpt-6-luna', reasoning_effort=effort, fast_tier=False, timeout=75,
         response_schema={'type': 'object'}, open_url=opener, retry_transport=False)
     assert response.text == '{}' and len(calls) == 1
     assert calls[0]['reasoning'] == {'effort': effort}
-    assert calls[0]['model'] == 'gpt-6-luna' and calls[0]['service_tier'] == 'priority'
+    assert calls[0]['model'] == 'gpt-6-luna' and 'service_tier' not in calls[0]
     assert calls[0]['tools'] == [] and calls[0]['tool_choice'] == 'none'
 
 
 @pytest.mark.parametrize('override', [
     {'reasoning_effort': 'medium'}, {'reasoning_effort': 'max'},
-    {'model': 'other'}, {'fast_tier': False}, {'mcp_profile': 'tools'},
+    {'model': 'other'}, {'fast_tier': True}, {'mcp_profile': 'tools'},
 ])
 def test_extra_effort_does_not_widen_other_model_authority(override):
     arguments = dict(system_prompt='same', user_prompt='same', model='gpt-6-luna',
-        reasoning_effort='xhigh', fast_tier=True, timeout=75, mcp_profile=None,
+        reasoning_effort='xhigh', fast_tier=False, timeout=75, mcp_profile=None,
         response_schema={'type': 'object'}, open_url=lambda *_a, **_kw: pytest.fail('network'))
     arguments.update(override)
     with pytest.raises(ValueError, match='scenario_model_policy'):
@@ -404,9 +438,9 @@ def test_timeout_type_is_preserved_without_transport_details(wrapped):
     error = TimeoutError('sensitive transport details')
     def open_url(*args, **kwargs):
         raise URLError(error) if wrapped else error
-    with pytest.raises(ValueError, match='^scenario_oauth_failed$') as exc:
+    with pytest.raises(ValueError, match='^scenario_oauth_failed:timeout$') as exc:
         generate_scenario(system_prompt='test', user_prompt='test', model='gpt-6-luna',
-            reasoning_effort='high', fast_tier=True, timeout=75, open_url=open_url,
+            reasoning_effort='high', fast_tier=False, timeout=75, open_url=open_url,
             response_schema={'type': 'object'})
     assert type(exc.value).__name__ == 'ScenarioOAuthTimeout'
     assert exc.value.__cause__ is None
@@ -416,8 +450,64 @@ def test_other_transport_error_does_not_claim_timeout():
     from urllib.error import URLError
     def open_url(*args, **kwargs):
         raise URLError('sensitive connection failure')
-    with pytest.raises(ValueError, match='^scenario_oauth_failed$') as exc:
+    with pytest.raises(ValueError, match='^scenario_oauth_failed:connection$') as exc:
         generate_scenario(system_prompt='test', user_prompt='test', model='gpt-6-luna',
-            reasoning_effort='high', fast_tier=True, timeout=75, open_url=open_url,
+            reasoning_effort='high', fast_tier=False, timeout=75, open_url=open_url,
             response_schema={'type': 'object'})
     assert type(exc.value) is ValueError
+
+
+def test_usage_fields_are_small_safe_counters_and_missing_is_not_zero(monkeypatch):
+    from live.scenario_oauth import usage_counts
+    assert usage_counts(None)is None
+    v=usage_counts(dict(input_tokens=100,output_tokens=20,input_tokens_details=dict(cached_tokens=101),
+        output_tokens_details=dict(reasoning_tokens=True),account='secret'))
+    assert v==dict(input_tokens=100,output_tokens=20,cached_input_tokens=None,reasoning_tokens=None)
+    monkeypatch.delenv('PRISM_BTC_SCENARIO_OAUTH_URL',raising=False)
+    body=result();body['usage']=dict(input_tokens=100,output_tokens=20,input_tokens_details=dict(cached_tokens=0),output_tokens_details=dict(reasoning_tokens=10))
+    response=call(lambda *a,**kw:Response(body),retry_transport=False)
+    assert response.usage==dict(input_tokens=100,output_tokens=20,cached_input_tokens=0,reasoning_tokens=10)
+
+
+@pytest.mark.parametrize('reason,category', [('missing_terminal_event','stream_incomplete'),('max_output_tokens','output_limit'),
+    ('max_messages','output_limit'),('content_filter','content_filter'),('steered','steered'),('SENSITIVE_OUTPUT_7401','incomplete')])
+def test_incomplete_reason_is_closed_and_never_retried(reason,category):
+    calls=[]
+    def opened(*args,**kwargs):
+        calls.append(1)
+        return Response(dict(status='incomplete',incomplete_details={'reason':reason}))
+    with pytest.raises(ValueError,match='scenario_oauth_failed:'+category)as e:call(opened)
+    assert len(calls)==1
+    assert 'SENSITIVE_OUTPUT_7401'not in str(e.value)
+
+
+def test_confirmed_overload_preserves_safe_retry_after_without_retry(monkeypatch):
+    monkeypatch.delenv('PRISM_BTC_SCENARIO_OAUTH_URL',raising=False);opened=[]
+    def open_url(*args,**kwargs):
+        opened.append(1)
+        return Response(dict(status='failed',error=dict(code='server_is_overloaded',message='secret provider text',headers={'retry-after':'321','retry-after-ms':'321000'})))
+    with pytest.raises(ValueError)as failure:call(open_url,retry_transport=False)
+    assert str(failure.value)=='scenario_oauth_failed:overloaded'
+    assert failure.value.retry_after_seconds==321 and opened==[1]
+    assert 'secret'not in str(failure.value)
+
+
+def test_completed_with_error_is_never_accepted(monkeypatch):
+    monkeypatch.delenv('PRISM_BTC_SCENARIO_OAUTH_URL',raising=False)
+    value=dict(result(),error=dict(code='server_is_overloaded',headers={'retry-after':'321'}))
+    with pytest.raises(ValueError,match='overloaded'):call(lambda *a,**k:Response(value),retry_transport=False)
+
+
+@pytest.mark.parametrize('headers,expected',[({'Retry-After':'321','Retry-After-MS':'321001'},322),
+    ({'retry-after':True},None),({'retry-after':'-1'},None),({'retry-after':'secret'},None),
+    ({'retry-after':'99999999'},None),({},None),(None,None)])
+def test_retry_after_is_bounded_numeric_and_unknown_is_not_zero(headers,expected):
+    from live.scenario_oauth import retry_after_seconds
+    assert retry_after_seconds(headers)==expected
+
+
+def test_completed_with_incomplete_details_is_never_accepted(monkeypatch):
+    monkeypatch.delenv('PRISM_BTC_SCENARIO_OAUTH_URL',raising=False)
+    value=dict(result(),incomplete_details=dict(reason='max_output_tokens'))
+    with pytest.raises(ValueError,match='scenario_oauth_failed:output_limit'):
+        call(lambda *a,**k:Response(value),retry_transport=False)

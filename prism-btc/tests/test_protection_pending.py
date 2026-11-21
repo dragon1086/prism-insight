@@ -3,6 +3,7 @@ import pytest
 
 from live.scenario_broker import BrokerNotReady
 from tests.test_scenario_execution import live as live_fixture, persist
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 @pytest.fixture
@@ -102,7 +103,7 @@ def test_delayed_tightening_runtime_and_frozen_replay_keep_protection_boundary(t
         if 'selection_token' in request['response_schema']['properties']:
             choices = data['calculated_candidates']
             selected = next((r for r in choices['candidates'] if r['eligible']), choices['wait'])
-            return SimpleNamespace(text=json.dumps(dict(selection_token=f"{selected['id']}:{selected['receipt_sha256']}", rationale='fixture')))
+            return SimpleNamespace(text=json.dumps(dict(selection_token=f"{selected['id']}:{model_receipt_hash(selected)}", rationale='fixture')))
         elapsed = ctx['now'] - bundle['start_ms']/1000
         action = 'OPEN' if not ctx.get('scenario_id') and elapsed < 300 else 'ADJUST' if ctx.get('scenario_id') and elapsed < 600 else 'WAIT'
         plan = wire(ctx, action)

@@ -16,6 +16,11 @@ and the full text is written to logs/reviews/.
 Usage:
     python tools/two_week_review.py --dry-run
     python tools/two_week_review.py --start 2026-10-05 --end 2026-10-18
+    python tools/two_week_review.py --every 14 --anchor 2026-10-18   # cron: every other Sunday
+
+Since 2026-11-07 (user decision) this runs every two weeks and replaces the ops watchdog's daily
+summary and notice-only messages in the maintenance chat; the sources section says when the watchdog
+last ran, since its morning summary no longer proves it is alive.
 """
 from __future__ import annotations
 
@@ -522,11 +527,88 @@ def section_adds(datas, window, events, book) -> str:
         if moves:
             lines.append(f"  · 막힌 증액의 그 뒤 가격: 평균 {_p(_avg(moves))}(오른 경우 {sum(m > 0 for m in moves)}/"
                          f"{len(moves)}건, 오르면 막은 것이 기회 손실).")
+        summaries = [e for e in events.get("micro_split.add_plan_day_summary", []) if e.get("market") == market]
+        if summaries:
+            last = Counter(str(v.get("last")) for e in summaries
+                           for v in (_attrs(e).get("scenarios") or {}).values() if isinstance(v, dict))
+            waits = Counter()
+            for e in summaries:
+                waits.update({str(k): int(n) for k, n in (_attrs(e).get("plan_waits") or {}).items()})
+            added = sum(1 for e in summaries if _attrs(e).get("outcome") == "ADD" or _attrs(e).get("added"))
+            lines.append(f"- 장 마감 대기 사유(종목·하루 {len(summaries)}건, 증액 난 날 {added}건): 시나리오별 마지막 사유 "
+                         f"{_top(last, 4)}; 계획 전체 대기 {_top(waits, 3)}.")
     b3 = events.get("_b3", Counter())
     if b3:
         lines.append(f"- 증액 집행기 감사 기록(교차 확인): 조건 충족 {b3['add_plan.qualified']}건, 집행 "
                      f"{b3['add_plan.executed']}건, 안전장치 차단 {b3['add_plan.rail_blocked']}건, 취소 "
                      f"{b3['add_plan.invalidated']}건.")
+    return "\n".join(lines)
+
+
+def _crowded_out(events, market) -> list[tuple[dict, float | None, int | None]]:
+    """(event, decision price, pyramid rows held) of new names skipped because the rows were full."""
+    if market == "KR":
+        return [(e, _f(_attrs(e).get("decision_price")), _attrs(e).get("pyramid_rows_held"))
+                for e in events.get("entry.slot_blocked", []) if e.get("market") == market]
+    out = []
+    for e in events.get("candidate.evaluated", []):
+        context = _attrs(e).get("decision_context") or {}
+        if e.get("market") == market and "SLOT_FULL" in (context.get("skip_reason_codes") or []):
+            out.append((e, _f(context.get("price")), context.get("pyramid_rows_held")))
+    return out
+
+
+def section_pyramid(datas, window, events, book) -> str:
+    lines = ["2b) 피라미딩(한 종목 최대 3칸, 칸마다 초분할) · 칸이 차서 못 산 새 종목"]
+    for data in datas:
+        market = data.market
+        gates = _dedupe([e for e in events.get("pyramid.gate_evaluated", []) if e.get("market") == market],
+                        ("ticker", "stage", "reason_code"))
+        allowed = [e for e in gates if _attrs(e).get("allowed") and _attrs(e).get("stage") == "gate"]
+        refused = [e for e in gates if not _attrs(e).get("allowed")]
+        opened = [e for e in events.get("pyramid.row_opened", []) if e.get("market") == market]
+        lines.append(f"[{market}] 피라미딩 검사 {len(gates)}건(종목·하루·단계 기준), 조건 통과 {len(allowed)}건, "
+                     f"막힘 {len(refused)}건({_top(Counter(str(_attrs(e).get('reason_code')) for e in refused), 4)}), "
+                     f"새 칸 연 기록 {len(opened)}건.")
+        rows = [i for i in touched(data, window)
+                if isinstance((micro(i) or {}).get("pyramid_row"), dict)]
+        if rows:
+            wins = [i.trade.ret for i in rows if i.trade.ret > 0]
+            losses = [i.trade.ret for i in rows if i.trade.ret <= 0]
+            ratio = (_avg(wins) / abs(_avg(losses))) if wins and losses and _avg(losses) else None
+            lines.append(f"- 피라미딩 칸 {len(rows)}개({len({i.trade.ticker for i in rows})}종목): 이긴 칸 {len(wins)}개 평균 "
+                         f"{_p(_avg(wins))}, 진 칸 {len(losses)}개 평균 {_p(_avg(losses))}, 손익비 "
+                         f"{'-' if ratio is None else f'{ratio:.2f}'}; 계좌 기여 "
+                         f"{sum(i.trade.contribution for i in rows):+.2f}%p(장부 기준, 현재가·청산가).")
+            for item in sorted(rows, key=lambda i: -i.trade.contribution)[:3]:
+                marker = micro(item)["pyramid_row"]
+                lines.append(f"  · {item.trade.label} {marker.get('entry_no') or '-'}번째 칸 {item.trade.buy_date}: "
+                             f"{_p(item.trade.ret)}(최고 {_p(item.trade.mfe)}), 비중 {_pct(item.trade.fraction)}")
+        else:
+            lines.append("- 기간 안에 열린 피라미딩 칸이 장부에 없습니다.")
+        moves = []
+        for event in _dedupe(refused, ("ticker",)):
+            latest, _ = later_move(book, market, event.get("ticker"), event_day(event), _attrs(event).get("current_price"))
+            if latest is not None:
+                moves.append(latest)
+        if moves:
+            lines.append(f"  · 막힌 피라미딩의 그 뒤 가격: 평균 {_p(_avg(moves))}(오른 경우 {sum(m > 0 for m in moves)}/"
+                         f"{len(moves)}건, 오르면 막은 것이 기회 손실).")
+        crowded = _crowded_out(events, market)
+        unique = {e.get("ticker"): (e, price, held) for e, price, held in crowded}
+        latest, best, big = [], [], 0
+        for event, price, _ in unique.values():
+            now, top = later_move(book, market, event.get("ticker"), event_day(event), price)
+            if now is not None:
+                latest.append(now)
+            if top is not None:
+                best.append(top)
+                big += top >= LEADER_PCT
+        by_pyramid = sum(1 for _, _, held in unique.values() if isinstance(held, int) and held > 0)
+        unknown = sum(1 for _, _, held in unique.values() if not isinstance(held, int))
+        lines.append(f"- 칸이 차서 못 산 새 종목 {len(unique)}개(기록 {len(crowded)}건), 그때 피라미딩 칸이 있던 경우 "
+                     f"{by_pyramid}개(모름 {unknown}개). 그 뒤 현재가 평균 {_p(_avg(latest))}, 최고 평균 "
+                     f"{_p(_avg(best))}, +20% 도달 {big}개(판단 가격 대비).")
     return "\n".join(lines)
 
 
@@ -654,7 +736,8 @@ def section_reentry(datas, window, runtime: Path, events) -> str:
             for day, info in (watch.get("live") or {}).items():
                 if window.has(day):
                     live[str(info.get("result") or info.get("status"))] += 1
-            camp = ((watch.get("ledger") or {}).get("campaigns") or {}).get("L97") or {}
+            camps = (watch.get("ledger") or {}).get("campaigns") or {}
+            camp = camps.get("MA20R") or camps.get("L97") or {}     # the traded rule (MA20R where it is live)
             for att in camp.get("attempts") or []:
                 if window.has(att.get("date")) and att.get("status") == "CLOSED":
                     approved_flag = (by_day.get(att.get("date")) or {}).get("approved")
@@ -682,6 +765,16 @@ def section_reentry(datas, window, runtime: Path, events) -> str:
                          f"({len(rejected_rets)}건). 거절 쪽이 더 좋으면 재점검이 기회를 막은 것입니다.")
         if reasons:
             lines.append(f"- AI 거절 사유 상위: {_top(reasons, 3)}")
+        # 2026-11-16 observe-only arm: 20-day-average recovery re-entry (H-1116-reentry-ma20r-observe).
+        ma20r = [((w.get("ledger") or {}).get("controls") or {}).get("MA20R") for w in watches]
+        fired = [c for c in ma20r if c and c.get("first_trigger") and window.has(c["first_trigger"].get("date"))]
+        skipped = sum(1 for c in ma20r if c and c.get("status") == "SKIPPED_NON_BULL_ANCHOR")
+        closed = [c["trade"] for c in fired if (c.get("trade") or {}).get("status") == "CLOSED"]
+        rets = [_f(t.get("ret")) for t in closed]
+        rets = [r * 100 for r in rets if r is not None]
+        lines.append(f"- 관측 전용 '20일선 회복+거래량' 재진입(주문 없음): 기간 내 신호 {len(fired)}건, 가상 청산 {len(closed)}건 "
+                     f"평균 {_p(_avg(rets))}, +20% 도달 {sum(1 for r in rets if r >= LEADER_PCT)}건, 진행 중 "
+                     f"{len(fired) - len(closed)}건" + (f", 강세 앵커 아니라 건너뜀 {skipped}건" if market == "KR" else "") + ".")
     return "\n".join(lines)
 
 
@@ -855,7 +948,8 @@ def section_sources(datas, events, book, logs, window) -> str:
                      f"가격 조회 {book.calls[data.market]}회(한도 초과로 생략 {book.denied[data.market]}회)."
                      + (" " + " ".join(data.notes) if data.notes else ""))
     missing = [name for name in ("trigger_quality.selection", "runner.sell_blocked", "micro_split.add_executed",
-                                 "reentry_v3.shadow_run") if not events.get(name)]
+                                 "reentry_v3.shadow_run", "pyramid.gate_evaluated",
+                                 "micro_split.add_plan_day_summary") if not events.get(name)]
     if missing:
         lines.append(f"- 기간 내 기록이 없는 이벤트: {', '.join(missing)} (아직 발생 안 함 또는 배포 전).")
     return "\n".join(lines)
@@ -865,10 +959,15 @@ def section_sources(datas, events, book, logs, window) -> str:
 
 def priority_prices(book: PriceBook, events, markets):
     """Fetch the counterfactual prices first so the cap never drops them."""
-    for kind, ref_key in (("runner.sell_blocked", "current_price"), ("micro_split.add_blocked", "price")):
+    for kind, ref_key in (("runner.sell_blocked", "current_price"), ("micro_split.add_blocked", "price"),
+                          ("pyramid.gate_evaluated", "current_price"), ("entry.slot_blocked", "decision_price")):
         for event in events.get(kind, []):
             if event.get("market") in markets and _f(_attrs(event).get(ref_key)):
                 book.bars(event["market"], event.get("ticker"), event_day(event))
+    for market in markets:
+        for event, price, _ in _crowded_out(events, market):
+            if price:
+                book.bars(market, event.get("ticker"), event_day(event))
     for event in events.get("trigger_quality.selection", []):
         if event.get("market") not in markets:
             continue
@@ -889,6 +988,7 @@ def build_report(*, conn, window: Window, markets, events, logs, runtime: Path, 
         section_sources(datas, events, book, logs, window),
         section_micro_split(datas, window, events),
         section_adds(datas, window, events, book),
+        section_pyramid(datas, window, events, book),
         section_conviction(datas, window),
         section_runner(datas, window, events, book),
         section_reentry(datas, window, runtime, events),
@@ -897,6 +997,20 @@ def build_report(*, conn, window: Window, markets, events, logs, runtime: Path, 
         section_errors(datas, events),
         section_north_star(datas, window),
     ]
+
+
+def due(end: date, every: int | None, anchor: date) -> bool:
+    """True without --every; else only on end dates a whole number of periods after the anchor."""
+    return not every or ((end - anchor).days >= 0 and (end - anchor).days % every == 0)
+
+
+def watchdog_line(state_path: Path) -> str:
+    """When the ops watchdog (every 5 minutes) last saved its state; a stale time means it stopped."""
+    try:
+        last = datetime.fromtimestamp(state_path.stat().st_mtime, KST)
+    except OSError:
+        return "- 운영 감시: 상태 파일 없음(감시가 돌지 않았거나 경로가 다름)."
+    return f"- 운영 감시: 마지막 실행 {last:%m/%d %H:%M} KST (5분마다 실행, 장애·복구만 유지보수방으로 보냄)."
 
 
 def write_report(out_dir: Path, window: Window, header: str, sections: list[str]) -> Path:
@@ -920,12 +1034,18 @@ def main(argv=None) -> int:
     parser.add_argument("--no-prices", action="store_true", help="skip price lookups (DB and events only)")
     parser.add_argument("--no-logs", action="store_true", help="skip the log scan")
     parser.add_argument("--dry-run", action="store_true", help="print only; no Telegram, no file")
+    parser.add_argument("--every", type=int, help="run only when the end date is a multiple of this many days "
+                                                  "after --anchor (cron runs it weekly)")
+    parser.add_argument("--anchor", default="2026-10-18", help="YYYY-MM-DD of a past review (with --every)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.WARNING)
 
     from dotenv import load_dotenv
     load_dotenv(ROOT / ".env")
     end = date.fromisoformat(args.end) if args.end else datetime.now(KST).date()
+    if not due(end, args.every, date.fromisoformat(args.anchor)):
+        print(f"{end.isoformat()}: not a review day (every {args.every} days from {args.anchor}).", file=sys.stderr)
+        return 0
     start = date.fromisoformat(args.start) if args.start else end - timedelta(days=DEFAULT_DAYS - 1)
     window = Window(start, end)
     markets = list(MARKETS) if args.market == "both" else [args.market.upper()]
@@ -937,6 +1057,7 @@ def main(argv=None) -> int:
     try:
         sections = build_report(conn=conn, window=window, markets=markets, events=events, logs=logs,
                                 runtime=Path(args.runtime), book=book, max_calls=args.max_price_calls)
+        sections[0] += "\n" + watchdog_line(Path(args.runtime) / "ops_watchdog_state.json")
     finally:
         conn.close()
     header = f"[PRISM 2주 점검] {start.isoformat()}~{end.isoformat()} · {'/'.join(markets)}"

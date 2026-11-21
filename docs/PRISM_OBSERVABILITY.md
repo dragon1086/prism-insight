@@ -48,6 +48,10 @@ message to the private maintenance chat (`prism_core.ops_alert`):
 - The same signature is held for 6 hours, then re-sent with its count; a stopped job that runs again
   sends `[복구]`; a daily summary at 08:30 KST lists runs and re-entry signals → orders. No morning
   summary means the watchdog itself is down.
+- Since 2026-11-07 (user decision) the chat gets only `[장애]`/`[복구]` and the disk alert: the daily summary
+  and `[주의]`-only messages are off (`OPS_WATCHDOG_SUMMARY_ENABLED`, `OPS_WATCHDOG_NOTICES_ENABLED`, default
+  false) and the biweekly review (`tools/two_week_review.py --every 14`, every other Sunday 19:00 KST)
+  replaces them; its first section shows when the watchdog last ran.
 
 Jobs and their heartbeat lines are listed in `JOBS` (the loops' own summary lines, pinned in
 `tests/test_ops_watchdog.py`). Add a job there when a new scheduled job is added. Jobs under systemd
@@ -55,6 +59,32 @@ Jobs and their heartbeat lines are listed in `JOBS` (the loops' own summary line
 (`journalctl -u <unit>` after a cursor kept in the state file); its per-minute `b3-ae-worker-v1` line is
 the heartbeat. Without a readable journal such a job is skipped, never alerted. Rollback:
 `OPS_WATCHDOG_ENABLED=false` or remove the cron line. State: `runtime/ops_watchdog_state.json`.
+
+## Holdings reconcile (corporate actions)
+
+`tools/holdings_reconcile.py` (db-server cron, KR 09:06 KST and US 09:36 ET on weekdays, added
+2026-11-18 after Black Hills became Bright Horizon Energy on 11/16: KIS renamed the position to HZN
+the same day, our tables kept BKH, the KIS quote for BKH froze at the 11/13 close and the hard-stop
+loop watched that frozen price for two sessions) compares each configured account's broker balance
+(inquiry TR only, never an order) with the ledger's holdings and classifies the difference:
+
+- `RENAME` (one ledger ticker gone, one broker ticker new, same share count as the previous run's
+  snapshot, broker average price within 5% of our buy price): applied automatically to the live
+  tables (`*_stock_holdings`, `*_holding_decisions`, `us_pending_orders`, `loop_a/b_position_state`,
+  open `positions`) and the runtime state files (core hold, O'Neil watchlist, US eligibility,
+  re-entry v3 state); history tables and the ClickStack ledger keep the old code (`legacy_holding_id`
+  links them). Reported to the maintenance chat with the rows changed.
+- `RENAME_RATIO` (share count changed, or no snapshot yet, or prices differ: a 0.98-for-1 merger moves
+  the price only 2%, so the share count decides), `SPLIT` (same ticker, count or price ratio changed),
+  `GONE` (not at the broker: cash merger, delisting, a sale outside the system), `OUTSIDE` (broker
+  ticker the ledger does not know: manual buy, spin-off shares), `AMBIGUOUS` (several at once),
+  `STALE_QUOTE` (0.00% change and zero volume during the session): reported only, with the exact
+  `--apply-rename OLD NEW --ratio R` command where one applies. The ratio scales `buy_price`,
+  `current_price`, `target_price`, `stop_loss` and the scenario `highest_price`, and records
+  `scenario.corporate_action`. `MISSING` stays missing: a failed balance inquiry classifies nothing.
+- Dedupe: one alert per finding per market day (`OUTSIDE` once). State and the broker share-count
+  snapshot: `runtime/holdings_reconcile_state.json`. Rollback: `HOLDINGS_RECONCILE_ENABLED=false` or
+  remove the cron lines. Tests: `tests/test_holdings_reconcile.py`.
 
 ## Deployment topology
 
@@ -98,6 +128,8 @@ ClickHouse process (mode `0644`).
 - `entry.executed`
 - `entry.fill_reconciled` (US CAPTURE: 제출과 실제 체결을 구분하는 주문 provenance)
 - `exit.executed`
+- `pyramid.gate_evaluated`, `pyramid.row_opened`, `entry.slot_blocked` (KR) — #288 pyramid
+  rows, see "Pyramid rows" under Trace linkage
 - `holding.evaluated` (every KR/US hold-or-sell review after the runner guard; shares the
   position's `trace_id`, because the holding-decision tables keep only the latest row)
 - `broker.order_request` (every KIS order TR from `trading/kis_auth._url_fetch`: accepted,
@@ -167,6 +199,29 @@ One `trace_id` reads a decision end to end. Read it with `tools/clickstack_query
   decision, falling back to a watch-scoped trace when it is unknown. A live re-entry buy
   is a new position with its own trace. `reentry_v3.live_entry` carries its
   `entry_trace_id`, and that position's context events carry `origin_trace_id`.
+- **Pyramid rows (2026-11-08, `PYRAMID_ROWS_MICRO_SPLIT_ENABLED`)**: a pyramid row (2nd/3rd row of a
+  ticker) is a new position with its own trace. Its context events from `entry.executed` on (the BUY-time `candidate.evaluated` comes before the row is sized)
+  context events and `pyramid.row_opened` carry `origin_trace_id` (the ticker's first row) and
+  `parent_trace_ids` (every earlier row), read from `scenario.micro_split.pyramid_row`.
+  `clickstack_query.py trace <trace>` lists every trace whose `origin_trace_id` is that trace (re-entry
+  buys and pyramid rows). Events (`prism_core/pyramid_ledger.py`, unknown values `null`, never 0):
+  - `pyramid.gate_evaluated` (on the first row's trace; emitted with the flag on or off): `stage`
+    (`pre_gate` before the BUY LLM, `gate`, `sizing` after the B3 plan), `allowed`, `reason_code`
+    (`ALLOWED`, `LEGACY_PYRAMID_BLOCKED_MICRO_SPLIT` = flag off, `REGIME_NOT_ALLOWED`, `PROFIT_BELOW_MIN`,
+    `MAX_ROWS`, `PRICE_MISSING`, `PILOT_FREEZE`, `PYRAMID_ROW_NO_MICRO_PLAN`, `PYRAMID_RESERVE_SLOTS`,
+    `PYRAMID_MAX_SLOTS`), `reason`, `flag_enabled`, `regime`, `entry_basis` (`cost_weighted`/`simple_mean`),
+    `existing_entry`, `current_price`, `profit_pct`, `ticker_rows`, `ownership`, `rows_held`,
+    `distinct_tickers`, `pyramid_rows_held`, `free_rows`, `reserve_applied`, `planned_allocation`
+    (sizing stage), `candidate_decision_id`. The sector cap never blocks a pyramid row with the flag on
+    (same-ticker rows are exempt), so it has no code here.
+  - `pyramid.row_opened` (new row's trace): `row_id`, `row_number`, `allocation`, `micro_split`,
+    `stop_loss`, `parent_row_ids`, `origin_trace_id`, `parent_trace_ids`.
+  - Crowded-out new names: KR `entry.slot_blocked` (`limit` MAX_SLOTS/AI_CAP, `buy_score`,
+    `decision_price`, `slots_max`, `rows_held`, `distinct_tickers`, `pyramid_rows_held`, `free_rows`);
+    US extends the existing skip `candidate.evaluated` decision context with
+    `skip_reason_codes: ["SLOT_FULL"]`, `slot_limit` and the same row counts.
+  - Row exits log `reason=` `PYRAMID_ROW_LEDGER_QTY` / `PYRAMID_ROW_QTY_RESIDUAL` /
+    `PYRAMID_ROW_QTY_UNKNOWN` / `LAST_ROW_REMAINDER` / `LEGACY_EQUAL_SPLIT` (batch and loop logs).
 - **Buy decision quarterly EPS (2026-10-23)**: `decision_inputs.shadow_captured` (same trace as
   the decision's `candidate.evaluated`) carries `quarterly_eps` (`quarterly_eps_v1`,
   `prism_core/decision_snapshot.quarterly_eps`): `period`, `eps`, `prior_year_period`,
@@ -178,10 +233,14 @@ One `trace_id` reads a decision end to end. Read it with `tools/clickstack_query
   US yfinance quarterly income statement, period = quarter-end date, diluted EPS in USD). No
   extra fetch at decision time; a block collected after the decision or absent from the report
   run is `MISSING` (`not_in_report_meta`, `collected_after_decision`). Observation only.
+- **Re-entry observe-only arms (state file, not events)**: every v3 watch ledger carries `controls.PIVOT` (pivot
+  breakout control) and, from 2026-11-16, `controls.MA20R` (first close back above the 20-session average on an up day
+  with volume >= the 20-session average; virtual E1 trade; KR records `SKIPPED_NON_BULL_ANCHOR` unless the anchor
+  regime is bull). Read them from `runtime/reentry_v3_state_{kr,us}.json`; `tools/two_week_review.py` section 5 sums them.
 - **Re-entry evidence (2026-10-21)**: `reentry_v3.shadow_trigger` and
   `reentry_v3.shadow_near_miss` (the primary rule missed only on its own filters: R/R floor,
   no target, chase, below the level, shakeout volume) carry a `snapshot`
-  (`prism_core/decision_snapshot.py`, `decision_snapshot_v1`). It holds MA20/50/200 values,
+  (`prism_core/decision_snapshot.py`, `decision_snapshot_v1`). It holds MA10/20/50/200 values (MA10 from 2026-11-09),
   distances and 10-bar slopes, the 50-day line flags, ATR14, the 60/252-day high distance,
   50-day volume ratios and RS60. Uncomputable values are `null` and listed in `missing`.
   The events also carry the level basis, previous close, day low, prior attempts and the
@@ -221,6 +280,13 @@ One `trace_id` reads a decision end to end. Read it with `tools/clickstack_query
   twice. Suggested cron (KST): `10 16 * * 1-5 … --market KR`, `10 7 * * 2-6 … --market US`.
 - **BTC**: `btc.scenario.*` share `sha256("scenario:<id>")`. A `decision_input` joins the
   scenario trace when its run touched exactly one scenario (`scenario_inferred=true`).
+- **BTC replay observations**: new `btc.research.source` account events may include
+  `ticker_observation` with only BTCUSDT Mark, Last, bid, ask, and the local HTTP request/response
+  times plus Bybit's response timestamp. `exchange_call` events may include `exchange_observation`
+  with local wrapper times and hashed order references. The wrapper starts before the final guard;
+  neither timestamp is an exchange fill time, and proximity alone does not link a quote to an order.
+  Clock regression, missing prices, or crossed quotes remain partial/unknown. The exporter does not
+  backfill historical account or audit events; this is prospective evidence, not fill or P&L proof.
 - Not linked by design: `broker.order_request` (HTTP layer; join by ticker, time and
   `execution_profile_ref`) and `job.run_completed` (run level).
 

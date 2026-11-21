@@ -235,15 +235,15 @@ def build_closed_continuity(conn, state, now):
         return missing
 
 
-def build_position_flow(conn, active, context, now):
+def build_position_flow(conn, active, context, now, *, snapshot=None):
     try:
-        return _build_position_flow(conn, active, context, now)
+        return _build_position_flow(conn, active, context, now, snapshot=snapshot)
     except (sqlite3.Error, ValueError, TypeError, KeyError, OverflowError, AttributeError):
         # Optional continuity must never prevent independent protection checks.
         return dict(version=1, status="UNAVAILABLE", reason="malformed_optional_history")
 
 
-def _build_position_flow(conn, active, context, now):
+def _build_position_flow(conn, active, context, now, *, snapshot=None):
     """Project saved same-scenario events without SQL writes or external dependencies.
 
     Context is the existing broker-verified context, not an independent observation.
@@ -330,7 +330,7 @@ def _build_position_flow(conn, active, context, now):
         observations=["positions", "target_status", "previous_hard_stop", "account_captured_at"],
         economics="runner_economics", advisory_checkpoints_not_exit_rules="review_memory")
 
-    transitions, changes, observations = [], [], []
+    transitions, changes, observations, marks = [], [], [], []
     previous_status = previous_observation = None
     try:
         # Project only needed context fields in SQLite before crossing the DB
@@ -454,6 +454,12 @@ def _build_position_flow(conn, active, context, now):
                 if observation.get("status") != "UNAVAILABLE" and comparison != previous_observation:
                     observations.append(dict(slot=slot, **observation))
                     previous_observation = comparison
+                if (observation.get("status") != "UNAVAILABLE" and ctx.get("accounting_status") == "confirmed"
+                        and ctx.get("positions")
+                        and all(isinstance(p, dict) and _number(p.get("quantity")) and p["quantity"] > 0
+                                for p in ctx["positions"])
+                        and _number(ctx.get("mark_price")) and ctx["mark_price"] > 0):
+                    marks.append((observation["captured_at"], ctx["mark_price"]))
             except (ValueError, TypeError, KeyError, OverflowError, sqlite3.Error):
                 coverage["invalid_rows"] += 1
     except (sqlite3.Error, ValueError, TypeError, OverflowError):
@@ -461,9 +467,237 @@ def _build_position_flow(conn, active, context, now):
         coverage["older_history"] = "UNAVAILABLE"
     coverage.update(status_transitions_found=len(transitions), requested_changes_found=len(changes),
                     observed_changes_found=len(observations))
+    if snapshot is not None:
+        add("mark_pace", _mark_pace(snapshot, active, context, now, marks), 800)
     recent("thesis_transitions", transitions, 4)
     recent("requested_changes", changes, 3)
     recent("historical_observation_changes", observations, 3)
     if coverage["omitted_items"] or coverage["invalid_rows"] or coverage["older_history"] != "NO_OLDER_STORED_ROWS":
         result["status"] = "PARTIAL"
     return result
+
+
+def _mark_pace(snapshot, active, context, now, marks):
+    """Two verified Mark endpoints are not an intrabar path or order flow."""
+    try:
+        thesis = context['entry_thesis']
+        current_at, current = context['account_captured_at'], context['mark_price']
+        side = active['side']
+        primary = snapshot['timeframes']['30m']
+        frame = primary['confirmed']
+        at = snapshot['as_of_ms']
+        atr = frame['atr14_risk_only']
+        filled_at, entry = thesis['first_fill_at'], thesis['initial_fill_average']
+        values = (current_at, current, at, atr, filled_at, entry, now,
+                  frame['open_time_ms'], thesis['observed_at'])
+        if (not all(_number(v) for v in values) or not snapshot.get('valid') is True
+                or thesis.get('status') != 'VERIFIED' or side not in ('LONG', 'SHORT')
+                or thesis.get('side') != side or frame.get('is_confirmed') is not True
+                or primary.get('status') != 'ok'
+                or context.get('accounting_status') != 'confirmed'
+                or not filled_at <= thesis['observed_at'] <= now
+                or not isinstance(context.get('positions'), list) or not context['positions']
+                or any(not isinstance(p, dict) or not _number(p.get('quantity'))
+                       or p['quantity'] <= 0 for p in context['positions'])
+                or min(current, atr, entry) <= 0 or not 0 <= now - current_at <= 120
+                or frame['open_time_ms'] + 1800000 != int(at // 1800000) * 1800000
+                or frame['open_time_ms'] + 1800000 > current_at * 1000
+                or at > now * 1000):
+            return dict(status='MISSING')
+        prior = [(t, p) for t, p in marks if _number(t) and _number(p)
+                 and p > 0 and filled_at <= t < current_at and 60 <= current_at - t <= 600]
+        if not prior:
+            latest_fill = thesis.get('latest_entry_fill_at')
+            additional = thesis.get('additional_entry_fills')
+            elapsed = current_at - filled_at
+            # Fill price and Mark are different price streams, not a Mark-to-Mark pace.
+            if (not _number(latest_fill) or latest_fill != filled_at
+                    or type(additional) is not int or additional != 0 or not 60 <= elapsed <= 600
+                    or thesis['observed_at'] < current_at
+                    or not 0 <= now - at / 1000 <= 120
+                    or abs(current_at - at / 1000) > 120):
+                return dict(status='MISSING')
+            change = (1 if side == 'LONG' else -1) * (current - entry)
+            normalized = (change / atr) * 300 / elapsed
+            if not all(_number(v) for v in (change, normalized)):
+                return dict(status='MISSING')
+            hourly_frame = snapshot['timeframes'].get('1h')
+            hourly = hourly_frame.get('confirmed') if isinstance(hourly_frame, dict) else None
+            hourly = hourly if isinstance(hourly, dict) else {}
+            hourly_atr, hourly_open = hourly.get('atr14_risk_only'), hourly.get('open_time_ms')
+            hourly_normalized = None
+            if (isinstance(hourly_frame, dict) and hourly_frame.get('status') == 'ok'
+                    and hourly.get('is_confirmed') is True and _number(hourly_atr) and hourly_atr > 0
+                    and _number(hourly_open) and hourly_open + 3600000 == int(at // 3600000) * 3600000
+                    and hourly_open + 3600000 <= current_at * 1000):
+                value = (change / hourly_atr) * 300 / elapsed
+                if _number(value):
+                    hourly_normalized = value
+            def partial_compact(value, digits):
+                rounded = round(value, digits)
+                return value if rounded == 0 and value != 0 else rounded
+            return dict(status='PARTIAL', source='FILL_AVG_TO_MARK_DIFFERENT_PRICE_STREAMS',
+                        interval_seconds=partial_compact(elapsed, 1),
+                        fill_to_mark_favorable_usdt_per_btc=partial_compact(change, 4),
+                        fill_to_mark_atr30_per_5m=partial_compact(normalized, 4),
+                        fill_to_mark_atr1h_per_5m=partial_compact(hourly_normalized, 4) if hourly_normalized is not None else None,
+                        favorable_atr30_per_5m=None, favorable_atr1h_per_5m=None)
+        previous_at, previous = max(prior, key=lambda x: x[0])
+        elapsed = current_at - previous_at
+        sign = 1 if side == 'LONG' else -1
+        favorable = sign * (current - previous)
+        rate30 = (favorable / atr) * 300 / elapsed
+        if not all(_number(v) for v in (favorable, rate30)):
+            return dict(status='MISSING')
+        rate1h = None
+        hourly_frame = snapshot['timeframes'].get('1h')
+        hourly = hourly_frame.get('confirmed') if isinstance(hourly_frame, dict) else None
+        hourly = hourly if isinstance(hourly, dict) else {}
+        hourly_atr, hourly_open = hourly.get('atr14_risk_only'), hourly.get('open_time_ms')
+        if (isinstance(hourly_frame, dict) and hourly_frame.get('status') == 'ok'
+                and hourly.get('is_confirmed') is True and _number(hourly_atr) and hourly_atr > 0
+                and _number(hourly_open) and hourly_open + 3600000 == int(at // 3600000) * 3600000
+                and hourly_open + 3600000 <= current_at * 1000):
+            value = (favorable / hourly_atr) * 300 / elapsed
+            if _number(value):
+                rate1h = value
+        forming_move = forming_range = None
+        forming = snapshot['timeframes']['30m'].get('forming')
+        if isinstance(forming, dict):
+            ohlcv = forming.get('ohlcv')
+            observed, opened = forming.get('observed_at_ms'), forming.get('open_time_ms')
+            historical = snapshot.get('historical_replay')
+            historical_ok = (forming.get('observation_kind') == 'historical_completed_subbars'
+                             and isinstance(historical, dict)
+                             and historical.get('source_interval_ms') == 60000
+                             and historical.get('closed_source_through_ms') == at
+                             and isinstance(historical.get('zero_progress_synthetic_timeframes'), list)
+                             and '30m' not in historical['zero_progress_synthetic_timeframes'])
+            if (isinstance(ohlcv, dict) and (forming.get('observation_kind') == 'observed' or historical_ok)
+                    and _number(observed) and _number(opened) and opened <= observed <= at
+                    and at < opened + 1800000
+                    and all(_number(ohlcv.get(k)) and ohlcv[k] > 0 for k in ('open', 'high', 'low', 'close'))
+                    and ohlcv['low'] <= min(ohlcv['open'], ohlcv['close'])
+                    and ohlcv['high'] >= max(ohlcv['open'], ohlcv['close'])):
+                move = sign * (ohlcv['close'] - ohlcv['open']) / atr
+                span = (ohlcv['high'] - ohlcv['low']) / atr
+                if _number(move) and _number(span):
+                    forming_move, forming_range = move, span
+        def compact(value, digits=4):
+            rounded = round(value, digits)
+            return value if rounded == 0 and value != 0 else rounded
+        return dict(status='AVAILABLE', source='MARK_PAIR_LAST_OHLC_NO_PATH',
+                    interval_seconds=compact(elapsed, 1), favorable_usdt_per_btc=compact(favorable),
+                    favorable_atr30_per_5m=compact(rate30),
+                    favorable_atr1h_per_5m=compact(rate1h) if rate1h is not None else None,
+                    last30_favorable_atr=compact(forming_move) if forming_move is not None else None,
+                    last30_range_atr=compact(forming_range) if forming_range is not None else None)
+    except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
+        return dict(status='MISSING')
+
+
+HOLDING_REFERENCES = [('REACTION', '30m', 1800000, 1.), ('TREND', '1h', 3600000, 1.)]
+HOLDING_VIEW_MAX_BYTES = 1800
+
+
+def holding_management_view(snapshot, context, structure):
+    """Price references only; the model chooses posture and the host rechecks risk."""
+    from decimal import Decimal as D, ROUND_FLOOR, ROUND_CEILING
+    from live.scenario_fee_projection import fee_only_projection
+    try:
+        if (not context.get('scenario_id') or context.get('accounting_status') != 'confirmed'
+                or context.get('protection_ok') is not True or context.get('management_quarantine')
+                or context.get('pending_entries')!=[]
+                or snapshot.get('valid') is not True):
+            return None
+        now, captured, at = context['now'], context['account_captured_at'], snapshot['as_of_ms']
+        if not all(_number(v) and v>0 for v in (now,captured,at)) or not 0<=now-captured<=120 or not 0<=now*1000-at<=120000:
+            return None
+        side, mark, old, tick = (context.get(k) for k in ('side','mark_price','previous_hard_stop','price_tick'))
+        if side not in ('LONG','SHORT') or not all(_number(v) and v>0 for v in (mark,old,tick)):
+            return None
+        sign = 1 if side=='LONG' else -1
+        if sign*(mark-old)<=0:
+            return None
+        lots = context['positions']
+        if (not isinstance(lots,list) or not lots or len(lots)>20
+                or any(not isinstance(p,dict) or not all(_number(p.get(k)) and p[k]>0 for k in ('price','quantity')) for p in lots)):
+            return None
+        quantity = sum((D(str(p['quantity'])) for p in lots),D(0))
+        entry = sum((D(str(p['price']))*D(str(p['quantity'])) for p in lots),D(0))/quantity
+        recorded = context.get('recorded_scenario_net')
+        def net(price):
+            if not _number(recorded):
+                return None
+            v=fee_only_projection(side=side,entry_price=float(entry),exit_price=price,quantity=float(quantity),
+                evidence=context.get('observed_execution_fee_evidence'),now=now,new_entry=False,recorded_net=recorded)
+            return v.get('estimated_net_before_unmodelled_costs') if v['status']=='AVAILABLE' else None
+        flatten = net(mark)
+        rows=[]
+        for name,frame,duration,buffer in HOLDING_REFERENCES:
+            row=dict(profile=name,frame=frame,status='MISSING');rows.append(row)
+            raw=snapshot.get('timeframes',{}).get(frame,{}).get('confirmed',{})
+            atr,opened=raw.get('atr14_risk_only'),raw.get('open_time_ms')
+            points=[p for p in structure.get('primary',{}).get(frame,{}).get('points',[])
+                    if p.get('phase')=='CONFIRMED' and p.get('is_confirmed') is True]
+            if not points:continue
+            p=points[-1];ma,close=p.get('ma10'),p.get('close')
+            if (raw.get('is_confirmed') is not True or type(opened) is not int
+                    or opened+duration!=int(at//duration)*duration or p.get('as_of_ms')!=opened+duration
+                    or not all(_number(v) and v>0 for v in (atr,ma,close))):
+                continue
+            center=D(str(mark if name=='REACTION' else ma))
+            reference=center-sign*D(str(buffer))*D(str(atr))
+            reference=(reference/D(str(tick))).to_integral_value(rounding=ROUND_FLOOR if side=='LONG' else ROUND_CEILING)*D(str(tick))
+            if reference<=0:continue
+            proposed=max(D(str(old)),reference) if side=='LONG' else min(D(str(old)),reference)
+            progress=sign*(D(str(mark))-entry)/D(str(atr))
+            stop_net=net(float(proposed)) if name=='REACTION' else None
+            ratchet_ready=(stop_net>0 and progress>=D(str(buffer))) if stop_net is not None else None
+            if name=='REACTION' and ratchet_ready is not True:proposed=D(str(old))
+            restore=False
+            if name=='TREND' and sign*(reference-D(str(old)))<0:
+                policy=context.get('stop_policy') or {};anchor=policy.get('initial_hard_stop')
+                if (type(policy.get('version')) is int and policy['version']==1
+                        and context.get('new_risk_blocked') is False
+                        and policy.get('anchor_available') is True and policy.get('widening_eligible') is True
+                        and _number(anchor) and anchor>0 and sign*(old-anchor)>=0):
+                    proposed=max(D(str(anchor)),reference) if side=='LONG' else min(D(str(anchor)),reference)
+                    restore=sign*(proposed-D(str(old)))<0
+            usable=proposed>0 and sign*(D(str(mark))-proposed)>0
+            row.update(status='AVAILABLE',confirmed_at_ms=opened+duration,ma10=ma,atr=atr,buffer_atr=buffer,
+                reference_basis='FRESH_MARK' if name=='REACTION' else 'CONFIRMED_MA10',
+                ratchet_reference_active=ratchet_ready if name=='REACTION' else None,
+                reference_stop=float(reference),candidate_stop=float(proposed) if usable else None,
+                requires_stop_revision=restore if usable else False,
+                confirmed_close_against_ma10=sign*(close-ma)<0,
+                favorable_price_progress_atr=round(float(progress),6),
+                fee_only_net_at_candidate=net(float(proposed)) if usable else None)
+        if not any(row['status']=='AVAILABLE' for row in rows):
+            return None
+        result=dict(version=1,status='PARTIAL' if any(r['status']=='MISSING' for r in rows) else 'AVAILABLE',
+            fee_only_net_if_flatten=flatten,cost_only_exit_estimate_positive=flatten>0 if flatten is not None else None,
+            rows=rows,meaning='Advisory references, not regime classification or orders. Mark versus Last-close SMA; basis not adjusted. Fee-only estimates include recorded net, exclude future funding/slippage. Restored price bounds are not risk approval; existing stop_revision and fresh budget validation remain mandatory.')
+        return result if _size(result)<=HOLDING_VIEW_MAX_BYTES else None
+    except (KeyError,TypeError,ValueError,AttributeError,ArithmeticError,OverflowError):
+        return None
+
+
+def project_holding_management_input(projected, context):
+    """Never evict an original fact/history item to add optional management data."""
+    try:
+        if not context.get('scenario_id') or not context.get('positions'):return projected
+        original=restore_model_input(projected);target=original.get('contract_context',{})
+        fields=_CONTEXT_FIELDS+('side','pending_entries','management_quarantine','protection_ok','price_tick','observed_execution_fee_evidence','stop_policy')
+        if ('holding_management' in target or _size(projected)>_MODEL_INPUT_LIMIT
+                or any(target.get(k)!=context.get(k) for k in fields)):
+            return projected
+        view=holding_management_view(original.get('market_snapshot',{}),target,target.get('ma_structure',{}))
+        if view is None:return projected
+        logical=copy.deepcopy(original);logical['contract_context']['holding_management']=view
+        candidate,_=project_model_input(logical,allow_gap_rescue=True)
+        if _size(candidate)>_MODEL_INPUT_LIMIT:return projected
+        restored=restore_model_input(candidate);restored['contract_context'].pop('holding_management',None)
+        return candidate if restored==original else projected
+    except (KeyError,TypeError,ValueError,AttributeError,ArithmeticError,OverflowError):
+        return projected

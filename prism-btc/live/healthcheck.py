@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 
 from live import tracking
 from live.scenario_review_storage import review_text
+from utils.btc_recovery_references import read_recovery
 from live.telegram_reporter import _load_env
 from live.ops_alerts import _resolve_ops_destination, _send
 
@@ -114,7 +115,7 @@ def _completion_context(conn, mode: str, last_error: datetime, now: datetime) ->
                 # of validation: submission_unknown shares the same status.
                 label = {"lock_busy": "잠금 대기로 건너뜀", "blocked": "차단됨",
                          "intent_pending": "주문 처리 미확정",
-                         "rejected_no_action": "위험·주문 조건 검산으로 제안 거절 · 주문 변경 없음"}.get(status, "완료 미확인")
+                         "rejected_no_action": "진입 경제성·위험·주문 조건 미달 · 주문 변경 없음"}.get(status, "완료 미확인")
                 lines.append(f"최근 시나리오 실행({mode}): {_kst_time(stamp)} · {label}")
             lines.append(f"포지션 보호({mode}): " + (
                 f"{_kst_time(protection)} · 확인" if protection else "최근 확인 기록 없음"))
@@ -254,7 +255,8 @@ def _recovered_input_size_burst(conn, errors, last_error: datetime, now: datetim
                 row = matches[0]
                 if (not valid_time(row['observed_at']) or not stamp <= row['observed_at'] <= health['decision']['at']):
                     return False
-                body = json.loads(review_text(row['body']))
+                body = json.loads(read_recovery(row['body'], conn, row['slot'], decode_legacy=review_text,
+                                                expected_kind=row['kind']))
                 if body.get('input_id') != input_id:
                     return False
                 records[kind] = (row['observed_at'], body)

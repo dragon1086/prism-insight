@@ -45,7 +45,7 @@ def snapshot(bars, *, price=None, bench=None):
     out.update(price=round(price, 6), last_completed_date=str(rows[-1]["date"])[:10],
                prev_close=round(closes[-1], 6), move_vs_prev_close_pct=_pct(price, closes[-1]),
                completed_bars=len(rows))
-    for length in (20, 50, 200):
+    for length in (10, 20, 50, 200):  # ma10 added 2026-11-09 (O'Neil 10-day line, re-entry research)
         ma = _ma(closes, length)
         before = _ma(closes, length, len(closes) - SLOPE_LOOKBACK) if len(closes) - SLOPE_LOOKBACK >= length else None
         if ma is None:
@@ -88,8 +88,51 @@ def snapshot(bars, *, price=None, bench=None):
     else:
         out["rs_60d_pctp"] = None
         missing["rs_60d_pctp"] = "needs_61_bars_and_index"
+    out["downtrend_rally"] = downtrend_rally(rows, bench)
     out["status"] = "OK" if not missing else "PARTIAL"
     out["missing"] = missing
+    return out
+
+
+DOWNTREND_RALLY_CONTRACT = "downtrend_rally_v1"
+RALLY_FAIL_RECENT_BARS = 3   # research S4: a rally-fail fire on the judgement bar or the two before it
+_DOWNTREND_RALLY_MIN_BARS = 26   # ATR20/MA20 plus the 5-bar MA20 slope
+
+
+def downtrend_rally(rows, bench=None):
+    """H-1114-nobuy-rally-in-downtrend (user decision 2026-11-15, record only, never a gate): the rally-fail
+    short setup mirrored as 'do not buy' flags, on completed bars. S1 crash_switch (close 3 ATR20 under the
+    20-day high, held until a close above MA20), S2 = S1 and MA20 below its value 5 bars ago, S3 = S2 and the
+    close within 1 ATR20 of (or above) MA20, S4 = a KQ_RFAIL-style fire within RALLY_FAIL_RECENT_BARS; M2 =
+    S2 on the index. Same functions as the inverse lane (prism_inverse.domain.signals), so a review can
+    re-derive every flag from the bars. Research: tasks/research-20261114/bear-nobuy/filter.py ``states``."""
+    from prism_inverse.domain import signals as S
+
+    def states(bars):
+        h, l, c = ([float(b[k]) for b in bars] for k in ("high", "low", "close"))
+        a = S.ind([b.get("open") for b in bars], h, l, c)   # open is carried, never used
+        i = len(c) - 1
+        switch = S.crash_switch(a)[i]
+        falling = i >= 5 and S._lt(a["ma20"][i], a["ma20"][i - 5])
+        near = a["atr"][i] is not None and a["ma20"][i] is not None and c[i] >= a["ma20"][i] - a["atr"][i]
+        fires = S.kq_rally_fail(a)
+        return {"crash_switch": switch, "ma20_falling_5d": falling, "rally_in_downtrend": switch and falling,
+                "rally_near_ma20": switch and falling and near,
+                "rally_fail_fired_recent": any(i - f < RALLY_FAIL_RECENT_BARS for f in fires),
+                "last_rally_fail_date": str(bars[fires[-1]]["date"])[:10] if fires else None}
+
+    out = {"contract": DOWNTREND_RALLY_CONTRACT, "recent_bars": RALLY_FAIL_RECENT_BARS}
+    if len(rows) < _DOWNTREND_RALLY_MIN_BARS:
+        return {**out, "status": "MISSING", "missing": {"bars": f"needs_{_DOWNTREND_RALLY_MIN_BARS}_bars"}}
+    out.update(states(rows))
+    index = [b for b in (bench or []) if _num(b.get("high")) and _num(b.get("low")) and _num(b.get("close"))]
+    if len(index) >= _DOWNTREND_RALLY_MIN_BARS:
+        idx = states(index)
+        out.update(index_crash_switch=idx["crash_switch"], index_ma20_falling_5d=idx["ma20_falling_5d"],
+                   index_rally_in_downtrend=idx["rally_in_downtrend"], status="OK")
+    else:
+        out.update(index_crash_switch=None, index_ma20_falling_5d=None, index_rally_in_downtrend=None,
+                   status="PARTIAL", missing={"index": f"needs_{_DOWNTREND_RALLY_MIN_BARS}_bars"})
     return out
 
 

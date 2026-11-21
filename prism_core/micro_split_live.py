@@ -8,10 +8,11 @@ fills, like the legacy full-slot entry. OFF unless MICRO_SPLIT_LIVE_ENABLED.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from copy import deepcopy
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
 
 from prism_core.slot_weight import slot_fraction
 
@@ -23,6 +24,101 @@ def live_enabled(market):
     flag = os.getenv("MICRO_SPLIT_LIVE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
     markets = {m.strip().upper() for m in os.getenv("MICRO_SPLIT_LIVE_MARKETS", "KR,US").split(",") if m.strip()}
     return flag and str(market).upper() in markets
+
+
+def pyramid_rows_enabled():
+    """#288 pyramid rows for micro-split holdings (user decision 2026-11-08), default off.
+
+    On: a held micro-split winner may open another independent row (max 3) that is itself a
+    micro-split position. Off: micro-split rows stay out of #288 (LEGACY_PYRAMID_BLOCKED_MICRO_SPLIT).
+    """
+    return os.getenv("PYRAMID_ROWS_MICRO_SPLIT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+PYRAMID_RESERVE_DEFAULT = 2        # free rows kept for new names (user decision 2026-11-08, after replay)
+PYRAMID_RESERVE_BELOW_DEFAULT = 8  # the reserve applies only below this many distinct tickers
+_ACCOUNT_TICKERS_SQL = {"KR": "SELECT ticker FROM stock_holdings WHERE account_key = ?",
+                        "US": "SELECT ticker FROM us_stock_holdings WHERE account_key = ?"}
+
+
+def _own_cursor(agent):
+    """A separate cursor, so a read here never resets the caller's shared cursor results."""
+    conn = getattr(agent, "conn", None)
+    return conn.cursor() if conn is not None else agent.cursor
+
+
+def _setting(name, default):
+    value = int(os.getenv(name, str(default)).strip())
+    if value < 0:
+        raise ValueError(name)
+    return value
+
+
+def pyramid_reserve_check(row_tickers, max_slots):
+    """(ok, reason) for opening one more pyramid row, counted in holding ROWS like the MAX_SLOTS
+    new-entry limit. free_after = max_slots - (rows + 1). While the account holds fewer than
+    PYRAMID_RESERVE_BELOW_TICKERS (default 8) distinct tickers, free_after must stay >=
+    PYRAMID_RESERVE_SLOTS (default 2); at or above it the reserve is 0. MAX_SLOTS always holds.
+    Unreadable settings or holdings fail closed. New-name entries never call this.
+    The weighted-slot AI cap stays a separate check in the buy path."""
+    try:
+        reserve = _setting("PYRAMID_RESERVE_SLOTS", PYRAMID_RESERVE_DEFAULT)
+        below = _setting("PYRAMID_RESERVE_BELOW_TICKERS", PYRAMID_RESERVE_BELOW_DEFAULT)
+        tickers = list(row_tickers)
+        free_after = int(max_slots) - (len(tickers) + 1)
+    except (TypeError, ValueError):
+        return False, "PYRAMID_RESERVE_SLOTS:UNKNOWN"
+    names = len({str(t) for t in tickers})
+    required = reserve if names < below else 0
+    if free_after < 0:
+        return False, f"PYRAMID_MAX_SLOTS:rows={len(tickers)}/{max_slots}"
+    if free_after < required:
+        return False, f"PYRAMID_RESERVE_SLOTS:free_after={free_after}<{required} (tickers={names}<{below})"
+    return True, f"PYRAMID_RESERVE_SLOTS_OK:free_after={free_after}>={required} (tickers={names})"
+
+
+def pyramid_slot_check(agent, *, market, ticker, logger=None):
+    """Reserve rule for the active account, run BEFORE sizing (no add plan for a blocked row): (ok, reason)."""
+    try:
+        rows = _own_cursor(agent).execute(_ACCOUNT_TICKERS_SQL[str(market).upper()],
+                                          (agent._account_scope()[0],)).fetchall()
+        ok, reason = pyramid_reserve_check([row[0] for row in rows], agent.max_slots)
+    except Exception:  # noqa: BLE001 - unknown usage fails closed
+        ok, reason = False, "PYRAMID_RESERVE_SLOTS:UNKNOWN"
+    if logger:
+        logger.warning("[PYRAMID_ROW][%s] %s %s: %s", market, ticker, "slot ok" if ok else "blocked", reason)
+    return ok, reason
+
+
+def pyramid_row_check(agent, *, market, ticker, plan, logger=None):
+    """Flag-on pyramid row admission: (ok, reason). The row must be micro-split (a B3 plan was
+    built) and pass the reserve rule for the active account."""
+    if plan is None:
+        if logger:
+            logger.warning("[PYRAMID_ROW][%s] %s blocked: PYRAMID_ROW_NO_MICRO_PLAN", market, ticker)
+        return False, "PYRAMID_ROW_NO_MICRO_PLAN"
+    return pyramid_slot_check(agent, market=market, ticker=ticker, logger=logger)
+
+
+def rows_cost_weighted_entry(rows):
+    """Cost-weighted entry of a ticker's rows [(buy_price, scenario)], or None when a row is unreadable.
+
+    A micro-split row weighs its slot allocation at its leg-weighted entry (its ``buy_price`` is
+    only the first leg); a legacy row weighs one slot at ``buy_price``. Slot weights equal cost
+    weights because rows of one account share that account's slot amount.
+    """
+    cost = units = Decimal(0)
+    for buy_price, scenario in rows:
+        if isinstance(scenario, str):
+            scenario = json.loads(scenario or "{}")
+        block = record(scenario)
+        if block is not None:
+            weight, entry = _dec(block["allocation"]), weighted_entry(block["legs"])
+        else:
+            weight, entry = Decimal(str(slot_fraction(scenario))), _dec(buy_price)
+        cost += weight
+        units += weight / entry
+    return float(cost / units) if units > 0 else None
 
 
 def plan_adds_enabled(market):
@@ -50,6 +146,61 @@ def scaled_cash(unit_amount, allocation, market):
     if value <= 0:
         raise ValueError("allocation below one currency unit")
     return int(value) if quantum == 1 else float(value)
+
+
+def fill_to_target_cash(unit_amount, ticker_allocation, held_quantity, price, market):
+    """Order notional that brings the broker holding up to PRISM's ticker allocation, never above (0 if there).
+
+    Why (2026-11-14, user decision): whole-share rounding leaves the broker below the strategy ledger
+    (JNJ 0.8 x $1,000 bought 2 x $284.55 = $569), and an add of only the delta ($100 < one share)
+    never closes that gap, so an add orders the gap to the new allocation instead.
+    """
+    quantum = Decimal(1) if str(market).upper() == "KR" else Decimal("0.01")
+    value = (_dec(unit_amount) * _dec(ticker_allocation) - _dec(held_quantity) * _dec(price)).quantize(
+        quantum, rounding=ROUND_DOWN)
+    value = max(value, Decimal(0))
+    return int(value) if quantum == 1 else float(value)
+
+
+def one_share_floor_cash(unit_amount, held_quantity, price, market):
+    """Cash for exactly one share when the add budget is below one share, or 0 to keep the block.
+
+    Why (2026-11-15, user decision): the 5%p add steps are below one share of AAPL, JNJ, BKH or a
+    480,000-won KR stock at the live account size, so no add was ever executed (6/6 blocked in the
+    11/02~15 review). One share is allowed when the broker holding is known and one more share keeps
+    the ticker within one full slot; an unknown holding stays blocked.
+    """
+    if held_quantity is None:
+        return 0
+    cost = _dec(price) * (_dec(held_quantity) + 1)
+    if cost > _dec(unit_amount):
+        return 0
+    return int(_dec(price).quantize(Decimal(1), rounding=ROUND_CEILING)) if str(market).upper() == "KR" else float(price)
+
+
+async def broker_held_quantity(trading, symbol):
+    """Shares of symbol held at the broker, or None when not authoritative.
+
+    KR has a checked balance query (HELD/FLAT/UNKNOWN); the US trader only has the plain one, where
+    0 also means a failed query, so only a positive count counts. FLAT is None too: an add never
+    rebuilds a position the broker does not hold.
+    """
+    import asyncio
+
+    from prism_core.execution_service import normalize_checked_holding
+
+    try:
+        checked = getattr(trading, "get_holding_quantity_checked", None)
+        if callable(checked):
+            state, quantity = normalize_checked_holding(await asyncio.to_thread(checked, symbol))
+            return quantity if state == "HELD" else None
+        plain = getattr(trading, "get_holding_quantity", None)
+        if callable(plain):
+            quantity = await asyncio.to_thread(plain, symbol)
+            return quantity if type(quantity) is int and quantity > 0 else None
+    except Exception:  # noqa: BLE001 - an unreadable balance falls back to the delta order
+        return None
+    return None
 
 
 # Conviction tilt (2026-10-04, user-approved design 2): top setups start one step bigger.
@@ -98,19 +249,119 @@ def conviction_tilt(base, *, market, buy_score, trigger_type):
             "buy_score": float(score), "trigger_type": str(trigger_type).strip()}
 
 
-def entry_record(*, plan, unit_amount, market, entered_at, tilt=None):
+# Re-entry first size (2026-11-08, user decision after H-1106-reentry-shrink): a LIVE re-entry starts
+# at REENTRY_V3_FIRST_SIZE_FACTOR x the B3 initial; adds still come from the add_plan rails.
+REENTRY_SIZE_REASON = "REENTRY_FIRST_SIZE"
+# H-1109 LIVE (2026-11-09, user decision): a re-entry in a bull regime keeps the full B3 initial;
+# sideways, bear and MISSING regimes keep the REENTRY_V3_FIRST_SIZE_FACTOR size.
+# 2026-11-10 (user decision): the switch also takes a market list ("KR") - US bull re-entries lost under
+# both the current and the K8b regime, so US goes back to the factor. "true" still means KR and US.
+REENTRY_BULL_SIZE_REASON = "REENTRY_BULL_FULL_SIZE"
+REENTRY_MA20R_SIZE_REASON = "REENTRY_MA20R_FULL_SIZE"
+
+
+def _bull_full_size_market(market):
+    raw = os.getenv("REENTRY_V3_BULL_FULL_SIZE", "false").strip()
+    if raw.lower() in {"1", "true", "yes", "on"}:
+        return True
+    return str(market).upper() in {m.strip().upper() for m in raw.split(",") if m.strip()}
+
+
+def reentry_first_size(base, scenario, market=None):
+    """{"base", "sized", "factor", "reason"} for a re-entry scenario when the factor is below 1, else None.
+
+    With REENTRY_V3_BULL_FULL_SIZE on for the market, a bull-regime re-entry records factor 1 (the full B3 initial).
+    """
+    meta = (scenario or {}).get("reentry") if isinstance(scenario, dict) else None
+    if not isinstance(meta, dict) or not meta.get("version"):
+        return None
+    regime = scenario.get("_deterministic_market_regime")
+    if meta.get("signal") == "MA20R":
+        # H-1116 (user decision 2026-11-16): the MA20 recovery re-entry takes the full B3 initial in every regime
+        # (the account replay that passed used a full slot; half size halved the gain).
+        base = _dec(base)
+        return {"base": str(base), "sized": str(base), "factor": "1", "reason": REENTRY_MA20R_SIZE_REASON,
+                "regime": regime}
+    if _bull_full_size_market(market) and regime in _BULL:
+        base = _dec(base)
+        return {"base": str(base), "sized": str(base), "factor": "1", "reason": REENTRY_BULL_SIZE_REASON,
+                "regime": regime}
+    try:
+        factor = Decimal(os.getenv("REENTRY_V3_FIRST_SIZE_FACTOR", "1").strip())
+    except ArithmeticError:
+        return None
+    if not factor.is_finite() or not 0 < factor < 1:
+        return None
+    base = _dec(base)
+    sized = (base * factor).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+    return {"base": str(base), "sized": str(_dec(sized)), "factor": str(factor), "reason": REENTRY_SIZE_REASON}
+
+
+# H-1109-kr-reentry-bull-size SHADOW (2026-11-09, user approval): record what the first re-entry size
+# would be under regime sizing (bull 1.0; sideways/bear 0 or 0.5). Observation only, never the order.
+REGIME_SHADOW_ID = "H-1109-reentry-regime-size"
+_BULL = {"parabolic", "strong_bull", "moderate_bull"}
+_BEAR = {"moderate_bear", "strong_bear"}
+REGIME_SHADOW_ARMS = {"bull1_else0": {"bull": "1", "sideways": "0", "bear": "0"},
+                      "bull1_else05": {"bull": "1", "sideways": "0.5", "bear": "0.5"}}
+# 2026-11-10 (H-1110, US): arms that split bull by K8b bull age (early = first 20 sessions). The early-bull
+# block itself is LIVE in reentry_v3_live.plan; these record what the later bull / bear sizes would be.
+K8B_AGE_ARMS = {"early0_late1_else05": {"early": "0", "late": "1", "sideways": "0.5", "bear": "0.5"},
+                "early0_late05_bear1": {"early": "0", "late": "0.5", "sideways": "0.5", "bear": "1"}}
+
+
+def regime_size_shadow(base, scenario, reentry_size=None):
+    """Hypothetical first re-entry sizes per regime arm, or None when off or not a re-entry.
+
+    A missing or unknown regime stays MISSING (no arm sizes), never a default bucket.
+    """
+    if os.getenv("REENTRY_REGIME_SIZE_SHADOW", "false").strip().lower() not in {"1", "true", "yes", "on"}:
+        return None
+    meta = (scenario or {}).get("reentry") if isinstance(scenario, dict) else None
+    if not isinstance(meta, dict) or not meta.get("version"):
+        return None
+    regime = scenario.get("_deterministic_market_regime")
+    bucket = ("bull" if regime in _BULL else "bear" if regime in _BEAR else "sideways" if regime == "sideways"
+              else None)
+    base = _dec(base)
+    out = {"id": REGIME_SHADOW_ID, "regime": regime, "bucket": bucket or "MISSING", "base": str(base),
+           "applied_factor": (reentry_size or {}).get("factor", "1"),
+           "applied": (reentry_size or {}).get("sized", str(base))}
+    sized = lambda f: str((base * Decimal(f)).quantize(Decimal("0.0001"), rounding=ROUND_DOWN).normalize())  # noqa: E731
+    if bucket:
+        out["arms"] = {name: {"factor": f[bucket], "sized": sized(f[bucket])} for name, f in REGIME_SHADOW_ARMS.items()}
+        age = (meta.get("k8b") or {}).get("bull_age")
+        cell = bucket if bucket != "bull" else None if not isinstance(age, int) else "early" if age <= 20 else "late"
+        out["k8b_bull_age"] = age
+        if cell:                             # bull without a K8b age stays MISSING for the age arms
+            out["arms"].update({name: {"factor": f[cell], "sized": sized(f[cell])} for name, f in K8B_AGE_ARMS.items()})
+    return out
+
+
+def _safe_regime_shadow(base, scenario, reentry_size):
+    try:
+        return regime_size_shadow(base, scenario, reentry_size)
+    except Exception:  # noqa: BLE001 - the shadow record must never change the live entry
+        return None
+
+
+def entry_record(*, plan, unit_amount, market, entered_at, tilt=None, reentry_size=None, regime_shadow=None):
     """The micro_split block stored on the new holding's scenario.
 
     With a conviction ``tilt`` the first leg and the allocation are the tilted value and the
     tilt is recorded next to the B3 plan hash (which still describes the base initial).
     """
-    initial = tilt["tilted"] if tilt else plan["initial_nominal"]
+    initial = tilt["tilted"] if tilt else (reentry_size["sized"] if reentry_size else plan["initial_nominal"])
     block = {"contract": CONTRACT, "policy_version": plan["policy_version"], "plan_hash": plan["plan_hash"],
              "market": str(market).upper(), "unit_amount": str(_dec(unit_amount)), "allocation": str(_dec(initial)),
              "legs": [{"kind": "INITIAL", "allocation": str(_dec(initial)),
                        "price": str(_dec(plan["entry_reference"])), "at": entered_at}]}
     if tilt:
         block["conviction_tilt"] = dict(tilt)
+    if reentry_size:
+        block["reentry_size"] = dict(reentry_size)
+    if regime_shadow:
+        block["reentry_regime_shadow"] = dict(regime_shadow)
     # Why the first size is what it is (observation only; the plan hash above freezes the same values).
     setup = plan.get("setup") or {}
     block["sizing"] = {k: (str(v) if v is not None else None) for k, v in (
@@ -175,15 +426,20 @@ def display(scenario):
 
 
 def prepare_entry(agent, *, market, ticker, current_price, scenario, decision_ref, account, logger=None,
-                  trigger_type=None):
+                  trigger_type=None, pyramid_row=None):
     """Size a LIVE first entry: (plan, cash_amount, scenario_with_record) or (None, None, scenario).
 
     Called with the refreshed execution price, before the strategy row and the
     broker order. When LIVE is off or the plan cannot be built (no ATR/stop),
     the legacy full-slot entry is unchanged and the reason is logged. A top setup
     (scenario buy_score >= 8 and a strong ``trigger_type``) starts with the conviction
-    tilt; callers pass no trigger type for entries outside the regular batch (re-entry).
+    tilt; callers pass no trigger type for entries outside the regular batch (re-entry,
+    pyramid rows). ``pyramid_row`` (prism_core.pyramid_ledger.lineage: entry_no 2/3, parent rows and
+    traces) marks a #288 pyramid row on the block.
     """
+    if pyramid_row:
+        # A pyramid row is a plain first entry linked by origin/parent traces: never re-entry sizing.
+        scenario = {k: v for k, v in scenario.items() if k != "reentry"}
     if not live_enabled(market):
         return None, None, scenario
     try:
@@ -193,11 +449,16 @@ def prepare_entry(agent, *, market, ticker, current_price, scenario, decision_re
                           stop_loss=scenario.get("stop_loss"), decision_ref=decision_ref)
         tilt = conviction_tilt(plan["initial_nominal"], market=market, buy_score=scenario.get("buy_score"),
                                trigger_type=trigger_type)
-        initial = tilt["tilted"] if tilt else plan["initial_nominal"]
+        size = None if tilt else reentry_first_size(plan["initial_nominal"], scenario, market)
+        initial = tilt["tilted"] if tilt else (size["sized"] if size else plan["initial_nominal"])
         cash = scaled_cash(unit, initial, market)
         updated = dict(scenario)
         updated[SCENARIO_KEY] = entry_record(plan=plan, unit_amount=unit, market=market,
-                                             entered_at=plan["created_at"], tilt=tilt)
+                                             entered_at=plan["created_at"], tilt=tilt, reentry_size=size,
+                                             regime_shadow=None if tilt else _safe_regime_shadow(
+                                                 plan["initial_nominal"], scenario, size))
+        if pyramid_row:
+            updated[SCENARIO_KEY]["pyramid_row"] = dict(pyramid_row)
         attach_buy_add_plan(updated, market=market, ticker=ticker, raw=updated.pop("add_plan", None), logger=logger)
         if logger:
             logger.warning("[MICRO_SPLIT][%s] %s initial=%s b3_initial=%s tilt=%s cash=%s", market, ticker, initial,
@@ -252,10 +513,22 @@ def _emit_planned(*, market, ticker, position_id, block, plan, issues, decision_
                                "plan_source": (plan or {}).get("source"), "valid_for": (plan or {}).get("valid_for"),
                                "scenario_ids": [s["id"] for s in scenarios],
                                "lens": sorted({x for s in scenarios for x in s["lens"]}),
-                               "dropped": [i["reason"] for i in issues]})
+                               "dropped": [i["reason"] for i in issues],
+                               # Trigger levels and chase limits, so a blocked or missed add can be replayed
+                               # after the holding row's plan history (last few sessions) is overwritten.
+                               "scenarios": [{k: s.get(k) for k in ("id", "type", "trigger", "target_allocation",
+                                                                    "max_chase_pct", "max_chase_pct_written")}
+                                             for s in scenarios]})
     except Exception as error:  # noqa: BLE001 - observability never affects trading
         import logging
         logging.getLogger(__name__).warning("[MICRO_SPLIT][%s] add_planned event skipped: %s", market, error)
+
+
+def pyramid_signal_fields(scenario):
+    """Extra BUY signal fields for a micro-split pyramid row ({} otherwise); sizing stays position_fraction."""
+    block = record(scenario)
+    row = block.get("pyramid_row") if block is not None else None
+    return {"entry_kind": "PYRAMID_ADD", "pyramid_entry_no": row.get("entry_no")} if isinstance(row, dict) else {}
 
 
 def entry_message_block(scenario, market):
@@ -269,6 +542,8 @@ def entry_message_block(scenario, market):
     tilt = block.get("conviction_tilt") or {}
     base = round(float(tilt["base"]) * 100) if tilt.get("base") else None
     tilted = f" (상위 셋업 가중, 기본 {base}%에서 상향)" if base is not None else ""
+    if (block.get("reentry_size") or {}).get("reason") == REENTRY_SIZE_REASON:
+        tilted = f" (재진입 첫 비중 축소, 기본 {round(float(block['reentry_size']['base']) * 100)}%에서 하향)"
     plan = block.get("add_plan") or {}
     labels = [add_plan.scenario_label(s, market, "ko") for s in plan.get("scenarios") or []]
     if not plan_adds_enabled(market):
@@ -417,6 +692,99 @@ _SCENARIO_SQL = {
 }
 
 
+def record_add_leg(agent, *, market, row_id, bar_end, **fields):
+    """Store order facts on an add leg (``bar_end``): ``order_cash`` (a fill-to-target notional, or 0
+    when rejected) and ``decision_id`` (the order intent's source decision id, which the post-close
+    fill check matches to write ``filled_qty``).
+
+    Per-row exit quantities (prism_core.loop_row_split) size a leg from its allocation delta; a
+    fill-to-target add orders more than that and a rejected add nothing, so the leg keeps what it
+    actually ordered. Never raises.
+    """
+    conn = None
+    try:
+        market, conn = str(market).upper(), agent.conn
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(_SCENARIO_SQL[market], (int(row_id),)).fetchone()
+        scenario = json.loads(row[0]) if row and row[0] else None
+        block = record(scenario)
+        leg = next((leg for leg in (block or {}).get("legs", []) if leg.get("bar_end") == bar_end), None)
+        if leg is None:
+            conn.rollback()
+            return False
+        leg.update({key: str(value) for key, value in fields.items()})
+        conn.execute(_UPDATE_SQL[market], (json.dumps(scenario, ensure_ascii=False), int(row_id)))
+        conn.commit()
+        return True
+    except Exception:  # noqa: BLE001 - the leg delta stays the sizing basis
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+        return False
+
+
+def record_leg_fill(conn, *, market, row_id, symbol, account_key, decision_id, filled_qty):
+    """Store the broker-confirmed ``filled_qty`` on one ledger leg after the close; never raises.
+
+    ``decision_id`` set: the add leg that recorded it; None: the row's INITIAL leg. A row that is
+    gone, belongs to another ticker/account or has no such leg is left alone (returns False).
+    Per-row exit quantities then count shares bought instead of shares ordered.
+    """
+    try:
+        market = str(market).upper()
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(_ROW_SQL[market], (int(row_id), symbol, account_key)).fetchone()
+        scenario = json.loads(row[4]) if row and row[4] else None
+        legs = (record(scenario) or {}).get("legs") or []
+        if decision_id is None:
+            leg = legs[0] if legs and legs[0].get("kind") == "INITIAL" else None
+        else:
+            leg = next((leg for leg in legs if leg.get("decision_id") == decision_id), None)
+        if leg is None or leg.get("filled_qty") == str(int(filled_qty)):
+            conn.rollback()
+            return False
+        leg["filled_qty"] = str(int(filled_qty))
+        conn.execute(_UPDATE_SQL[market], (json.dumps(scenario, ensure_ascii=False), int(row_id)))
+        conn.commit()
+        return True
+    except Exception:  # noqa: BLE001 - the ordered quantity stays the basis
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        return False
+
+
+def record_order_price(agent, *, market, row_id, price, logger=None):
+    """Store the price that sized the first leg's broker order (``legs[0].order_price``).
+
+    The US path re-quotes at the broker after the strategy row is written, so the order can be
+    sized at another price than the leg; per-row exit quantities (prism_core.loop_row_split) use
+    it. Legacy rows and an unreadable row are left alone. Never raises (observation of the order).
+    """
+    conn = None
+    try:
+        market, price, conn = str(market).upper(), _dec(price), agent.conn
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")  # same guard as a worker add: no lost leg
+        row = conn.execute(_SCENARIO_SQL[market], (int(row_id),)).fetchone()
+        scenario = json.loads(row[0]) if row and row[0] else None
+        block = record(scenario)
+        if block is None or block["legs"][0].get("order_price") == str(price):
+            conn.rollback()
+            return False
+        block["legs"][0]["order_price"] = str(price)
+        conn.execute(_UPDATE_SQL[market], (json.dumps(scenario, ensure_ascii=False), int(row_id)))
+        conn.commit()
+        return True
+    except Exception as error:  # noqa: BLE001 - the leg price stays the sizing basis
+        if conn is not None:
+            with contextlib.suppress(Exception):  # a failed rollback must not hide the original error
+                conn.rollback()
+        if logger:
+            logger.warning("[MICRO_SPLIT][%s] order price not recorded for row %s: %s", market, row_id, error)
+        return False
+
+
 def add_order_status(result, market):
     """Plain order status for the add message (reason codes stay in logs and the add_executed event)."""
     if result.get("success"):
@@ -466,6 +834,23 @@ def add_signal_fields(*, market, campaign, meta, before, after, price, stop_loss
             "trade_message": str(result.get("message") or "")[:200]}
 
 
+def ticker_signal_fields(agent, *, market, symbol, account_key, row_id, before, after):
+    """ticker_allocation_before/after and ticker_rows of an ADD ({} when the rows are unreadable).
+
+    Why (2026-11-08): with pyramid rows a subscriber sees only the broker's ticker total, so a row's
+    own allocation_after looked already filled and every pyramid-row add was skipped there.
+    """
+    from prism_core.loop_row_split import _ROWS_SQL
+    try:
+        rows = _own_cursor(agent).execute(_ROWS_SQL[market], (symbol, account_key)).fetchall()
+        others = sum(slot_fraction(json.loads(r[1] or "{}")) for r in rows if int(r[0]) != int(row_id))
+        count = len(rows) if any(int(r[0]) == int(row_id) for r in rows) else len(rows) + 1
+    except Exception:  # noqa: BLE001 - unknown stays absent; subscribers fall back to the row
+        return {}
+    return {"ticker_allocation_before": round(others + float(before), 4),
+            "ticker_allocation_after": round(others + float(after), 4), "ticker_rows": count}
+
+
 async def publish_add_signal(*, ticker, company_name, price, fields):
     """Publish the ADD on Redis Streams and GCP Pub/Sub; best effort, never raises.
 
@@ -502,7 +887,8 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
     The holding row's scenario is updated first and independently of the broker
     fill, like the legacy entry. ``buy_price`` stays the initial entry (positions
     mirror, -7% stop basis and SHADOW parity); the cost-weighted entry is recorded
-    at exit by ``exit_basis``. The order notional is the allocation delta of one slot.
+    at exit by ``exit_basis``. The order notional fills the broker
+    holding up to the ticker allocation (the slot delta when the holding is unknown).
     """
     from observability.events import emit_event
     from prism_core.execution_service import ExecutionService
@@ -550,22 +936,41 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
         agent.conn.rollback()
         raise
     after = float(updated[SCENARIO_KEY]["allocation"])
-    cash = scaled_cash(block["unit_amount"], delta, market)
-    intent = OrderIntent.create(
-        market=market, account_id=campaign["account_key"], symbol=campaign["symbol"], side="buy",
-        order_style="smart", source="micro_split_add",
-        source_decision_id=_hash(["micro-split-add", campaign["campaign_id"], decision["bar_end"]]),
-        source_position_id=campaign["position_id"], cash_amount=cash, limit_price=price,
-        reason="Micro-split add")
-    if whole_share_quantity(cash, price) <= 0:
-        result = {"success": False, "status": "blocked_budget", "reason_code": "micro_split_add_below_one_share",
-                  "message": "Add budget below one share; strategy allocation recorded", "quantity": 0}
-    else:
-        service = (ExecutionService.domestic if market == "KR" else ExecutionService.us)
-        async with service(account_name=account["name"], db_path=agent.db_path) as trading:
+    ticker_fields = ticker_signal_fields(agent, market=market, symbol=campaign["symbol"],
+                                         account_key=campaign["account_key"], row_id=row_id,
+                                         before=before, after=after)
+    service = (ExecutionService.domestic if market == "KR" else ExecutionService.us)
+    async with service(account_name=account["name"], db_path=agent.db_path) as trading:
+        # Fill to the ticker allocation when the broker holding is known; otherwise the delta, as before.
+        held = await broker_held_quantity(trading, campaign["symbol"])
+        if held and "ticker_allocation_after" in ticker_fields:
+            cash, cash_basis = fill_to_target_cash(block["unit_amount"], ticker_fields["ticker_allocation_after"],
+                                                   held, price, market), "fill_to_target"
+        else:
+            cash, cash_basis = scaled_cash(block["unit_amount"], delta, market), "delta"
+        if whole_share_quantity(cash, price) <= 0:
+            floor_cash = one_share_floor_cash(block["unit_amount"], held, price, market)
+            if floor_cash:
+                cash, cash_basis = floor_cash, "one_share_floor"
+        intent = OrderIntent.create(
+            market=market, account_id=campaign["account_key"], symbol=campaign["symbol"], side="buy",
+            order_style="smart", source="micro_split_add",
+            source_decision_id=_hash(["micro-split-add", campaign["campaign_id"], decision["bar_end"]]),
+            source_position_id=campaign["position_id"], cash_amount=cash, limit_price=price,
+            reason="Micro-split add")
+        leg_facts = {"decision_id": intent.source_decision_id}  # the post-close fill check finds the leg by it
+        if cash_basis in ("fill_to_target", "one_share_floor"):
+            leg_facts["order_cash"] = cash
+        record_add_leg(agent, market=market, row_id=row_id, bar_end=decision["bar_end"], **leg_facts)
+        if whole_share_quantity(cash, price) <= 0:
+            result = {"success": False, "status": "blocked_budget", "reason_code": "micro_split_add_below_one_share",
+                      "message": "Add budget below one share; strategy allocation recorded", "quantity": 0}
+        else:
             kwargs = {"stock_code": campaign["symbol"]} if market == "KR" else {"ticker": campaign["symbol"]}
             result = await trading.execute_buy(buy_amount=cash, limit_price=price, intent=intent,
                                                strict_budget=True, **kwargs)
+            if result.get("intent_status") == "FAILED":  # broker rejected: the leg bought nothing
+                record_add_leg(agent, market=market, row_id=row_id, bar_end=decision["bar_end"], order_cash=0)
     # One channel message per add: a secondary account's add of the same position sends no second notice.
     announce = campaign["account_key"] == (primary_account_key(agent) or campaign["account_key"])
     if announce:
@@ -582,6 +987,7 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
             fields = add_signal_fields(market=market, campaign=campaign, meta=meta, before=before, after=after,
                                        price=price, stop_loss=row.get("stop_loss"), result=result,
                                        signal_id=intent.source_decision_id)
+            fields.update(ticker_fields)
         except (KeyError, TypeError, ValueError) as error:
             import logging
             logging.getLogger(__name__).warning("[MICRO_SPLIT][%s] add signal skipped: %s", market, error)
@@ -600,7 +1006,8 @@ async def execute_add(agent, *, market, campaign, decision, now, chat_id=None):
                            "rail": meta.get("rail"), "acceleration": meta.get("acceleration"),
                            "allocation_before": before,
                            "allocation_after": after, "add_price": price, "average_entry": average,
-                           "order_cash": cash, "intent_id": intent.id, "broker_success": bool(result.get("success")),
+                           "order_cash": cash, "cash_basis": cash_basis,
+                           "broker_held_before": held, "intent_id": intent.id, "broker_success": bool(result.get("success")),
                            "broker_status": result.get("status") or result.get("intent_status"),
                            "broker_quantity": result.get("quantity"),
                            "broker_reason": result.get("reason_code") or result.get("message"),
@@ -722,6 +1129,8 @@ def dashboard_fields(scenario, *, buy_price=None, current_price=None):
     fields = {"allocation": fraction, "allocation_label": display(scenario) or (
         f"비중 {round(fraction * 100)}%" if fraction < 1 else None), "average_entry": entry,
         "add_count": max(len(block["legs"]) - 1, 0) if block is not None else 0}
+    if block is not None and isinstance(block.get("pyramid_row"), dict):
+        fields["pyramid_entry_no"] = block["pyramid_row"].get("entry_no")
     if current_price and entry:
         fields["slot_profit_rate"] = (float(current_price) / float(entry) - 1) * 100 * fraction
     return fields
@@ -817,14 +1226,13 @@ def buy_prompt_block(market, language="ko"):
             "몫이니 그 조건은 시나리오로 쓰십시오.\n"
             "- 점수는 산정 기준대로 매기십시오. 입력에 기준을 충족하는 근거가 있는데 '애매하다'는 이유로 한 단계 낮추지 "
             "마십시오. 근거가 없으면 만들어내지 마십시오.\n"
-            "- 바뀌지 않는 것: 1단계 펀더멘털·1.5단계 추세·1.6단계 상습 손절 게이트, 미진입 단독·복합 사유(아래 사유 1 예외 "
-            "제외), 손익비 floor, 최대 손절폭, 손절 규칙. 보유 종목이 7개 이상이면 '6점 이상만 진입' 규칙은 그대로 "
-            "적용됩니다. 목표 산정만 아래 규칙을 따르며, 이 규칙은 모든 국면에 적용됩니다. 이 프레임은 기준 안의 재량 판단에만 적용됩니다.\n"
+            "- 바뀌지 않는 것: 1단계 펀더멘털·1.5단계 추세·1.6단계 상습 손절 게이트, 미진입 단독·복합 사유, "
+            "손익비 floor, 최대 손절폭, 손절 규칙. "
+            "목표 산정만 아래 규칙을 따르며, 이 규칙은 모든 국면에 적용됩니다. 이 프레임은 기준 안의 재량 판단에만 적용됩니다.\n"
             "- 이번 매수는 초분할(최초 비중 + 증액 시나리오)이고 매도는 기존대로 전량입니다(시스템 제약 4). 제약 2·3은 "
             "진입/미진입 결정 문장에만 적용되며 add_plan의 조건부 시나리오를 막지 않습니다.\n"
             f"\n### 초분할 진입 기준 (결정론적)\n"
-            f"진입 최소 점수는 시장 국면과 관계없이 {value}점입니다(매트릭스의 min_score 열과 JSON 예시값 대신, 보유 종목 "
-            f"7개 이상일 때의 6점 규칙은 예외로 유지). min_score "
+            f"진입 최소 점수는 시장 국면과 관계없이 {value}점입니다(매트릭스의 min_score 열과 JSON 예시값 대신). min_score "
             f"필드에 {value}점을 쓰십시오. 결정 규칙: effective_score ≥ {value} AND 1·1.5·1.6단계 게이트 통과 AND 미진입 "
             "단독·복합 사유 없음 AND 손익비 ≥ 현재 국면 floor AND |손절폭| ≤ 최대 손절폭 AND 모멘텀 신호·추가 확인 개수 "
             "충족 → 진입. min_score 외의 매트릭스 값, 점수 산정 기준, 스키마는 바뀌지 않습니다.\n"
@@ -832,8 +1240,6 @@ def buy_prompt_block(market, language="ko"):
             "적용합니다(횡보·moderate_bear 8점, strong_bear 9점, 횡보이면서 시장 흐름 지표가 상승 추세(UPTREND)이면 7점; "
             "지시문의 분산일 강등·반등 시험매수 예외 포함). "
             f"min_score 필드에는 그대로 {value}점을 쓰십시오.\n"
-            "- 미진입 단독 사유 1(지지선이 -10% 이하)은 이번 진입에 적용하지 않습니다. '손절가 설정' 규칙상 지지선이 멀면 "
-            "매트릭스 최대 손절폭이 손절가가 되므로 사용 가능한 손절은 항상 있습니다.\n"
             "- 목표 도달은 어떤 국면에서도 매도가 아니라 trailing 전환이고(2026-10-07 매도 원칙), 초분할에서는 바로 위 저항 돌파가 증액 조건입니다. 그래서 가장 가까운 확정 주요 저항이 "
             "현재가 +3% 이내이면 그 저항은 목표가 아니라 증액 조건입니다. add_plan에 그 저항 돌파(breakout) 시나리오를 "
             "쓰고, target_price는 그 다음 확정 주요 저항까지 거리의 80%로 산정합니다. 다음 저항이 없으면 2a 조건을 확인하고, "
@@ -853,15 +1259,15 @@ def buy_prompt_block(market, language="ko"):
         "- Score by the rubric. When the inputs contain evidence that meets a band, do not mark it down a step for "
         "being 'borderline'. Never invent evidence that is not there.\n"
         "- Unchanged: the Step 1 fundamental, Step 1.5 trend and Step 1.6 repeat stop-out gates, standalone and "
-        "compound no-entry reasons (except reason 1 below), the R/R floor, the maximum stop width and the stop "
-        "rules. With 7 or more holdings, the 'only buy_score >= 6' rule still applies. Only the target follows the "
+        "compound no-entry reasons, the R/R floor, the maximum stop width and the stop "
+        "rules. Only the target follows the "
         "rule below, and that rule applies in every regime. This frame only applies to discretionary judgment inside those criteria.\n"
         "- This buy is a micro-split (initial allocation plus add scenarios) and selling stays a full exit "
         "(system constraint 4). Constraints 2 and 3 apply to the enter/no-entry decision only and do not forbid "
         "conditional add_plan scenarios.\n"
         "\n### Micro-split entry threshold (deterministic)\n"
         f"The minimum entry score is {value} in every market regime (instead of the matrix min_score column and the "
-        f"JSON example values; the 6-point rule for 7 or more holdings stays as an exception). Write {value} in "
+        f"JSON example values). Write {value} in "
         f"min_score. Decision rule: effective_score >= {value} AND Steps 1, "
         "1.5 and 1.6 pass AND no standalone or compound no-entry reason AND R/R >= the current regime floor AND "
         "|stop| <= the maximum stop AND the momentum-signal and extra-confirmation counts are met -> Enter. Every "
@@ -870,8 +1276,6 @@ def buy_prompt_block(market, language="ko"):
         f"applies the regime's existing floor instead of {value} (sideways and moderate_bear 8, strong_bear 9, "
         f"sideways with an UPTREND market pulse 7, with the instruction's distribution step-down and rebound-pilot "
         f"exceptions). Still write {value} in min_score.\n"
-        "- Standalone no-entry reason 1 (support at -10% or worse) does not apply to this entry: under the stop rules "
-        "a distant support makes the matrix maximum stop the stop, so a usable stop always exists.\n"
         "- In every regime reaching the target switches to a trailing stop instead of selling (2026-10-07 sell "
         "policy), and in a micro-split a break above the next "
         "resistance is an add condition. So when the nearest confirmed major resistance is within +3% of the current "

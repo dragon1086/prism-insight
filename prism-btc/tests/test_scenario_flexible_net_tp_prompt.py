@@ -19,27 +19,15 @@ def test_draft_and_selection_share_flexible_tp_and_cost_semantics(side, holding)
     assert len(calls) == 2
     for call in calls:
         text = " ".join(call["system_prompt"].split())
-        for clause in (
-            "100-200 USDT of favorable movement is NOT automatically net profit",
-            "100-300 USDT away only when evidenced structure and cost room support it",
-            "not a minimum profit distance", "not a forced allocation",
-            "NOT actual breakeven or a mandatory SL boundary",
-            "LEG_ONLY projections from WHOLE_SCENARIO projections",
-            "Missing fee evidence stays UNKNOWN, not zero and not an automatic WAIT",
-            "A winning partial exit does not guarantee a profitable whole trade",
-            "do not force a breakeven stop", "Choose the structural invalidation SL first",
-            "do not increase leverage to 30x", "ABOVE the support", "BELOW the resistance",
-            "not guaranteed reach or fill", "counting recorded costs only once",
-            "estimated_net_before_unmodelled_costs is NOT guaranteed future net profit",
-        ):
+        for clause in ('Fixed leverage is 10','conditional payoff is not expected return',
+                       'Unknown costs/funding are not zero','Profits never replenish the original budget',
+                       'Price above/below MA10/MA35 describes location, not direction',
+                       'not an automatic veto','never restore sold lots'):
             assert clause in text
-        assert "Start by considering 50% near" not in text
-        assert "Compare TP allocations at the same entry and structural SL" in text
-        assert "Bounded MA10-to-MA35 traversals retain their original cap" in text
-        assert "not a preset near-heavy allocation" in text
-        assert "Changing TP fractions does not itself justify moving the first target farther" in text
-        assert "explicitly assess any closer supplied reaction zone" in text
-        assert "Prefer a structurally justified profit-protecting SL at or beyond" not in text
+        assert '50% near'not in text and 'not a preset near-heavy'not in text
+        if not holding:
+            assert 'Choose structural invalidation with noise room' in text
+            assert 'Do not stretch TP or squeeze SL merely to pass host economics' in text
 
 
 def test_host_allocation_mode_keeps_new_tp_policy_in_both_phases():
@@ -48,9 +36,9 @@ def test_host_allocation_mode_keeps_new_tp_policy_in_both_phases():
     args, calls = taped("allocation-calculated")
     assert args[3]["outcome"]["status"] == "COMPLETE"
     assert len(calls) == 2
-    assert "Do not emit entry quantity" in calls[0]["system_prompt"]
-    assert "Return exactly selection_token and rationale" in calls[1]["system_prompt"]
+    assert 'new entries use allocation_fraction, not BTC quantity' in calls[0]['system_prompt']
+    assert set(calls[1]['response_schema']['properties'])=={'selection_token','rationale'}
     for call in calls:
-        text = " ".join(call["system_prompt"].split())
-        assert "100-200 USDT of favorable movement is NOT automatically net profit" in text
-        assert "NOT actual breakeven or a mandatory SL boundary" in text
+        text=' '.join(call['system_prompt'].split())
+        assert 'conditional payoff is not expected return' in text
+        assert 'Unknown costs/funding are not zero' in text

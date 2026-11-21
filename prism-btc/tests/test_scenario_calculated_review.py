@@ -7,6 +7,7 @@ import pytest
 from live.scenario_calculated_review import calculate_candidate, research_review
 from live.scenario_contract import identity_fields
 from live.scenario_preview import response_contract
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def context():
@@ -46,7 +47,7 @@ def run(ctx=None, candidates=None, *, mutate=None, clock=lambda: 1000, fail_seco
                 raise RuntimeError("secret")
             data = json.loads(kwargs["user_prompt"])["calculated_candidates"]
             chosen = next((r for r in data["candidates"] if r["eligible"]), data["wait"])
-            result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}",
+            result = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}",
                           rationale="계산과 추세 검토 후 선택")
         if mutate:
             mutate(result, len(calls), kwargs)
@@ -98,7 +99,7 @@ def test_two_phase_exact_selection_no_order_and_audit():
         ("MODEL_REQUEST", "candidate"), ("MODEL_RAW", "candidate"),
         ("CALCULATED_CANDIDATES", None), ("MODEL_REQUEST", "selection")]
     assert all(c["retry_transport"] is False and c["timeout"] <= 75 for c in calls)
-    assert all(c["model"] == "gpt-6.1-sol" and c["reasoning_effort"] == "low" and c["mcp_profile"] is None for c in calls)
+    assert all(c["model"] == "gpt-6.1-terra" and c["reasoning_effort"] == "low" and c["mcp_profile"] is None for c in calls)
 
 
 def test_no_candidates_wait_is_one_call():
@@ -245,7 +246,7 @@ def test_recorder_cannot_mutate_selected_receipts():
             answer = dict(wait_proposal=wire(ctx), candidates=[wire(ctx, "LONG")], no_candidate_reason="")
         else:
             c = data["calculated_candidates"]["candidates"][0]
-            answer = dict(selection_token=f"c0:{c['receipt_sha256']}", rationale="판단 근거")
+            answer = dict(selection_token=f"c0:{model_receipt_hash(c)}", rationale="판단 근거")
         return SimpleNamespace(text=json.dumps(answer))
     result = research_review(dict(valid=True, as_of_ms=1000000), ctx, response_contract(ctx),
         generate=generate, record=record, clock=lambda: 1000)
@@ -407,12 +408,13 @@ def test_market_account_candidates_preserved_and_each_phase_uses_its_own_schema(
     assert 'candidate_price_order' not in displays[0]
     assert displays[1]['candidate_price_order'][0][:2] == [
         result['candidates']['candidates'][0]['id'], result['candidates']['candidates'][0]['receipt_sha256']]
-    assert restored[1]["calculated_candidates"] == result["candidates"]
+    assert [r["host_receipt_sha256"] for r in restored[1]["calculated_candidates"]["candidates"]] == [r["receipt_sha256"] for r in result["candidates"]["candidates"]]
+    assert [r["effective_plan"] for r in restored[1]["calculated_candidates"]["candidates"]] == [r["effective_plan"] for r in result["candidates"]["candidates"]]
     assert all("research_response_contract" not in p for p in payloads)
-    assert restored[0]["response_contract"] == response_contract(context())
+    assert restored[0]["response_contract"]["authority"].startswith("API response_schema")
     assert set(calls[0]["response_schema"]["properties"]) == {
         "wait_proposal", "candidates", "no_candidate_reason"}
-    assert restored[1]["response_contract"] == calls[1]["response_schema"]
+    assert restored[1]["response_contract"]["authority"].startswith("API response_schema")
     assert "wait_proposal" not in calls[1]["response_schema"]["properties"]
 
 
@@ -449,7 +451,9 @@ def test_retained_row17_size_boundary_without_dropping_evidence_or_raising_cap()
     assert len(_encoded(old_second).encode()) > 100000
     second = restore_model_input(json.loads(calls[1]["user_prompt"]))
     assert second["contract_context"]["retained_evidence"] == ctx["retained_evidence"]
-    assert second["calculated_candidates"] == result["candidates"]
+    assert [r["host_receipt_sha256"] for r in second["calculated_candidates"]["candidates"]] == [r["receipt_sha256"] for r in result["candidates"]["candidates"]]
+    assert "raw_proposal" in result["candidates"]["candidates"][0]
+    assert "raw_proposal" not in second["calculated_candidates"]["candidates"][0]
 
 
 def holding(side="LONG"):
@@ -710,3 +714,29 @@ def test_valid_holding_cancel_only_wait_keeps_current_protection_and_metadata():
     assert result["executable"] is False and result["orders_submitted"] == 0
     assert ctx["previous_hard_stop"] == original["previous_hard_stop"]
     assert ctx["positions"] == original["positions"]
+
+
+def test_new_incomplete_reason_round_trips_through_exact_failure_tape():
+    from analysis.scenario_review_tape import record_review,replay_review
+    c=context();snapshot=dict(valid=True,as_of_ms=1000000);contract=response_contract(c);bindings={'test':'terminal-reason'}
+    def fail(**request):raise ValueError('scenario_oauth_failed:stream_incomplete')
+    tape=record_review(research_review,snapshot,c,contract,generate=fail,record=lambda e:None,clock=lambda:1000,bindings=bindings)
+    assert tape['outcome']['status']=='FAILED'
+    assert replay_review(tape,research_review,snapshot,c,contract,bindings=bindings)==tape['outcome']
+    assert any(o.get('event',{}).get('failure_detail')=='stream_incomplete'for o in tape['operations'])
+
+
+@pytest.mark.parametrize('wait',[321,None])
+def test_provider_wait_metadata_reaches_sealed_error_event_without_headers(wait):
+    from functools import partial
+    from analysis.scenario_review_tape import record_review
+    from live.scenario_oauth import ScenarioOAuthFailure
+    from tests.test_scenario_entry_plans import sample
+    s,c,_=sample();events=[]
+    def fail(**q):raise ScenarioOAuthFailure('overloaded',wait)
+    t=record_review(partial(research_review,research_mode='economic-reject-calculated-v1'),s,c,response_contract(c),generate=fail,record=events.append,clock=lambda:c['now'])
+    assert t['outcome']['status']=='FAILED'
+    event=next(e for e in events if e['kind']=='MODEL_ERROR')
+    assert event['failure_detail']=='overloaded'and'headers'not in event
+    if wait is None:assert'retry_after_seconds'not in event
+    else:assert event['retry_after_seconds']==321 and event['failed_at']==c['now']

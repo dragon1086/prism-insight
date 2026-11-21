@@ -9,6 +9,7 @@ from analysis.scenario_replay import network_boundary, run_replay
 from backtest.scenario_exchange import ScenarioExchange
 from tests.test_scenario_calculated_replay import wire
 from tests.test_scenario_replay import inputs
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 @pytest.mark.parametrize('profile', ['single-pass-economic-v4', 'calculated-economic-v4'])
@@ -38,7 +39,7 @@ def test_wait_cancel_ack_pending_retains_intent_until_terminal(tmp_path, monkeyp
         ctx = data['contract_context']
         if 'selection_token' in request['response_schema']['properties']:
             selected = data['calculated_candidates']['candidates'][0]
-            result = dict(selection_token=f"{selected['id']}:{selected['receipt_sha256']}", rationale='fixture')
+            result = dict(selection_token=f"{selected['id']}:{model_receipt_hash(selected)}", rationale='fixture')
         else:
             action = 'OPEN' if ctx['now'] < bundle['start_ms']/1000+300 else 'WAIT'
             plan = wire(ctx, action)

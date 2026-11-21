@@ -14,6 +14,7 @@ from live.scenario_calculated_review import (
 from live.scenario_preview import response_contract
 from live.scenario_review_guard import guard_review
 from tests.test_scenario_review_guard import context, wire
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def allocation_wire(ctx, action="OPEN"):
@@ -33,10 +34,11 @@ def taped(mode, *, action="OPEN", corrupt=False, ctx_override=None):
     def generate(**request):
         calls.append(request)
         body = json.loads(request["user_prompt"])
-        assert body["response_contract"] == request["response_schema"] or mode == "allocation-calculated"
+        assert body["response_contract"]["authority"].startswith("API response_schema")
+        assert "properties" in request["response_schema"]
         if len(calls) == 2:
             chosen = next(r for r in body["calculated_candidates"]["candidates"] if r["eligible"])
-            result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale="계산 검토")
+            result = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale="계산 검토")
         else:
             result = allocation_wire(ctx, action)
             if corrupt and result["entries"]:
@@ -90,7 +92,7 @@ def test_allocation_schema_does_not_modify_legacy_and_prompt_has_no_sizing_arith
     prompt = calls[0]["system_prompt"]
     assert "Round proposed quantity DOWN" not in prompt
     assert "Per-BTC risk is positive entry-to-SL" not in prompt
-    assert "Do not emit entry quantity" in prompt
+    assert "new entries use allocation_fraction, not BTC quantity" in prompt
 
 
 def test_possible_price_adjustment_is_reserved_once_without_post_resize():
@@ -152,7 +154,7 @@ def test_runtime_trusted_mode_reaches_both_fresh_guards(tmp_path, monkeypatch, m
     def generate(**request):
         if "selection_token" in request["response_schema"]["properties"]:
             chosen = json.loads(request["user_prompt"])["calculated_candidates"]["candidates"][0]
-            result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale="검산 확인")
+            result = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale="검산 확인")
         else:
             result = runtime_wire(captured, "OPEN")
             result["entries"][0].pop("quantity")

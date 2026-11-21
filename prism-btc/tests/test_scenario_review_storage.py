@@ -27,6 +27,30 @@ def test_legacy_and_compressed_have_same_replay_hash():
     assert review_text(packed) == export_text(packed) == value
 
 
+def test_replay_hash_resolves_review_event_reference_and_rejects_changed_source():
+    import json
+    import random
+    from utils.btc_review_event_references import compact
+    request = {'kind': 'MODEL_REQUEST', 'phase': 'single', 'request': {
+        'prompt': random.Random(17).randbytes(16000).hex(), 'timeout': 50.0}}
+    event = {'kind': 'MODEL_RAW', 'phase': 'single', 'actual_request': dict(request['request'], timeout=49.0),
+             'raw': 'fixture'}
+    source = json.dumps(request, sort_keys=True, allow_nan=False)
+    original = json.dumps(event, sort_keys=True, allow_nan=False)
+    encoded = compact(original, [(0, source)], 1, 1)
+    assert isinstance(encoded, bytes)
+    with sqlite3.connect(':memory:') as conn:
+        conn.execute('CREATE TABLE llm_scenario_review_events(slot,sequence,body,PRIMARY KEY(slot,sequence))')
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 0, source))
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 1, original))
+        expected = _runtime_event_hash(conn)
+        conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE sequence=1', (encoded,))
+        assert _runtime_event_hash(conn) == expected
+        conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE sequence=0', (source + ' ',))
+        with pytest.raises(ValueError):
+            _runtime_event_hash(conn)
+
+
 @pytest.mark.parametrize('data', [MAGIC+b'bad', MAGIC+gzip.compress(b'{}')[:-1],
                                   MAGIC+gzip.compress(b'{}')+b'junk',
                                   MAGIC+gzip.compress(b'x'*(MAX_BYTES+1))])
@@ -82,3 +106,167 @@ def test_compressed_recovery_wire_preserves_replay_and_fails_closed():
         _runtime_event_hash(conn)
     with pytest.raises(ValueError):
         _single_pass_audit_rows(conn, 1)
+
+def test_recovery_wire_writer_preserves_text_and_other_events():
+    import json
+    from live import scenario_recovery
+    conn = sqlite3.connect(':memory:')
+    scenario_recovery.ensure_schema(conn)
+    original = {'user_prompt': 'market-data-' * 200, 'input_id': 'input-1'}
+    scenario_recovery.journal(conn, 'MODEL_REQUEST', original, 1)
+    scenario_recovery.journal(conn, 'MODEL_RAW', {'raw': 'response-' * 200}, 2)
+    scenario_recovery.journal(conn, 'OTHER', original, 3)
+    scenario_recovery.journal(conn, 'MODEL_RAW', {'raw': 'x'}, 4)
+    rows = conn.execute('SELECT kind,body FROM llm_scenario_recovery_events ORDER BY rowid').fetchall()
+    assert isinstance(rows[0][1], bytes) and rows[0][1].startswith(MAGIC)
+    assert json.loads(review_text(rows[0][1])) == original
+    assert isinstance(rows[1][1], bytes) and json.loads(review_text(rows[1][1]))['raw'] == 'response-' * 200
+    assert isinstance(rows[2][1], str) and json.loads(rows[2][1]) == original
+    assert isinstance(rows[3][1], str) and json.loads(rows[3][1]) == {'raw': 'x'}
+
+
+def test_recovery_wire_limit_applies_before_compression():
+    from live import scenario_recovery
+    conn = sqlite3.connect(':memory:')
+    scenario_recovery.ensure_schema(conn)
+    with pytest.raises(ValueError, match='recovery_journal_bound'):
+        scenario_recovery.journal(conn, 'MODEL_REQUEST', {'user_prompt': '가' * 100_000}, 1)
+    assert conn.execute('SELECT COUNT(*) FROM llm_scenario_recovery_events').fetchone()[0] == 0
+
+
+def test_recovery_compression_error_preserves_missing_evidence(monkeypatch):
+    from live import scenario_recovery
+    conn = sqlite3.connect(':memory:')
+    scenario_recovery.ensure_schema(conn)
+    conn.execute('CREATE TABLE llm_scenario_decisions(slot INTEGER, context TEXT)')
+    conn.commit()
+    def fail(_):
+        raise OSError('compression unavailable')
+    monkeypatch.setattr(scenario_recovery, 'review_storage', fail)
+    with scenario_recovery.capture_wire(conn, 1, lambda: 1):
+        scenario_recovery.record_model_request(system_prompt='x', user_prompt='x', response_schema={})
+        scenario_recovery.record_model_wire('x')
+    assert conn.execute('SELECT COUNT(*) FROM llm_scenario_recovery_events').fetchone()[0] == 0
+
+
+def test_snapshot_storage_exact_roundtrip_and_fallback(monkeypatch):
+    from live import scenario_review_storage as storage
+    text = '{"price":"' + '가격' * 5000 + '"}'
+    encoded = storage.snapshot_storage(text)
+    assert isinstance(encoded, bytes) and storage.review_text(encoded) == text
+    assert storage.snapshot_storage('{}') == '{}'
+    monkeypatch.setattr(storage, 'review_storage', lambda _: (_ for _ in ()).throw(OSError('unavailable')))
+    assert storage.snapshot_storage(text) == text
+    monkeypatch.setattr(storage, 'review_storage', lambda _: 'changed')
+    assert storage.snapshot_storage(text) == text
+    with pytest.raises(ValueError, match='snapshot_body_type_invalid'):
+        storage.snapshot_storage(None)
+
+def test_referenced_tape_keeps_runtime_hash_and_fails_if_source_disappears():
+    import json
+    from utils.btc_review_references import canonical, compact, pack
+
+    conn = sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE llm_scenario_decisions(slot INTEGER,snapshot TEXT,context TEXT,proposal TEXT,outcome TEXT)')
+    conn.execute('CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT)')
+    conn.execute('CREATE TABLE llm_scenario_review_tapes(slot INTEGER,body TEXT)')
+    snapshot, context = {'z': 1, 'a': 2}, {'input_id': 'fixture'}
+    event = {'kind': 'MODEL_RAW', 'raw': 'fixture'}
+    body = {'inputs': {'snapshot': snapshot, 'context': context}, 'operations': [{'kind': 'record', 'event': event}]}
+    original = json.dumps(body)
+    s, c, e = map(canonical, (snapshot, context, event))
+    conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)', (1, s, c, None, None))
+    conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 0, e))
+    conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (1, original))
+    expected = _runtime_event_hash(conn)
+    conn.execute('UPDATE llm_scenario_review_tapes SET body=?', (pack(compact(original, s, c, [e])),))
+    assert _runtime_event_hash(conn) == expected
+    import gzip
+    from observability.review_storage import MAGIC
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + gzip.compress(s.encode()),))
+    assert _runtime_event_hash(conn) == expected
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + b'corrupt',))
+    with pytest.raises(ValueError):
+        _runtime_event_hash(conn)
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (s,))
+    conn.execute('DELETE FROM llm_scenario_review_events')
+    with pytest.raises(ValueError):
+        _runtime_event_hash(conn)
+
+
+@pytest.mark.parametrize('model_reference', [False, True])
+def test_tape_writer_deduplicates_only_complete_recoverable_evidence(model_reference):
+    import hashlib
+    import json
+    from live.scenario_review_storage import review_storage, tape_storage, validate_tape_for_commit
+    from utils.btc_review_references import MAGIC as REF_MAGIC, canonical, read_tape, unpack
+
+    conn = sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE llm_scenario_decisions(slot INTEGER,snapshot TEXT,context TEXT)')
+    conn.execute('CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT)')
+    text = ''.join(hashlib.sha256(str(i).encode()).hexdigest() for i in range(2000))
+    snapshot, context = {'z': text, 'a': 1}, {'z': 2, 'a': text}
+    request = {'prompt': text}
+    event = {'kind': 'MODEL_RAW', 'actual_request': request, 'raw': text}
+    operations = ([{'kind': 'generate', 'request': request, 'text': text}] if model_reference else [])
+    tape = {'inputs': {'snapshot': snapshot, 'context': context},
+            'operations': operations + [{'kind': 'record', 'event': event}], 'outcome': {'status': 'COMPLETE'}}
+    raw = json.dumps(tape)
+    conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?)',
+                 (1, canonical(snapshot), canonical(context)))
+    conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 0, canonical(event)))
+    encoded = tape_storage(conn, 1, raw)
+    assert encoded.startswith(REF_MAGIC) and len(encoded) < len(review_storage(raw))
+    assert unpack(encoded)['version'] == (2 if model_reference else 1)
+    assert read_tape(encoded, conn, 1, decode_legacy=review_text) == raw
+    conn.commit()
+    assert validate_tape_for_commit(conn, 1, raw, encoded) == encoded
+    assert conn.in_transaction
+    conn.commit()
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (review_storage(canonical(snapshot)),))
+    compressed = tape_storage(conn, 1, raw)
+    assert compressed.startswith(REF_MAGIC)
+    assert read_tape(compressed, conn, 1, decode_legacy=review_text) == raw
+    conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (canonical(snapshot),))
+    conn.commit()
+    conn.execute('DELETE FROM llm_scenario_review_events')
+    conn.commit()
+    fallback = validate_tape_for_commit(conn, 1, raw, encoded)
+    assert review_text(fallback) == raw
+    conn.commit()
+    assert review_text(tape_storage(conn, 1, raw)) == raw
+    conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 1, canonical(event)))
+    assert review_text(tape_storage(conn, 1, raw)) == raw
+    tape['outcome']['status'] = 'FAILED'
+    failed = json.dumps(tape)
+    assert review_text(tape_storage(conn, 1, failed)) == failed
+
+
+def test_reference_validation_holds_write_lock_until_commit(tmp_path):
+    import json
+    from live.scenario_review_storage import validate_tape_for_commit
+    from utils.btc_review_references import canonical, compact, pack
+
+    path = tmp_path / 'race.sqlite'
+    conn = sqlite3.connect(path)
+    conn.execute('CREATE TABLE llm_scenario_decisions(slot INTEGER,snapshot TEXT,context TEXT)')
+    conn.execute('CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT)')
+    snapshot, context, event = {'x': 1}, {'x': 2}, {'kind': 'MODEL_RAW'}
+    raw = json.dumps({'inputs': {'snapshot': snapshot, 'context': context},
+                      'operations': [{'kind': 'record', 'event': event}]})
+    s, c, e = map(canonical, (snapshot, context, event))
+    conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?)', (1, s, c))
+    conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (1, 0, e))
+    conn.commit()
+    encoded = pack(compact(raw, s, c, [e]))
+    assert validate_tape_for_commit(conn, 1, raw, encoded) == encoded
+    other = sqlite3.connect(path, timeout=0)
+    with pytest.raises(sqlite3.OperationalError, match='locked'):
+        other.execute('UPDATE llm_scenario_review_events SET body=?', ('{}',))
+    conn.commit()
+    other.execute('UPDATE llm_scenario_review_events SET body=?', ('{}',))
+    other.commit()
+    assert review_text(validate_tape_for_commit(conn, 1, raw, encoded)) == raw
+    conn.rollback()
+    other.close()
+    conn.close()

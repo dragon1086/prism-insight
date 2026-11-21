@@ -67,3 +67,13 @@ def test_delegation_matches_core():
     from trading import domestic_stock_trading as dom
     for h, m in [(10, 0), (15, 35), (20, 0), (8, 15)]:
         assert dom._domestic_order_window(_at(h, m)) == domestic_order_window(_at(h, m))
+
+
+def test_session_override_shifts_regular_closing_and_reserved_for_that_day_only(monkeypatch):
+    # 2026-11-19 college entrance exam day: KRX 10:00-16:30, closing-price trading 16:40-17:00
+    monkeypatch.setenv("KRX_SESSION_OVERRIDE", "bad-entry,2026-11-19=10:00-16:30")
+    exam = lambda h, m: datetime.datetime(2026, 11, 19, h, m)  # noqa: E731
+    assert [domestic_order_window(exam(h, m)) for h, m in [(9, 30), (10, 0), (15, 45), (16, 30), (16, 35), (16, 40), (17, 0), (17, 1)]] == \
+        ["unavailable", "regular", "regular", "regular", "unavailable", "closing", "closing", "reserved"]
+    assert domestic_order_window(_at(15, 45)) == "closing"           # other days unchanged
+    assert domestic_order_window(datetime.datetime(2026, 11, 19, 6, 45, tzinfo=ZoneInfo("UTC"))) == "regular"  # 15:45 KST

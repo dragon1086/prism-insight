@@ -14,8 +14,8 @@ import re
 from engine.scenario_snapshot import TIMEFRAME_MS, candle_start
 
 INTERVAL_MS = 300000
-PRIMARY = ('15m', '30m', '1h')
-FRAMES = {*PRIMARY, '4h', '12h', '1d', '1w'}
+PRIMARY = ('30m', '1h')
+FRAMES = {'15m', *PRIMARY, '4h', '12h', '1d', '1w'}  # Frozen raw packet coverage, not judgment authority.
 TOP = {'schema_version', 'kind', 'symbol', 'start_ms', 'end_ms', 'source', 'rows', 'rows_sha256'}
 AVAILABLE = {'slot', 'status', 'available_at_ms', 'source_context_now', 'snapshot',
              'snapshot_hash', 'source_evidence', 'quote_evidence'}

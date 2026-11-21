@@ -33,6 +33,9 @@ CONFIRMS = ("5m_close", "daily_close")
 GRID = Decimal("0.05")
 MAX_STEP = Decimal("0.25")
 MAX_CHASE_PCT = Decimal("2.0")
+# 2026-11-08 (user): AI-written limits of 0.3-1% blocked strong add days; 1.5% was positive in the
+# 2026 spring replay with no drawdown change (RESEARCH_LESSONS 11-08). Lower values are raised to it.
+MIN_CHASE_PCT = Decimal("1.5")
 MIN_SCENARIOS, MAX_SCENARIOS = 2, 4
 HISTORY_LIMIT = 30
 SESSION_PLANS = 3  # stored plans per holding (today, next session, one spare)
@@ -271,7 +274,8 @@ def _validate_scenario(raw, allocation, last_step):
     rationale = raw.get("rationale")
     scenario = {"id": sid, "type": kind, "lens": list(dict.fromkeys(lens)), "trigger": out,
                 "target_allocation": str(target.quantize(Decimal("0.01"))),
-                "max_chase_pct": float(min(chase, MAX_CHASE_PCT)),
+                "max_chase_pct": float(min(max(chase, MIN_CHASE_PCT), MAX_CHASE_PCT)),
+                "max_chase_pct_written": float(chase),  # the AI's own value, kept for later review
                 "rationale": rationale.strip()[:300] if isinstance(rationale, str) else ""}
     return scenario, ({"id": sid, "reason": "CHASE_CLAMPED"} if chase > MAX_CHASE_PCT else None)
 
@@ -450,7 +454,9 @@ def _average_volume(daily):
 
 
 def _volume_pace(evidence, bars, phase, daily):
-    if phase == "CLOSE":
+    # A provisional close (judged before the close, b3_ae_worker.CLOSE_LEAD) has only part of the day's
+    # volume, so it is paced like intraday against the same elapsed time.
+    if phase == "CLOSE" and not (evidence.get("today_daily") or {}).get("provisional"):
         average, today = _average_volume(daily), evidence.get("today_daily")
         return None if average is None or not today else Decimal(str(today["volume"])) / average
     prior = evidence.get("prior_cumulative") or {}
@@ -486,12 +492,18 @@ def _conditions(trigger, evidence, *, bars, daily, price, phase, now):
         levels.append(Decimal(str(trigger["price_above"])))
     if "reclaim_above" in trigger:
         window = daily[-ZONE_WINDOW:]
+        # A zone the stock rose through: closes below it on the way up are not an undercut and the breakout
+        # bar's own low is not a pullback, so only sessions after the first close above zone_high count.
+        zone_high = Decimal(str(trigger["zone_high"]))
+        first_above = next((i for i, b in enumerate(window) if Decimal(str(b["close"])) > zone_high), None)
+        if first_above is not None:
+            window = window[first_above + 1:]
         lows = [Decimal(str(b["low"])) for b in window]
         if phase == "CLOSE":
             lows.append(Decimal(str(today["low"])))
         elif bars:
             lows.append(min(Decimal(str(b["low"])) for b in bars))
-        if not lows or min(lows) > Decimal(str(trigger["zone_high"])):
+        if not lows or min(lows) > zone_high:
             return None, "ZONE_NOT_TOUCHED"
         if any(Decimal(str(b["close"])) < Decimal(str(trigger["zone_low"])) for b in window):
             return None, "ZONE_UNDERCUT"
@@ -658,9 +670,9 @@ def evaluate_plan(plan, state, evidence, *, now):
 
     ``state``: allocation, legs (micro_split legs), initial_entry, initial_stop,
     current_stop, fee_rate, entry_session (date), blocked (reason or None).
-    ``evidence``: phase INTRADAY|CLOSE, session_date, open_at, price (quote, or the
-    official close at CLOSE), today_bars (5m OHLCV), daily (completed sessions
-    before today), today_daily (CLOSE only), prior_cumulative (matched volume).
+    ``evidence``: phase INTRADAY|CLOSE, session_date, open_at, price (quote; at CLOSE the
+    close, or the latest price for a provisional close just before it), today_bars (5m OHLCV), daily (completed sessions
+    before today), today_daily (CLOSE only; ``provisional`` before the close), prior_cumulative (matched volume).
     """
     current = _time(now)
 

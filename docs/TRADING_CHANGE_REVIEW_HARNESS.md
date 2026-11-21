@@ -177,7 +177,7 @@ BUY/SELL/보유 점검 프롬프트를 바꾸거나 부록을 추가할 때마�
      buy_score vs effective_score, 부록 결정 규칙에서 손익비·모멘텀 조건 누락).
    - 죽은 경로 (강세장 F 1개 미달 보완 경로 vs 채점표 "펀더 미달 = 1~2점";
      "3~4점 진입 검토" vs 매트릭스 모멘텀 1개+ 요구).
-   - 사유의 전제가 다른 규칙 때문에 거짓이다 (단독 사유 1 "지지선 -10%면 손절 불가" vs
+   - 사유의 전제가 다른 규칙 때문에 거짓이다 (옛 단독 사유 1 "지지선 -10%면 손절 불가"(2026-11-11 삭제됨) vs
      손절 규칙 "최대 손절폭과 지지선 중 타이트한 쪽").
    - 목표·청산 모델 불일치 (강세 국면 목표 도달 = trailing 전환인데 손익비는 그 목표를
      수익의 끝으로 계산, 초분할에서는 그 저항 돌파가 증액 조건).
@@ -201,7 +201,7 @@ BUY/SELL/보유 점검 프롬프트를 바꾸거나 부록을 추가할 때마�
    손절가로 올리면 장중 하드스탑이 실행한다는 사실이 빠져 있었고 "trailing > 현재가면 매도"가 장중 매도를 지시했다.
    "−5~−7% 1일 유예" vs 장중 하드스탑 자동 실행, 횡보 "−3~5%" vs 국면 블록·코드 ×0.95 "이보다 좁게 잡지 마라").
    코드를 볼 때는 실행 경로 전체(배치 매도·하드스탑 루프·추세 이탈 루프)를 확인한다. 한 함수만 보고 단정하지 않는다.
-   실행 시각도 대조한다: 운영의 '장 마감'은 실제 종가가 아니다(AI 매도 판단 KR 14:46·US 14:30 ET, 추세 이탈 마감 점검 KR 15:10~15:25·US 15:50~15:59 ET). 프롬프트에 '종가'·'마감'을 쓰면 판단 시점에 그 값이 있는지 확인한다.
+   실행 시각도 대조한다: 운영의 '장 마감'은 실제 종가가 아니다(AI 매도 판단 KR 14:46 시작·실제 판단 15:00경, US 14:30 ET 시작·실제 판단 14:50 ET경(원장 2026-10-28~11-10 기준), 추세 이탈 마감 점검 KR 15:10~15:25·US 15:50~15:59 ET). 프롬프트에 '종가'·'마감'을 쓰면 판단 시점에 그 값이 있는지 확인한다. 오후 판단(스크리닝·매도)은 그 시점 가격을 오늘 종가로 간주한다(사용자 결정 2026-10-30). 오전 판단에서 전일 종가를 오늘 고점으로 만든 라인과 비교하지 않는다(LLY).
    프롬프트가 말하는 숫자·실행 방식(손절·trailing 폭·활성화·국면)은 코드 상수와 맞추고, 맞는지를
    테스트로 고정한다(`tests/test_sell_prompt_consistency.py` 방식: 코드 상수를 import해 프롬프트와 비교).
 9. **형제 프롬프트 전수 점검.** 한 프롬프트에서 모순 유형을 찾거나 고치면 같은 유형을 BUY·SELL·재진입 재점검
@@ -210,7 +210,7 @@ BUY/SELL/보유 점검 프롬프트를 바꾸거나 부록을 추가할 때마�
     1~3번 방식으로 다시 펼쳐 모순을 찾고, 결과를 점검 기록에 남긴다.
 11. 추가된 점검 유형: 지침 안의 "단일 기준(이 단계에서만 매도)"과 다른 곳의 재량 매도 문구(시장 충격·
     기회비용·리밸런싱)의 충돌, 같은 값의 범위 표기 불일치(−8% vs −8~10%), 시스템 값이 주어지는데 AI에게
-    직접 판정하라는 단계(0단계 국면 자체 판정).
+    직접 판정하라는 단계(옛 SELL 0단계 국면 자체 판정, 2026-11-11 삭제됨).
 
 ## Review lenses
 
@@ -252,6 +252,14 @@ data or a falsifiable test.
 7. **Make the effect observable and reversible.** Log a stable reason code,
    preserve enough identifiers for later outcome analysis, and keep rollback
    to one small code change or feature flag.
+8. **Keep the research engine in step (user rule 2026-11-18).** The full-ops
+   research engine (local `tasks/research-20261117/full-ops/`, `acct4.py` +
+   `FIDELITY_CHECKLIST_ko.md`) is the baseline for strategy research and copies
+   production rules. When a change alters first size, adds, pyramid rows,
+   re-entry, sell lines, slots, batch times or a LIVE flag, update the engine
+   in the same task, rerun its `revalidate.sh` until the scorecard passes, and
+   update `tests/test_research_engine_contract.py`. Research run on an engine
+   that lags production is not evidence.
 
 ## Gotcha: local evidence is not a global gate
 

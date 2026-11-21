@@ -116,9 +116,32 @@ def test_rejection_raises_and_rate_limit_retries(client):
                              Resp([stock_row(dates[0], 10)]), Resp([stock_row(dates[0], 10)])])
     assert md.daily_history("AAPL", dates[0], dates[0])["Close"].iloc[0] == 10
     assert len(fake.calls) == 3
-    client(responses=[Resp(ok=False, message="EGW00123 invalid")])
+    client(responses=[Resp(ok=False, message="EGW00999 invalid")])
+    with pytest.raises(md.UsMarketDataUnavailable, match="EGW00999"):
+        md.daily_history("AAPL", dates[0], dates[0])
+
+
+_EXPIRED = '{"rt_cd":"1","msg1":"기간이 만료된 token 입니다.","msg_cd":"EGW00123"}'
+
+
+def test_expired_token_rebuilds_client_once(client, monkeypatch):
+    """2026-11-04: the cached client kept an expired token until the worker restarted."""
+    dates = days(1)
+    stale = client(responses=[Resp(ok=False, message=_EXPIRED)])
+    fresh = FakeClient(raw=[stock_row(dates[0], 10)])
+    monkeypatch.setattr(md, "_us_trading_class", lambda: (lambda auto_trading=False: fresh))
+    assert md.daily_history("AAPL", dates[0], dates[0])["Close"].iloc[0] == 10
+    assert len(stale.calls) == 1 and md._client is fresh
+
+
+def test_expired_token_twice_is_not_retried_again(client, monkeypatch):
+    dates = days(1)
+    client(responses=[Resp(ok=False, message=_EXPIRED)])
+    again = FakeClient(responses=[Resp(ok=False, message=_EXPIRED)])
+    monkeypatch.setattr(md, "_us_trading_class", lambda: (lambda auto_trading=False: again))
     with pytest.raises(md.UsMarketDataUnavailable, match="EGW00123"):
         md.daily_history("AAPL", dates[0], dates[0])
+    assert len(again.calls) == 1
 
 
 @pytest.mark.parametrize("ratio", [4.0, 0.1])

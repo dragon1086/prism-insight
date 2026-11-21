@@ -3,6 +3,7 @@
 The guard's ordinary replay_review remains pure. Only this economic runner
 replays advances and durable review events, once, before the guard is entered.
 """
+import gzip
 from copy import deepcopy
 import json
 import math
@@ -16,6 +17,9 @@ ALLOCATION_PROFILES = {
     "allocation-calculated-economic-v1": "allocation-calculated",
 }
 REJECTION_PROFILES = {
+    "deployed-main-v3": "economic-reject-calculated-v1",
+    "deployed-entry-plans-v5": "economic-reject-calculated-v1",
+    "deployed-cost-reference-v4": "economic-reject-calculated-v1",
     "economic-reject-single-v1": "economic-reject-single-v1",
     "economic-reject-calculated-v1": "economic-reject-calculated-v1",
     "economic-reject-goal-v2": "economic-reject-calculated-v1",
@@ -23,6 +27,17 @@ REJECTION_PROFILES = {
 RESEARCH_PROFILES = {**ALLOCATION_PROFILES, **REJECTION_PROFILES}
 ECONOMIC_PROFILES = {"single-pass-economic-v4", "calculated-economic-v4", *RESEARCH_PROFILES}
 REVIEW_PROFILES = {"calculated-economic-v4", *RESEARCH_PROFILES}
+
+
+def read_tape_text(path):
+    path = Path(path)
+    if path.suffix != '.gz':
+        return path.read_text(encoding='utf-8')
+    with gzip.open(path, 'rt', encoding='utf-8') as stream:
+        text = stream.read(96_000_001)
+    if len(text) > 96_000_000:
+        raise TapeMismatch('compressed_tape_too_large')
+    return text
 
 
 class EconomicTape:
@@ -34,10 +49,10 @@ class EconomicTape:
                       contract_hash=digest(contract))
         if mode == "record":
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.stream = self.path.open("x", encoding="utf-8")
+            self.stream = gzip.open(self.path,"xt",encoding="utf-8",compresslevel=9) if self.path.suffix==".gz" else self.path.open("x",encoding="utf-8")
             self._write(header)
         else:
-            lines = self.path.read_text(encoding="utf-8").splitlines()
+            lines = read_tape_text(self.path).splitlines()
             if not lines or json.loads(lines[0]) != header:
                 raise TapeMismatch("economic_tape_contract")
             for line in lines[1:]:

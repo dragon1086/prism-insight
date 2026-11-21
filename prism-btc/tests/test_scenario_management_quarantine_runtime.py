@@ -8,10 +8,11 @@ import pytest
 from live.scenario_broker import BrokerNotReady, ScenarioDemoBroker
 from live.scenario_control import _write
 from live.scenario_runtime import ScenarioRuntime
-from tests.test_scenario_execution import Exchange, persist
+from tests.test_scenario_execution import Exchange, persist, record_exit_decision
 from tests.test_scenario_entry_contract_runtime import definition
 from tests.test_scenario_immediate_reduce_execution import auto_fill
 from tests.test_scenario_runtime import proposal, wait_proposal
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 class ShortExchange(Exchange):
@@ -75,6 +76,7 @@ def incident(tmp_path, request):
     adjustment = persist(broker, action='ADJUST', action_id='adjust', revision=2,
         side=side, hard_stop=stop,
         entries=[], partial_stops=[dict(id='ps-adjusted', price=partial_stop, fraction=.5)])
+    record_exit_decision(broker, adjustment)
     broker.execute(adjustment, 'adjust')
     reduced = persist(broker, action='REDUCE', action_id='r1', revision=3,
         side=side, hard_stop=stop, entries=[], reduce_fraction=.5, reduce_plan=dict(quantity_before=.1,
@@ -415,7 +417,7 @@ def calculated_runtime(incident, action, *, after_review=None):
         else:
             data = json.loads(request['user_prompt'])['calculated_candidates']
             chosen = data['wait'] if action == 'WAIT' else data['candidates'][0]
-            result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale=rationale)
+            result = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale=rationale)
         return SimpleNamespace(text=json.dumps(result))
     adapter = make_calculated_review_proposer(generate=generate, clock=lambda: incident['now'][0])
     def propose(snapshot, context, *, record):

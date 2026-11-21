@@ -174,3 +174,15 @@ def test_add_plan_prompts_are_live_only_and_review_plans_are_stored(tmp_path, ki
     assert result.returncode == 0, result.stderr[-8000:]
     out = json.loads(result.stdout.strip().splitlines()[-1])
     assert out == {"ok": True, "paths": ["codex", "mcp"] if market == "KR" else ["codex"]}
+
+
+@pytest.mark.parametrize("market,language", [("KR", "ko"), ("KR", "en"), ("US", "ko"), ("US", "en")])
+def test_volume_guidance_keeps_volume_pace_off_breakout_and_pullback(market, language):
+    # 2026-11-08 (user-approved): bull-market replay — breakout/reclaim adds on days without rising volume did
+    # better and the AI's 1.3-1.5x volume requirement only removed adds. The example must not teach it either.
+    from prism_core import add_plan_prompts as AP
+    text = AP.buy_block(market, language, expected_initial=0.45)
+    assert ("breakout·pullback_reclaim 시나리오에는 volume_pace_min을 쓰지 마십시오" in text if language == "ko"
+            else "do not put volume_pace_min on breakout or pullback_reclaim scenarios" in text)
+    example = AP._EXAMPLE[market]
+    assert '"volume_pace_min"' not in example

@@ -22,6 +22,10 @@ MIN_BIG_MOVERS = 3
 MAX_INTUITIONS = 8
 MAX_SECTORS = 4               # a lesson about most sectors is not about a situation
 _CASE_REF = re.compile(r"\s*[(（]?\s*(?:(?<![A-Za-z0-9])[BL]\d+(?![A-Za-z0-9])\s*[,·/]?\s*)+[)）]?")
+# The "Do not" list enforced: an exception to an enforced rule, or a theme used as the buy reason.
+# shortcut: Korean phrasings seen in output only, extend when a new wording slips through.
+_RULE_BREACH = re.compile(r"(통과|충족|미달|기준|게이트)[^.。]{0,30}?(아니더라도|않더라도|미달이라도|못하더라도|없더라도)"
+                          r"|테마\s*(수혜|연결)|주도\s*테마")
 TRACKER_SQL = {
     "KR": "SELECT ticker, company_name, trigger_type, analyzed_date AS day, analyzed_price AS price, skip_reason, "
           "buy_score, min_score, decision_id, watchlist_id, NULL AS sector, tracked_7d_return AS r7, "
@@ -213,6 +217,8 @@ def validate(items, cases, sectors):
         big, contrast = item.get("big_mover_keys"), item.get("contrast_keys")
         condition, insight = (str(item.get(k) or "").strip() for k in ("condition", "insight"))
         condition, insight = (_CASE_REF.sub("", text).strip() for text in (condition, insight))
+        if _RULE_BREACH.search(condition + " " + insight):
+            continue
         if (tags is None or not (tags["regimes"] or tags["sectors"]) or len(tags["sectors"]) > MAX_SECTORS
                 or not condition or not insight
                 or not isinstance(big, list) or not isinstance(contrast, list)):

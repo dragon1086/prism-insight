@@ -112,8 +112,10 @@ def test_min_score_schema_matches_matrix_en():
 def test_no_entry_standalone_reasons_ko():
     agent = create_trading_scenario_agent(language="ko")
     assert "**단독 사유 (한 가지만 충족해도 미진입):**" in agent.instruction
-    # 5 standalone reasons + 1 compound; key phrases must be present
-    assert "손절 지지선이 -10% 이하" in agent.instruction
+    # 4 standalone reasons + 1 compound; key phrases must be present
+    # 2026-11-11 prompt diet (audit M1, user decision): the "-10% support" reason is gone — the stop rule
+    # (tighter of matrix max stop / support) always yields a usable stop, so its premise was false.
+    assert "손절 지지선이 -10% 이하" not in agent.instruction
     assert "PER ≥ 업종 평균 2.5배" in agent.instruction
     assert "펀더 게이트 미달 + 시장 체제가 sideways/bear" in agent.instruction
     assert 'severity = "high"' in agent.instruction
@@ -123,7 +125,7 @@ def test_no_entry_standalone_reasons_ko():
 def test_no_entry_standalone_reasons_en():
     agent = create_trading_scenario_agent(language="en")
     assert "**Standalone (any one is sufficient):**" in agent.instruction
-    assert "Stop loss support is at -10% or worse" in agent.instruction
+    assert "Stop loss support is at -10% or worse" not in agent.instruction  # 2026-11-11 prompt diet (M1)
     assert "PER ≥ 2.5× industry average" in agent.instruction
     assert "Fundamental Gate fail in sideways / bear regime" in agent.instruction
     assert 'severity risk event' in agent.instruction
@@ -212,31 +214,34 @@ def test_macro_sector_leader_detail_present_en():
     assert "weigh the medium-term tailwind from the sector" in agent.instruction
 
 
+# 2026-11-11 prompt diet (audit D13): the contrarian "analysis points" block restated the trigger line,
+# so only the trigger line remains and it must still carry the temporary-vs-structural rule.
 def test_contrarian_value_detail_present_ko():
     agent = create_trading_scenario_agent(language="ko")
-    assert "**역발상 가치주 트리거 분석 포인트:**" in agent.instruction
-    assert "구조적(실적 악화, 경쟁력 상실)" in agent.instruction
+    assert "**역발상 가치주 트리거 분석 포인트:**" not in agent.instruction
+    assert "구조적(실적 악화/경쟁력 상실)이면 미진입" in agent.instruction
 
 
 def test_contrarian_value_detail_present_en():
     agent = create_trading_scenario_agent(language="en")
-    assert "**Contrarian Value Stock trigger — analysis points:**" in agent.instruction
+    assert "**Contrarian Value Stock trigger — analysis points:**" not in agent.instruction
     assert "earnings deterioration / loss of competitive edge" in agent.instruction
 
 
+# 2026-11-11 prompt diet (audit X6): the portfolio analysis guide duplicated the per-report user message
+# (holdings count, slot usage, sector and period distribution), so it is gone from the shared instruction.
 def test_portfolio_analysis_guide_present_ko():
     agent = create_trading_scenario_agent(language="ko")
-    assert "## 포트폴리오 분석 가이드" in agent.instruction
-    for item in ("현재 보유 종목 수", "산업군 분포", "투자 기간 분포", "포트폴리오 평균 수익률"):
-        assert item in agent.instruction
+    assert "## 포트폴리오 분석 가이드" not in agent.instruction
+    assert "## 포트폴리오 제약" in agent.instruction
+    assert "보유 종목 7개 이상" not in agent.instruction  # M7 (user decision): no LLM-only 7-holdings rule
 
 
 def test_portfolio_analysis_guide_present_en():
     agent = create_trading_scenario_agent(language="en")
-    assert "## Portfolio Analysis Guide" in agent.instruction
-    for item in ("Current number of holdings", "Sector distribution",
-                 "Investment-period distribution", "Portfolio average return"):
-        assert item in agent.instruction
+    assert "## Portfolio Analysis Guide" not in agent.instruction
+    assert "## Portfolio Constraints" in agent.instruction
+    assert "7+ holdings" not in agent.instruction
 
 
 def test_perplexity_detail_present_ko():

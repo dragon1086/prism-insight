@@ -23,7 +23,7 @@ from core.scenario_limit_prices import POLICY_VERSION, observed_quotes
 from live.exchange_snapshot import read_complete
 from live.liquidation_guard import capture as capture_liquidation
 from live.shared_entry_coordinator import database_path, mutation_lock
-from live.scenario_execution import ScenarioExecution, decimal
+from live.scenario_execution import ScenarioExecution, decimal, target_rejection_status
 
 
 _MONITOR_CALL_TIMING = ContextVar('btc_incident_monitor_call_timing', default=None)
@@ -37,6 +37,10 @@ _MONITOR_METHODS = frozenset({
 
 class BrokerNotReady(ValueError):
     """Sanitized fail-closed reason, without transport payload or credentials."""
+
+
+class BrokerTargetPreflightRejected(BrokerNotReady):
+    """Target revision rejected before any target cancellation or submission."""
 
 
 class BrokerProtectionPending(BrokerNotReady):
@@ -123,11 +127,20 @@ class ScenarioDemoBroker(ScenarioExecution):
     capabilities = frozenset()
     execution_blockers = ("explicit_execution_enablement_required",)
 
-    def __init__(self, conn, *, session=None, expected_main_uid, clock=time.time, execution_enabled=False, convergence_entry_enabled=False):
+    def __init__(self, conn, *, session=None, expected_main_uid, clock=time.time, execution_enabled=False, convergence_entry_enabled=False, entry_economics_enabled=False, entry_fee_reference_enabled=False, prepared_entry_plans_enabled=False):
+        if type(prepared_entry_plans_enabled) is not bool or (prepared_entry_plans_enabled and not entry_economics_enabled):
+            raise ValueError('prepared_plans_require_entry_economics')
+        self.prepared_entry_plans_enabled = prepared_entry_plans_enabled
+        if type(entry_fee_reference_enabled) is not bool or (entry_fee_reference_enabled and not entry_economics_enabled):
+            raise ValueError('fee_reference_requires_entry_economics')
+        self.entry_fee_reference_enabled = entry_fee_reference_enabled
         database_path(conn)
         if type(convergence_entry_enabled) is not bool:
             raise ValueError('convergence_entry_flag_must_be_bool')
         self.convergence_entry_enabled = convergence_entry_enabled
+        if type(entry_economics_enabled) is not bool:
+            raise ValueError('entry_economics_flag_must_be_bool')
+        self.entry_economics_enabled = entry_economics_enabled
         if not isinstance(expected_main_uid, str) or not expected_main_uid.isdigit() or int(expected_main_uid) <= 0:
             raise BrokerNotReady("explicit_main_uid_required")
         if session is None:
@@ -143,6 +156,7 @@ class ScenarioDemoBroker(ScenarioExecution):
             conn.execute("""CREATE TABLE IF NOT EXISTS llm_scenario_broker_evidence (
                 kind TEXT NOT NULL, captured_at REAL NOT NULL, body TEXT NOT NULL)""")
             conn.execute("CREATE INDEX IF NOT EXISTS llm_scenario_broker_evidence_kind ON llm_scenario_broker_evidence(kind)")
+            conn.execute("CREATE INDEX IF NOT EXISTS llm_scenario_broker_cursor_cover ON llm_scenario_broker_evidence(kind,body) WHERE kind='incident_epoch_finance_cursor_v1'")
             conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_broker_notices(event_id TEXT PRIMARY KEY,scenario_id TEXT NOT NULL,body TEXT NOT NULL)")
             conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_broker_incidents(scenario_id TEXT PRIMARY KEY,episode INTEGER NOT NULL,active INTEGER NOT NULL)")
             conn.execute("CREATE TABLE IF NOT EXISTS llm_scenario_notice_positions(scenario_id TEXT PRIMARY KEY,revision INTEGER NOT NULL,body TEXT NOT NULL)")
@@ -200,8 +214,27 @@ class ScenarioDemoBroker(ScenarioExecution):
             raise BrokerNotReady("main_uid_mismatch")
 
     def _save(self, kind, body):
+        text = json.dumps(body, allow_nan=False, sort_keys=True,
+                          separators=(',', ':') if kind == 'account' else None)
+        if kind == 'account':
+            original = text
+            try:
+                from live.scenario_review_storage import snapshot_storage
+                text = snapshot_storage(text)
+            except Exception:
+                text = original
+        if kind == 'financial':
+            original = text
+            try:
+                from utils.btc_financial_references import compact, restore
+                candidate = compact(text)
+                if restore(candidate) == text:
+                    text = candidate
+            except Exception:
+                # Optional deduplication must never interrupt broker evidence or protection.
+                text = original
         self.conn.execute("INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)",
-                          (kind, self.clock(), json.dumps(body, allow_nan=False, sort_keys=True)))
+                          (kind, self.clock(), text))
         self.conn.commit()
 
     def _legacy_local(self):
@@ -227,6 +260,7 @@ class ScenarioDemoBroker(ScenarioExecution):
     def capture_account(self):
         """Fresh read-only observation; NOT a validated trading risk context."""
         with mutation_lock(self.conn):
+            self._last_account_observation_fingerprint = None
             self._identity()
             started = self.clock()
             positions = read_complete(self._call, "get_positions", category="linear", symbol="BTCUSDT")
@@ -302,6 +336,11 @@ class ScenarioDemoBroker(ScenarioExecution):
                                for o in observed["open_orders"]],key=lambda o:str(o["orderId"])))
             observed["account_version"] = hashlib.sha256(json.dumps(economic, sort_keys=True).encode()).hexdigest()
             self._save("account", observed)
+            try:
+                from live.scenario_management_quarantine import account_observation_fingerprint
+                self._last_account_observation_fingerprint = account_observation_fingerprint(observed)
+            except (ValueError, TypeError, KeyError):
+                self._last_account_observation_fingerprint = None
             return observed
 
     def capture_financial_evidence(self, start_ms, end_ms):
@@ -610,7 +649,16 @@ class ScenarioDemoBroker(ScenarioExecution):
             unknown_intents=any(c["status"] == "UNKNOWN" or not c["evidence"] for c in children))
         from live.scenario_incident_epoch import new_risk_blocked, historical
         incident_blocked = new_risk_blocked(self)
-        return dict(historical_unsettled=historical(self.conn), incident_epoch_blocked=incident_blocked,
+        from live.scenario_entry_economics import policy as entry_economics_policy
+        economics = ({'entry_economics': entry_economics_policy()}
+                     if getattr(self, 'entry_economics_enabled', False) and not active and observed.get('exchange_flat') is True else {})
+        if (economics and getattr(self, 'entry_fee_reference_enabled', False) and financial_ok
+                and not pending and accounting['positions'] == []):
+            from live.scenario_fee_projection import demo_entry_fee_reference
+            economics['entry_fee_reference'] = demo_entry_fee_reference()
+        if economics and getattr(self,'prepared_entry_plans_enabled',False) and financial_ok and not pending and accounting['positions']==[]:
+            economics['prepared_entry_plans_version']=1
+        return dict(**economics, historical_unsettled=historical(self.conn), incident_epoch_blocked=incident_blocked,
             entry_thesis=initial_entry_evidence, stop_policy=stop_policy, scenario_risk_fraction=fraction, conditional_entry_version=1, account_version=observed["account_version"],legacy_fenced=observed["legacy_fenced"],
             **({'management_quarantine': management} if management else {}),
             **({'management_quarantine_block': management_block} if management_block else {}),
@@ -678,6 +726,15 @@ class ScenarioDemoBroker(ScenarioExecution):
                 if child["kind"] in ("tp", "partial_sl") and child["status"] != "TERMINAL":
                     self._cancel(child, before_cancel=verify_flat)
             return self.capture_account()
+
+    def _rejected_target_safe(self, active, intent_id, plan, batch, children):
+        if (not batch or batch[0]!=target_rejection_status(plan) or plan.get("action_id")!=intent_id or plan.get("action")!="ADJUST"
+                or plan.get("entries") or plan.get("cancel_entry_ids") or plan.get("stop_revision")
+                or plan.get("pending_renewal") or plan.get("scenario_id")!=active.get("scenario_id")
+                or plan.get("side")!=active.get("side") or any(c["intent_id"]==intent_id for c in children)):
+            return False
+        old,current=decimal(plan.get("hard_stop")),decimal(active.get("hard_stop"))
+        return (active["side"]=="LONG" and current>=old) or (active["side"]=="SHORT" and current<=old)
 
     def reconcile(self):
         observed=self.capture_account()
@@ -775,10 +832,17 @@ class ScenarioDemoBroker(ScenarioExecution):
                 halted = halted or not recovery_pending
         except Exception:
             halted=True
+        from live.scenario_management_quarantine import unsettled_entry_reconciliation_scope
+        try:
+            entry_quarantine = unsettled_entry_reconciliation_scope(self, active)
+        except Exception:
+            entry_quarantine = ''  # A corrupt authority cannot permit entry mutation.
         expired=self.clock()>=active.get("expires_at",0)
         stop_hit=any(c["kind"]=="native_sl" and c["evidence"] and c["evidence"]["executions"] for c in self.children(active["scenario_id"]))
         if self.execution_enabled:
             for child in self.children(active["scenario_id"]):
+                if entry_quarantine and child['link_id'] == entry_quarantine:
+                    continue
                 if child["status"] != "TERMINAL" and self._conditional_invalidated(child, observed, active):
                     try:
                         self._cancel(child)
@@ -786,6 +850,8 @@ class ScenarioDemoBroker(ScenarioExecution):
                         unknown = True
         if self.execution_enabled and (halted or expired or not protection or stop_hit):
             for child in self.children(active["scenario_id"]):
+                if entry_quarantine and child['link_id'] == entry_quarantine:
+                    continue
                 if child["kind"]=="entry" and child["status"]!="TERMINAL":
                     if expired and not (halted or not protection or stop_hit):
                         from live.scenario_pending_renewal import load, matching_child
@@ -819,8 +885,18 @@ class ScenarioDemoBroker(ScenarioExecution):
                 except Exception:
                     unknown=True
         protection=self._verify_protection(observed,active["hard_stop"],active["side"])
-        from live.scenario_management_quarantine import bound_exit
-        quarantine_exit = bool(exiting and bound_exit(self, json.loads(latest[0])['action_id']))
+        from live.scenario_management_quarantine import active_receipt, bound_exit
+        exit_id = json.loads(latest[0])['action_id'] if exiting else None
+        quarantine_exit = bool(exiting and bound_exit(self, exit_id))
+        if (exiting and self.execution_enabled and not stop_hit and quarantine_exit and observed['legacy_fenced']
+                and not any(c['intent_id'] == exit_id for c in self.children(active['scenario_id']))):
+            try:
+                authority = active_receipt(self, self_exit=exit_id)
+                if authority and authority.get('scope') == 'ENTRY_AGGREGATE_ONLY':
+                    if self._continue_unsubmitted_exit(active):
+                        observed = self.capture_account()
+            except Exception:
+                unknown = True
         if exiting and self.execution_enabled and not stop_hit and (not unknown or quarantine_exit) and not observed["legacy_fenced"]:
             try:
                 if self._continue_unsubmitted_exit(active):
@@ -849,10 +925,16 @@ class ScenarioDemoBroker(ScenarioExecution):
                 unknown=True
         # GTC entries commonly fill after execute() returned. Synchronize the
         # most recent committed plan without invoking the LLM or adding risk.
-        if protection and self.execution_enabled and not observed["exchange_flat"] and not stop_hit:
+        if protection and self.execution_enabled and not observed["exchange_flat"] and not stop_hit and entry_quarantine is None:
             plans=self.conn.execute("SELECT id,payload FROM llm_scenario_intents WHERE scenario_id=? ORDER BY rowid DESC",(active["scenario_id"],)).fetchall()
             for ident,body in plans:
                 plan=json.loads(body)
+                batch=self.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id=?",(ident,)).fetchone()
+                if batch and batch[0].startswith("REJECTED_TARGET_PREWRITE:"):
+                    if self._rejected_target_safe(active,ident,plan,batch,self.children(active["scenario_id"])):
+                        continue
+                    unknown=True
+                    break
                 if plan["action"]=="EXIT":
                     break
                 if plan["action"] == "REDUCE":
@@ -888,6 +970,8 @@ class ScenarioDemoBroker(ScenarioExecution):
         monitor(self)
         if self.execution_enabled and incident_halted(self.conn):
             for child in self.children(active['scenario_id']):
+                if entry_quarantine and child['link_id'] == entry_quarantine:
+                    continue
                 if child['kind'] == 'entry' and child['status'] != 'TERMINAL':
                     try:
                         self._cancel(child)
@@ -921,11 +1005,12 @@ class ScenarioDemoBroker(ScenarioExecution):
                     if not proof or proof.get('status') not in {'APPLIED', 'REJECTED'}:
                         continue
                 cancelled=all(any(c["kind"]=="entry" and (c["local_id"]==entry or c["order_id"]==entry) and c["status"]=="TERMINAL" for c in children) for entry in payload.get("cancel_entry_ids",[]))
-                adjusted=(payload["action"]=="ADJUST" and not payload.get("entries")
+                batch=self.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id=?",(ident,)).fetchone()
+                adjusted=(payload["action"]=="ADJUST" and not payload.get("entries") and not unknown
+                    and batch is not None and batch[0]=="COMPLETE"
                     and (not payload.get("stop_revision") or self._stop_revision_evidence("stop_revision_confirmed", ident))
                     and self._verify_protection(observed,payload["hard_stop"],active["side"]))
                 no_submit=payload["action"]=="OPEN" and observed["exchange_flat"] and not observed["open_orders"]
-                batch=self.conn.execute("SELECT status FROM llm_scenario_execution_batches WHERE intent_id=?",(ident,)).fetchone()
                 # Children are durable BEFORE any submit. An explicitly aborted
                 # replacement with none cannot have placed its replacement; only
                 # release it after exact old-order evidence proves flat/terminal.
@@ -934,16 +1019,19 @@ class ScenarioDemoBroker(ScenarioExecution):
                     and not unknown and observed["exchange_flat"] and not observed["open_orders"]
                     and not observed["legacy_fenced"] and protection
                     and all(c["status"]=="TERMINAL" and c["evidence"] for c in children))
+                rejected_adjust=(not unknown and not observed["legacy_fenced"] and protection
+                    and self._rejected_target_safe(active,ident,payload,batch,children))
                 reduced = False
                 reduction_result = None
                 if payload["action"] == "REDUCE":
                     from live.scenario_immediate_reduce import RESOLVED, result
                     reduction_result = result(self, ident)
                     reduced = reduction_result["status"] in RESOLVED
-                terminal=cancelled and (reduced or payload["action"]=="WAIT" or adjusted or no_submit or aborted_adjust or (payload["action"]=="EXIT" and observed["exchange_flat"]))
+                terminal=cancelled and (reduced or payload["action"]=="WAIT" or adjusted or no_submit or aborted_adjust or rejected_adjust or (payload["action"]=="EXIT" and observed["exchange_flat"]))
                 if terminal:
                     items.append(dict(intent_id=ident,terminal=True,protection_ok=protection,orders_reconciled=True,
                         executions_complete=True,execution_ids=[],filled_quantity=0.,exchange_order_ids=[],open_entries=[],
+                        **({'action_applied':False,'rejection_reason':'target_evidence_unavailable'} if rejected_adjust else {}),
                         **({'reduction_result': reduction_result} if reduction_result else {}),
                         **({'pending_renewal_receipt': proof} if payload.get('pending_renewal') else {})))
                 continue

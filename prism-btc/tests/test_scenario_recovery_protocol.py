@@ -19,6 +19,21 @@ def recovery_context():
     return c
 
 
+def test_recovery_schema_indexes_slot_and_kind_without_changing_records():
+    conn = sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE llm_scenario_recovery_events '
+                 '(event_id TEXT PRIMARY KEY, slot INTEGER, scenario_id TEXT, kind TEXT NOT NULL, '
+                 'observed_at REAL NOT NULL, body TEXT NOT NULL)')
+    conn.executemany('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?,?,?)', [
+        ('one', 100, None, 'MODEL_RAW', 1, '{}'), ('two', 101, None, 'MODEL_RAW', 2, '{}')])
+    ensure_schema(conn)
+    query = "SELECT 1 FROM llm_scenario_recovery_events WHERE slot=? AND kind='MODEL_RAW'"
+    assert conn.execute(query, (100,)).fetchone() == (1,)
+    assert conn.execute(query, (102,)).fetchone() is None
+    assert 'llm_scenario_recovery_slot_kind' in str(conn.execute('EXPLAIN QUERY PLAN ' + query, (100,)).fetchall())
+    assert conn.execute('SELECT count(*) FROM llm_scenario_recovery_events').fetchone()[0] == 2
+
+
 @pytest.mark.parametrize('stage,fraction',[(0,.005),(1,.01),(2,.02)])
 def test_automatic_normalization_contract_uses_host_offered_cap(stage,fraction):
     c=recovery_context()
@@ -58,9 +73,9 @@ def test_assembled_v2_policy_separates_stage_authority_and_market_proposal():
         return SimpleNamespace(text=json.dumps(p))
     propose({'valid':True,'as_of_ms':1000000},c,response_contract(c),generate=generate,clock=lambda:1000)
     policy=' '.join(calls[0]['system_prompt'].split())
-    for text in ('When recovery_contract_version=2','host-offered scenario_risk_fraction',
-                 'does not expire the entire recovery program','NORMAL stage 2',
-                 'not a statistical proof','never raises the risk budget of an active scenario'):
+    for text in ('Recovery permissions/stage/cap come from the host',
+                 'No promotion arithmetic or higher cap requests',
+                 'protection survives entry expiry','Unsettled exposure grants no attempt'):
         assert text in policy
 
 
@@ -82,10 +97,11 @@ def test_actual_request_and_invalid_raw_are_durable_before_parse(tmp_path):
         with pytest.raises(ScenarioModelError):
             propose({'valid':True,'as_of_ms':1000000},c,response_contract(c),
                     generate=lambda **kw:SimpleNamespace(text='not JSON'),clock=lambda:1000)
-    rows={kind:json.loads(body) for kind,body in conn.execute('SELECT kind,body FROM llm_scenario_recovery_events')}
+    from live.scenario_review_storage import review_text
+    rows={kind:json.loads(review_text(body)) for kind,body in conn.execute('SELECT kind,body FROM llm_scenario_recovery_events')}
     assert rows['MODEL_RAW']['raw']=='not JSON'
     assert json.loads(rows['MODEL_REQUEST']['user_prompt'])['contract_context']['input_id']==c['input_id']
-    assert rows['MODEL_REQUEST']['model']=='gpt-6.1-sol'
+    assert rows['MODEL_REQUEST']['model']=='gpt-6.1-terra'
     assert 'MODEL_ERROR' in rows
 
 

@@ -210,3 +210,14 @@ def test_the_exit_rule_from_the_sell_side_wins_over_the_guessed_kind(tmp_path):
     conn.close()
     (row,) = CL.position_rows("US", main_db=main)["position_exit"]
     assert row["trigger_type"] == "TIER2_TRAIL"
+
+
+def test_snapshot_records_the_ten_day_line():
+    from prism_core.decision_snapshot import snapshot
+    bars = [{"date": f"2026-01-{d:02d}", "open": 10 + d, "high": 11 + d, "low": 9 + d, "close": 10 + d, "volume": 100}
+            for d in range(1, 21)]
+    out = snapshot(bars)
+    assert out["ma10"] == sum(10 + d for d in range(11, 21)) / 10 and out["dist_ma10_pct"] is not None
+    assert out["ma10_slope_10d_pct"] is not None
+    short = snapshot(bars[:5])
+    assert short["ma10"] is None and short["missing"]["ma10"] == "needs_10_bars"

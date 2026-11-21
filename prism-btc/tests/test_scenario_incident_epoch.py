@@ -715,7 +715,7 @@ def test_runtime_overlong_historical_observation_skips_model_and_all_new_posts(f
     assert outcome['status'] == 'blocked', outcome
     assert calls == []
     assert i['exchange'].writes == []
-    assert policy.halted(broker.conn)
+    assert not policy.halted(broker.conn)  # this cycle only; the next tick re-observes
 
 
 def test_owned_emergency_exit_fallback_precedes_delayed_historical_observation(flat_incident, monkeypatch):
@@ -738,7 +738,7 @@ def test_owned_emergency_exit_fallback_precedes_delayed_historical_observation(f
     broker.reconcile()
     emergency = [c for c in broker.children() if c['kind'] == 'exit']
     assert len(emergency) == 1 and emergency[0]['request']['reduceOnly'] is True
-    assert policy.halted(broker.conn)
+    assert broker._incident_observation is None and not policy.halted(broker.conn)
 
 
 def test_late_original_timestamp_fee_correction_is_watched_after_day_seven(flat_incident):
@@ -837,8 +837,8 @@ def test_evidence_index_is_initialized_under_lock_once_before_epoch_lookup(tmp_p
     conn.set_trace_callback(observe)
     ScenarioDemoBroker(conn, session=Session(), expected_main_uid='123')
     conn.set_trace_callback(None)
-    assert lock_checks == [True]
-    index_at = next(n for n, sql in enumerate(trace) if sql.startswith('CREATE INDEX'))
+    assert lock_checks == [True, True]
+    index_at = max(n for n, sql in enumerate(trace) if sql.startswith('CREATE INDEX'))
     epoch_at = next(n for n, sql in enumerate(trace) if sql.startswith('SELECT kind,body FROM llm_scenario_broker_evidence WHERE kind IN'))
     assert index_at < epoch_at
     schema_version = conn.execute('PRAGMA schema_version').fetchone()[0]
@@ -981,6 +981,31 @@ def test_monitor_gap_release_fails_closed(flat_incident,monkeypatch,fault):
     assert policy.halted(broker.conn) and i['exchange'].writes==[]
 
 
+@pytest.mark.parametrize('extra,owned', [
+    (dict(orderId='unsaved-sl', orderLinkId='', parentOrderLinkId='OWN', reduceOnly=True, stopOrderType='StopLoss'), True),
+    (dict(orderId='unsaved-order', orderLinkId='OWN'), True),
+    (dict(orderId='other-sl', orderLinkId='', parentOrderLinkId='someone-else', reduceOnly=True, stopOrderType='StopLoss'), False),
+    (dict(orderId='opening', orderLinkId='', parentOrderLinkId='OWN', reduceOnly=False, stopOrderType='StopLoss'), False),
+    (dict(orderId='blank', orderLinkId='', parentOrderLinkId=''), False),
+])
+def test_monitor_accepts_only_own_unsaved_orders(flat_incident, monkeypatch, extra, owned):
+    # 2026-10-30 01:01: the entry's attached stop was live 3 minutes before its row was saved.
+    i=flat_incident;transition(i);broker=restarted(i)
+    link='sc_live_entry'
+    broker.conn.execute('INSERT INTO llm_scenario_children VALUES(?,?,?,?,?,?,?,?,?,?)',
+        (link,'live-intent','live-scenario','entry','e',json.dumps(dict(side='Buy',qty='.001')),'UNKNOWN',None,None,i['now'][0]))
+    broker.conn.commit()
+    order={k:(link if v=='OWN' else v) for k,v in extra.items()}
+    original=policy.account_sources
+    def with_order(*a):
+        rows=original(*a);next(r for r in rows if 'orders' in r)['orders']['result']['list'].append(order);return rows
+    monkeypatch.setattr(policy,'account_sources',with_order)
+    assert (policy.monitor(broker, refresh=True) is not None) is owned
+    assert policy.halted(broker.conn) is (not owned)
+    if not owned:
+        assert policy._events(broker.conn, policy.HALT)[-1]['evidence']['reason'] == 'incident_epoch_foreign_order'
+
+
 def test_corrupt_monitor_release_cannot_hide_halt(flat_incident):
     i=flat_incident;transition(i);broker=restarted(i)
     policy.record_late(broker,dict(status='HISTORICAL_MONITOR_OR_COVERAGE_GAP'))
@@ -990,7 +1015,7 @@ def test_corrupt_monitor_release_cannot_hide_halt(flat_incident):
 
 
 @pytest.mark.parametrize('stage', ['child_lookup', 'finance', 'account'])
-def test_monitor_deadline_records_only_safe_stage_and_keeps_halt(flat_incident, monkeypatch, caplog, stage):
+def test_monitor_deadline_blocks_only_this_cycle(flat_incident, monkeypatch, caplog, stage):
     i = flat_incident
     transition(i)
     broker = restarted(i)
@@ -1010,18 +1035,19 @@ def test_monitor_deadline_records_only_safe_stage_and_keeps_halt(flat_incident, 
             i['now'][0] += 11
             return result
         monkeypatch.setattr(policy, name, delayed)
+    halts = copy.deepcopy(policy._events(broker.conn, policy.HALT))
     assert policy.monitor(broker, refresh=True) is None
-    assert policy.halted(broker.conn)
-    evidence = policy._events(broker.conn, policy.HALT)[-1]['evidence']
-    assert evidence == dict(status='HISTORICAL_MONITOR_OR_COVERAGE_GAP',
-                            error_type='ValueError', reason='incident_epoch_monitor_' + stage + '_deadline')
+    assert not policy.halted(broker.conn) and policy._events(broker.conn, policy.HALT) == halts
+    assert policy.new_risk_blocked(broker)  # no fresh observation in this cycle
     messages = [r.getMessage() for r in caplog.records if r.name == policy.__name__
                 and r.getMessage().startswith('incident_monitor_call_timing ')]
     assert len(messages) == 1
     assert f"started_ms={int((i['now'][0] - 11) * 1000)}" in messages[0]
     timing = json.loads(messages[0].split(' calls=', 1)[1])
-    assert set(timing) == {'calls', 'dropped', 'measurement_failures'}
+    assert set(timing) == {'calls', 'dropped', 'measurement_failures', 'phase_ms'}
     assert timing['dropped'] == timing['measurement_failures'] == 0
+    assert {'cursor_load', 'receipt_load', 'cursor_validate', 'children_lookup', 'child_query'} <= set(timing['phase_ms'])
+    assert all(isinstance(v, (int, float)) and v >= 0 for v in timing['phase_ms'].values())
     assert timing['calls'] and len(timing['calls']) <= 64
     for call in timing['calls']:
         assert set(call) == {'method', 'elapsed_ms', 'ok'}
@@ -1035,14 +1061,13 @@ def test_monitor_deadline_records_only_safe_stage_and_keeps_halt(flat_incident, 
         monkeypatch.setattr(broker, '_query_child', original)
     else:
         monkeypatch.setattr(policy, name, original)
-    before = copy.deepcopy(policy._events(broker.conn, policy.HALT))
-    policy.release_monitor_gap(broker, expected_halts_sha256=digest(before))
-    assert not policy.halted(broker.conn)
-    assert policy._events(broker.conn, policy.HALT) == before
+    assert policy.monitor(broker, refresh=True) is not None
+    assert not policy.new_risk_blocked(broker)
+    assert policy._events(broker.conn, policy.HALT) == halts
     assert i['exchange'].writes == []
 
 
-def test_monitor_timing_logging_failure_cannot_clear_halt(flat_incident, monkeypatch):
+def test_monitor_timing_logging_failure_still_fails_closed(flat_incident, monkeypatch):
     i = flat_incident
     transition(i)
     broker = restarted(i)
@@ -1057,8 +1082,7 @@ def test_monitor_timing_logging_failure_cannot_clear_halt(flat_incident, monkeyp
     monkeypatch.setattr(policy.logging.getLogger(policy.__name__), 'warning',
                         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('logger failed')))
     assert policy.monitor(broker, refresh=True) is None
-    assert policy.halted(broker.conn)
-    assert policy._events(broker.conn, policy.HALT)[-1]['evidence']['reason'] == 'incident_epoch_monitor_account_deadline'
+    assert policy.new_risk_blocked(broker) and not policy.halted(broker.conn)
     assert i['exchange'].writes == []
     from live.scenario_broker import _MONITOR_CALL_TIMING
     assert _MONITOR_CALL_TIMING.get() is None
@@ -1080,3 +1104,73 @@ def test_successful_monitor_restores_outer_trace_without_warning(flat_incident, 
         assert i['exchange'].writes == []
     finally:
         _MONITOR_CALL_TIMING.reset(token)
+
+
+@pytest.mark.parametrize('deadline', [False, True])
+def test_monitor_phase_clock_failure_never_changes_safety_or_leaks(flat_incident, monkeypatch, caplog, deadline):
+    i = flat_incident
+    transition(i)
+    broker = restarted(i)
+    original = broker._query_child
+
+    def broken_clock():
+        raise RuntimeError('private clock detail')
+
+    monkeypatch.setattr(policy, '_phase_clock_ns', broken_clock)
+    if deadline:
+        def delayed(*args, **kwargs):
+            result = original(*args, **kwargs)
+            i['now'][0] += 11
+            return result
+        monkeypatch.setattr(broker, '_query_child', delayed)
+    caplog.set_level(logging.WARNING, logger=policy.__name__)
+    result = policy.monitor(broker, refresh=True)
+    assert (result is None) is deadline
+    assert not policy.halted(broker.conn) and i['exchange'].writes == []
+    assert 'private clock detail' not in caplog.text
+    if deadline:
+        record = next(r.getMessage() for r in caplog.records
+                      if r.getMessage().startswith('incident_monitor_call_timing '))
+        timing = json.loads(record.split(' calls=', 1)[1])
+        assert timing['measurement_failures'] > 0 and timing['phase_ms'] == {}
+
+
+def test_monitor_phase_timing_identifies_slow_cursor_without_sensitive_data(flat_incident, monkeypatch, caplog):
+    i = flat_incident
+    transition(i)
+    broker = restarted(i)
+    original = policy._iter_events
+    ticks = [1_000_000_000]
+
+    def events(conn, kind):
+        result = original(conn, kind)
+        if kind == policy.FINANCE_CURSOR:
+            ticks[0] += 11_000_000_000
+            i['now'][0] += 11
+        return result
+
+    monkeypatch.setattr(policy, '_iter_events', events)
+    monkeypatch.setattr(policy, '_phase_clock_ns', lambda: ticks[0])
+    caplog.set_level(logging.WARNING, logger=policy.__name__)
+    assert policy.monitor(broker, refresh=True) is None
+    message = next(r.getMessage() for r in caplog.records
+                   if r.getMessage().startswith('incident_monitor_call_timing '))
+    timing = json.loads(message.split(' calls=', 1)[1])
+    assert timing['phase_ms']['cursor_load'] == 11000
+    assert timing['phase_ms']['cursor_validate'] == 0
+    assert 'accountId' not in message and 'orderId' not in message
+    assert not policy.halted(broker.conn) and i['exchange'].writes == []
+
+
+def test_existing_incident_receipt_remains_valid_after_code_digest_change(flat_incident, monkeypatch):
+    i = flat_incident
+    transition(i)
+    before = copy.deepcopy(policy.receipt(i['broker'].conn))
+    original_epoch = before['epoch_id']
+    monkeypatch.setattr(policy, 'code_digest', lambda: 'f' * 64)
+    broker = restarted(i)
+    assert policy.epoch(broker.conn) == original_epoch
+    assert policy.receipt(broker.conn) == before
+    assert policy.monitor(broker, refresh=True) is not None
+    assert not policy.halted(broker.conn) and not policy.new_risk_blocked(broker)
+    assert i['exchange'].writes == []

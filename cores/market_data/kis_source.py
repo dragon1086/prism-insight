@@ -35,6 +35,7 @@ from time import monotonic, sleep
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import requests
 
 from cores.market_data.schema import has_ohlcv, normalize
 from cores.market_data.source import Unavailable, Unsupported
@@ -131,6 +132,7 @@ _MAX_WINDOWS = 40
 # KIS's per-second quota is shared by every process on the app key and resets each
 # second, so a short wait answers it; anything else is refused at once.
 _RATE_LIMIT_CODE = "EGW00201"
+_KIS_EXPIRED_AUTH_CODE = "EGW00123"
 _RATE_LIMIT_WAITS = (0.5, 1.0)
 
 
@@ -164,13 +166,32 @@ class KisSource:
         return self._client
 
     def _fetch(self, api_url: str, tr_id: str, params: dict) -> object:
+        try:
+            return self._fetch_once(api_url, tr_id, params)
+        except Unavailable as exc:
+            if _KIS_EXPIRED_AUTH_CODE not in str(exc):
+                raise
+        # The cached client keeps the token it was built with, so an expired one never recovers
+        # (B3 KR worker 2026-11-04 10:15). Rebuild it: ka.auth() reuses a live saved token or issues one.
+        logger.info("KIS %s token expired; re-authenticating once", tr_id)
+        with self._lock:
+            self._client = None
+        return self._fetch_once(api_url, tr_id, params)
+
+    def _fetch_once(self, api_url: str, tr_id: str, params: dict) -> object:
         for wait in (*_RATE_LIMIT_WAITS, None):
             try:
                 response = self._trading()._request(api_url, tr_id, params)
             except Unavailable:
                 raise
             except Exception as exc:  # transport, auth — all "not now"
-                raise Unavailable(f"KIS {tr_id} failed: {exc}") from exc
+                # KIS sometimes drops a pooled connection (RemoteDisconnected, KOSPI index 2026-10-30);
+                # these are read-only quotes, so the same short retry as a rate limit is safe.
+                if wait is None or not isinstance(exc, requests.exceptions.ConnectionError):
+                    raise Unavailable(f"KIS {tr_id} failed: {exc}") from exc
+                logger.info("KIS %s connection dropped; retrying in %.1fs", tr_id, wait)
+                sleep(wait)
+                continue
 
             if response and response.isOK():
                 return response.getBody()

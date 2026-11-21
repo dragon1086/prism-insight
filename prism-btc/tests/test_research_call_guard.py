@@ -274,3 +274,20 @@ def test_no_auth_or_payload_fields(tmp_path):
     with pytest.raises(ValueError):
         g.reserve("A", "DRAFT", "raw model prompt")
     assert g.snapshot()["reserved_attempts"] == 0
+
+
+def test_optional_readiness_digest_is_anchored_and_legacy_ledger_still_reads(tmp_path):
+    root = tmp_path / 'new'
+    g = guard(root, 2)
+    proof = 'c' * 64
+    ident = g.reserve('A', 'DRAFT', REQUEST, runtime_readiness_sha256=proof)
+    g.finish(ident, 'ok', 1)
+    rows = [json.loads(line) for line in g.ledger.read_text().splitlines()]
+    assert rows[1]['runtime_readiness_sha256'] == proof
+    assert CallGuard.inspect_existing(root, REGISTRY, 2)['actual_http_calls'] == 1
+    g.ledger.write_bytes(g.ledger.read_bytes().replace(proof.encode(), b'd' * 64))
+    with pytest.raises(CallGuardError):
+        CallGuard.inspect_existing(root, REGISTRY, 2)
+    old = guard(tmp_path / 'legacy', 2)
+    old.finish(reserve(old), 'ok', 1)
+    assert CallGuard.inspect_existing(tmp_path / 'legacy', REGISTRY, 2)['actual_http_calls'] == 1

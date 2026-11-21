@@ -1,6 +1,7 @@
 import pytest
 
 from live.scenario_fee_projection import fee_only_projection, observed_fee_evidence
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def evidence(rate=.00055):
@@ -171,8 +172,8 @@ def test_full_holding_two_candidate_select_fee_views_fit_and_restore(target_coun
     originals=[]
     sizes=[]
     if target_count==20:
-        # Keep this overflow fixture above the cap after retiring lower-frame input.
-        ctx['capacity_fixture_padding']='x'*64
+        # Keep an actual overflow after duplicate candidate copies are removed.
+        ctx['capacity_fixture_padding']='x'*12000
     def without_fee_additions(value):
         if isinstance(value,list):
             return [without_fee_additions(item) for item in value]
@@ -211,7 +212,7 @@ def test_full_holding_two_candidate_select_fee_views_fit_and_restore(target_coun
                 assert len(targets)==target_count*2
                 assert all(t['fee_only_projection']['status']=='AVAILABLE' for t in targets)
             choice=restored['calculated_candidates']['wait']
-            body=dict(selection_token=f"{choice['id']}:{choice['receipt_sha256']}",rationale='cost review')
+            body=dict(selection_token=f"{choice['id']}:{model_receipt_hash(choice)}",rationale='cost review')
         return SimpleNamespace(text=json.dumps(body))
     if target_count==20:
         # This padded legal-array fixture exceeds the existing input cap.

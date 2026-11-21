@@ -95,6 +95,27 @@ def test_only_exact_decision_input_manifest_not_protect_or_exporter_head(lane,co
     assert event['attributes']['policy_evidence'].startswith('UNKNOWN') == (conflict is not None)
 
 
+def test_referenced_decision_input_keeps_review_manifest_link(lane):
+    from utils.btc_audit_references import canonical, compact, sha
+
+    manifest_tables(lane[0])
+    create_review(lane[0])
+    snapshot, context = {'blob': 'x' * 5000}, {'input_id': 'input', 'blob': 'y' * 5000}
+    event = {'snapshot': snapshot, 'context': context, 'input_id': 'input',
+             'snapshot_hash': sha(canonical(snapshot)), 'context_hash': sha(canonical(context))}
+    raw, s, c = canonical(event), json.dumps(snapshot, sort_keys=True), json.dumps(context, sort_keys=True)
+    with sqlite3.connect(lane[0]) as conn:
+        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)', (100, s, c, None, None))
+        conn.execute("UPDATE llm_scenario_audit_events SET body=? WHERE kind='decision_input'", (compact(raw, s, c),))
+    export.export_once(*lane)
+    add_review(lane[0], 1, dict(kind='MODEL_REQUEST', phase='candidate', request=dict(
+        user_prompt=json.dumps(dict(contract_context=dict(input_id='input'))))))
+    assert export.export_once(*lane)['status'] == 'OK'
+    recorded = review_events(lane)[-1]
+    assert recorded['git_sha'] == 'a' * 40
+    assert not recorded['attributes']['policy_evidence'].startswith('UNKNOWN')
+
+
 def test_review_identity_anchor_detects_changed_sequence(lane):
     create_review(lane[0])
     export.export_once(*lane)
@@ -235,6 +256,34 @@ def test_compressed_review_events_keep_original_hash_and_cursor(lane):
     assert export.export_once(*lane)['status'] != 'UNAVAILABLE'
 
 
+def test_referenced_review_event_exports_original_hash_and_fails_closed(lane):
+    import random
+    from utils.btc_review_event_references import compact
+    create_review(lane[0])
+    export.export_once(*lane)
+    request = {'kind': 'MODEL_REQUEST', 'phase': 'single', 'request': {
+        'user_prompt': random.Random(7).randbytes(16000).hex(), 'timeout': 50}}
+    raw = {'kind': 'MODEL_RAW', 'phase': 'single', 'actual_request': dict(request['request'], timeout=49),
+           'raw': 'PRIVATE RESPONSE'}
+    request_text = json.dumps(request, sort_keys=True, allow_nan=False)
+    raw_text = json.dumps(raw, sort_keys=True, allow_nan=False)
+    reference = compact(raw_text, [(0, request_text)], 100, 1)
+    assert isinstance(reference, bytes)
+    with sqlite3.connect(lane[0]) as conn:
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (100, 0, request_text))
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (100, 1, reference))
+    assert export.export_once(*lane)['captured'] == 2
+    event = review_events(lane)[-1]
+    assert event['attributes']['source_sequence'] == 1
+    assert event['attributes']['body_sha256'] == export._hash(raw_text)
+    assert 'PRIVATE RESPONSE' not in lane[2].read_text()
+    assert export.export_once(*lane)['captured'] == 0
+    with sqlite3.connect(lane[0]) as conn:
+        conn.execute('DELETE FROM llm_scenario_review_events WHERE slot=100 AND sequence=0')
+    assert export.export_once(*lane)['status'] == 'UNAVAILABLE'
+    assert len(review_events(lane)) == 2
+
+
 def test_bad_compressed_review_keeps_cursor(lane):
     from observability.review_storage import MAGIC
     create_review(lane[0])
@@ -301,3 +350,45 @@ def test_compressed_and_legacy_rows_share_export_anchor(stream):
     row = dict(slot=100, sequence=1, body=original)
     packed = dict(row, body=MAGIC + gzip.compress(original.encode(), mtime=0))
     assert export._anchor_hash(stream, row) == export._anchor_hash(stream, packed)
+
+
+@pytest.mark.parametrize('with_generate', [False, True])
+def test_referenced_tape_restores_export_anchor_and_fails_on_missing_source(lane, with_generate):
+    from utils.btc_review_references import canonical, compact, pack
+
+    snapshot = {'z': 1, 'a': {'second': 2, 'first': 1}}
+    context = {'input_id': 'fixture'}
+    request = {'system_prompt': 'private fixture', 'schema': {'z': 1, 'a': 2}}
+    event = {'kind': 'MODEL_RAW', 'actual_request': request, 'raw': 'private fixture'}
+    inputs = {'snapshot': snapshot, 'context': context, 'bindings': {}}
+    operations = ([{'kind': 'generate', 'request': request, 'text': 'private fixture'}] if with_generate else [])
+    body = {'version': 1, 'inputs': inputs, 'inputs_sha256': tape_digest(inputs), 'calls': 0,
+            'operations': operations + [{'kind': 'record', 'event': event}],
+            'outcome': {'status': 'COMPLETE', 'result': {}}}
+    body['sha256'] = tape_digest(body)
+    original = json.dumps(body)
+    snapshot_text, context_text, event_text = map(canonical, (snapshot, context, event))
+    bundle = compact(original, snapshot_text, context_text, [event_text])
+    assert bundle['version'] == (2 if with_generate else 1)
+    packed = pack(bundle)
+    create_review(lane[0])
+    with sqlite3.connect(lane[0]) as conn:
+        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?,?,?)',
+                     (100, snapshot_text, context_text, None, None))
+        conn.execute('INSERT INTO llm_scenario_review_events VALUES(?,?,?)', (100, 0, event_text))
+        conn.execute('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body TEXT)')
+        conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)', (100, packed))
+        plain = {'slot': 100, 'body': original}
+        compressed = {'slot': 100, 'body': packed}
+        assert export._anchor_hash('llm_scenario_review_tapes', plain, conn) == export._anchor_hash(
+            'llm_scenario_review_tapes', compressed, conn)
+    export.export_once(*lane)
+    result = export.export_once(*lane)
+    assert result['status'] != 'UNAVAILABLE'
+    tape = [item for item in events(lane[2]) if item['event_type'] == 'btc.research.review_tape'][-1]
+    assert tape['attributes']['tape_hash_status'] == 'MATCH'
+    assert tape['attributes']['body_sha256'] == export._hash(original)
+    assert 'private fixture' not in lane[2].read_text()
+    with sqlite3.connect(lane[0]) as conn:
+        conn.execute('DELETE FROM llm_scenario_review_events WHERE slot=100 AND sequence=0')
+    assert export.export_once(*lane)['status'] == 'UNAVAILABLE'

@@ -11,10 +11,12 @@ from live.scenario_broker import ScenarioDemoBroker
 from live.scenario_control import _write
 from live.scenario_pending_renewal import load, receipt
 from live.scenario_review_adapter import make_calculated_review_proposer
+from utils.btc_review_references import read_tape
 from live.scenario_runtime import ScenarioRuntime
 from live.scenario_model_input import restore_model_input
 from tests.test_scenario_execution import Exchange
 from tests.test_scenario_review_runtime import wire
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def renewal_runtime(tmp_path, *, reapprove=True, assessment='INTACT', before_select=None,
@@ -86,7 +88,7 @@ def renewal_runtime(tmp_path, *, reapprove=True, assessment='INTACT', before_sel
             chosen = (next((row for row in bundle['candidates'] if row['id'] == 'WAIT_RENEWAL'), bundle['wait'])
                       if ctx['scenario_id'] and select_renewal else
                       bundle['wait'] if ctx['scenario_id'] else bundle['candidates'][0])
-            result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale=selection_reason)
+            result = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale=selection_reason)
             if before_select and ctx['scenario_id']:
                 before_select(broker, exchange)
         return SimpleNamespace(text=json.dumps(result))
@@ -146,8 +148,8 @@ def test_initial_lease_and_explicit_selected_wait_keep_exact_order(tmp_path, sid
     assert len(calls) == 4  # OPEN DRAFT+SELECT, renewal DRAFT+SELECT even without trade alternatives.
     selected_input = restore_model_input(json.loads(calls[-1]['user_prompt']))
     fallback = selected_input['calculated_candidates']['wait']
-    assert fallback['proposal_source'] == 'HOST_NO_RENEWAL_FALLBACK'
-    assert fallback['raw_proposal']['pending_renewal'] is None
+    assert fallback['effective_plan']['pending_renewal'] is None
+    assert 'raw_proposal'not in fallback
     # Repeated executor call returns durable proof, never another renewal/write.
     payload = json.loads(r.conn.execute('SELECT payload FROM llm_scenario_intents ORDER BY rowid DESC LIMIT 1').fetchone()[0])
     b.execute(payload, payload['action_id'])
@@ -311,17 +313,24 @@ def test_two_trade_alternatives_plus_renewal_are_lossless_and_decline_is_availab
     assert r.tick()['status'] == 'intent_pending'
     e.now += 301
     outcome = r.tick()
-    assert outcome['status'] == 'intent_pending', (outcome, [json.loads(review_text(row[0]))['outcome']
-        for row in r.conn.execute('SELECT body FROM llm_scenario_review_tapes')])
+    assert outcome['status'] == 'intent_pending', (outcome, [json.loads(read_tape(row[1], r.conn, row[0], decode_legacy=review_text))['outcome']
+        for row in r.conn.execute('SELECT slot,body FROM llm_scenario_review_tapes')])
     projected = json.loads(calls[-1]['user_prompt'])
     restored = restore_model_input(projected)
     choices = restored['calculated_candidates']
     assert [row['id'] for row in choices['candidates']] == ['c0', 'c1', 'WAIT_RENEWAL']
     renewal = choices['candidates'][-1]
-    assert renewal['raw_model_wrapper']['wait_proposal']['pending_renewal'] == renewal['raw_proposal']['pending_renewal']
+    assert renewal['effective_plan']['pending_renewal'] is not None
+    assert choices['wait']['effective_plan']['pending_renewal'] is None
+    slot,body=r.conn.execute('SELECT slot,body FROM llm_scenario_review_tapes ORDER BY slot DESC LIMIT 1').fetchone()
+    original=json.loads(read_tape(body,r.conn,slot,decode_legacy=review_text))['outcome']['result']['candidates']
+    full=original['candidates'][-1]
+    assert full['raw_model_wrapper']['wait_proposal']['pending_renewal']==full['raw_proposal']['pending_renewal']
     from live.scenario_calculated_review import receipt_hash
-    assert choices['wait']['derived_from_model_proposal_sha256'] == receipt_hash(renewal['raw_proposal'])
-    assert choices['wait']['raw_proposal']['pending_renewal'] is None
+    assert original['wait']['proposal_source']=='HOST_NO_RENEWAL_FALLBACK'
+    assert original['wait']['derived_from_model_proposal_sha256']==receipt_hash(full['raw_proposal'])
+    assert choices['wait']['host_receipt_sha256']==original['wait']['receipt_sha256']
+    assert renewal['host_receipt_sha256']==full['receipt_sha256']
     assert len(calls[-1]['user_prompt'].encode()) < 100000
 
 
@@ -546,7 +555,7 @@ def test_pending_renewal_reads_compressed_selected_tape(tmp_path, monkeypatch, c
     def compressed(payload, ident):
         slot = r.conn.execute('SELECT slot FROM llm_scenario_decisions WHERE json_extract(proposal, "$.action_id")=?', (ident,)).fetchone()[0]
         body = r.conn.execute('SELECT body FROM llm_scenario_review_tapes WHERE slot=?', (slot,)).fetchone()[0]
-        value = MAGIC + (b'broken' if corrupt else gzip.compress(review_text(body).encode(), mtime=0))
+        value = MAGIC + (b'broken' if corrupt else gzip.compress(read_tape(body, r.conn, slot, decode_legacy=review_text).encode(), mtime=0))
         r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (value, slot))
         r.conn.commit()
         return original(payload, ident)
@@ -563,6 +572,7 @@ def test_pending_renewal_reads_compressed_selected_tape(tmp_path, monkeypatch, c
 def test_runtime_durable_event_comparison_reads_compressed_events(tmp_path, monkeypatch):
     import gzip
     from live.scenario_review_storage import MAGIC
+    from utils.btc_review_event_references import read_event
     r, b, e, _, _ = renewal_runtime(tmp_path)
     original = r._record_calculated_review
 
@@ -570,7 +580,7 @@ def test_runtime_durable_event_comparison_reads_compressed_events(tmp_path, monk
         original(slot, event, commit=commit)
         seq, body = r.conn.execute('SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence DESC LIMIT 1', (slot,)).fetchone()
         r.conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=? AND sequence=?',
-                       (MAGIC + gzip.compress(review_text(body).encode(), mtime=0), slot, seq))
+                       (MAGIC + gzip.compress(read_event(body, r.conn, slot, seq, decode_legacy=review_text).encode(), mtime=0), slot, seq))
         if commit:
             r.conn.commit()
 
@@ -582,12 +592,14 @@ def test_runtime_durable_event_comparison_reads_compressed_events(tmp_path, monk
 
 def test_new_review_tape_is_compressed_and_preserves_complete_envelope(tmp_path):
     from backtest.scenario_tape import digest
-    from live.scenario_review_storage import MAGIC, review_text
+    from live.scenario_review_storage import review_text
+    from utils.btc_review_references import MAGIC
     r, _, _, _, _ = renewal_runtime(tmp_path)
     assert r.tick()['status'] == 'intent_pending'
     stored = r.conn.execute('SELECT body FROM llm_scenario_review_tapes').fetchone()[0]
     assert isinstance(stored, bytes) and stored.startswith(MAGIC)
-    envelope = json.loads(review_text(stored))
+    slot = r.conn.execute('SELECT slot FROM llm_scenario_review_tapes').fetchone()[0]
+    envelope = json.loads(read_tape(stored, r.conn, slot, decode_legacy=review_text))
     assert envelope['outcome']['status'] == 'COMPLETE' and envelope['executable'] is False
     assert envelope['sha256'] == digest({k: v for k, v in envelope.items() if k != 'sha256'})
 
@@ -602,7 +614,8 @@ def test_runtime_compressed_tape_exports_with_matching_original_seal(tmp_path):
     assert r.tick()['status'] == 'intent_pending'
     db = Path(r.conn.execute('PRAGMA database_list').fetchone()[2])
     stored = r.conn.execute('SELECT body FROM llm_scenario_review_tapes').fetchone()[0]
-    original = review_text(stored)
+    slot = r.conn.execute('SELECT slot FROM llm_scenario_review_tapes').fetchone()[0]
+    original = read_tape(stored, r.conn, slot, decode_legacy=review_text)
     state, spool = tmp_path / 'export-state.sqlite', tmp_path / 'export.jsonl'
     btc_scenario_export.export_once(db, state, spool)
     btc_scenario_export.export_once(db, state, spool)
@@ -612,3 +625,34 @@ def test_runtime_compressed_tape_exports_with_matching_original_seal(tmp_path):
     assert exported[0]['attributes']['tape_hash_status'] == 'MATCH'
     assert exported[0]['attributes']['body_sha256'] == btc_scenario_export._hash(original)
     r.conn.close()
+
+
+@pytest.mark.parametrize('corrupt', [False, True])
+def test_pending_renewal_reads_referenced_tape_and_rejects_changed_source(tmp_path, monkeypatch, corrupt):
+    from utils.btc_review_references import compact, pack
+    from utils.btc_review_event_references import read_event
+
+    r, b, e, _, _ = renewal_runtime(tmp_path)
+    assert r.tick()['status'] == 'intent_pending'
+    original = b._renew_pending
+
+    def referenced(payload, ident):
+        slot = r.conn.execute('SELECT slot FROM llm_scenario_decisions WHERE json_extract(proposal, "$.action_id")=?', (ident,)).fetchone()[0]
+        stored = r.conn.execute('SELECT body FROM llm_scenario_review_tapes WHERE slot=?', (slot,)).fetchone()[0]
+        snapshot, context = r.conn.execute('SELECT snapshot,context FROM llm_scenario_decisions WHERE slot=?', (slot,)).fetchone()
+        events = [read_event(body, r.conn, slot, seq, decode_legacy=review_text)
+                  for seq, body in r.conn.execute('SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence', (slot,))]
+        value = pack(compact(read_tape(stored, r.conn, slot, decode_legacy=review_text), review_text(snapshot), context, events))
+        r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (value, slot))
+        if corrupt:
+            r.conn.execute('UPDATE llm_scenario_review_events SET body=? WHERE slot=? AND sequence=0', ('{}', slot))
+        r.conn.commit()
+        return original(payload, ident)
+
+    monkeypatch.setattr(b, '_renew_pending', referenced)
+    e.now += 301
+    r.tick()
+    lease = load(r.conn, r.state()['active'])
+    assert lease['revision'] == (0 if corrupt else 1)
+    status = json.loads(r.conn.execute('SELECT body FROM llm_scenario_pending_renewals').fetchone()[0])['status']
+    assert status == ('REJECTED' if corrupt else 'APPLIED')

@@ -175,3 +175,22 @@ def test_t1_exemption_lets_a_rule_approved_reentry_below_the_50_day_line_through
     t2 = evaluate_production_buy_gate(_scenario(), current_price=100.0, market_regime="moderate_bull",
                                       trend_facts="T1_hit: true / T2_hit: true", t1_exempt=True)
     assert {item["code"] for item in t2["hard_findings"]} == {"individual_trend_t2"}
+
+
+def test_nonbull_52w_gate_blocks_only_regular_new_buys_far_below_the_high(monkeypatch):
+    facts = "- 52주 확정 최고가(당일 봉 제외, 확정 250거래일): 1,400.00 | 현재가/최고가 71.4%"
+    kw = dict(current_price=100.0 * 10, trend_facts=facts, market="US")
+    sc = _scenario(target_price=1150.0, stop_loss=950.0, risk_reward_ratio=3.0, entry_price=1000.0)
+    codes = lambda r: {item["code"] for item in r["hard_findings"]}  # noqa: E731
+    off = evaluate_production_buy_gate(sc, market_regime="sideways", **kw)
+    assert "nonbull_far_below_52w_high" not in codes(off) and round(off["high52_ratio"], 3) == 0.714
+    monkeypatch.setenv("NONBULL_52W_GATE_MARKETS", "KR,US")
+    assert "nonbull_far_below_52w_high" in codes(evaluate_production_buy_gate(sc, market_regime="sideways", **kw))
+    for extra in (dict(market_regime="moderate_bull"), dict(market_regime="sideways", is_add=True),
+                  dict(market_regime="sideways", score_exempt=True)):
+        assert "nonbull_far_below_52w_high" not in codes(evaluate_production_buy_gate(sc, **{**kw, **extra}))
+    near = evaluate_production_buy_gate(sc, market_regime="sideways", **{**kw, "trend_facts": facts.replace("1,400.00", "1,300.00")})
+    unknown = evaluate_production_buy_gate(sc, market_regime="sideways", **{**kw, "trend_facts": "- 52주 확정 최고가: 계산 불가"})
+    assert "nonbull_far_below_52w_high" not in codes(near) | codes(unknown) and unknown["high52_ratio"] is None
+    monkeypatch.setenv("NONBULL_52W_GATE_MARKETS", "KR")
+    assert "nonbull_far_below_52w_high" not in codes(evaluate_production_buy_gate(sc, market_regime="sideways", **kw))

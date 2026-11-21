@@ -61,8 +61,9 @@ export function MetricsCards({
   const daysElapsed = getDaysElapsed(market)
 
   // 총 자산 계산 (평가금액 + 예수금)
-  const totalAssets = (summary.real_trading.total_eval_amount || 0) +
-                      (summary.real_trading.available_amount || 0)
+  // US sends a trade-date total; summing settled cash alone drops sale proceeds still settling
+  const totalAssets = summary.real_trading.total_assets ||
+                      (summary.real_trading.total_eval_amount || 0) + (summary.real_trading.available_amount || 0)
 
   // Season 시작 금액
   const seasonStartAmount = seasonInfo.startAmount

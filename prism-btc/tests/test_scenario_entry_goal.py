@@ -7,10 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from live.scenario_review_storage import review_text
+from utils.btc_review_event_references import read_event
 from live.scenario_entry_goal import (
     GoalConsistencyRejection, goal_schema, prepare_goal_source, resolve_goal, validate_goal_plan,
 )
 from tests.test_scenario_ma_context import NOW, point, snapshot
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def context():
@@ -79,6 +82,14 @@ def test_real_runtime_registers_original_source_and_renews_same_order(tmp_path, 
     active = r.state()['active']
     record = deepcopy(active['entry_contract'])
     assert record['version'] == 2 and 'expected_progress' not in record['definition']
+    assert r._entry_contract_registered(active)
+    from live.scenario_review_storage import review_storage, review_text
+    original_snapshot = r.conn.execute('SELECT snapshot FROM llm_scenario_decisions WHERE slot=?',
+                                       (record['resolved_goal']['decision_slot'],)).fetchone()[0]
+    assert isinstance(original_snapshot, bytes)
+    r.conn.execute('UPDATE llm_scenario_decisions SET snapshot=? WHERE slot=?',
+                   (review_storage(review_text(original_snapshot)), record['resolved_goal']['decision_slot']))
+    r.conn.commit()
     assert r._entry_contract_registered(active)
     original = deepcopy(b.children()[0]['request'])
     writes = deepcopy(e.writes)
@@ -169,9 +180,10 @@ def test_goal_rejected_candidate_keeps_taped_select_wait_and_original_prose():
             bundle = payload['calculated_candidates']
             rejected = bundle['candidates'][0]
             assert rejected['rejection_type'] == 'PREAUTHORITY_PLAN_CONSISTENCY'
-            assert rejected['raw_allocation_proposal'] == raw
+            assert rejected['draft_intent']['entry_contract'] == raw['entry_contract']
+            assert rejected['draft_intent']['rationale'] == raw['rationale']
             chosen = bundle['wait']
-            result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale='원래 목표와 불일치')
+            result = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale='원래 목표와 불일치')
         return SimpleNamespace(text=json.dumps(result))
 
     mode = 'economic-reject-calculated-v1'
@@ -454,7 +466,7 @@ def test_later_adjust_uses_registered_bound_not_new_ma_or_new_thesis(tmp_path):
     raw.update(side='LONG', hard_stop=98, chase=dict(max_bps=0, max_reprices=0),
         entry_contract=None, thesis_assessment=dict(contract_id=original['contract_id'], status='INTACT', reason='Still original'))
     for price, expected in [(105, True), (107, False)]:
-        raw['take_profits'] = [dict(id='tp', price=price, fraction=.5)]
+        raw['take_profits'] = [dict(id='tp', price=price, fraction=1.)]
         receipt = calculate_candidate(raw, ctx, candidate_id='c0')
         assert receipt['eligible'] is expected, receipt
         if not expected:
@@ -477,10 +489,11 @@ def test_v1_schema_and_registered_record_match_deployed_9d4a_golden():
 
 
 def test_v2_prompt_is_reviewed_and_v1_prompt_is_unchanged():
-    from live.scenario_llm import ENTRY_CONTRACT_PROMPT, entry_contract_prompt
-    assert entry_contract_prompt({'entry_contract_version': 1}) == ENTRY_CONTRACT_PROMPT
-    assert hashlib.sha256(entry_contract_prompt({'entry_contract_version': 2}).encode()).hexdigest() == (
-        '33d1c257facbc6711586c5cc78800de6df5e6f6c45fc8f322c8c3d92584d7381')
+    from live.scenario_llm import entry_contract_prompt
+    v1, v2 = [entry_contract_prompt({'entry_contract_version': v}) for v in (1,2)]
+    assert 'premise/expected_progress fields' in v1 and 'Version2' not in v1
+    assert 'BOUNDED_BEFORE' in v2 and 'strictly before that value' in v2
+    assert 'never repair a contradiction in prose' in v2
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -597,7 +610,8 @@ def test_goal_source_loss_does_not_disable_registered_numeric_failure_exit(tmp_p
         elif damage == 'decision_missing':
             r.conn.execute('DELETE FROM llm_scenario_decisions WHERE slot=?', (slot,))
         else:
-            snap = json.loads(r.conn.execute('SELECT snapshot FROM llm_scenario_decisions WHERE slot=?', (slot,)).fetchone()[0])
+            from live.scenario_review_storage import review_text
+            snap = json.loads(review_text(r.conn.execute('SELECT snapshot FROM llm_scenario_decisions WHERE slot=?', (slot,)).fetchone()[0]))
             snap['timeframes']['4h']['ma_path']['confirmed_points'][0]['ma35'] += 1
             r.conn.execute('UPDATE llm_scenario_decisions SET snapshot=? WHERE slot=?', (json.dumps(snap), slot))
         r.conn.commit()
@@ -682,8 +696,9 @@ def test_host_link_preserves_fresh_economic_receipt_and_final_lease_hash(tmp_pat
     payload = json.loads(r.conn.execute('SELECT payload FROM llm_scenario_intents WHERE id=?',
         (record['origin']['action_id'],)).fetchone()[0])
     economic = {k: v for k, v in payload.items() if k != 'host_entry_contract_id'}
-    event = json.loads(r.conn.execute("SELECT body FROM llm_scenario_review_events "
-        "WHERE body LIKE '%FINAL_FRESH_REVIEW_RECEIPT%'").fetchone()[0])
+    events = (json.loads(read_event(body, r.conn, slot, sequence, decode_legacy=review_text))
+              for slot, sequence, body in r.conn.execute('SELECT slot,sequence,body FROM llm_scenario_review_events'))
+    event = next(item for item in events if item['kind'] == 'FINAL_FRESH_REVIEW_RECEIPT')
     assert receipt_hash(economic) == event['receipt']['validated_sha256']
     assert _digest(economic) == record['origin']['plan_sha256']
     assert receipt_hash(economic) != _digest(economic)  # Unicode vs ASCII JSON encoding is intentional.
@@ -818,7 +833,7 @@ def test_source_loss_after_selection_does_not_reject_goal_independent_protection
             raw['pending_renewal'] = None
         if kind == 'ADJUST':
             raw.update(side='LONG', hard_stop=99, chase=dict(max_bps=0, max_reprices=0),
-                take_profits=[dict(id='tp', price=105, fraction=.5)] if action == 'TP_ADJUST' else [])
+                take_profits=[dict(id='tp', price=105, fraction=1.)] if action == 'TP_ADJUST' else [])
         if action == 'CANCEL_WAIT':
             raw['cancel_entry_ids'] = [ctx['pending_entries'][0]['id']]
         return raw
@@ -831,7 +846,7 @@ def test_source_loss_after_selection_does_not_reject_goal_independent_protection
             bundle = restore_model_input(json.loads(request['user_prompt']))['calculated_candidates']
             chosen = bundle['candidates'][0]
             assert chosen['eligible'], chosen
-            answer = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale='protect')
+            answer = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale='protect')
         return SimpleNamespace(text=json.dumps(answer))
     mode = 'economic-reject-calculated-v1'
     contract = response_contract(ctx)
@@ -855,3 +870,12 @@ def test_source_loss_after_selection_does_not_reject_goal_independent_protection
         if action == 'CANCEL_WAIT':
             assert 'pending_renewal_version' not in fresh and 'pending_renewal_offer' not in fresh
             assert checked['validated']['cancel_entry_ids'] == [ctx['pending_entries'][0]['id']]
+
+
+@pytest.mark.parametrize('action',['OPEN','ADJUST'])
+@pytest.mark.parametrize('fractions',[[],[.8],[.1,.7]])
+def test_bounded_goal_cannot_retain_unpriced_tail(action,fractions):
+    plan=dict(action=action,side='LONG',entries=[dict(price=90)],
+              take_profits=[dict(price=95+i,fraction=f) for i,f in enumerate(fractions)])
+    with pytest.raises(GoalConsistencyRejection,match='bound_requires_full_tp'):
+        validate_goal_plan(plan,resolve_goal(goal(),context()),full_tp=True)

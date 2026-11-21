@@ -777,8 +777,15 @@ class StockTrackingAgent:
             return ""
         return buy_growth_facts.collect(self, ticker, language=self.language)
 
-    async def _check_sector_diversity(self, sector: str) -> bool:
-        """Check for over-concentration in same sector (delegates to tracking.helpers)"""
+    async def _check_sector_diversity(self, sector: str, is_pyramiding_add: bool = False) -> bool:
+        """Check for over-concentration in same sector (delegates to tracking.helpers).
+
+        With PYRAMID_ROWS_MICRO_SPLIT_ENABLED a pyramid row of a held ticker adds no new name to
+        the sector, so it is exempt (same as US). Flag off: unchanged.
+        """
+        from prism_core.micro_split_live import pyramid_rows_enabled
+        if is_pyramiding_add and pyramid_rows_enabled():
+            return True
         account_key, _ = self._account_scope()
         return check_sector_diversity(
             self.cursor, sector,
@@ -1558,6 +1565,10 @@ class StockTrackingAgent:
                 db_lock=db_lock,
                 sector_profile=self._report_sector_profile(ticker),
             )
+            from prism_core.reentry_v3_live import kis_master_sector
+            from prism_core.sector_names import fill_missing_sector, normalize_kr_sector
+            scenario = await fill_missing_sector(
+                scenario, lambda: normalize_kr_sector(kis_master_sector(ticker) or ""))
 
             scenario = apply_buy_scenario_contract(
                 scenario, market="KR", entry_price=current_price
@@ -1636,6 +1647,10 @@ class StockTrackingAgent:
                     f"{pre_ticker}({pre_company}) already in holdings — pyramid pre-gate "
                     f"blocked ({why}); skipping scenario LLM"
                 )
+                from prism_core import pyramid_ledger
+                pyramid_ledger.emit_gate(self, market="KR", ticker=pre_ticker, stage="pre_gate", allowed=False,
+                                         reason=why, existing=existing, current_price=pre_price,
+                                         decision_id=f"report:{os.path.basename(pdf_report_path)}")
                 return {
                     "success": True,
                     "decision": "Already holding",
@@ -1668,6 +1683,10 @@ class StockTrackingAgent:
                 _pilot_freeze = False
             if _pilot_freeze:
                 logger.info(f"[PULSE_PILOT] 중복매수 동결: {ticker}({company_name}) already in holdings")
+                from prism_core import pyramid_ledger
+                pyramid_ledger.emit_gate(self, market="KR", ticker=ticker, stage="gate", allowed=False,
+                                         reason="PILOT_FREEZE", current_price=analysis_result.get("current_price"),
+                                         decision_id=f"report:{os.path.basename(pdf_report_path)}")
                 return {
                     "success": True,
                     "decision": "Already holding",
@@ -1688,6 +1707,11 @@ class StockTrackingAgent:
                 existing_row_count=existing.get("row_count", 0),
                 ownership=existing.get("pyramid_ownership"),
             )
+            from prism_core import pyramid_ledger
+            pyramid_ledger.emit_gate(self, market="KR", ticker=ticker, stage="gate", allowed=allowed, reason=reason,
+                                     existing=existing, current_price=current_price,
+                                     regime=scenario.get("_deterministic_market_regime"),
+                                     decision_id=f"report:{os.path.basename(pdf_report_path)}")
             if not allowed:
                 logger.info(f"{ticker}({company_name}) already in holdings — add gate blocked: {reason}")
                 return {
@@ -1706,7 +1730,9 @@ class StockTrackingAgent:
             analysis_result["existing_row_count"] = existing.get("row_count", 0)
 
         sector = analysis_result.get("sector", "Unknown")
-        analysis_result["sector_diverse"] = await self._check_sector_diversity(sector)
+        analysis_result["sector_diverse"] = (
+            await self._check_sector_diversity(sector, is_pyramiding_add=True) if analysis_result.get("is_add")
+            else await self._check_sector_diversity(sector))
         return analysis_result
 
     @staticmethod
@@ -2773,6 +2799,11 @@ class StockTrackingAgent:
             current_slots = await self._get_current_slots_count()
             if current_slots >= self.max_slots:
                 logger.warning(f"Holdings already at maximum ({self.max_slots})")
+                if not is_add:  # a new name crowded out (ledger only)
+                    from prism_core import pyramid_ledger
+                    pyramid_ledger.emit_slot_blocked(self, market="KR", ticker=ticker, score=scenario.get("buy_score"),
+                                                     price=current_price, decision_id=scenario.get("_decision_id"),
+                                                     limit="MAX_SLOTS")
                 return LegacyPositionWriteResult(False, None)
 
             # Check market-based maximum portfolio size
@@ -2788,6 +2819,11 @@ class StockTrackingAgent:
             if _weighted >= max_portfolio_size:
                 logger.warning(f"Reached market-based max portfolio size ({max_portfolio_size}). "
                                f"Slot-weighted usage: {_weighted:.2f} ({current_slots} holdings)")
+                if not is_add:
+                    from prism_core import pyramid_ledger
+                    pyramid_ledger.emit_slot_blocked(self, market="KR", ticker=ticker, score=scenario.get("buy_score"),
+                                                     price=current_price, decision_id=scenario.get("_decision_id"),
+                                                     limit="AI_CAP")
                 return LegacyPositionWriteResult(False, None)
 
             # Current time
@@ -2991,6 +3027,7 @@ class StockTrackingAgent:
                 required_score_override=_micro_split_gate_score(scenario),
                 score_exempt=_reentry_rule_approved(scenario),
                 t1_exempt=_reentry_rule_approved(scenario),
+                market="KR",
             )
             if result.get("score_policy"):
                 logger.info("[ENTRY_SCORE_POLICY][KR] regime=%s pulse=%s policy=%s", computed_regime, pulse, result["score_policy"])
@@ -4037,6 +4074,7 @@ class StockTrackingAgent:
                             # distribute from (snapshot - already_ordered), so fills
                             # that haven't settled yet cannot cause an over-sell.
                             sell_quantity = None
+                            row_denominator = row_fraction = None
                             # Multi-row tickers sell fractionally. The FINAL row of a
                             # ticker already split THIS pass (remaining_rows==1 but
                             # ticker in pass_total_qty) must also sell from the snapshot
@@ -4051,12 +4089,16 @@ class StockTrackingAgent:
                                     )
                                     pass_sold_qty[ticker] = 0
                                 available = pass_total_qty[ticker] - pass_sold_qty[ticker]
-                                sell_quantity = compute_fractional_sell_quantity(available, remaining_rows)
+                                # Equal split for legacy rows; a micro-split pyramid row sells its own
+                                # ledger shares, never another row's (prism_core.loop_row_split).
+                                from prism_core.loop_row_split import batch_row_sell_quantity
+                                sell_quantity, row_reason, row_denominator, row_fraction = batch_row_sell_quantity(
+                                    self.cursor, "KR", stock, available, remaining_rows)
                                 pass_sold_qty[ticker] += sell_quantity
                                 logger.info(
                                     f"{ticker} pyramiding fractional sell: {sell_quantity} shares "
                                     f"(available {available} of snapshot {pass_total_qty[ticker]}, "
-                                    f"remaining rows={remaining_rows})"
+                                    f"remaining rows={remaining_rows}, reason={row_reason})"
                                 )
                             # Execute async sell with limit price for reserved orders
                             closed_legacy_id = stock.get("id")
@@ -4108,7 +4150,9 @@ class StockTrackingAgent:
                         # exit instead of full-liquidating. sell_quantity is only
                         # set for fractional multi-row sells; a genuine full sell
                         # leaves it None → denominator 1 (unchanged behavior).
-                        sell_denominator = remaining_rows if sell_quantity is not None else 1
+                        # A micro-split pyramid row sends its own denominator (0 = nothing sold: not published).
+                        sell_denominator = ((remaining_rows if row_denominator is None else row_denominator)
+                                            if sell_quantity is not None else 1)
 
                         # [Optional] Publish sell signal via Redis Streams
                         # Auto-skipped if Redis not configured (requires UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN)
@@ -4122,7 +4166,8 @@ class StockTrackingAgent:
                                 profit_rate=((current_price - stock.get('buy_price', 0)) / stock.get('buy_price', 0) * 100),
                                 sell_reason=sell_reason,
                                 trade_result=trade_result,
-                                sell_denominator=sell_denominator
+                                sell_denominator=sell_denominator,
+                                sell_fraction=row_fraction,
                             )
                         except Exception as signal_err:
                             logger.warning(f"Sell signal publish failed (non-critical): {signal_err}")
@@ -4139,7 +4184,8 @@ class StockTrackingAgent:
                                 profit_rate=((current_price - stock.get('buy_price', 0)) / stock.get('buy_price', 0) * 100),
                                 sell_reason=sell_reason,
                                 trade_result=trade_result,
-                                sell_denominator=sell_denominator
+                                sell_denominator=sell_denominator,
+                                sell_fraction=row_fraction,
                             )
                         except Exception as signal_err:
                             logger.warning(f"GCP sell signal publish failed (non-critical): {signal_err}")
@@ -4965,12 +5011,13 @@ class StockTrackingAgent:
         """Schedule Firebase notification as non-blocking task. Returns the task."""
         return asyncio.create_task(self._notify_firebase(message, chat_id, message_id, msg_type=msg_type))
 
-    async def _send_with_retry(self, chat_id: str, text: str, max_retries: int = 3):
-        """Retry explicit rate rejection only; ambiguous delivery requires review."""
+    async def _send_with_retry(self, chat_id: str, text: str, max_retries: int = 3, broadcast: bool = False):
+        """Retry explicit rate rejection only; ambiguous delivery requires review (broadcast: resend once)."""
         from messaging.telegram_delivery import send_message_once_or_rate_retry
 
         return await send_message_once_or_rate_retry(
-            self.telegram_bot, chat_id=chat_id, text=text, attempts=max_retries + 1
+            self.telegram_bot, chat_id=chat_id, text=text, attempts=max_retries + 1,
+            resend_unknown_once=broadcast,
         )
 
     async def send_telegram_message(self, chat_id: str, language: str = "ko",
@@ -5235,7 +5282,7 @@ class StockTrackingAgent:
                             MAX_MESSAGE_LENGTH = 4096
 
                             if len(translated_message) <= MAX_MESSAGE_LENGTH:
-                                result = await self._send_with_retry(chat_id=channel_id, text=translated_message)
+                                result = await self._send_with_retry(chat_id=channel_id, text=translated_message, broadcast=True)
                                 firebase_tasks.append(self._schedule_firebase(translated_message, channel_id, result.message_id, msg_type=msg_type))
                             else:
                                 # Split long messages
@@ -5256,7 +5303,7 @@ class StockTrackingAgent:
                                 # Send split messages
                                 first_msg_id = None
                                 for i, part in enumerate(parts, 1):
-                                    result = await self._send_with_retry(chat_id=channel_id, text=f"[{i}/{len(parts)}]\n{part}")
+                                    result = await self._send_with_retry(chat_id=channel_id, text=f"[{i}/{len(parts)}]\n{part}", broadcast=True)
                                     if i == 1:
                                         first_msg_id = result.message_id
                                     await asyncio.sleep(0.5)

@@ -1,7 +1,6 @@
 """Repo-root pytest configuration.
 
-Its ONE job today is to make it impossible for a test run to emit a real
-trading signal.
+It isolates test trading signals and the default observability spool.
 
 Background: the trading agents (and the publisher modules themselves) call
 ``load_dotenv()`` at import time, so importing one inside a test hands the
@@ -32,6 +31,8 @@ from messaging.publish_guard import DISABLE_ENV_VAR
 # Set at import time — before pytest imports a single test module, and before
 # any of them can import a trading agent and trigger load_dotenv().
 os.environ[DISABLE_ENV_VAR] = "1"
+# Test fixtures must never enter the shared ClickStack spool during collection or execution.
+os.environ["PRISM_OBSERVABILITY_SPOOL"] = os.devnull
 # Never write the runtime eligibility cache or reach KIS from the default test run;
 # tests that exercise either opt in explicitly.
 os.environ.setdefault("US_ELIGIBILITY_CACHE_PATH", "")
@@ -48,6 +49,10 @@ os.environ.setdefault("CANDIDATE_LEDGER_ENABLED", "false")
 # BUY/SELL prompts read official filings (SEC / KIS 공시) on every decision; hermetic
 # prompt tests must not reach the network. tests/test_corporate_filings.py opts in.
 os.environ.setdefault("CORP_FILINGS_ENABLED", "false")
+# Ops alerts go to the real maintenance chat once load_dotenv() runs; a server test run sent a fake
+# "AAPL synthetic broker rejection" there (2026-10-30). Blank values survive load_dotenv (no override).
+for _alert_var in ("OPS_ALERT_CHAT_ID", "OPS_ALERT_BOT_TOKEN", "OAUTH_ALERT_CHAT_ID", "OAUTH_ALERT_BOT_TOKEN"):
+    os.environ[_alert_var] = ""
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,12 @@ import importlib.util
 import json
 from pathlib import Path
 import sqlite3
+import sys
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from utils.btc_audit_references import read_audit  # noqa: E402
+from utils.btc_accounting_audit_references import read_accounting  # noqa: E402
+from observability.review_storage import review_text  # noqa: E402
 
 
 QUERIES = {
@@ -83,10 +89,27 @@ def _read(db):
         conn.execute("BEGIN")  # All source tables share one SQLite snapshot.
         names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         require(set(QUERIES) | {"btc_meta"} <= names)
-        data = {name: sorted((dict(r) for r in conn.execute(query)), key=canonical)
-                for name, query in QUERIES.items()}
+        data = {}
+        for name, query in QUERIES.items():
+            rows = [dict(r) for r in conn.execute(query)]
+            if name == 'llm_scenario_decisions':
+                for row in rows:
+                    if row.get('snapshot') is not None:
+                        row['snapshot'] = review_text(row['snapshot'])
+            if name == 'llm_scenario_broker_evidence':
+                for row in rows:
+                    if row.get('kind') == 'account':
+                        row['body'] = review_text(row['body'])
+            data[name] = sorted(rows, key=canonical)
         for name, query in OPTIONAL.items():
-            data[name] = sorted((dict(r) for r in conn.execute(query)), key=canonical) if name in names else []
+            rows = [dict(r) for r in conn.execute(query)] if name in names else []
+            if name == 'llm_scenario_audit_events':
+                for row in rows:
+                    if row.get('kind') == 'decision_input':
+                        row['body'] = read_audit(row['body'], conn, row.get('decision_slot'))
+                    elif row.get('kind') == 'accounting_observation':
+                        row['body'] = read_accounting(row['body'], conn)
+            data[name] = sorted(rows, key=canonical)
         data["binding"] = [dict(r) for r in conn.execute(
             "SELECT value FROM btc_meta WHERE mode='demo' AND key='shared_entry_policy_v1'")]
         conn.rollback()

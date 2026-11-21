@@ -475,7 +475,7 @@ class PortfolioTelegramReporter:
                     )
 
                     # Send translated message
-                    success = await self.telegram_bot.send_message(channel_id, translated_message)
+                    success = await self.telegram_bot.send_message(channel_id, translated_message, broadcast=True)
 
                     if success:
                         logger.info(f"Portfolio report sent successfully to {lang} channel")

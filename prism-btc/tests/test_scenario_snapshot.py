@@ -218,12 +218,12 @@ def test_recent_15m_gap_disables_acceleration():
     assert forming["volume_acceleration"]["ratio"] is None
 
 
-def test_missing_15m_invalidates_decision_but_preserves_linear_context():
+def test_missing_15m_is_optional_and_preserves_linear_context():
     now,h,p = intrabar_fixture()
     del h["15m"]
     del p["15m"]
     result=snapshot(h,p,now=now)
-    assert not result["valid"]
+    assert result["valid"]
     forming=result["timeframes"]["1h"]["forming"]
     assert forming["volume_acceleration"]["status"] == "unavailable"
     assert forming["volume_projection"]["same_progress_profile"]["status"] == "unavailable"

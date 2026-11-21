@@ -24,7 +24,7 @@ logger = logging.getLogger("loop_publish")
 
 async def publish_loop_sell(market: str, ticker: str, company_name: str, price: float,
                             buy_price: float, sell_reason: str, trade_result=None,
-                            sell_denominator: int = 1) -> None:
+                            sell_denominator: int = 1, sell_fraction=None) -> None:
     """Best-effort: broadcast a loop sell to Redis Streams + GCP Pub/Sub.
 
     Auto-skips when the respective transport is unconfigured (the underlying
@@ -42,7 +42,7 @@ async def publish_loop_sell(market: str, ticker: str, company_name: str, price: 
         await publish_sell_signal(
             ticker=ticker, company_name=company_name, price=price, buy_price=buy_price,
             profit_rate=profit_rate, sell_reason=sell_reason, trade_result=trade_result,
-            market=mkt, sell_denominator=sell_denominator,
+            market=mkt, sell_denominator=sell_denominator, sell_fraction=sell_fraction,
         )
     except Exception as e:
         logger.warning("[loop-publish] Redis sell signal failed (non-critical): %s", e)
@@ -53,7 +53,7 @@ async def publish_loop_sell(market: str, ticker: str, company_name: str, price: 
         await gcp_publish_sell_signal(
             ticker=ticker, company_name=company_name, price=price, buy_price=buy_price,
             profit_rate=profit_rate, sell_reason=sell_reason, trade_result=trade_result,
-            market=mkt, sell_denominator=sell_denominator,
+            market=mkt, sell_denominator=sell_denominator, sell_fraction=sell_fraction,
         )
     except Exception as e:
         logger.warning("[loop-publish] GCP sell signal failed (non-critical): %s", e)

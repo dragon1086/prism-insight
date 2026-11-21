@@ -11,6 +11,9 @@ from backtest.scenario_tape import TapeMismatch
 from tests.test_scenario_replay import inputs, wait_policy
 from tests.test_scenario_review_runtime import wire as runtime_wire
 from live.scenario_model_input import restore_model_input
+from live.scenario_review_storage import review_text
+from utils.btc_review_event_references import read_event
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def wire(ctx, action):
@@ -39,6 +42,23 @@ def test_runtime_event_hash_literal_queries_preserve_all_columns_and_rowid_order
                 rows=[("z",1000.001,"original"),("a",1000.002,"later")]),
         }
         assert _runtime_event_hash(conn)==digest(expected)
+
+
+def test_runtime_event_hash_preserves_recovery_input_reference():
+    from analysis.scenario_replay import _runtime_event_hash
+    from utils.btc_recovery_references import canonical, compact_input, pack
+    with sqlite3.connect(':memory:') as conn:
+        conn.execute('CREATE TABLE llm_scenario_decisions(slot INTEGER, context TEXT)')
+        conn.execute('CREATE TABLE llm_scenario_recovery_events(slot INTEGER, kind TEXT, body TEXT)')
+        context = canonical({'recovery': {'baseline': 'x' * 2000}})
+        original = canonical({'decision_slot': 7, 'recovery': json.loads(context)['recovery']})
+        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?)', (7, context))
+        conn.execute('INSERT INTO llm_scenario_recovery_events VALUES(?,?,?)', (7, 'INPUT', original))
+        before = _runtime_event_hash(conn)
+        compacted = compact_input(context, original, 7)
+        assert compacted != original
+        conn.execute('UPDATE llm_scenario_recovery_events SET body=?', (pack(compacted),))
+        assert _runtime_event_hash(conn) == before
 
 
 @pytest.mark.parametrize("create_statement", [
@@ -103,7 +123,7 @@ def test_zero_network_native_economic_fresh_frozen_exact_full_tick(tmp_path, pat
         if "selection_token" in request["response_schema"]["properties"]:
             receipts = payload["calculated_candidates"]
             selected = next((r for r in receipts["candidates"] if r["eligible"]), receipts["wait"])
-            result = dict(selection_token=f"{selected['id']}:{selected['receipt_sha256']}", rationale="계산 확인")
+            result = dict(selection_token=f"{selected['id']}:{model_receipt_hash(selected)}", rationale="계산 확인")
         elif "wait_proposal" in request["response_schema"]["properties"]:
             if ctx.get("scenario_id") and ctx["now"] >= bundle["start_ms"]/1000 + 600:
                 candidates = [wire(ctx, "EXIT")]
@@ -171,7 +191,7 @@ def test_exit_cancel_latency_is_not_submission_failure_and_replays_exactly(tmp_p
         if "selection_token" in request["response_schema"]["properties"]:
             receipts=payload["calculated_candidates"]
             selected=next((r for r in receipts["candidates"] if r["eligible"]),receipts["wait"])
-            result=dict(selection_token=f"{selected['id']}:{selected['receipt_sha256']}",rationale="fixture")
+            result=dict(selection_token=f"{selected['id']}:{model_receipt_hash(selected)}",rationale="fixture")
         else:
             action="EXIT" if ctx.get("scenario_id") else ("OPEN" if ctx["now"] < bundle["start_ms"]/1000+300 else "WAIT")
             result=wire(ctx,action)
@@ -272,7 +292,7 @@ def test_post_review_durable_record_delay_cannot_extend_deadline(tmp_path,monkey
     class DelayedConnection(sqlite3.Connection):
         def execute(self, sql, parameters=()):
             result=super().execute(sql,parameters)
-            if sql.startswith("INSERT INTO llm_scenario_review_events") and json.loads(parameters[2])["kind"]=="FRESH_REVIEW_RECEIPT":
+            if sql.startswith("INSERT INTO llm_scenario_review_events") and json.loads(read_event(parameters[2], self, parameters[0], parameters[1], decode_legacy=review_text))["kind"]=="FRESH_REVIEW_RECEIPT":
                 wall[0]+=76
             return result
     monkeypatch.setattr(sqlite3,"connect",lambda *args,**kwargs:original(*args,factory=DelayedConnection,**kwargs))
@@ -281,7 +301,7 @@ def test_post_review_durable_record_delay_cannot_extend_deadline(tmp_path,monkey
         payload=json.loads(request["user_prompt"])
         if "selection_token" in request["response_schema"]["properties"]:
             receipt=payload["calculated_candidates"]["candidates"][0]
-            result=dict(selection_token=f"{receipt['id']}:{receipt['receipt_sha256']}",rationale="검산")
+            result=dict(selection_token=f"{receipt['id']}:{model_receipt_hash(receipt)}",rationale="검산")
         else:
             ctx=payload["contract_context"]
             result=dict(wait_proposal=wire(ctx,"WAIT"),candidates=[wire(ctx,"OPEN")],
@@ -349,7 +369,7 @@ def test_final_guard_validation_latency_is_not_invisible(tmp_path,monkeypatch):
         payload=json.loads(request["user_prompt"])
         if "selection_token" in request["response_schema"]["properties"]:
             receipt=payload["calculated_candidates"]["candidates"][0]
-            result=dict(selection_token=f"{receipt['id']}:{receipt['receipt_sha256']}",rationale="검산")
+            result=dict(selection_token=f"{receipt['id']}:{model_receipt_hash(receipt)}",rationale="검산")
         else:
             ctx=payload["contract_context"]
             result=dict(wait_proposal=wire(ctx,"WAIT"),candidates=[wire(ctx,"OPEN")],
@@ -380,7 +400,7 @@ def test_record_fault_replays_true_durable_effect_without_duplicate_guard_effect
             self.injected=False
         def execute(self,sql,parameters=()):
             inject=(self.fresh and not self.injected and sql.startswith("INSERT INTO llm_scenario_review_events")
-                    and json.loads(parameters[2])["kind"]=="MODEL_REQUEST")
+                    and json.loads(read_event(parameters[2], self, parameters[0], parameters[1], decode_legacy=review_text))["kind"]=="MODEL_REQUEST")
             if inject:
                 self.injected=True
                 if fault=="before_commit":
@@ -436,7 +456,7 @@ def test_consumed_recovery_exact_all_runtime_review_exchange_tables(tmp_path,pro
         payload=restore_model_input(json.loads(request["user_prompt"]))
         if "selection_token" in request["response_schema"]["properties"]:
             candidate=next(r for r in payload["calculated_candidates"]["candidates"] if r["eligible"])
-            result=dict(selection_token=f"{candidate['id']}:{candidate['receipt_sha256']}",rationale="계산 검토")
+            result=dict(selection_token=f"{candidate['id']}:{model_receipt_hash(candidate)}",rationale="계산 검토")
         else:
             ctx=payload["contract_context"]
             proposal=policy(payload["market_snapshot"],ctx)
@@ -483,7 +503,10 @@ def test_consumed_recovery_exact_all_runtime_review_exchange_tables(tmp_path,pro
                 assert outcome["status"]==("wait" if holding_action=="WAIT" else "intent_pending")
                 assert one.execute("SELECT count(*) FROM llm_scenario_intents").fetchone()[0]==(1 if holding_action=="WAIT" else 2)
                 if holding_action=="EXIT":
-                    final=json.loads(one.execute("SELECT body FROM llm_scenario_review_events WHERE slot=? AND body LIKE '%FINAL_FRESH_REVIEW_RECEIPT%'",(stop_minute//300000,)).fetchone()[0])
+                    slot = stop_minute//300000
+                    events = (json.loads(read_event(body, one, slot, sequence, decode_legacy=review_text))
+                              for sequence, body in one.execute("SELECT sequence,body FROM llm_scenario_review_events WHERE slot=?",(slot,)))
+                    final = next(event for event in events if event['kind'] == 'FINAL_FRESH_REVIEW_RECEIPT')
                     assert round((final["post_validation_checked_at"]-final["receipt"]["checked_at"])*1000)==1
                 else:
                     tick=next(json.loads(line) for line in tape.read_text().splitlines()[1:] if json.loads(line)["at_ms"]==stop_minute)
@@ -509,7 +532,7 @@ def test_observing_post_record_stop_crossing_never_consumes_permit(tmp_path,monk
         def execute(self,sql,parameters=()):
             result=super().execute(sql,parameters)
             if (sql.startswith("INSERT INTO llm_scenario_review_events") and parameters[0]==stop_minute//300000
-                    and json.loads(parameters[2])["kind"]=="FRESH_REVIEW_RECEIPT"):
+                    and json.loads(read_event(parameters[2], self, parameters[0], parameters[1], decode_legacy=review_text))["kind"]=="FRESH_REVIEW_RECEIPT"):
                 wall[0]+=40
             return result
     monkeypatch.setattr(sqlite3,"connect",lambda *args,**kwargs:original(*args,factory=DelayedConnection,**kwargs))
@@ -519,7 +542,7 @@ def test_observing_post_record_stop_crossing_never_consumes_permit(tmp_path,monk
         data=restore_model_input(json.loads(request["user_prompt"]))
         if "selection_token" in request["response_schema"]["properties"]:
             candidate=next(r for r in data["calculated_candidates"]["candidates"] if r["eligible"])
-            result=dict(selection_token=f"{candidate['id']}:{candidate['receipt_sha256']}",rationale="계산 확인")
+            result=dict(selection_token=f"{candidate['id']}:{model_receipt_hash(candidate)}",rationale="계산 확인")
         else:
             ctx=data["contract_context"]
             candidates=[]
@@ -547,6 +570,31 @@ def test_observing_post_record_stop_crossing_never_consumes_permit(tmp_path,monk
         outcome=json.loads(conn.execute("SELECT outcome FROM llm_scenario_decisions WHERE slot=?",(stop_minute//300000,)).fetchone()[0])
         assert outcome["failure_code"]=="fresh_safety_rejection"
         assert outcome["failure_detail"]=="stop_crossed_market"
+
+
+def test_changed_context_records_only_allowed_field_without_order(tmp_path, monkeypatch):
+    from live import scenario_review_guard
+    bundle, market = inputs()
+    wall = [0.]
+    def generate(**request):
+        wall[0] += 1
+        payload = json.loads(request['user_prompt'])
+        if 'selection_token' in request['response_schema']['properties']:
+            choice = payload['calculated_candidates']['wait']
+            result = dict(selection_token=f"{choice['id']}:{model_receipt_hash(choice)}", rationale='fixture')
+        else:
+            result = dict(wait_proposal=wire(payload['contract_context'], 'WAIT'), candidates=[], no_candidate_reason='fixture')
+        return SimpleNamespace(text=json.dumps(result))
+    def reject(*args, **kwargs):
+        raise ValueError('review_guard_context_changed:account_version')
+    monkeypatch.setattr(scenario_review_guard, 'guard_review', reject)
+    run_replay(bundle, market, tmp_path/'one', mode='fixture', tape_path=tmp_path/'tape',
+        policy_profile='calculated-economic-v4', model_generator=generate, clock_monotonic=lambda:wall[0])
+    with sqlite3.connect(tmp_path/'one'/'replay.sqlite') as conn:
+        assert conn.execute('SELECT count(*) FROM llm_scenario_intents').fetchone()[0] == 0
+        outcomes = [json.loads(row[0]) for row in conn.execute('SELECT outcome FROM llm_scenario_decisions')]
+        rejected = [o for o in outcomes if o.get('failure_code') == 'fresh_safety_rejection']
+        assert rejected and all(o.get('failure_detail') == 'context_changed' and o.get('failure_field') == 'account_version' for o in rejected)
 
 
 def test_profiles_preserve_legacy_contract_schema():

@@ -182,6 +182,7 @@ def test_model_incident_only_validated_model_outcome_recovers(tmp_path, reason, 
     for stamp in (1000,1010):
         notify_runtime_status(c,failure,clock=lambda:stamp)
     for result in ({'status':'protection_checked'}, {'status':'intent_pending'},
+                   {'status':'intent_pending','reason':'awaiting_exact_evidence','model_deferred':True},
                    {'status':'intent_pending','reason':'submission_unknown'},
                    {'status':'lock_busy'}, {'status':'blocked','reason':'new_risk_halted'}):
         notify_runtime_status(c,result,clock=lambda:1020)
@@ -337,3 +338,90 @@ def test_submission_unknown_is_preserved_as_error_even_without_decision_slot(tmp
     errors = c.execute("SELECT message FROM btc_events WHERE mode='demo' AND level='error'").fetchall()
     assert [row[0] for row in errors] == ['scenario tick: submission_unknown']
     c.close()
+
+
+@pytest.mark.parametrize('flags,enabled',[(['--execute','--calculated-review'],True),(['--execute','--calculated-review','--demo-fee-reference'],True),(['--execute','--calculated-review','--prepared-entry-plans'],True),(['--protect-only'],False)])
+def test_cli_enables_economics_only_for_decision_broker(tmp_path,monkeypatch,capsys,flags,enabled):
+    import inspect
+    from live import scenario_broker
+    runner,path,_=_main_failure_fixture(tmp_path,monkeypatch,ValueError('unused'),'none')
+    monkeypatch.setattr(sys,'argv',['runner',*flags,'--root-db',str(path)])
+    configured={}
+    def broker(*a,**kw):
+        configured.update(kw);return object()
+    def checked(conn,adapter,**kw):
+        inspect.signature(run_once).bind(conn,adapter,**kw)
+        return {'status':'wait','model_called':False}
+    monkeypatch.setattr(scenario_broker,'ScenarioDemoBroker',broker)
+    monkeypatch.setattr(runner,'run_once',checked)
+    assert runner.main()==0
+    assert configured['entry_economics_enabled'] is enabled
+    assert configured['entry_fee_reference_enabled'] is ('--demo-fee-reference' in flags)
+    assert configured.get('prepared_entry_plans_enabled',False) is ('--prepared-entry-plans' in flags)
+    assert json.loads(capsys.readouterr().out)['status']=='wait'
+
+
+@pytest.mark.parametrize('flags',[[],['--execute'],['--execute','--calculated-review','--protect-only'],['--execute','--calculated-review','--activate']])
+def test_fee_reference_cannot_activate_or_run_protection(monkeypatch,flags):
+    from live import scenario_runner
+    monkeypatch.setattr(sys,'argv',['runner','--demo-fee-reference',*flags])
+    with pytest.raises(SystemExit) as e:scenario_runner.main()
+    assert e.value.code==2
+
+
+@pytest.mark.parametrize('flags',[[],['--execute'],['--execute','--calculated-review','--protect-only'],['--execute','--calculated-review','--activate']])
+def test_prepared_plans_cannot_activate_or_run_protection(monkeypatch,flags):
+    from live import scenario_runner
+    monkeypatch.setattr(sys,'argv',['runner','--prepared-entry-plans',*flags])
+    with pytest.raises(SystemExit)as e:scenario_runner.main()
+    assert e.value.code==2
+
+
+def _overload_db():
+    c=sqlite3.connect(':memory:')
+    c.execute('CREATE TABLE llm_scenario_decisions(slot INTEGER,outcome TEXT)')
+    c.execute('CREATE TABLE llm_scenario_review_events(slot INTEGER,sequence INTEGER,body TEXT)')
+    c.execute('INSERT INTO llm_scenario_decisions VALUES(1,?)',(json.dumps(dict(status='blocked',reason='llm_call_failed',failure_detail='overloaded')),))
+    c.execute('INSERT INTO llm_scenario_review_events VALUES(1,0,?)',(json.dumps(dict(kind='MODEL_ERROR',failure_detail='overloaded',retry_after_seconds=321,failed_at=100)),))
+    c.commit();return c
+
+
+def test_provider_wait_preserves_protection_and_skips_model_until_boundary(monkeypatch):
+    from live import scenario_runner as r
+    c=_overload_db();calls=[]
+    broker=SimpleNamespace(environment='demo',lane='MAIN',reconcile=lambda:(calls.append('protect')or dict(protection_confirmed=True)))
+    monkeypatch.setattr(r,'ScenarioRuntime',lambda *a,**k:SimpleNamespace(tick=lambda:(calls.append('model')or dict(status='wait'))))
+    monkeypatch.setattr(r.time,'time',lambda:420.)
+    value=r._run_once(c,broker,execute=True,calculated_review=True)
+    assert value['status']=='model_cooldown'and value['retry_at']==421 and value['model_deferred']is True
+    assert calls==['protect']
+    monkeypatch.setattr(r.time,'time',lambda:421.)
+    assert r._run_once(c,broker,execute=True,calculated_review=True)['status']=='wait'
+    assert calls==['protect','model']
+
+
+def test_provider_wait_never_masks_unverified_protection(monkeypatch):
+    from live import scenario_runner as r
+    c=_overload_db();broker=SimpleNamespace(environment='demo',lane='MAIN',reconcile=lambda:dict(protection_confirmed=False))
+    monkeypatch.setattr(r.time,'time',lambda:420.)
+    monkeypatch.setattr(r,'ScenarioRuntime',lambda *a,**k:pytest.fail('no model during provider wait'))
+    value=r._run_once(c,broker,execute=True,calculated_review=True)
+    assert value['status']=='blocked'and value['reason']=='protection_not_verified_by_scenario_adapter'
+    assert value['model_deferred']is True
+
+
+def test_legacy_error_without_retry_after_does_not_invent_a_deadline():
+    from live import scenario_runner as r
+    c=_overload_db();c.execute('UPDATE llm_scenario_review_events SET body=?',(json.dumps(dict(kind='MODEL_ERROR',failure_detail='overloaded')),));c.commit()
+    assert r._provider_retry_at(c,420)is None
+
+
+def test_invalid_retry_evidence_still_runs_protection_and_never_model(monkeypatch):
+    from live import scenario_runner as r
+    c=_overload_db();c.execute('UPDATE llm_scenario_review_events SET body=?',(json.dumps(dict(kind='MODEL_ERROR',retry_after_seconds=True,failed_at=100)),));c.commit();calls=[]
+    b=SimpleNamespace(environment='demo',lane='MAIN',reconcile=lambda:(calls.append('protect')or dict(protection_confirmed=True)))
+    monkeypatch.setattr(r.time,'time',lambda:420.)
+    monkeypatch.setattr(r,'ScenarioRuntime',lambda *a,**k:pytest.fail('invalid cooldown evidence must not reach model'))
+    result=r._run_once(c,b,execute=True,calculated_review=True)
+    assert result['status']=='blocked'and result['reason']=='provider_retry_evidence_invalid'
+    assert calls==['protect']

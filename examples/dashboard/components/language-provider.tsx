@@ -80,13 +80,13 @@ const translations: Record<Language, Record<string, string>> = {
 
     // Metrics Cards - Simulator
     "metrics.simulator": "프리즘 시뮬레이터",
-    "metrics.simSoldProfit": "시뮬레이터 매도 수익률 단순 합계",
+    "metrics.simSoldProfit": "시뮬레이터 매도 수익률 합계",
     "metrics.simAvgHoldingDays": "시뮬레이터 평균 보유기간",
     "metrics.simCurrentProfit": "시뮬레이터 보유종목 누적수익률",
     "metrics.waitingSell": "매도 대기중",
     "metrics.onlyHolding": "현재 보유만 존재",
     "metrics.updateOnSell": "매도 시 업데이트",
-    "metrics.soldProfitDesc": "종목별 수익률을 그대로 더한 값 (비중·복리 미반영)",
+    "metrics.soldProfitDesc": "종목별 수익률에 슬롯 비중을 곱해 더한 값 (복리 미반영). 10으로 나누면 누적 수익률 차트 값",
     "metrics.sold": "매도",
     "metrics.soldBasis": "건 매도 기준",
     "metrics.needStrategy": "보유 전략 확인 필요",
@@ -568,13 +568,13 @@ const translations: Record<Language, Record<string, string>> = {
 
     // Metrics Cards - Simulator
     "metrics.simulator": "Prism Simulator",
-    "metrics.simSoldProfit": "Sim Sold Returns (Simple Sum)",
+    "metrics.simSoldProfit": "Sim Sold Returns (Slot-Weighted Sum)",
     "metrics.simAvgHoldingDays": "Sim Avg Holding Days",
     "metrics.simCurrentProfit": "Sim Current Holdings Return",
     "metrics.waitingSell": "Awaiting sale",
     "metrics.onlyHolding": "Only holdings exist",
     "metrics.updateOnSell": "Updates on sale",
-    "metrics.soldProfitDesc": "Per-trade returns added up (no weighting or compounding)",
+    "metrics.soldProfitDesc": "Per-trade returns × slot fraction, added up (no compounding). Divide by 10 for the cumulative chart value",
     "metrics.sold": "sold",
     "metrics.soldBasis": " sold basis",
     "metrics.needStrategy": "Review strategy",

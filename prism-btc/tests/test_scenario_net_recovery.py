@@ -86,6 +86,20 @@ def test_runtime_small_loss_preserves_window_promotes_only_next_open(automatic_n
     assert r.state()['recovery']['stage_evidence']['window']==[]
 
 
+def test_runtime_recovery_input_reference_restores_original(automatic_net):
+    from live.scenario_review_storage import review_text
+    from utils.btc_recovery_references import MAGIC, read_recovery
+
+    r, _, _, _ = automatic_net
+    open_probe(automatic_net)
+    slot, stored = r.conn.execute("SELECT slot,body FROM llm_scenario_recovery_events WHERE kind='INPUT' ORDER BY rowid DESC LIMIT 1").fetchone()
+    assert isinstance(stored, bytes) and stored.startswith(MAGIC)
+    body = json.loads(read_recovery(stored, r.conn, slot, decode_legacy=review_text, expected_kind='INPUT'))
+    ctx = json.loads(r.conn.execute('SELECT context FROM llm_scenario_decisions WHERE slot=?', (slot,)).fetchone()[0])
+    assert body['recovery'] == ctx['recovery']
+    assert body['context_hash'] == recovery.digest(ctx)
+
+
 def test_runtime_small_loss_at_stage_one_preserves_positive_net(automatic_net):
     r,_,_,_=automatic_net
     for i,pnl in enumerate([15,15,15,-2]):

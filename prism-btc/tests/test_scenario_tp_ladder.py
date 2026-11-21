@@ -5,8 +5,9 @@ from decimal import Decimal
 import pytest
 
 from core.llm_scenario import ScenarioValidationError, validate_scenario
+from live.scenario_broker import BrokerNotReady
 from tests.test_llm_scenario import sample
-from tests.test_scenario_execution import live, persist  # noqa: F401
+from tests.test_scenario_execution import live, persist, record_exit_decision  # noqa: F401
 
 
 @pytest.fixture(params=["LONG", "SHORT"])
@@ -127,26 +128,48 @@ def test_adjust_reallocates_only_remnant_without_restoring_old_quota(ladder):
     payload = persist(broker, action="ADJUST", action_id="a2", entries=[],
                       side=ladder[2], hard_stop=ladder[3],
                       take_profits=targets(ladder[2], (.2, .3, .5)))
+    record_exit_decision(broker, payload)
     broker.execute(payload, "a2")
     broker.reconcile()
     rows = live_targets(broker, "a2")
     assert {key: Decimal(row["request"]["qty"]) for key, row in rows.items()} == {
-        "near": Decimal(".017"), "mid": Decimal(".025"), "far": Decimal(".042")}
+        "near": Decimal(".017"), "mid": Decimal(".025"), "far": Decimal(".043")}
     assert all(exchange.orders[row["link_id"]]["orderStatus"] == "Cancelled"
                for row in old_live.values())
     assert exchange.orders[near["link_id"]]["orderStatus"] == "Filled"
-    assert sum(Decimal(row["request"]["qty"]) for row in rows.values()) == Decimal(".084")
-    # Per-tier flooring leaves .001 under native Full SL, not overclosed or
-    # falsely described as exact 100% TP coverage.
+    assert sum(Decimal(row["request"]["qty"]) for row in rows.values()) == Decimal(".085")
+    # The new full-TP revision conserves only the actual .085 remainder.
     assert Decimal(exchange.orders["native"]["qty"]) == Decimal(".085")
     assert broker.reconcile()["protection_confirmed"] is True
 
 
-def test_small_fill_skips_subminimum_tier_and_keeps_floor_residual_protected(ladder):
+@pytest.mark.parametrize("change", ["tighter","weaker"])
+def test_rejected_adjustment_checks_later_full_stop_direction(ladder,change):
+    broker,exchange,side,stop=(*open_ladder(ladder),*ladder[2:])
+    payload=persist(broker,action="ADJUST",action_id="a2",entries=[],side=side,hard_stop=stop,
+                    take_profits=targets(side))
+    with pytest.raises(BrokerNotReady,match="exit_decision_targets_missing"):
+        broker.execute(payload,"a2")
+    stop_after=(99 if side=="LONG" else 101) if change=="tighter" else (97 if side=="LONG" else 103)
+    state=json.loads(broker.conn.execute("SELECT body FROM llm_scenario_state WHERE id=1").fetchone()[0])
+    state["active"]["hard_stop"]=stop_after
+    broker.conn.execute("UPDATE llm_scenario_state SET body=? WHERE id=1",(json.dumps(state),))
+    broker.conn.commit()
+    exchange.stop=str(stop_after)
+    exchange.orders["native"]["triggerPrice"]=str(stop_after)
+    items=[item for item in broker.reconcile()["intents"] if item["intent_id"]=="a2"]
+    if change=="tighter":
+        assert len(items)==1 and items[0]["terminal"] is True and items[0]["action_applied"] is False
+    else:
+        assert not any(item.get("terminal") is True for item in items)
+    assert Decimal(exchange.orders["native"]["triggerPrice"])==stop_after
+
+
+def test_small_fill_skips_zero_tier_and_allocates_full_remaining_tp(ladder):
     broker, exchange = open_ladder(ladder, (.1, .2, .7), filled=.007)
     rows = live_targets(broker)
     assert {key: Decimal(row["request"]["qty"]) for key, row in rows.items()} == {
-        "mid": Decimal(".001"), "far": Decimal(".004")}
+        "mid": Decimal(".001"), "far": Decimal(".006")}
     assert Decimal(exchange.orders["native"]["qty"]) == Decimal(".007")
     assert broker.reconcile()["protection_confirmed"] is True
 

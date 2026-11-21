@@ -28,7 +28,8 @@ Options:
 Signals: BUY (sized by position_fraction of one slot), ADD (micro-split add: buys delta_fraction of
 one slot for a ticker already held, capped at PRISM's new allocation and one slot, once per
 signal_id; kill switch SUBSCRIBER_FOLLOW_ADDS=false, ledger SUBSCRIBER_ADD_LEDGER, default
-runtime/subscriber_add_signals.jsonl), SELL (sell_denominator), EVENT (log only). Unknown types are
+runtime/subscriber_add_signals.jsonl; for a pyramid row the target is the ticker total, up to 3
+slots), SELL (sell_fraction when sent, else sell_denominator), EVENT (log only). Unknown types are
 logged and acked without an order.
 
 Note:
@@ -90,11 +91,11 @@ def is_market_hours(market: str = "KR") -> bool:
     if market == "US":
         return is_us_market_hours()
 
-    # Korea: 09:00~15:30 KST
-    now = datetime.now().time()
-    market_open = time(9, 0)
-    market_close = time(15, 30)
-    return market_open <= now <= market_close
+    # Korea: 09:00~15:30 KST (KRX_SESSION_OVERRIDE moves it on special days, e.g. exam day)
+    from prism_core.time_windows import regular_session
+    now = datetime.now()
+    market_open, market_close = regular_session(now.date())
+    return market_open <= now.time() <= market_close
 
 
 _US_CMD_MODULE = None
@@ -514,9 +515,10 @@ def _stale_signal_age(publish_time, now: Optional[datetime] = None) -> Optional[
 # ============================================================
 # PRISM starts a micro-split position at 30-80% of one slot (BUY position_fraction) and adds up
 # to one slot when an add scenario is confirmed. Each add is published as type "ADD" with
-# delta_fraction (of one slot, same basis as position_fraction). We buy delta_fraction x our own
-# one-slot amount, only for a ticker we already hold, never above PRISM's new allocation or one
-# slot, and at most once per signal_id (claimed in a local ledger before any order).
+# delta_fraction (of one slot, same basis as position_fraction). We buy up to PRISM's new allocation
+# x our own one-slot amount (2026-11-14: the gap, not only the delta, so whole-share rounding of the
+# entry is made up), only for a ticker we already hold, never above that allocation, and at most
+# once per signal_id (claimed in a local ledger before any order).
 
 ADD_LEDGER_ENV = "SUBSCRIBER_ADD_LEDGER"
 _ALLOCATION_TOLERANCE = 0.011  # rounding slack between delta_fraction and after - before
@@ -576,25 +578,40 @@ def _add_fields(signal: Dict[str, Any]):
             "limit_price": limit}, None
 
 
-def plan_add_amount(*, unit_amount: float, delta_fraction: float, allocation_after: float,
-                    held_quantity: int, price: float, market: str = "KR"):
+def _ticker_target(signal: Dict[str, Any], row_after: float):
+    """(PRISM's allocation of the whole ticker after this add, rows held) in slots.
+
+    Since 2026-11-08 a ticker can hold up to 3 pyramid rows, each micro-split, and the broker only
+    shows the ticker total. The ADD then carries ticker_allocation_after and ticker_rows; an older
+    signal (or an invalid value) falls back to the row itself: (allocation_after, 1).
+    """
+    try:
+        total, rows = float(signal.get("ticker_allocation_after")), int(signal.get("ticker_rows"))
+    except (TypeError, ValueError):
+        return row_after, 1
+    if not (1 <= rows <= 3 and row_after <= total + 1e-9 and total <= rows + 1e-9):
+        return row_after, 1
+    return total, rows
+
+
+def plan_add_amount(*, unit_amount: float, allocation_after: float,
+                    held_quantity: int, price: float, market: str = "KR", slot_rows: int = 1):
     """(order amount, None) or (0, reason) for an ADD.
 
-    amount = min(delta x slot, target - held value, slot - held value), where slot is our one-slot
-    amount, target = allocation_after x slot and the held value is valued at the add price. A holding
-    already at or above PRISM's new allocation (e.g. a legacy full-slot entry) buys nothing.
+    amount = target - held value (the gap, not only delta x slot: since 2026-11-14 an add also
+    makes up the whole-share rounding of earlier orders), where slot is our one-slot amount, target =
+    min(allocation_after, slot_rows) x slot and the held value (whole ticker) is valued at the add
+    price. allocation_after is the ticker total when PRISM holds pyramid rows (slot_rows > 1). A
+    holding already at or above PRISM's new allocation (e.g. a legacy full-slot entry) buys nothing.
     """
     slot = float(unit_amount or 0)
     if slot <= 0 or price <= 0:
         return 0, "one-slot amount or price unavailable"
     held_value = max(int(held_quantity or 0), 0) * price
-    room = min(min(allocation_after, 1.0) * slot, slot) - held_value
-    amount = min(delta_fraction * slot, room)
+    room = min(allocation_after, max(int(slot_rows), 1)) * slot - held_value
     if room < price:
         return 0, f"holding already at PRISM's allocation (held {held_value:,.2f} of target {allocation_after:.0%})"
-    if amount < price:
-        return 0, "add amount below one share"
-    amount = int(amount) if market != "US" else int(amount * 100) / 100
+    amount = int(room) if market != "US" else int(room * 100) / 100
     return amount, None
 
 
@@ -674,9 +691,10 @@ async def follow_add_signal(signal: Dict[str, Any], logger: logging.Logger, *, d
             elif held <= 0:
                 result = skip("not held here (an ADD never opens a new position)")
             else:
-                amount, why = plan_add_amount(unit_amount=trading.buy_amount, delta_fraction=fields["delta"],
-                                              allocation_after=fields["after"], held_quantity=held,
-                                              price=fields["limit_price"], market=market)
+                target, rows = _ticker_target(signal, fields["after"])
+                amount, why = plan_add_amount(unit_amount=trading.buy_amount,
+                                              allocation_after=target, held_quantity=held,
+                                              price=fields["limit_price"], market=market, slot_rows=rows)
                 if not amount:
                     result = skip(why)
                 elif market == "US":
@@ -698,6 +716,22 @@ async def follow_add_signal(signal: Dict[str, Any], logger: logging.Logger, *, d
                  "skipped": bool(result.get("skipped")), "message": str(result.get("message", ""))[:200],
                  "at": datetime.now().isoformat()}, ledger_path)
     return result
+
+
+def _sell_fraction(signal: Dict[str, Any]) -> Optional[float]:
+    try:
+        value = float(signal.get("sell_fraction"))
+    except (TypeError, ValueError):
+        return None
+    return value if 0 < value < 1 else None
+
+
+def partial_sell_quantity(holding: int, sell_denominator: int, sell_fraction: Optional[float] = None) -> int:
+    """Shares to sell for one row of several: floor(holding x sell_fraction) when PRISM sent its exact
+    share (micro-split pyramid rows, 2026-11-08), else holding // sell_denominator (older signals)."""
+    if sell_fraction is not None and 0 < sell_fraction < 1:
+        return int(holding * sell_fraction + 1e-9)
+    return holding // sell_denominator
 
 
 async def execute_buy_trade(ticker: str, company_name: str, logger: logging.Logger, limit_price: Optional[int] = None,
@@ -740,7 +774,8 @@ async def execute_buy_trade(ticker: str, company_name: str, logger: logging.Logg
         return {"success": False, "message": str(e)}
 
 
-async def execute_sell_trade(ticker: str, company_name: str, logger: logging.Logger, limit_price: Optional[int] = None, sell_denominator: int = 1) -> Dict[str, Any]:
+async def execute_sell_trade(ticker: str, company_name: str, logger: logging.Logger, limit_price: Optional[int] = None, sell_denominator: int = 1,
+                             sell_fraction: Optional[float] = None) -> Dict[str, Any]:
     """Execute actual sell order (async)
 
     Args:
@@ -770,7 +805,7 @@ async def execute_sell_trade(ticker: str, company_name: str, logger: logging.Log
             sell_quantity = None  # None => full-position sell (unchanged behavior)
             if sell_denominator and sell_denominator > 1:
                 holding = await asyncio.to_thread(trading.get_holding_quantity, ticker)
-                sell_quantity = holding // sell_denominator
+                sell_quantity = partial_sell_quantity(holding, sell_denominator, sell_fraction)
                 if sell_quantity < 1:
                     # Our position is too small for this fraction to round to a
                     # share. Keep it — the source's final full sweep (denominator
@@ -843,7 +878,8 @@ async def execute_us_buy_trade(ticker: str, company_name: str, logger: logging.L
         return {"success": False, "message": str(e)}
 
 
-async def execute_us_sell_trade(ticker: str, company_name: str, logger: logging.Logger, limit_price: Optional[float] = None, sell_denominator: int = 1) -> Dict[str, Any]:
+async def execute_us_sell_trade(ticker: str, company_name: str, logger: logging.Logger, limit_price: Optional[float] = None, sell_denominator: int = 1,
+                             sell_fraction: Optional[float] = None) -> Dict[str, Any]:
     """Execute actual US stock sell order (async)
 
     Args:
@@ -872,7 +908,7 @@ async def execute_us_sell_trade(ticker: str, company_name: str, logger: logging.
         sell_quantity = None  # None => full-position sell (unchanged behavior)
         if sell_denominator and sell_denominator > 1:
             holding = await asyncio.to_thread(trading.get_holding_quantity, ticker)
-            sell_quantity = holding // sell_denominator
+            sell_quantity = partial_sell_quantity(holding, sell_denominator, sell_fraction)
             if sell_quantity < 1:
                 # Position too small for this fraction to round to a share; keep
                 # it for the source's final full sweep (denominator 1). Not a failure.
@@ -989,14 +1025,16 @@ def main():
             if market == "US":
                 limit_price = float(price) if price else None
                 if signal_type == "SELL":
-                    return asyncio.run(execute_us_sell_trade(ticker, company_name, logger, limit_price=limit_price, sell_denominator=sell_denominator))
+                    return asyncio.run(execute_us_sell_trade(ticker, company_name, logger, limit_price=limit_price, sell_denominator=sell_denominator,
+                        sell_fraction=_sell_fraction(signal)))
                 else:  # BUY
                     return asyncio.run(execute_us_buy_trade(ticker, company_name, logger, limit_price=limit_price,
                                                             position_fraction=_position_fraction(signal)))
             else:  # KR (default)
                 limit_price = int(price) if price else None
                 if signal_type == "SELL":
-                    return asyncio.run(execute_sell_trade(ticker, company_name, logger, limit_price=limit_price, sell_denominator=sell_denominator))
+                    return asyncio.run(execute_sell_trade(ticker, company_name, logger, limit_price=limit_price, sell_denominator=sell_denominator,
+                        sell_fraction=_sell_fraction(signal)))
                 else:  # BUY
                     return asyncio.run(execute_buy_trade(ticker, company_name, logger, limit_price=limit_price,
                                                          position_fraction=_position_fraction(signal)))
@@ -1152,9 +1190,11 @@ def main():
                     # Live trading or market hours: execute immediately
                     logger.info(f"🚀 Executing sell order: {market_label} {company_name}({ticker})")
                     if market == "US":
-                        asyncio.run(execute_us_sell_trade(ticker, company_name, logger, limit_price=float(price) if price else None, sell_denominator=sell_denominator))
+                        asyncio.run(execute_us_sell_trade(ticker, company_name, logger, limit_price=float(price) if price else None, sell_denominator=sell_denominator,
+                        sell_fraction=_sell_fraction(signal)))
                     else:
-                        asyncio.run(execute_sell_trade(ticker, company_name, logger, limit_price=int(price) if price else None, sell_denominator=sell_denominator))
+                        asyncio.run(execute_sell_trade(ticker, company_name, logger, limit_price=int(price) if price else None, sell_denominator=sell_denominator,
+                        sell_fraction=_sell_fraction(signal)))
             else:
                 logger.info(f"🔸 [DRY-RUN] Sell skipped: {market_label} {company_name}({ticker})")
 

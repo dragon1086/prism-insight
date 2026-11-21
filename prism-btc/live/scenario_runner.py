@@ -54,6 +54,34 @@ def run_once(conn, broker, *, execute=False, protect_only=False,
                          entry_contract_enabled=entry_contract_enabled, convergence_entry_enabled=convergence_entry_enabled)
 
 
+def _provider_retry_at(conn, now):
+    """Read only confirmed provider advice from the latest failed decision."""
+    from live.scenario_review_storage import review_text
+    from utils.btc_review_event_references import read_event
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('llm_scenario_decisions','llm_scenario_review_events')")}
+    if len(tables) != 2:
+        return None
+    row = conn.execute('SELECT slot,outcome FROM llm_scenario_decisions ORDER BY slot DESC LIMIT 1').fetchone()
+    if not row or not row[1]:
+        return None
+    outcome = json.loads(review_text(row[1]))
+    if outcome.get('reason') != 'llm_call_failed' or outcome.get('failure_detail') not in {'overloaded','rate_limited','http_429','http_503'}:
+        return None
+    for sequence, body in conn.execute('SELECT sequence,body FROM llm_scenario_review_events WHERE slot=? ORDER BY sequence DESC LIMIT 8', (row[0],)):
+        event = read_event(body, conn, row[0], sequence, decode_legacy=review_text)
+        event = json.loads(event) if isinstance(event, str) else event
+        if event.get('kind') != 'MODEL_ERROR':
+            continue
+        wait, failed_at = event.get('retry_after_seconds'), event.get('failed_at')
+        if wait is None:
+            return None
+        if (type(wait) is not int or not 0 < wait <= 86400 or type(failed_at) not in (int,float)
+                or not math.isfinite(failed_at) or not 0 < failed_at <= now + 120):
+            raise ValueError('provider_retry_evidence_invalid')
+        return failed_at + wait
+    return None
+
+
 def _run_once(conn, broker, *, execute=False, protect_only=False,
               snapshot=collect_snapshot, proposal=propose, calculated_review=False, entry_contract_enabled=False,
              convergence_entry_enabled=False):
@@ -103,6 +131,21 @@ def _run_once(conn, broker, *, execute=False, protect_only=False,
             return {"status":"blocked","reason":"protection_unconfirmed","model_called":False}
     if not execute:
         return {"status":"execution_disabled","reason":"explicit_activation_required"}
+    retry_at, unreadable = None, False
+    now = time.time()
+    if calculated_review:
+        try:
+            retry_at = _provider_retry_at(conn, now)
+        except Exception:
+            unreadable = True
+    if unreadable or retry_at is not None and now < retry_at:
+        result = dict(_run_once(conn, broker, protect_only=True), model_deferred=True)
+        if result['status'] == 'protection_checked':
+            result.update(status='blocked' if unreadable else 'model_cooldown',
+                          reason='provider_retry_evidence_invalid' if unreadable else 'provider_requested_wait')
+            if not unreadable:
+                result['retry_at'] = retry_at
+        return result
     runtime=ScenarioRuntime(conn,broker,
         lambda snap,ctx:proposal(snap,ctx,response_contract(ctx)),snapshot,
         recovery_enabled=True,automatic_normalization_enabled=True,
@@ -204,15 +247,18 @@ def notify_runtime_status(conn,result,*,clock=time.time):
         model_failed=result.get("status")=="blocked" and (result.get("reason") in {
             "llm_output_contract_failed", "llm_call_failed", "llm_input_preparation_failed"}
             or review_failed)
-        model_validated=result.get("status")=="wait" or (
-            result.get("status")=="intent_pending" and result.get("reason")=="awaiting_exact_evidence")
+        model_validated=result.get('model_deferred') is not True and (result.get("status")=="wait" or (
+            result.get("status")=="intent_pending" and result.get("reason")=="awaiting_exact_evidence"))
         if model_failed and (not model_row or not model_row[2]):
+            from live.scenario_oauth import safe_failure_reason
             identity="model-error-"+uuid.uuid4().hex
             stamp=clock()
             enqueue(conn,identity,{"kind":"MODEL_ERROR","timestamp":stamp,
                 "reason_code":"calculated_review_failed" if review_failed else result["reason"],
                 "failure_code": "input_size" if result.get("reason") == "llm_input_preparation_failed"
-                    and result.get("failure_code") == "input_size" else None})
+                    and result.get("failure_code") == "input_size" else None,
+                "transport_reason": safe_failure_reason(result.get('failure_detail'))
+                    if result.get('reason') == 'llm_call_failed' else None})
             conn.execute("INSERT OR REPLACE INTO llm_scenario_model_incident VALUES(1,?,?,1)",(identity,stamp))
         elif model_validated and model_row and model_row[2]:
             enqueue(conn,model_row[0]+"-resolved",{"kind":"MODEL_RECOVERED","timestamp":clock(),
@@ -252,6 +298,9 @@ def main():
                         help="opt in to two-pass, host-sized DEMO MAIN decisions; requires --execute")
     parser.add_argument("--entry-contract", action="store_true",
                         help="opt in to immutable entry premises and sampled failure EXIT; requires --execute")
+    parser.add_argument('--demo-fee-reference', action='store_true',
+                        help='explicit fresh OPEN fee + 5bps/fill slippage assumptions; not verified costs')
+    parser.add_argument('--prepared-entry-plans',action='store_true',help='host-coupled entry/SL/TP plans for flat calculated DEMO decisions')
     parser.add_argument("--root-db",type=Path,
                         default=Path(__file__).resolve().parents[2]/"stock_tracking_db.sqlite")
     args=parser.parse_args()
@@ -259,6 +308,10 @@ def main():
         parser.error("--calculated-review requires --execute and cannot be used for activation/protection")
     if args.entry_contract and not args.execute:
         parser.error("--entry-contract requires --execute")
+    if args.demo_fee_reference and (not args.calculated_review or not args.execute or args.protect_only or args.activate):
+        parser.error('--demo-fee-reference requires --execute --calculated-review')
+    if args.prepared_entry_plans and (not args.execute or not args.calculated_review or args.protect_only or args.activate):
+        parser.error('--prepared-entry-plans requires --execute --calculated-review decision mode')
     started=time.monotonic()
     loop="protection" if args.protect_only else "decision"
     if not args.execute and not args.protect_only and not args.activate:
@@ -285,7 +338,10 @@ def main():
         failure_stage="broker_init"
         from live.scenario_broker import ScenarioDemoBroker
         broker=ScenarioDemoBroker(conn,expected_main_uid=main_uid,execution_enabled=True,
-                                  convergence_entry_enabled=True)
+                                  convergence_entry_enabled=True,
+                                  entry_economics_enabled=args.calculated_review,
+                                  entry_fee_reference_enabled=args.demo_fee_reference,
+                                  **({'prepared_entry_plans_enabled':True} if args.prepared_entry_plans else {}))
         if args.activate:
             failure_stage="activation"
             from live.scenario_control import begin_transition,activate,flat_handoff_probe

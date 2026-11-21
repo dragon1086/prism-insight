@@ -5,6 +5,10 @@ on:
   push:
     branches: [main, fix/app-report-runtime, deploy/flow-evidence-app]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   report-data:
     runs-on: ubuntu-latest

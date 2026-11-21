@@ -14,6 +14,13 @@ The same problem is held back for REPEAT_HOURS and then re-sent with its count. 
 runs again sends [복구]. Once a day (SUMMARY_AT, KST) a summary shows what ran, which also proves the
 watchdog itself is alive: no summary in the morning means the watchdog is down.
 
+A stalled ClickStack shipper (events pending, checkpoint still for LEDGER_STALE_MIN) also sends [장애].
+
+Since 2026-11-07 (user decision) the chat gets only [장애]/[복구] and the disk alert by default: the daily
+summary and [주의]-only messages read like bug hunting and were replaced by the biweekly review
+(tools/two_week_review.py --every 14), which also reports when the watchdog last ran. Turn them back on with
+OPS_WATCHDOG_SUMMARY_ENABLED=true / OPS_WATCHDOG_NOTICES_ENABLED=true.
+
 Jobs that run under systemd (the B3 worker, which also runs the LIVE micro-split adds) log to journald;
 they are read with journalctl after a stored cursor. Without journalctl (CI, macOS) or a readable journal
 such a job is skipped for that run: no failure scan and no stopped-job alert.
@@ -50,6 +57,7 @@ MAX_READ_BYTES = 50 * 1024 * 1024
 EXAMPLES_PER_GROUP = 3
 MESSAGE_LIMIT = 3400
 DISK_ALERT_PCT = float(os.getenv("OPS_WATCHDOG_DISK_ALERT_PCT", "90"))
+LEDGER_STALE_MIN = float(os.getenv("OPS_WATCHDOG_LEDGER_STALE_MIN", "30"))
 JOURNAL_MAX_ENTRIES = 5000             # per unit and run (oldest first); the rest is read on the next run
 JOURNAL_TIMEOUT_S = 30
 B3_CONTRACT = '"contract": "b3-ae-worker-v1"'   # the B3 worker's tick line (printed every minute, all day)
@@ -80,8 +88,9 @@ JOBS = (
         ("09:05", "15:30")),
     Job("fill_chaser_us", "미체결 정정", "US", "logs/loop_c_fill_chaser.log", r"Fill-chaser US summary", 2,
         ("09:35", "16:00")),
-    Job("reentry_kr", "재진입", "KR", "logs/reentry_v3_shadow_kr.log", r'"phase": "intraday"', deadline="14:30"),
-    Job("reentry_us", "재진입", "US", "logs/reentry_v3_shadow_us.log", r'"phase": "intraday"', deadline="14:20"),
+    # Re-entry intraday runs moved to 15:08 KST / 15:30 ET on 2026-11-16 (#1386); deadlines sit after the order cutoffs.
+    Job("reentry_kr", "재진입", "KR", "logs/reentry_v3_shadow_kr.log", r'"phase": "intraday"', deadline="15:30"),
+    Job("reentry_us", "재진입", "US", "logs/reentry_v3_shadow_us.log", r'"phase": "intraday"', deadline="15:50"),
     # Record-only core long-term holding observer (tools/run_core_hold_observer.py, cron 16:40 KST / 17:10 ET).
     Job("core_hold_kr", "장기 보유 기록", "KR", "logs/core_hold_observer_kr.log", r"Core-hold KR summary", deadline="17:00"),
     Job("core_hold_us", "장기 보유 기록", "US", "logs/core_hold_observer_us.log", r"Core-hold US summary", deadline="17:30"),
@@ -114,9 +123,10 @@ FAILURES = (
     (re.compile(r" - ERROR - "), "오류 기록", "주의"),
 )
 # Known non-failures: yfinance's delisted/unknown-symbol notices (a peer candidate Yahoo lacks is dropped, LC 10/27),
-# the local OAuth proxy's timeout the OpenAI client retries (10/27), and skips we chose (one share over budget, 10/16).
+# the local OAuth proxy's timeout the OpenAI client retries (10/27), and skips we chose (one share over budget, 10/16;
+# its later sell finds no shares in the account, LLY 10/30).
 IGNORED = re.compile(r"possibly delisted|Quote not found for symbol|aiohttp\.server - ERROR - Error handling request"
-                     r"|below one share|quantity is 0|budget unavailable")
+                     r"|below one share|quantity is 0|not found in portfolio|budget unavailable")
 _EXCEPTION_LINE = re.compile(r"^[A-Za-z_][\w.]*(Error|Exception|Interrupt|Exit|Timeout)\b")
 _MARKET_TAG = re.compile(r"\[(KR|US)\]|\((KR|US)\)|market=(KR|US)\b|\b(KR|US) (summary|trading context)")
 # Broker client lines carry no market tag; their logger names it (a shared log's owner is the KR job, 2026-10-24).
@@ -512,13 +522,19 @@ def run(now_kst=None, *, state_path=STATE_PATH, sender=None, dry_run=False, jobs
     disk = disk_alert(state, now_kst)
     if disk:
         messages.append(disk)
+    ledger = ledger_alert(state, now_kst)
+    if ledger:
+        messages.append(ledger)
+    if not _flag("OPS_WATCHDOG_NOTICES_ENABLED", False):
+        to_send = [item for item in to_send if item[0]["severity"] == "장애"]
     alert = build_alert(to_send, stale_new, recovered, now_kst, jobs)
     if alert:
         messages.append(alert)
     hour, minute = _hm(SUMMARY_AT)
     due = now_kst.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if now_kst >= due and state.get("summary_day") != now_kst.date().isoformat() and not first_run:
-        messages.append(build_summary(state, now_kst, jobs))
+        if _flag("OPS_WATCHDOG_SUMMARY_ENABLED", False):
+            messages.append(build_summary(state, now_kst, jobs))
         state["summary_day"] = now_kst.date().isoformat()
         state["summary_since"] = now_kst.isoformat()
         state["tally"] = {}
@@ -539,7 +555,8 @@ def run(now_kst=None, *, state_path=STATE_PATH, sender=None, dry_run=False, jobs
 
 def disk_used_pct():
     usage = shutil.disk_usage(ROOT)
-    return 100 * usage.used / usage.total
+    # Same as df Use%: root's reserved blocks are not free space for the jobs (83% here when total said 80%).
+    return 100 * usage.used / (usage.used + usage.free)
 
 
 def disk_alert(state, now_kst):
@@ -559,6 +576,41 @@ def disk_alert(state, now_kst):
             f"{REPEAT_HOURS:g}시간 뒤에도 기준 이상이면 다시 보냅니다.")
 
 
+def ledger_backlog(now_ts):
+    """(unsent bytes, minutes since the shipper's checkpoint moved), or None without a spool on this host."""
+    spool = ROOT / "logs" / "prism_events.jsonl"
+    checkpoint = spool.with_suffix(".checkpoint.json")
+    try:
+        stat = spool.stat()
+    except FileNotFoundError:
+        return None
+    try:
+        value = json.loads(checkpoint.read_text(encoding="utf-8"))
+        offset = int(value["offset"]) if int(value["inode"]) == stat.st_ino else 0
+        moved = checkpoint.stat().st_mtime
+    except (OSError, ValueError, KeyError, TypeError):
+        offset, moved = 0, stat.st_mtime
+    return max(stat.st_size - offset, 0), (now_ts - moved) / 60
+
+
+def ledger_alert(state, now_kst):
+    """The shipper saves its checkpoint every few seconds; pending events with a still checkpoint mean
+    ClickStack stopped receiving (11/18-11/21: a disk-full moment left one batch unconfirmed, 3 days unseen)."""
+    backlog = ledger_backlog(now_kst.timestamp())
+    last = state.get("ledger_alert")
+    if not backlog or not backlog[0] or backlog[1] < LEDGER_STALE_MIN:
+        state.pop("ledger_alert", None)
+        return None
+    if last and now_kst - datetime.fromisoformat(last) < timedelta(hours=REPEAT_HOURS):
+        return None
+    state["ledger_alert"] = now_kst.isoformat()
+    pending, minutes = backlog
+    return (f"[장애] PRISM 매매 원장(ClickStack) 전송 멈춤 {now_kst:%m/%d %H:%M} KST\n"
+            f"■ {minutes / 60:.1f}시간째 전송 진행 없음, 보내지 못한 기록 {pending / 1e6:.1f}MB (기록은 서버에 보존됨)\n"
+            f"  확인: journalctl -u prism-observability-shipper -n 20 (operator_review_required면 수동 확인 필요)\n"
+            f"{REPEAT_HOURS:g}시간 뒤에도 멈춰 있으면 다시 보냅니다.")
+
+
 def _source(job):
     """Where a job's lines come from: its log file or its systemd unit's journal."""
     return f"journal:{job.unit}" if job.unit else job.log
@@ -574,8 +626,15 @@ def _send(text):
     return send_ops_alert_sync(text)
 
 
+def _flag(name, default):
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
 def enabled():
-    return os.getenv("OPS_WATCHDOG_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+    return _flag("OPS_WATCHDOG_ENABLED", True)
 
 
 def main(argv=None):

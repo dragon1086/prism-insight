@@ -98,6 +98,7 @@ try:
     from cores.oneil_fallback import (
         evaluate_oneil_sell as _oneil_eval,
         from_stock_data as _oneil_from,
+        entry_regime_of as _oneil_entry_regime,
     )
     _ONEIL_FALLBACK_AVAILABLE = True
 except Exception:  # pragma: no cover - defensive
@@ -400,19 +401,17 @@ async def get_current_stock_price(cursor, ticker: str, account_key: str | None =
             if current_price > 0:
                 logger.info(f"{ticker} current price: ${current_price:.2f}")
                 return float(current_price)
-            else:
-                logger.warning(f"Cannot get price for {ticker}")
-                return _get_last_price_from_db(cursor, ticker, account_key=account_key)
-
+            # KIS reports transient backend errors (e.g. OPSQ0008) as an empty quote, not an
+            # exception: retry those too (2026-11-19, PANW/SLS buy reviews skipped on one blip).
+            logger.warning(f"Cannot get price for {ticker} (attempt {attempt + 1}/{MAX_RETRIES})")
         except Exception as e:
             logger.error(f"Error querying current price for {ticker} "
                          f"(attempt {attempt + 1}/{MAX_RETRIES}): {str(e)}")
-            if attempt < MAX_RETRIES - 1:
-                wait = 2 * (attempt + 1)  # 2s, 4s
-                logger.warning(f"{ticker} price query retry in {wait}s")
-                await asyncio.sleep(wait)
-            else:
-                return _get_last_price_from_db(cursor, ticker, account_key=account_key)
+        if attempt < MAX_RETRIES - 1:
+            wait = 2 * (attempt + 1)  # 2s, 4s
+            logger.warning(f"{ticker} price query retry in {wait}s")
+            await asyncio.sleep(wait)
+    return _get_last_price_from_db(cursor, ticker, account_key=account_key)
 
 
 def _get_last_price_from_db(cursor, ticker: str, account_key: str | None = None) -> float:
@@ -540,6 +539,15 @@ def _effective_buy_score(
     }
 
 
+def _pyramid_rows_enabled():
+    """PYRAMID_ROWS_MICRO_SPLIT_ENABLED (prism_core.micro_split_live); off when unreadable."""
+    try:
+        from prism_core.micro_split_live import pyramid_rows_enabled
+        return pyramid_rows_enabled()
+    except Exception:  # noqa: BLE001 - fail closed: micro-split rows stay out of #288
+        return False
+
+
 def check_sector_diversity(cursor, sector: str, max_same_sector: int, concentration_ratio: float, account_key: str | None = None) -> bool:
     """
     Check for over-concentration in same sector.
@@ -562,17 +570,25 @@ def check_sector_diversity(cursor, sector: str, max_same_sector: int, concentrat
         if not sector or sector.lower() == "unknown":
             return True
 
+        # Pyramid rows on: a ticker counts once (its extra rows are not extra names).
+        names = _pyramid_rows_enabled()
         if account_key:
-            cursor.execute("SELECT scenario FROM us_stock_holdings WHERE account_key = ?", (account_key,))
+            cursor.execute(("SELECT ticker, scenario FROM us_stock_holdings WHERE account_key = ?" if names
+                            else "SELECT scenario FROM us_stock_holdings WHERE account_key = ?"), (account_key,))
         else:
-            cursor.execute("SELECT scenario FROM us_stock_holdings")
+            cursor.execute("SELECT ticker, scenario FROM us_stock_holdings" if names else "SELECT scenario FROM us_stock_holdings")
         holdings_scenarios = cursor.fetchall()
 
         sectors = []
+        seen = set()
         for row in holdings_scenarios:
-            if row[0]:
+            if names:
+                if row[0] in seen:
+                    continue
+                seen.add(row[0])
+            if row[-1]:
                 try:
-                    scenario_data = json.loads(row[0])
+                    scenario_data = json.loads(row[-1])
                     if 'sector' in scenario_data:
                         sectors.append(scenario_data['sector'])
                 except Exception:
@@ -1594,6 +1610,16 @@ class USStockTrackingAgent:
                         _neg_equity_f2_block, ticker, getattr(self, "language", "ko")), timeout=30)
                 except asyncio.TimeoutError:
                     logger.warning(f"[NEG_EQUITY_F2] {ticker} facts timed out; shared F2 rule applies")
+            # F1/F2 for financials without an operating income line (None for everyone else -> byte-identical prompts).
+            from prism_core import us_financial_f_gate as _fin_gate
+            financial_facts = None
+            if ticker:
+                try:
+                    import yfinance as _yf  # this file is on the direct-import allowlist; the gate module is not
+                    financial_facts = await asyncio.wait_for(
+                        asyncio.to_thread(_fin_gate.facts_for, ticker, _yf), timeout=30)
+                except asyncio.TimeoutError:
+                    logger.warning(f"[FINANCIAL_F_GATE] {ticker} facts timed out; shared F1/F2 rules apply")
 
             # Build trigger info section
             trigger_info_section = ""
@@ -1633,6 +1659,7 @@ class USStockTrackingAgent:
             prompt_message += add_plan_buy_block(self, market="US", ticker=ticker,
                                                  language=getattr(self, "language", "ko"))
             prompt_message += neg_equity_block
+            prompt_message += _fin_gate.prompt_block(financial_facts, getattr(self, "language", "ko"))
             # Official SEC filings: do not enter a stock under a control tender offer or delisting.
             from prism_core.corporate_filings import official_event_block_async
             prompt_message += await official_event_block_async(
@@ -1773,6 +1800,8 @@ class USStockTrackingAgent:
                     scenario_json["_deterministic_trend_facts"] = trend_facts
                 if decision_facts:
                     scenario_json["_decision_input_facts"] = decision_facts
+                if financial_facts:
+                    scenario_json["_sector_profile"] = _fin_gate.stamp(financial_facts)
                 # Persist the experience-based score adjustment alongside the scenario.
                 # It rides inside the scenario JSON, stored in us_stock_holdings.scenario and
                 # copied to us_trading_history.scenario on sell — giving the weekly influence
@@ -1854,6 +1883,11 @@ class USStockTrackingAgent:
                 )
                 return {"success": False, "error": "analysis_failed",
                         "ticker": ticker, "company_name": company_name}
+
+            from cores.us_data_client import get_us_data_client
+            from prism_core.sector_names import fill_missing_sector
+            scenario = await fill_missing_sector(
+                scenario, lambda: get_us_data_client().get_company_info(ticker).get("sector"))
 
             scenario = apply_buy_scenario_contract(
                 scenario, market="US", entry_price=current_price
@@ -2509,12 +2543,13 @@ class USStockTrackingAgent:
             live_regime_block = (
                 live_regime_summary
                 if live_regime_summary
-                else "unavailable — verify via yahoo_finance (^GSPC 20MA, ^VIX)"
+                else "unavailable (the system could not compute it this cycle)"
             )
             # Same trailing band as the automatic exit, which trails on _live_regime_cache
             # (KR carries it in kr_live_regime_block).
             from prism_core.sell_regime_context import trailing_band_line
-            live_regime_block += "\n" + trailing_band_line(getattr(self, "_live_regime_cache", None), "en").rstrip()
+            live_regime_block += "\n" + trailing_band_line(
+                getattr(self, "_live_regime_cache", None), "en", _oneil_entry_regime(stock_data.get("scenario"), "US")).rstrip()
 
             prompt_message = f"""
 Please make a sell/hold decision for the following US stock holding.
@@ -2528,7 +2563,7 @@ Please make a sell/hold decision for the following US stock holding.
 - Current Price: ${current_price:,.2f}
 - Target Price: ${target_price:,.2f} (initial scenario: ${initial_target_price:,.2f})
 - Stop Loss: ${stop_loss:,.2f} (initial scenario: ${initial_stop_loss:,.2f})
-- Highest Price Since Entry: ${highest_price:,.2f}{' (⚠️ First tracking - verify the peak from the session after entry via get_historical_stock_prices. Leave out the entry-day high, which may predate the buy; if bought this session, use this value as is)' if highest_price_initialized else ''}
+- Highest Price Since Entry: ${highest_price:,.2f}{' (First tracking: this is the system-stored peak. Leave out the entry-day high, which may predate the buy; do not re-check the peak with tools, use this value as is)' if highest_price_initialized else ''}
 - Trailing Stop Adjustment Threshold: {trailing_stop_threshold_pct:.1f}% (only adjust stop-loss if new value is at least this much higher)
 - Return: {profit_rate:.2f}%
 - Holding Period: {days_passed} days
@@ -2545,7 +2580,7 @@ Please make a sell/hold decision for the following US stock holding.
 
 ### Task:
 Use yahoo_finance and sqlite tools to check latest data, then decide whether to sell or continue holding.
-**Market regime**: Treat the "Current Market Regime (LIVE)" above as the authoritative market environment for step-0 분석 (강세장/약세장 판단). It is system-computed from S&P500/VIX this cycle; prefer it over the stored buy-time scenario. Only if it shows "unavailable", fall back to fetching ^GSPC/^VIX via yahoo_finance yourself.
+**Market regime**: Treat the "Current Market Regime (LIVE)" above as the authoritative market environment (bull → A mode, otherwise B mode). It is system-computed from S&P500/VIX this cycle; prefer it over the stored buy-time scenario. If it shows "unavailable", do not judge the regime yourself: the automatic exit trails at peak × 0.90 and you must not raise the stop to a trailing level today.
 **Important**: If stop loss/target price adjustment is needed, return it via portfolio_adjustment JSON only. Do NOT directly UPDATE the DB.
 """
             # System-computed facts (trailing line, stop-raise eligibility, tier-3 conditions, sessions held,
@@ -2882,6 +2917,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 required_score_override=_micro_split_gate_score(scenario),
                 score_exempt=_reentry_rule_approved(scenario),
                 t1_exempt=_reentry_rule_approved(scenario),
+                market="US",
             )
             if result.get("score_policy"):
                 logger.info("[ENTRY_SCORE_POLICY][US] regime=%s pulse=%s policy=%s", computed_regime, pulse, result["score_policy"])
@@ -3846,6 +3882,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     # Computed from plan/remaining_rows (always in scope here);
                     # sell_quantity is not defined on the current_price<=0 path.
                     sell_denominator = remaining_rows if plan == "fractional" else 1
+                    row_fraction = None  # micro-split pyramid row: exact share of the position sold
 
                     # Delete from holding_decisions when selling
                     await self._delete_holding_decision(ticker)
@@ -3917,12 +3954,18 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                             )
                                             pass_sold_qty[ticker] = 0
                                         available = pass_total_qty[ticker] - pass_sold_qty[ticker]
-                                        sell_quantity = compute_us_fractional_sell_quantity(available, remaining_rows)
+                                        # Equal split for legacy rows; a micro-split pyramid row sells its own
+                                        # ledger shares, never another row's (prism_core.loop_row_split).
+                                        from prism_core.loop_row_split import batch_row_sell_quantity
+                                        sell_quantity, row_reason, row_denominator, row_fraction = (
+                                            batch_row_sell_quantity(self.cursor, "US", stock, available, remaining_rows))
                                         pass_sold_qty[ticker] += sell_quantity
+                                        if plan == "fractional":
+                                            sell_denominator = row_denominator
                                         logger.info(
                                             f"{ticker} pyramiding fractional sell: {sell_quantity} shares "
                                             f"(available {available} of snapshot {pass_total_qty[ticker]}, "
-                                            f"remaining rows={remaining_rows})"
+                                            f"remaining rows={remaining_rows}, reason={row_reason})"
                                         )
                                     # plan == "full_exit" -> sell_quantity stays None (full position);
                                     # the ticker was already added to fully_exited_tickers above.
@@ -3992,7 +4035,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 sell_reason=sell_reason,
                                 trade_result=trade_result,
                                 market="US",
-                                sell_denominator=sell_denominator
+                                sell_denominator=sell_denominator,
+                                sell_fraction=row_fraction,
                             )
                         except Exception as signal_err:
                             logger.warning(f"Sell signal publish failed (non-critical): {signal_err}")
@@ -4011,7 +4055,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 sell_reason=sell_reason,
                                 trade_result=trade_result,
                                 market="US",
-                                sell_denominator=sell_denominator
+                                sell_denominator=sell_denominator,
+                                sell_fraction=row_fraction,
                             )
                         except Exception as signal_err:
                             logger.warning(f"GCP sell signal publish failed (non-critical): {signal_err}")
@@ -4397,6 +4442,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             _pilot_freeze = False
                         if _pilot_freeze:
                             logger.info(f"[PULSE_PILOT] 중복매수 동결: {ticker} ({company_name}) already in holdings")
+                            from prism_core import pyramid_ledger
+                            pyramid_ledger.emit_gate(self, market="US", ticker=ticker, stage="gate", allowed=False,
+                                                     reason="PILOT_FREEZE", current_price=current_price,
+                                                     decision_id=source_decision_id)
                             state["held_skip_reason"] = state["held_skip_reason"] or (
                                 "기존 보유 종목이며 파일럿 정책에 따라 추가매수를 동결했습니다."
                             )
@@ -4410,6 +4459,11 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             existing_row_count=existing.get("row_count", 0),
                             ownership=existing.get("pyramid_ownership"),
                         )
+                        from prism_core import pyramid_ledger
+                        pyramid_ledger.emit_gate(self, market="US", ticker=ticker, stage="gate", allowed=allowed,
+                                                 reason=gate_reason, existing=existing, current_price=current_price,
+                                                 regime=scenario.get("_deterministic_market_regime"),
+                                                 decision_id=source_decision_id)
                         if not allowed:
                             logger.info(f"Skipping stock in holdings: {ticker} — add gate blocked: {gate_reason}")
                             state["held_skip_reason"] = state["held_skip_reason"] or (
@@ -4439,6 +4493,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         )
                         state["should_save_watchlist"] = True
                         state["skip_reason"] = state["skip_reason"] or reason
+                        if not is_add:  # a new name crowded out: codes + row counts on candidate.evaluated
+                            from prism_core import pyramid_ledger
+                            state.setdefault("skip_detail", {
+                                "skip_reason_codes": ["SLOT_FULL"], "slot_limit": (
+                                    "MAX_SLOTS" if current_slots >= self.max_slots else "AI_CAP"),
+                                **pyramid_ledger.slot_context(pyramid_ledger._account_rows(self, "US"), self.max_slots)})
                         continue
 
                     # Evaluate sector / score / decision independently so the displayed
@@ -4831,14 +4891,39 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             state["skip_reason"] = owned_initial["reason"]
             return int(owned_initial["strategy_recorded"])
         micro_plan = None
-        if not is_add and not rebound_pilot:
+        from prism_core import micro_split_live, pyramid_ledger
+        pyramid_row = bool(is_add) and micro_split_live.pyramid_rows_enabled()
+        if (not is_add or pyramid_row) and not rebound_pilot:
             # Micro-split LIVE: B3 first allocation sizes the real order (legacy full slot if OFF/unavailable).
-            from prism_core import micro_split_live
+            # A pyramid row (flag on) is its own micro-split position, sized like a first entry without tilt.
             # Conviction tilt only for regular batch entries; re-entry v3 (require_micro_plan) passes none.
+            if pyramid_row:
+                def _pyramid_gate(ok, reason, allocation=None):
+                    pyramid_ledger.emit_gate(
+                        self, market="US", ticker=ticker, stage="sizing", allowed=ok, reason=reason,
+                        existing=get_us_existing_position_for_ticker(self.cursor, ticker,
+                                                                     account_key=self._account_scope()[0]),
+                        current_price=current_price, regime=scenario.get("_deterministic_market_regime"),
+                        planned_allocation=allocation, decision_id=source_decision_id)
+                # Free-row reserve before sizing, so a blocked row never records an add plan.
+                _row_ok, _row_reason = micro_split_live.pyramid_slot_check(
+                    self, market="US", ticker=ticker, logger=logger)
+                if not _row_ok:
+                    _pyramid_gate(False, _row_reason)
+                    state["skip_reason"] = state["skip_reason"] or "pyramid_row_blocked"
+                    return 0
             micro_plan, micro_cash, scenario = micro_split_live.prepare_entry(
                 self, market="US", ticker=ticker, current_price=current_price, scenario=scenario,
                 decision_ref=scenario.get("_decision_id") or source_decision_id,
-                account=account, logger=logger, trigger_type=None if require_micro_plan else trigger_type)
+                account=account, logger=logger,
+                trigger_type=None if (require_micro_plan or pyramid_row) else trigger_type,
+                pyramid_row=pyramid_ledger.lineage(self, "US", ticker) if pyramid_row else None)
+            if pyramid_row:
+                if micro_plan is None:  # never a full-slot pyramid row
+                    _pyramid_gate(False, "PYRAMID_ROW_NO_MICRO_PLAN")
+                    state["skip_reason"] = state["skip_reason"] or "pyramid_row_blocked"
+                    return 0
+                _pyramid_gate(True, _row_reason, micro_split_live.allocation(scenario))
             if micro_plan is not None:
                 entry_cash_amount = micro_cash
             elif micro_split_live.gate_score_override(scenario) is not None:
@@ -4896,7 +4981,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 )
             except Exception:  # noqa: BLE001 - optional capture cannot fail trading
                 logger.warning("[SCENARIO_SHADOW] initial capture unavailable")
-            if not is_add and not rebound_pilot:
+            if is_add:
+                pyramid_ledger.emit_row_opened(self, market="US", ticker=ticker, scenario=scenario,
+                                               position_id=legacy_position_id("US", buy_result.legacy_holding_id))
+            if (not is_add or micro_plan is not None) and not rebound_pilot:
                 # B3 all-entries SHADOW: fail-open, before the broker order.
                 try:  # fail-open: never affects the entry
                     from observability.b3_ae_capture import capture_entry as _b3_ae_entry
@@ -4973,6 +5061,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 quote_validator=self._buy_quote_validator(scenario, score_override=adjusted_score, is_add=is_add, ticker=ticker, account_key=order_intent.account_id),
                                 **({"strict_budget": True} if ((scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" or scenario.get("micro_split")) else {}),
                             )
+                            if scenario.get("micro_split"):  # the broker re-quote sized this order
+                                micro_split_live.record_order_price(self, market="US", row_id=buy_result.legacy_holding_id,
+                                                                    price=broker_price, logger=logger)
 
                     persisted_intent_id = trade_result.get("intent_id")
                     if persisted_intent_id:
@@ -5039,45 +5130,46 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     f"— simulator holding preserved, no skip notification"
                 )
                 logger.info(f"Simulator purchase recorded: {company_name} ({ticker}) @ ${current_price:.2f} (KIS order failed)")
-            else:
-                if trade_result.get("partial_success"):
-                    successful = trade_result.get("successful_accounts", [])
-                    failed = trade_result.get("failed_accounts", [])
-                    logger.warning(
-                        f"{ticker} partial success: {len(successful)}/{len(successful) + len(failed)} accounts"
+            elif trade_result.get("partial_success"):
+                successful = trade_result.get("successful_accounts", [])
+                failed = trade_result.get("failed_accounts", [])
+                logger.warning(
+                    f"{ticker} partial success: {len(successful)}/{len(successful) + len(failed)} accounts"
+                )
+
+            # Subscribers mirror the simulator like KR, ADD and SELL; trade_result says what our own order did.
+            if current_price > 0 and ticker not in signaled_tickers:
+                try:
+                    from messaging.redis_signal_publisher import publish_buy_signal
+                    await publish_buy_signal(
+                        ticker=ticker,
+                        company_name=company_name,
+                        price=current_price,
+                        scenario=scenario,
+                        source="AI분석",
+                        trade_result=trade_result,
+                        market="US"
                     )
+                except Exception as signal_err:
+                    logger.warning(f"Buy signal publish failed (non-critical): {signal_err}")
 
-                if ticker not in signaled_tickers:
-                    try:
-                        from messaging.redis_signal_publisher import publish_buy_signal
-                        await publish_buy_signal(
-                            ticker=ticker,
-                            company_name=company_name,
-                            price=current_price,
-                            scenario=scenario,
-                            source="AI분석",
-                            trade_result=trade_result,
-                            market="US"
-                        )
-                    except Exception as signal_err:
-                        logger.warning(f"Buy signal publish failed (non-critical): {signal_err}")
+                try:
+                    from messaging.gcp_pubsub_signal_publisher import publish_buy_signal as gcp_publish_buy_signal
+                    await gcp_publish_buy_signal(
+                        ticker=ticker,
+                        company_name=company_name,
+                        price=current_price,
+                        scenario=scenario,
+                        source="AI분석",
+                        trade_result=trade_result,
+                        market="US"
+                    )
+                except Exception as signal_err:
+                    logger.warning(f"GCP buy signal publish failed (non-critical): {signal_err}")
 
-                    try:
-                        from messaging.gcp_pubsub_signal_publisher import publish_buy_signal as gcp_publish_buy_signal
-                        await gcp_publish_buy_signal(
-                            ticker=ticker,
-                            company_name=company_name,
-                            price=current_price,
-                            scenario=scenario,
-                            source="AI분석",
-                            trade_result=trade_result,
-                            market="US"
-                        )
-                    except Exception as signal_err:
-                        logger.warning(f"GCP buy signal publish failed (non-critical): {signal_err}")
+                signaled_tickers.add(ticker)
 
-                    signaled_tickers.add(ticker)
-
+            if trade_actually_succeeded:
                 logger.info(f"Purchase complete: {company_name} ({ticker}) @ ${current_price:.2f}")
         else:
             state["should_save_watchlist"] = True
@@ -5276,12 +5368,13 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         """Schedule Firebase notification as non-blocking task. Returns the task."""
         return asyncio.create_task(self._notify_firebase(message, chat_id, message_id, msg_type=msg_type))
 
-    async def _send_with_retry(self, chat_id: str, text: str, max_attempts: int = 3):
-        """Retry explicit rate rejection only; ambiguous delivery requires review."""
+    async def _send_with_retry(self, chat_id: str, text: str, max_attempts: int = 3, broadcast: bool = False):
+        """Retry explicit rate rejection only; ambiguous delivery requires review (broadcast: resend once)."""
         from messaging.telegram_delivery import send_message_once_or_rate_retry
 
         return await send_message_once_or_rate_retry(
-            self.telegram_bot, chat_id=chat_id, text=text, attempts=max_attempts
+            self.telegram_bot, chat_id=chat_id, text=text, attempts=max_attempts,
+            resend_unknown_once=broadcast,
         )
 
     async def send_telegram_message(self, chat_id: str, language: str = "ko",
@@ -5502,7 +5595,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             MAX_MESSAGE_LENGTH = 4096
 
                             if len(translated_message) <= MAX_MESSAGE_LENGTH:
-                                result = await self._send_with_retry(channel_id, translated_message)
+                                result = await self._send_with_retry(channel_id, translated_message, broadcast=True)
                                 firebase_tasks.append(self._schedule_firebase(translated_message, channel_id, result.message_id, msg_type=msg_type))
                             else:
                                 # Split long messages
@@ -5523,7 +5616,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 first_msg_id = None
                                 for i, part in enumerate(parts, 1):
                                     result = await self._send_with_retry(
-                                        channel_id, f"[{i}/{len(parts)}]\n{part}"
+                                        channel_id, f"[{i}/{len(parts)}]\n{part}", broadcast=True
                                     )
                                     if i == 1:
                                         first_msg_id = result.message_id

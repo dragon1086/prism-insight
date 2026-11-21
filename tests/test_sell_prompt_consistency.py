@@ -39,8 +39,11 @@ def test_trailing_close_confirmed_but_raised_stop_runs_intraday(prompts):
     # must not tell the AI to sell on an intraday-only trailing breach.
     for key, text in prompts.items():
         assert ("장 마감 직전 자동 점검" in text) or ("pre-close automatic check" in text), key
-        # the AI sell run is before the close (KR 14:46, US 14:30 ET): it never has today's close
-        assert ("당일 종가는 아직 없습니다" in text) or ("today's close does not exist yet" in text), key
+        # 2026-10-30 user decision: the afternoon review's price counts as today's close; the morning review
+        # never sells on a trailing breach (LLY: a line from today's peak was compared with yesterday's close)
+        assert ("지금 가격을 오늘 종가로" in text) or ("treats the current price as today's close" in text), key
+        assert ("오전 판단에서는 trailing 이탈로 매도하지 마십시오" in text) or (
+            "The morning review never sells on a trailing breach" in text), key
         assert ("장중 하드스탑이 그대로 실행" in text) or ("executed by the intraday hard stop above" in text), key
         assert "trailing stop > 현재가이면 should_sell" not in text, key
         assert "If trailing stop > current price, set should_sell" not in text, key
@@ -61,8 +64,27 @@ def test_sells_all_or_nothing_but_micro_split_adds_exist(prompts):
 
 
 def test_step0_defers_to_the_system_regime(prompts):
+    # 2026-11-11 prompt diet (audit M4/X4, user decision): the Step 0 self-check is gone; with no system regime
+    # only the code fallback applies (peak x0.90, no stop raise), which the instruction must still state.
     for key, text in prompts.items():
         assert ("시스템이 계산한 시장 국면" in text) or ("system-computed market regime" in text), key
+        assert "0단계" not in text and "Step 0" not in text and "Self-check" not in text, key
+        assert ("고점 × 0.90(-10%)으로 넓게 잡습니다. 이날은 손절선을 trailing 수준으로 올리지 마십시오" in text
+                or "peak × 0.90 (-10%); on such a day do not raise stop_loss to a trailing level" in text), key
+
+
+def test_prompt_diet_removed_duplicate_and_discretionary_sell_wording(prompts):
+    # 2026-11-11 prompt diet (tasks/research-20261110/prompt-diet/AUDIT_ko.md): M2 the hard stop is executed by
+    # the system before the AI sees the position; M3 no fundamental/rebalancing sell reasons (Core-4 tiers only);
+    # D17 no "analysis elements" checklist; D14/D15 adjustment-prudence and DB-update lines live once.
+    for key, text in prompts.items():
+        assert "손절가 도달: 원칙적 즉시 전량 매도" not in text and "Stop loss reached: Immediate full exit" not in text, key
+        assert "펀더멘털 변화" not in text and "fundamental changes" not in text and "fundamentals change" not in text, key
+        assert "리밸런싱" not in text and "Rebalancing" not in text, key
+        assert "### 분석 요소" not in text and "### Analysis Elements" not in text, key
+        assert "신중한 조정 원칙" not in text and "Prudent Adjustment Principle" not in text, key
+        assert "DB 직접 수정 금지" not in text and "DO NOT directly UPDATE" not in text, key
+        assert ("시스템이 장중에 이미 실행합니다" in text) or ("already executed intraday by the system" in text), key
 
 
 def test_trailing_bands_match_the_exit_code(prompts):
@@ -107,6 +129,10 @@ def test_system_50_day_exit_is_named_and_reentry_is_not_a_reason(prompts):
     # Re-entry v3 only watches stop-outs, so "re-entry cost" is not a reason to hold (user decision 10/19).
     for key, text in prompts.items():
         assert ("50일선×0.995" in text) or ("50-day MA × 0.995" in text), key
+        # tools/trend_exit_seller.py ma50_exit_armed: bought below the line -> exempt until a close above it (10/29).
+        assert ("50일선 아래에서 매수한 종목은" in text) or ("bought below its 50-day MA is exempt" in text), key
+        # on_entry_session: no MA50 exit before the first close after entry (10/30 LITE).
+        assert ("매수 당일에는 어떤 종목에도" in text) or ("On the entry day itself" in text), key
         assert "재진입 비용" not in text and "re-entry cost" not in text, key
         assert ("20일 평균 이상 거래량" in text) or ("volume above its 20-day average" in text), key
 

@@ -86,6 +86,15 @@ LLM 지시문에서 각 시나리오에 근거 관점을 하나 이상 붙이게
   `gap_up_min_pct`, `hold_above_open_minutes`, `volume_pace_min`, `volume_dry_up_max`,
   `confirm` ∈ {`5m_close`, `daily_close`}, `bars`, `earliest_session`, `hold_sessions`.
   - `volume_pace_min`은 같은 경과 시각 기준 20일 평균 대비 배수다.
+  - 2026-11-08 지시문 변경(사용자 승인): breakout·pullback_reclaim에는 `volume_pace_min`을 쓰지 않고, 눌림에는 필요하면 `volume_dry_up_max`만 쓴다. `volume_pace_min`은 acceleration에만. 근거는 강세장 재현(`RESEARCH_LESSONS_ko.md` 11-07): 거래량 적은 날의 돌파·회복 증액이 더 좋았고, 거래량 증가 요구는 기회만 줄였다. 코드 검사는 그대로이며, AI가 따르는지는 원장 `micro_split.add_planned`의 `scenarios[].trigger`로 확인한다.
+  - 눌림 구간(`zone_low`~`zone_high`) 판정은 최근 10세션 중 **종가가 처음 `zone_high` 위로 올라선 다음 세션부터** 본다
+    (그런 종가가 없으면 10세션 전체). 그 뒤 저가가 `zone_high` 이하로 내려와야 눌림(`ZONE_NOT_TOUCHED` 아님)이고,
+    그 뒤 종가가 `zone_low` 아래면 무효(`ZONE_UNDERCUT`)다. 지시문에도 같은 문장이 있다.
+    - 2026-11-07 변경: 이전에는 10세션 전체 종가를 봤다. AI는 첫 매수가보다 2~9% 위, 주가가 막 뚫고 올라온 가격대를
+      구간으로 잡는데(예: HALO 매수가 117.97, 구간 126.03~127.21), 올라오는 길의 종가가 구간 아래라 10월 눌림
+      시나리오 12개가 장 시작 전부터 전부 무효였다. 지시문에 없던 코드 규칙이라 지시문·코드 모순으로 보고 사용자
+      승인(A안)으로 고쳤다. 돌파 당일 자신의 저가는 눌림으로 치지 않는다. 10월 재현에서 12개 중 10개가 살아났지만 다음
+      조건(거래량 7, 회복 실패 2, 구간 미도달 1)에서 막혀 증액은 여전히 0건이었다.
   - 목록 밖 조건은 무시하고 경고 로그를 남긴다. 그 시나리오는 실행하지 않는다.
 - **비중 세분화**:
   - `target_allocation`은 5%p 단위다.
@@ -94,7 +103,7 @@ LLM 지시문에서 각 시나리오에 근거 관점을 하나 이상 붙이게
 - **가격 기준**: 모두 그 종목의 실제 가격(원·달러)으로 쓴다. 고정 퍼센트 사다리는 쓰지 않는다.
 - **두 숫자를 구분한다**:
   - **증액 크기**: 5%p 단위, 한 번에 최대 25%p. 비중을 얼마나 늘리는지다.
-  - **추격 한도**: 트리거 가격 대비 +2%. 얼마나 비싸게까지 사는지다. 그보다 위로 달아나면 따라가지 않는다. 시나리오가 더 좁힐 수 있다.
+  - **추격 한도**: 트리거 가격 대비 +1.5~2%. 얼마나 비싸게까지 사는지다. 그보다 위로 달아나면 따라가지 않는다. 시나리오는 1.5%까지만 좁힐 수 있다(2026-11-08: AI가 0.3~1%로 좁게 써서 강한 날 증액이 막힘. 더 작게 쓰면 코드가 1.5%로 올린다).
 
 ## 4. 매일 재검토 (다음 세션용 계획)
 
@@ -170,7 +179,7 @@ LLM 지시문에서 각 시나리오에 근거 관점을 하나 이상 붙이게
 - **재검토 시점**: KR은 12:00 이전 점검(오전 배치)이 당일 계획을, 이후 점검(오후 14:46 배치)이 다음 세션 계획을 씁니다. US는 10:15 ET·14:30 ET 장중 점검 모두 다음 뉴욕 세션 계획을 씁니다(2026-10-02 정정: 배치는 뉴욕 시간 cron). 키가 없으면 저장된 계획을 유지하고, 매도 판단이 나오면 계획을 취소합니다. 휴장일은 평일 기준으로 계산하므로 휴장일로 지정된 계획은 쓰이지 않고 다음 점검이 새 계획을 씁니다.
 - **추가 안전장치**: 집행 직전 보유 행의 계획 해시가 평가 때와 같아야 주문합니다(`PLAN_CHANGED`면 주문 없음). 손절(loop A)·추세 이탈(loop B) 주문이나 추세 이탈 감지가 있는 날은 증액하지 않습니다.
 - **JSON 파싱 보강**: 계획이 4단 중첩이라 기존 정규식(3단)으로는 응답 전체를 못 읽어 매도 판단까지 잃을 수 있었습니다. `cores/utils.parse_llm_json`과 US 매도 파서가 첫 `{`부터 완전한 JSON을 먼저 읽도록 보강했습니다(기존 입력의 결과는 같음).
-- **이벤트(ClickStack)**: `micro_split.add_planned`, `micro_split.add_plan_qualified`, `micro_split.add_plan_invalidated`, `micro_split.add_executed`. 속성에 `slot_allocation`, `scenario_id`, `lens`, `plan_hash`가 들어갑니다.
+- **이벤트(ClickStack)**: `micro_split.add_planned`, `micro_split.add_plan_qualified`, `micro_split.add_plan_invalidated`, `micro_split.add_executed`, `micro_split.add_plan_day_summary`(2026-11-08~: 장 마감 판단 때 하루 한 번, 시나리오별 대기 사유와 횟수 `scenarios.{id}.reasons`, 계획 단위 대기 `plan_waits`, 평가 횟수·첫/마지막 평가 시각, 그날 증액 `added`. 워커 재시작 전 집계는 빠지므로 `evaluations`·`first_at`으로 범위를 본다). 속성에 `slot_allocation`, `scenario_id`, `lens`, `plan_hash`가 들어갑니다. `add_planned`에는 2026-11-01부터 시나리오별 `trigger`(돌파·회복 가격 등), `target_allocation`, `max_chase_pct`도 남깁니다(보유 행의 계획은 최근 몇 세션만 남아, 막힌 증액을 나중에 재생하려면 원장에 숫자가 필요).
 - **켜는 방법**: `.env`에 `MICRO_SPLIT_LIVE_ENABLED=true`(이미 켜져 있으면 그대로)이고 `MICRO_SPLIT_LIVE_ADDS_ENABLED`가 `false`가 아니면 다음 BUY·보유 점검부터 계획이 생기고, B3 워커(`tools/run_b3_ae_shadow.py`)가 집행합니다.
 - **되돌리기**: 증액만 멈추려면 `MICRO_SPLIT_LIVE_ADDS_ENABLED=false`, 초분할 전체를 끄려면 `MICRO_SPLIT_LIVE_ENABLED=false`로 두고 워커를 재시작합니다.
 

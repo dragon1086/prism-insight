@@ -88,9 +88,15 @@ def test_decision_rules_and_json_schema_are_byte_preserved(prompt):
     # ko MA-citation guard, en journal section, sell_triggers example = exit-code bands and SELL Tier 3.
     # 2026-10-19 reviewed: rules hash only — max_portfolio_size is decided from the system regime and the Market
     # Pulse line and is compared with slot-weighted usage (PR-C). JSON unchanged.
+    # 2026-11-11 prompt diet (tasks/research-20261110/prompt-diet/AUDIT_ko.md, user-approved): rules + JSON —
+    # regime self-classification (X2), portfolio guide (X6), contrarian analysis points (D13), "-10% support"
+    # reason (M1, reasons renumbered 1-5), "7+ holdings" rule (M7), F4 cell shortened (D10), Step 1.5 exception /
+    # account_id filter / opening-hour restatements (D11, D9, D8), JSON sell_triggers example replaced by the
+    # template pointer (X3). The volume block is the shared prism_core/volume_prompt_block.py (D7). Thresholds,
+    # matrix, stop, R/R and score bands unchanged.
     expected = {
-        "ko": ("094d9bad43593ccacf210f9708a62a9161d8c0f74dd33bfb51193a7a22527319", "e8a523079136e32d6438a38c2c2b5829cb4cac4779ed115f44e493f34c34a186"),
-        "en": ("e815a07e3dfe65093067e946949271d95e0a72cd7037cc82c917676657731baf", "7113ec5349731572675710f4feb317ea287a65400fa165cce5b9580b394d4639"),
+        "ko": ("1b306c23cb8b1b68b7c219112307e419f36ae4e0db7cbcc79a245cf71057c8fa", "e88da32df1ca5f154fdaa35a31f5576e0e9a5facb65037d374d61c551deb13f9"),
+        "en": ("30bc27c7809cdfe9e81d1ea9ac06c94c8588dee48b399a70a69f995519a20b24", "485508136c680b285700c99fccd447a9167962c5b46e6d10cfee9650747e3e09"),
     }
     assert hashlib.sha256(text.split(heading)[0].encode()).hexdigest() == expected[language][0]
     assert hashlib.sha256(text[text.index(json_heading):].encode()).hexdigest() == expected[language][1]
@@ -119,6 +125,29 @@ def test_sell_factory_matches_reviewed_volume_prompt():
     # 2026-10-22 reviewed (user decision after the FRO re-entry was sold 57 minutes after the buy): Tier 3 counts only
     # when all three lower closes are completed bars after the entry session; KR/US x ko/en and the stored
     # scenario trigger say the same (tests/test_sell_facts.py). Hard stop, -7%, trailing and the MA50 exit unchanged.
+    # 2026-10-29 reviewed (user decision after 108490 was re-entered below its 50MA at 14:00 and sold by the MA50 exit at
+    # 15:10): the system 50-day exit line adds its exception — a position bought below the 50-day MA is exempt until a
+    # completed close above it (tools/trend_exit_seller.py ma50_exit_armed). KR/US x ko/en say the same.
+    # 2026-10-30 reviewed (user decision after the LITE re-entry, bought 1% above its 50MA, was sold by the MA50 exit
+    # two hours later): the MA50 exit also waits for the first close after entry (tools/trend_exit_seller.py
+    # on_entry_session); stop_loss and -7% still apply on the entry day. KR/US x ko/en say the same.
+    # 2026-10-30 reviewed: wording only — "applies from the next trading day" replaces "before the first close"
+    # (the pre-close check runs before the close, so the rule first applies on the next session). No rule change.
+    # 2026-10-30 reviewed (user decision after LLY was sold on yesterday's close against a line from today's peak): the
+    # afternoon review's price counts as today's close (as the afternoon screening assumes) for Tier 2 trailing and
+    # Tier 3, using the facts block's today bar; the morning review never sells on a trailing breach. KR/US x ko/en.
+    # 2026-11-09 reviewed (user decision, H-1109-tight-nonbull): Core-3 adds one line deferring to the per-stock trailing
+    # line when it differs from the defaults (a position bought in a sideways/bear regime may arm at +3%, x0.94/x0.96;
+    # cores/oneil_fallback.trail_params). Defaults and every other rule unchanged. KR/US x ko/en.
+    # 2026-11-11 prompt diet (tasks/research-20261110/prompt-diet/AUDIT_ko.md, user-approved): Step 0 self-check
+    # removed (M4/X4; only the x0.90 / no-raise code fallback is stated), Priority 1 says the system already ran the
+    # hard stop (M2), fundamental/rebalancing/portfolio_adjustment-fundamental wording removed (M3), restated target /
+    # band / Tier-3 / ratchet / afternoon-close lines and the time-check, analysis-elements, prudent-adjustment and
+    # DB-update lines removed (D1-D6, D14, D15, D17, X5, X7), ko-only lines dropped (M10), Core-1 indentation (S5);
+    # the volume block is the shared prism_core/volume_prompt_block.py without the BUY-only closing sentence (D7, X8).
+    # Bands, hard stop, MA50 exit, Tier 3 and every threshold unchanged. KR/US x ko/en.
+    # 2026-11-11 reviewed (audit M9): the afternoon-review time states the actual AI sell-review time
+    # (KR ~15:00 KST, US ~14:50 ET, ledger 2026-10-28..11-10) with the batch start as a note; wording only.
     source = SOURCE.read_text(encoding="utf-8")
     node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "create_sell_decision_agent")
-    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "fefd48a873c8b131d88427af3f6096cf0c826507b037eae5dcdbcb97ef8e2e76"
+    assert hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest() == "5b789fe37a0d5ee236827aeeda357420788d59cde9b8b2786f09b20df7798562"

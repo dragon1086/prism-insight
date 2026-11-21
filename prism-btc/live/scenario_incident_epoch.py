@@ -9,9 +9,10 @@ import logging
 import math
 import os
 from contextlib import suppress
+from time import perf_counter_ns as _phase_clock_ns
 from pathlib import Path
 
-from live.scenario_management_quarantine import digest, _append, _events, ENDPOINT
+from live.scenario_management_quarantine import digest, _append, _events, _iter_events, ENDPOINT
 from live.shared_entry_coordinator import mutation_lock
 
 KIND = 'incident_epoch_v1'
@@ -204,22 +205,43 @@ def monitor(broker, *, refresh=False):
     started = broker.clock()
     broker._incident_observation = None
     from live.scenario_broker import _MONITOR_CALL_TIMING
-    timing = dict(calls=[], dropped=0, measurement_failures=0)
+    timing = dict(calls=[], dropped=0, measurement_failures=0, phase_ms={})
+    phase_at = None
+    def mark(name):
+        nonlocal phase_at
+        try:
+            now = _phase_clock_ns()
+            if type(now) is not int or now < 0 or (phase_at is not None and now < phase_at):
+                raise ValueError('phase_clock_invalid')
+            if phase_at is not None:
+                timing['phase_ms'][name] = round(timing['phase_ms'].get(name, 0) + (now-phase_at)/1_000_000, 3)
+            phase_at = now
+        except Exception:
+            phase_at = None
+            timing['measurement_failures'] += 1
+    mark('start')
     token = _MONITOR_CALL_TIMING.set(timing)
     try:
         observed_bodies = []
-        all_cursors = _events(broker.conn, FINANCE_CURSOR)
+        all_cursors = _iter_events(broker.conn, FINANCE_CURSOR)
+        mark('cursor_load')
         values = receipts(broker.conn)
+        mark('receipt_load')
+        latest_cursors = {}
+        approved_epochs = {r['epoch_id'] for r in values}
         for cursor in all_cursors:
             require(cursor.get('sha256') == digest(cursor.get('body'))
-                    and cursor['body']['epoch_id'] in {r['epoch_id'] for r in values}, 'finance_cursor_corrupt')
+                    and cursor['body']['epoch_id'] in approved_epochs, 'finance_cursor_corrupt')
+            latest_cursors[cursor['body']['epoch_id']] = cursor
+        mark('cursor_validate')
         for value in values:
             children = broker.children(value['scenario_id'])
             child = next(c for c in children if c['link_id'] == value['approval']['unknown_link_id'])
+            mark('children_lookup')
             broker._query_child(child)
+            mark('child_query')
             require(0 <= broker.clock()-started <= 10, 'monitor_child_lookup_deadline')
-            cursors = [r for r in all_cursors if r['body']['epoch_id'] == value['epoch_id']]
-            previous = cursors[-1] if cursors else None
+            previous = latest_cursors.get(value['epoch_id'])
             if previous:
                 require(previous['sha256'] == digest(previous['body'])
                         and previous['body']['epoch_id'] == value['epoch_id'], 'finance_cursor_corrupt')
@@ -240,6 +262,7 @@ def monitor(broker, *, refresh=False):
             fresh = {kind: [row for row in rows if digest(row) not in baseline] for kind, rows in finance.items()}
             if any(fresh.values()):
                 record_late(broker, dict(financial_sources=fresh, scenario_id=value['scenario_id']))
+            mark('financial_observation')
             require(0 <= broker.clock()-started <= 10, 'monitor_finance_deadline')
             body = dict(epoch_id=value['epoch_id'], start_ms=start_ms, previous_end_ms=through,
                         end_ms=end_ms, source_sha256=digest(finance))
@@ -247,7 +270,9 @@ def monitor(broker, *, refresh=False):
             broker.conn.commit()
             observed_bodies.append(body)
         sources = account_sources(broker)
-        owned_ids = {c['order_id'] for c in broker.children() if c['order_id']}
+        children = broker.children()
+        owned_ids = {c['order_id'] for c in children if c['order_id']}
+        owned_links = {c['link_id'] for c in children if c['link_id']}
         active = broker._active()
         for source in sources:
             for position in source.get('positions', {}).get('result', {}).get('list', []):
@@ -255,18 +280,26 @@ def monitor(broker, *, refresh=False):
                     and source['scope'] == {'settleCoin': 'USDT'}
                     and position.get('symbol') == 'BTCUSDT' and position.get('positionIdx') == 0), 'foreign_position')
             for order in source.get('orders', {}).get('result', {}).get('list', []):
-                require(order.get('orderId') in owned_ids, 'foreign_order')
+                # Our own order can be on the exchange before its id is saved: an entry's
+                # attached stop exists from the fill, its row only after reconciliation.
+                require(order.get('orderId') in owned_ids or order.get('orderLinkId') in owned_links
+                        or (order.get('parentOrderLinkId') in owned_links and order.get('reduceOnly') is True
+                            and order.get('stopOrderType') == 'StopLoss'), 'foreign_order')
+        mark('account_observation')
         require(0 <= broker.clock()-started <= 10, 'monitor_account_deadline')
         broker._incident_observation = dict(epoch_id=receipt(broker.conn)['epoch_id'], started_at=started,
                                             source_sha256=digest(observed_bodies))
     except Exception as exc:
+        mark('incomplete')
         reason = str(exc) if isinstance(exc, ValueError) and str(exc).startswith('incident_epoch_') else 'observation_failed'
-        record_late(broker, dict(status='HISTORICAL_MONITOR_OR_COVERAGE_GAP',
-                                error_type=type(exc).__name__, reason=reason))
-        if reason in {'incident_epoch_monitor_child_lookup_deadline',
-                      'incident_epoch_monitor_finance_deadline',
-                      'incident_epoch_monitor_account_deadline'}:
-            # The durable halt must survive logging failures.
+        if reason not in {'incident_epoch_monitor_child_lookup_deadline',
+                          'incident_epoch_monitor_finance_deadline',
+                          'incident_epoch_monitor_account_deadline'}:
+            record_late(broker, dict(status='HISTORICAL_MONITOR_OR_COVERAGE_GAP',
+                                    error_type=type(exc).__name__, reason=reason))
+        else:
+            # A late observation only blocks this cycle (no fresh observation);
+            # the next one re-reads from the last cursor, so nothing is skipped.
             with suppress(Exception):
                 started_ms = (int(started * 1000) if type(started) in (int, float)
                               and math.isfinite(started) else None)

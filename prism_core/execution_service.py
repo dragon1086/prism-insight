@@ -116,6 +116,8 @@ class ExecutionService:
         "buy_reserved_order",
         "sell_reserved_order",
     }
+    # The account holds none of it (e.g. a buy skipped for under one share, LLY 2026-10-30): no order went out.
+    NO_POSITION_MARKERS = ("not found in portfolio", "quantity is 0")
     _AMBIGUOUS_FAILURE_MARKERS = (
         "timeout",
         "timed out",
@@ -235,6 +237,13 @@ class ExecutionService:
                 f"direct order method {name!r} is blocked; use ExecutionService methods"
             )
         return getattr(self._active_trader, name)
+
+    @classmethod
+    def _log_level(cls, accepted: bool, result: Any) -> int:
+        if accepted:
+            return logging.INFO
+        message = str(result.get("message") or "").lower() if isinstance(result, dict) else ""
+        return logging.WARNING if any(m in message for m in cls.NO_POSITION_MARKERS) else logging.ERROR
 
     @classmethod
     def _classify_result(cls, result: Any) -> tuple[str, bool, str]:
@@ -379,7 +388,7 @@ class ExecutionService:
                 cause=exc,
             ) from exc
         logger.log(
-            logging.INFO if accepted else logging.ERROR,
+            self._log_level(accepted, result),
             "[ORDER_INTENT] %s id=%s market=%s side=%s symbol=%s",
             status,
             intent.id,
@@ -546,7 +555,7 @@ class ExecutionService:
                 cause=exc,
             ) from exc
         logger.log(
-            logging.INFO if accepted else logging.ERROR,
+            self._log_level(accepted, result),
             "[ORDER_INTENT] %s id=%s market=%s side=%s symbol=%s",
             status,
             intent.id,

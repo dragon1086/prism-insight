@@ -132,12 +132,16 @@ def test_distribution_days_point_to_the_line_the_gate_reads(buy_prompts):
 
 
 def test_opening_hour_rule_states_the_current_price_exceptions(buy_prompts):
+    # 2026-11-11 prompt diet (audit D8): the opening-hour bullet points to the Step 1.5 and volume
+    # lower-bound rules instead of restating them; both rules must still be stated once above.
     for key, text in buy_prompts.items():
         flat = " ".join(text.split())
         if key.endswith("ko"):
-            assert "1.5단계 T1·T2는 시간대와 관계없이 개별 추세 팩트의 현재가로 판정하고, 장중 누적 거래량이 이미 확정 20거래일 평균의 200% 이상" in flat, key
+            assert "예외: 1.5단계 T1·T2 판정과 거래량 하한 판정(거래량 해석 기준)은 위 규칙대로 현재가·장중 누적 거래량을 씁니다" in flat, key
+            assert flat.count("T1·T2는 시간대와 관계없이") == 1 and flat.count("예외(하한 판정)") == 1, key
         else:
-            assert "Step 1.5 T1/T2 use the facts block's current price at any hour, and cumulative intraday volume already at ≥200%" in flat, key
+            assert "Exception: the Step 1.5 T1/T2 check and the volume lower-bound rule (Volume Interpretation) use the current price and cumulative intraday volume as set above" in flat, key
+            assert flat.count("Judge T1/T2 at any time of day") == 1 and flat.count("Exception (lower bound)") == 1, key
 
 
 def test_ma_citation_guard_exists_in_every_language(buy_prompts):
@@ -197,15 +201,20 @@ def _bands():
 
 
 def test_sell_trigger_example_and_template_use_exit_code_values(buy_prompts):
+    # 2026-11-11 prompt diet (audit X3 / M5): apply_buy_scenario_contract always overwrites sell_triggers
+    # with the template, so the BUY JSON example no longer spells out bands (the LLM's text was discarded);
+    # the template carries the exit-code bands plus the non-bull entry band (trail_params +3%, x0.94/x0.96).
     kr = _bands()
     from prism_core.trading_scenario_contract import _SELL_TRIGGERS_EN, _SELL_TRIGGERS_KO
-    texts = dict(buy_prompts)
-    texts["template-ko"] = "\n".join(_SELL_TRIGGERS_KO)
-    texts["template-en"] = "\n".join(_SELL_TRIGGERS_EN)
-    for key, text in texts.items():
+    for key, text in buy_prompts.items():
+        assert ('"sell_triggers": ["시스템이 매도 정책 템플릿으로 대체합니다' in text
+                or '"sell_triggers": ["replaced by the system SELL policy template' in text), key
+        assert "-3~5%" not in text and "고점 × 0.92" not in text and "peak × 0.92" not in text, key
+    for key, text in (("template-ko", "\n".join(_SELL_TRIGGERS_KO)), ("template-en", "\n".join(_SELL_TRIGGERS_EN))):
         for drop in (kr.TRAIL_DROP_BULL, kr.TRAIL_DROP_WEAK, kr.TRAIL_DROP_UNKNOWN):
             assert f"× {drop:.2f}" in text, (key, drop)
         assert f"+{kr.TRAIL_ACTIVATION_PCT:g}%" in text, key
+        assert "+3%" in text and "× 0.94" in text and "× 0.96" in text, key
         assert "-3~5%" not in text, key
         assert ("3거래일 연속 종가 하락" in text) or ("3 consecutive lower" in text), key
         assert ("20일선 아래" in text) or ("below the 20d MA" in text), key

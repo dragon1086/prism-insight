@@ -11,11 +11,11 @@ def test_reservation_contract_exposes_slot_deadline_and_price_cap():
     assert c['reservation_expires_at']==1200
     assert 'trigger_price' in c['entries'][0]
     text=' '.join(SYSTEM_PROMPT.split())
-    assert 'conditional stop-LIMIT' in text
-    assert 'not an exact exchange-side expiry' in text
-    assert 'cost_positive_stop' in text
-    assert 'not a fixed 10x +1%' in text
-    assert 'one direction per account' in text
+    assert 'conditional MarkPrice crossing' in text
+    assert 'not a promised fill' in text
+    assert 'reservation_expires_at' in text
+    assert 'not terminal cancellation or a flat account' in text
+    assert 'Never replace UNKNOWN orders or reverse an unsettled scenario' in text
 
 
 def test_conditional_plan_never_claims_fill_or_exact_expiry():

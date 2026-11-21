@@ -105,7 +105,10 @@ def test_known_non_failures_are_ignored():
              "2026-10-21 03:00:01,000 - x - ERROR - Actual purchase failed: Micro-split budget below one share",
              '2026-10-27 23:20:41,787 - yfinance - ERROR - HTTP Error 404: {"quoteSummary":{"result":null,"error":'
              '{"code":"Not Found","description":"Quote not found for symbol: LC"}}}',
-             "2026-10-27 15:44:09,062 - aiohttp.server - ERROR - Error handling request from 127.0.0.1"]
+             "2026-10-27 15:44:09,062 - aiohttp.server - ERROR - Error handling request from 127.0.0.1",
+             "2026-10-30 03:54:39,180 - us_stock_tracking_agent - ERROR - Actual sell failed: LLY not found in portfolio",
+             "2026-10-30 03:54:39,180 - x - WARNING - [LIVE][US] LLY KIS sell success=False order_no=None"
+             " msg=LLY not found in portfolio"]
     assert W.scan_lines(_job("us_morning"), lines, now)[1] == []
 
 
@@ -170,6 +173,7 @@ def test_no_stale_alert_outside_session_or_window(tmp_path, monkeypatch):
 
 def test_daily_reentry_deadline_and_morning_summary(tmp_path, monkeypatch):
     state = _setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("OPS_WATCHDOG_SUMMARY_ENABLED", "true")    # off by default since 2026-11-07
     monkeypatch.setattr(W, "_is_session", lambda market, day: day.weekday() < 5)
     for job in W.JOBS:
         if job.log and "{date}" not in job.log:
@@ -373,3 +377,53 @@ def test_disk_alert_fires_above_the_limit_holds_repeats_and_resets(tmp_path, mon
     monkeypatch.setattr(W, "disk_used_pct", lambda: 95.0)
     W.run(t0.replace(minute=20), state_path=state, sender=send)
     assert len(sent) == 2                                                  # a new episode alerts again
+
+
+def test_ledger_alert_fires_when_shipper_checkpoint_stalls_with_pending_events(tmp_path, monkeypatch):
+    # 2026-11-18..21: one unconfirmed batch after a disk-full moment stopped ClickStack shipping for 3 days.
+    import os
+    state = _setup(tmp_path, monkeypatch)
+    sent, t0 = [], datetime(2026, 11, 21, 12, 0, tzinfo=KST)
+    send = lambda m: sent.append(m) or True  # noqa: E731
+    spool, checkpoint = tmp_path / "logs/prism_events.jsonl", tmp_path / "logs/prism_events.checkpoint.json"
+    spool.write_text('{"event_id": "a"}\n' * 1000)
+    checkpoint.write_text(json.dumps({"inode": spool.stat().st_ino, "offset": 0}))
+    os.utime(checkpoint, (t0.timestamp() - 3 * 3600,) * 2)               # checkpoint still for 3 hours
+    W.run(t0, state_path=state, sender=send)
+    assert len(sent) == 1 and sent[0].startswith("[장애] PRISM 매매 원장(ClickStack) 전송 멈춤") and "3.0시간째" in sent[0]
+    W.run(t0.replace(minute=5), state_path=state, sender=send)
+    assert len(sent) == 1                                                  # held back inside REPEAT_HOURS
+    checkpoint.write_text(json.dumps({"inode": spool.stat().st_ino, "offset": spool.stat().st_size}))
+    os.utime(checkpoint, (t0.timestamp(),) * 2)                            # caught up
+    W.run(t0.replace(minute=10), state_path=state, sender=send)
+    assert len(sent) == 1 and "ledger_alert" not in json.loads(state.read_text())
+    os.utime(checkpoint, (t0.timestamp() - 600,) * 2)                      # idle but nothing pending: quiet
+    W.run(t0.replace(minute=15), state_path=state, sender=send)
+    assert len(sent) == 1
+
+
+def test_summary_and_notice_only_alerts_are_off_by_default(tmp_path, monkeypatch):
+    # 2026-11-07 (user): the maintenance chat keeps real failures only; the biweekly review replaces the rest.
+    state = _setup(tmp_path, monkeypatch)
+    monkeypatch.delenv("OPS_WATCHDOG_SUMMARY_ENABLED", raising=False)
+    monkeypatch.delenv("OPS_WATCHDOG_NOTICES_ENABLED", raising=False)
+    log = "logs/loop_a_hardstop.log"
+    _write(tmp_path, log, "", "w")
+    sent = []
+    send = lambda m: sent.append(m) or True  # noqa: E731
+    t0 = datetime(2026, 10, 21, 10, 0, tzinfo=KST)
+    W.run(t0, state_path=state, sender=send)
+    notice = "2026-10-21 10:01:00,000 - hardstop - ERROR - something odd happened\n"
+    _write(tmp_path, log, notice)
+    W.run(t0.replace(minute=5), state_path=state, sender=send)
+    assert sent == []                                                      # [주의]-only run: nothing sent
+    fail = "2026-10-21 10:06:00,000 - hardstop - WARNING - [LIVE][KR] 005930 KIS sell success=False msg=x\n"
+    _write(tmp_path, log, fail + notice.replace("10:01", "10:06").replace("odd", "odder"))
+    W.run(t0.replace(minute=10), state_path=state, sender=send)
+    assert len(sent) == 1 and sent[0].startswith("[장애]") and "[주의]" not in sent[0]
+    W.run(datetime(2026, 10, 22, 8, 31, tzinfo=KST), state_path=state, sender=send)
+    assert not any(m.startswith("[운영 점검]") for m in sent)               # no morning summary
+    monkeypatch.setenv("OPS_WATCHDOG_NOTICES_ENABLED", "true")
+    _write(tmp_path, log, notice.replace("10:01", "10:20").replace("odd", "strange"))
+    W.run(datetime(2026, 10, 22, 10, 21, tzinfo=KST), state_path=state, sender=send)
+    assert "something strange happened" in sent[-1]                       # notices are back when switched on

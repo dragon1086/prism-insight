@@ -880,7 +880,7 @@ class USStockAnalysisOrchestrator:
                             from_lang="ko",
                             to_lang=lang
                         )
-                        success = await bot_agent.send_message(channel_id, translated_message, msg_type="analysis")
+                        success = await bot_agent.send_message(channel_id, translated_message, msg_type="analysis", broadcast=True)
                         if success:
                             logger.info(f"US telegram message sent successfully to {lang} channel")
                         else:
@@ -1183,7 +1183,7 @@ class USStockAnalysisOrchestrator:
                         from_lang="ko",
                         to_lang=lang
                     )
-                    success = await bot_agent.send_message(channel_id, translated_message, msg_type="trigger")
+                    success = await bot_agent.send_message(channel_id, translated_message, msg_type="trigger", broadcast=True)
                     if success:
                         logger.info(f"US trigger alert sent successfully to {lang} channel")
                     else:

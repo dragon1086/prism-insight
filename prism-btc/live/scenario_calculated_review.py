@@ -1,6 +1,6 @@
 """Order-free lifecycle research: model prices, host arithmetic, model selection.
 
-Not a runtime proposer. Results are research receipts, never executable orders.
+Results are calculation receipts; callers alone authorize and execute orders.
 Caller supplies an audited, no-retry generator and a durable research recorder.
 """
 from copy import deepcopy
@@ -10,7 +10,7 @@ import json
 import math
 import time
 
-from core.llm_scenario import EntryConvergenceRejection, EconomicProposalRejection, ScenarioValidationError, risk_snapshot, validate_scenario
+from core.llm_scenario import target_quantities, EntryConvergenceRejection, EconomicProposalRejection, ScenarioValidationError, risk_snapshot, validate_scenario
 from core.scenario_limit_prices import preview_execution_prices
 from engine.scenario_ma_context import build_ma_structure_context
 from live import scenario_llm
@@ -25,159 +25,23 @@ from live.scenario_explanation import (enabled as explanation_enabled, rationale
     PROMPT as EXPLANATION_PROMPT)
 
 
-DRAFT_PROMPT = """
-Order-free candidate research. The supplied API response schema replaces
-the normal single-proposal output shape and overrides preceding instructions to
-personally compute costs/reward/risk. All trading safety rules remain unchanged.
-Return wait_proposal (a normal WAIT wire proposal), zero to two independent normal
-wire candidates (OPEN when flat, ADJUST/EXIT when active), and no_candidate_reason.
-wait_proposal is the WAIT fallback, not a global WAIT-only instruction: follow
-the separate candidates schema and its cap. baseline_kind describes the stored
-baseline's origin; the current first-observation flag is recovery.first_observation.
-Read current_decision_state for literal current host flags and wire action choices.
-Historical baseline_kind never makes first_observation=false into a first observation.
-Unknown flags remain unknown: do not invent permission or a first-observation ban.
-Choose strategic direction, entry,
-SL, TP, quantities and fractions yourself from supplied market evidence; the host
-does not choose these. Candidates are mutually exclusive alternatives, never a
-combined portfolio. Do not calculate reward/risk, costs or projected PnL yourself:
-the host will calculate your exact proposals for subsequent comparison. Do not
-shrink a structural SL to make size fit. A candidate may fail host risk validation;
-it will remain visible but cannot be selected. If no grounded candidate exists,
-return an empty candidates list and a qualitative
-reason identifying missing structure or evidence, not invented arithmetic.
-Economic objections alone must submit a candidate for host calculation, not use
-an empty list to bypass calculation. First recovery observation stays WAIT only,
-with empty candidates. Candidate submission is not an order or permission
-to trade. Unknown real fees never authorize invented net-reward arithmetic.
-For a new flat OPEN, consider TP, optional structural-weakening partial stops and
-remaining lots together. Noise alone need not justify partial SL; partial_stops=[]
-is valid when no structural reduction is grounded. Confirmed failure still means
-the existing full EXIT/protection rules, never partial-SL risk-budget credit.
-Cut invalidated exposure, not normal thesis-preserving fluctuations. Compare early
-TP concentration with participation in a sustained move: grounded later targets or
-SL-protected lots without fixed TP are allowed, never mandatory. Do not label
-rounding dust an intentional runner or invent a distant target to improve payoff.
-Partial SL saves exposure on continued weakness but sacrifices lots on recovery;
-design that tradeoff before entry, without a fixed stop width or exit percentage.
-For an active scenario keep its side and original risk budget. ADJUST entries are
-incremental only; exit targets are the complete replacement protection. Existing
-confirmed positions already reflect prior partial exits; never restore sold lots.
-When weakening evidence or a nearer TP changes a held trade, compare retaining the
-current protection with a structurally grounded conditional partial SL or full EXIT.
-A nearer TP alone does not repair the whole-trade payoff when the remaining stop
-loss stays large. Propose a coherent replacement plan for host calculation; judge
-exposure saved on further weakness against participation lost if price recovers.
-No reduction is mandatory without structural evidence; normal fluctuations and
-fees alone do not require a tighter stop or immediate exit. Confirmed failure
-still takes full EXIT, never a partial reduction to keep a failed premise alive.
-Pending quantities are unfilled reservations, not confirmed holdings; cancellation
-requests do not release them. An active scenario with only pending entries is not
-flat. Stop restoration still requires the original host stop_policy. EXIT is full
-closure intent, not an assertion that orders canceled or positions filled.
+DRAFT_PROMPT = """Order-free proposal stage. Follow the API schema: wait_proposal is the WAIT alternative; candidates are mutually exclusive, never a combined portfolio. Offer only supported legal alternatives and explain current evidence, contrary evidence, purpose and invalidation concisely. Missing qualitative evidence permits no candidates; an economic concern with an otherwise grounded plan should reach host calculation.
+The host computes effective prices, quantities, costs and payoff. Do not calculate them. If prepared_entry_plans is supplied, use coherent entry/SL and listed TP prices from one layout; choose TP subset/fractions and any goal-compatible runner. Illustrations fix neither weights nor confidence. Otherwise choose grounded structural prices under the original goal. Use each TP ID once. No output is an order or authority. First recovery observation stays WAIT when the host requires it.
+When entry_readiness is requested, SUPPORTED_NOW needs present evidence for this entry; WAIT_FOR_EVIDENCE means another observation is still needed.
 """
 
-SELECT_PROMPT = """
-Order-free calculated candidate review. The supplied API response schema
-replaces the normal single-proposal output shape and overrides preceding requests
-for model arithmetic, never safety constraints. Choose exactly one selection_token
-from the schema enum. Each host token binds a candidate ID (or WAIT) and its full
-receipt hash; never construct a token or copy a separate hash field. Never rewrite
-prices, quantities, expiry or confidence; revised plans require a new research
-run, not an extra call here. Interpret trend, support/resistance, fill plausibility
-and supplied host calculations. Do not invent net profit or recompute supplied
-arithmetic. Risk reserves are NOT observed per-side fees or guaranteed losses.
-Read calculation_field_units for projection.targets fields: gross_pnl is the
-before-cost USDT amount for that target's quantity, not whole-scenario profit;
-gross_reward_per_btc is USDT/BTC price distance, never total USDT reward. Keep
-quantity in BTC and reward/risk ratios dimensionless; do not recompute these.
-The same target-field units apply to projection.confirmed_remaining.targets and
-projection.hypothetical_all_fills.targets; keep their assumptions separate, never
-add these alternative projections together.
-Flat-entry gross target projections assume all proposed entries fill: a partial target is
-not whole-scenario profit, and unknown future fees/funding remain unknown.
-When supplied, joint_exit_paths compares bounded hypothetical exit sequences for
-new flat OPEN and confirmed remaining lots of a proposed ADJUST. Compare whole-path payoff and remaining lots, not sums of
-independent target profits. Flat paths assume full entry fills; active paths use
-only confirmed remaining lots. Both assume the displayed exit fills, not
-probabilities or expected net profit; partial SL is optional, never risk
-credit or a substitute for full EXIT on confirmed failure. No fixed payoff gate.
-Each path closes any remaining quantity at hard SL as a stress test, NOT the
-expected ending of a trend or the value of an open runner. Do not prefer liquidating upside simply because
-an assumed later hard-stop exit makes retained lots look costly. Separately assess
-the plan's early-TP concentration and grounded participation if the move continues;
-an unpriced protected remainder has no invented profit. Rounding dust is not intent.
-joint_exit_paths version2 paths are rows [sequence_ids,remaining_before_hard_stop,
-gross_pnl,fee_only]. TP_STOP/SL_STOP mean applied TP/partial-SL legs;
-TP1_STOP/SL1_STOP mean only the first TP/partial-SL leg; STOP means hard SL alone.
-TP1_SL/SL1_TP mean first TP then partial SL / first partial SL then TP; both kinds
-actually apply. All paths close any remainder at hard SL. Compare only displayed
-paths: omitted/zero/subminimum/capped-out legs are NOT part of their names.
-The corresponding projection.quantity/targets (flat) or
-projection.confirmed_remaining.quantity/targets (ADJUST) supply quantities/prices for these
-sequences; no independent leg profits are added to path gross. Targets retain their
-initial revision quota (not a fraction of each new remainder), sorted by price
-crossing order; zero/subminimum legs are omitted and quantities capped at remaining.
-This omission/clip is a modelling assumption, not proof of actual reduce-only fills.
-Partial SL's Mark trigger is only a hypothetical exit price, not its market fill.
-fee_only=null means UNKNOWN; otherwise [assumed_entry_fee,assumed_exit_fee,
-estimated_net_before_unmodelled_costs], in USDT, uses historical taker-max estimates
-with total original entry quantity charged once for version2 flat OPEN. Gross is also USDT. Funding,
-slippage, fill timing and revision races remain UNKNOWN/unmodelled, never zero.
-Flat OPEN whole_plan_payoff uses that all-TP-then-residual-hard-SL fee-only net_reward
-and full_stop_loss from full hard SL WITHOUT partial SL; both are USDT, ratio is
-dimensionless. UNKNOWN means missing costs/path or nonpositive loss denominator.
-This is a hypothetical payoff, not probability, expectancy or a guarantee; future
-funding/slippage are excluded, NOT zero. It changes no eligibility or risk budget.
-ADJUST confirmed_remaining joint paths version3 are supplied separately as
-contract_context.holding_exit_paths rows [candidate_id,receipt_sha256,paths].
-This optional view uses the same row columns and
-sequence rules but gross covers remaining lots ONLY. fee_only entry fee is zero:
-its net includes recorded net exactly once plus remaining gross minus assumed
-future exit fees. recorded_net already includes prior realized PnL and paid costs;
-never add it or subtract paid fees again. Missing recorded net or fee evidence
-makes path fee_only UNKNOWN, not zero. These paths are a proposed NEW revision,
-not existing live order quotas: never replay current_plan fractions against the
-remaining lots or resurrect filled targets. For WAIT compare existing
-runner_economics current-Mark/full-stop diagnostics; it has no invented TP path.
-Do not add confirmed paths to hypothetical_all_fills or call pending lots held.
-An absent optional holding view means unavailable, not no loss or no permission;
-use the original target/full-stop and runner_economics diagnostics when absent.
-For holdings distinguish confirmed_remaining projections from hypothetical_all_fills
-which additionally assume all pending and new entries fill. Never call hypothetical
-quantity held or add the two projections. Replacement target fractions start from
-confirmed remaining quantity, not the original pre-partial-exit position. Mark-based
-EXIT gross is an estimate, not fill or settlement evidence. Missing accounting stays
-unknown; a projection cannot replenish risk or grant stop-restoration permission.
-Unknown actual future fees alone are not a new automatic WAIT gate; evaluate the
-supplied reserve-based comparisons without inventing exact net profit or an edge.
-Pure wire/economic validation is NOT recovery authorization or execution evidence.
-Candidate eligible=true is selectable when its token is in the response enum;
-eligible=false is excluded. allocation_receipt.executable=false and order-free
-receipt flags mean the calculation cannot submit orders, NOT candidate rejection.
-Do not use those authority flags as a reason to WAIT on an eligible candidate.
-Current first_observation/recovery_eligible are in current_decision_state;
-baseline_kind is historical origin, not a current waiting restriction. Unknown
-state is not permission; fresh host recovery and execution checks still decide.
-No trade is mandatory. Explain the decisive evidence and invalidation briefly in
-Korean. When flat-OPEN or confirmed ADJUST joint paths are supplied, organize rationale as three short
-items: '계획:' name the candidate (also when choosing WAIT) and the decisive evidence;
-'경로:' compare its displayed paths using supplied host results. Only if partial-SL
-legs actually apply, compare exposure saved on weakness versus participation lost
-on recovery; otherwise compare the applicable full-stop/TP paths, never invent a partial SL;
-'연장:' assess early-TP concentration, grounded later targets/protected lots and why
-that balance fits this thesis. No partial SL, full TP or no fixed TP can each be
-valid; explain the applicable tradeoff, never force a runner or a partial stop.
-Use path IDs and existing host figures, not new arithmetic, probabilities or a
-claim of guaranteed profit. These items expose the response, not hidden reasoning;
-missing items alone never authorize a new WAIT rule or delay confirmed-failure EXIT.
-Return exactly selection_token and rationale, no other fields.
+SELECT_PROMPT = """Order-free selection stage. Choose one offered schema selection_token (candidate ID/full receipt hash). Eligible only; WAIT must be selectable. Never rewrite prices, quantities, confidence, direction or original goal in rationale. FAILED requires the offered EXIT.
+DRAFT owns the market thesis; check its effective plan against purpose, location, executable path and whole-trade outcomes. Do not start a second independent directional forecast. Reject for a specific material contradiction or inadequate opportunity, not an unhit future TP. Conditional payoff is not probability or target-reach evidence.
+Read calculation_field_units and displayed assumptions. Never recompute arithmetic or combine mutually exclusive paths. Distinguish actual fees, assumptions and reserves. Unknown future fees alone do not force WAIT when the host supplies a cost basis. Funding/unknown execution remain unknown.
+Use existing_exit_paths for unchanged WAIT; candidate projections describe changes. Include prior realized costs once, never restore filled quotas or call checkpoints orders. confirmed_remaining covers held lots; hypothetical_all_fills additionally assumes pending/new fills. Never add them. joint_exit_paths is stress testing, not the predicted ending or value of an open runner. execution_authorized=false does not reject an eligible schema token. Host guard restrictions still apply.
 """
 
 
 def _encoded(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False,
                       separators=(",", ":"))
+
+
 
 
 def receipt_hash(value):
@@ -242,7 +106,7 @@ def _joint_exit_paths(plan, targets, quantity, basis, minimum, fees, *, confirme
             if confirmed:
                 fee_view[2] = float(_decimal(recorded_net) + _decimal(fee_view[2]))
         paths.append([[sequence_id], legs, float(residual), float(gross), fee_view])
-    # The versioned column/sequence meanings live once in SELECT_PROMPT, not
+    # The versioned column/sequence meanings live once in model-only units, not
     # repeated per candidate/path in the size-limited user payload.
     result = dict(version=2, paths=[[path[0], *path[2:]] for path in paths])
     if confirmed:
@@ -250,6 +114,75 @@ def _joint_exit_paths(plan, targets, quantity, basis, minimum, fees, *, confirme
             gross_scope='CONFIRMED_REMAINING_ONLY',
             fee_net_scope='WHOLE_SCENARIO_RECORDED_NET_ONCE')
     return result
+
+
+def _kept_exit_paths(context):
+    """Value reported live quotas, never reapply old fractions after partial exits."""
+    from live.scenario_fee_projection import fee_only_projection
+    try:
+        if (not context.get('scenario_id') or context.get('accounting_status')!='confirmed'
+                or context.get('protection_ok') is not True or context.get('management_quarantine')
+                or context.get('pending_entries')!=[]):
+            return None
+        now,at=map(_decimal,(context['now'],context['account_captured_at']))
+        if not 0<=now-at<=120:return None
+        side=context['side'];sign=1 if side=='LONG' else -1
+        if side not in ('LONG','SHORT'):return None
+        lots=context['positions'];reported=context['target_status']
+        if not isinstance(lots,list) or not 0<len(lots)<=20 or not isinstance(reported,list) or len(reported)>100:return None
+        quantity=notional=Decimal(0)
+        for lot in lots:
+            price,qty=map(_decimal,(lot['price'],lot['quantity']))
+            if min(price,qty)<=0:return None
+            quantity+=qty;notional+=price*qty
+        basis=notional/quantity
+        mark,stop=map(_decimal,(context['mark_price'],context['previous_hard_stop']))
+        if min(mark,stop)<=0 or sign*(mark-stop)<=0:return None
+        targets=[];seen=set()
+        for row in reported:
+            if row.get('status')=='TERMINAL':continue
+            if row.get('status')!='LIVE' or row.get('kind') not in ('tp','partial_sl'):return None
+            key=(row['intent_id'],row['target_id'])
+            if any(not isinstance(v,str) or not v for v in key) or key in seen:return None
+            seen.add(key)
+            price,qty=(Decimal(str(row[k])) for k in ('price','remaining_quantity'))
+            if not all(v.is_finite() and v>0 for v in (price,qty)):return None
+            favorable=sign*(price-mark)
+            if (row['kind']=='tp' and favorable<=0) or (row['kind']=='partial_sl' and favorable>=0):return None
+            targets.append(dict(kind='take_profits' if row['kind']=='tp' else 'partial_stops',
+                id=':'.join(key),price=float(price),quantity=float(qty)))
+        def fees(price,qty):
+            return fee_only_projection(side=side,entry_price=float(basis),exit_price=float(price),
+                quantity=float(qty),evidence=context.get('observed_execution_fee_evidence'),
+                now=float(now),new_entry=False)
+        plan=dict(side=side,hard_stop=float(stop))
+        # Existing partially filled orders can have leaves below the new-order minimum.
+        joint=_joint_exit_paths(plan,targets,quantity,basis,Decimal(0),fees,
+            confirmed=True,recorded_net=context.get('recorded_scenario_net'))
+        return dict(version=1,quantity=float(quantity),joint_exit_paths=joint,
+            source='BROKER_REPORTED_LIVE_LEAVES_NOT_PLAN_FRACTIONS',
+            account_captured_at=float(at),future_fills_confirmed=False)
+    except (KeyError,TypeError,ValueError,ArithmeticError,OverflowError):
+        return None
+
+
+def _project_kept_exit_paths(projected,context):
+    from live.scenario_model_input import restore_model_input,project_model_input
+    try:
+        logical=restore_model_input(projected);target=logical['contract_context']
+        keys=('scenario_id','positions','pending_entries','accounting_status','protection_ok',
+              'management_quarantine','now','account_captured_at','side','mark_price',
+              'previous_hard_stop','target_status','recorded_scenario_net','observed_execution_fee_evidence')
+        if 'existing_exit_paths'in target or any(target.get(k)!=context.get(k) for k in keys):return projected
+        view=_kept_exit_paths(target)
+        if view is None or len(_encoded(view).encode())>2000:return projected
+        original=deepcopy(logical);target['existing_exit_paths']=view
+        candidate,_=project_model_input(logical,allow_gap_rescue=True)
+        if len(_encoded(candidate).encode())>100000:return projected
+        restored=restore_model_input(candidate);restored['contract_context'].pop('existing_exit_paths',None)
+        return candidate if restored==original else projected
+    except (KeyError,TypeError,ValueError,ArithmeticError,OverflowError):
+        return projected
 
 
 def _gross_projection(plan, context, *, lots=None,
@@ -286,15 +219,12 @@ def _gross_projection(plan, context, *, lots=None,
             return dict(status="UNKNOWN", reason="recorded_scenario_net_missing")
         return fee_only_projection(side=plan["side"], entry_price=basis, exit_price=price,
             quantity=qty, evidence=context.get("observed_execution_fee_evidence"), now=context.get("now"),
-            new_entry=new_entry, recorded_net=context.get("recorded_scenario_net") if whole and confirmed else None)
+            new_entry=new_entry, recorded_net=context.get("recorded_scenario_net") if whole and confirmed else None,
+            entry_fee_reference=context.get('entry_fee_reference') if new_entry else None)
     for kind in ("take_profits", "partial_stops"):
-        allocated = Decimal(0)
-        for row in plan[kind]:
-            # New revision: prior reductions are already absent from supplied lots.
-            qty = (max(Decimal(0), min(quantity - allocated,
-                   quantity * _decimal(row["fraction"]))) / step).to_integral_value(
-                       rounding=ROUND_DOWN) * step
-            allocated += qty
+        # New revision: prior reductions are already absent from supplied lots.
+        for row, qty in zip(plan[kind], target_quantities(quantity, plan[kind], step,
+                                                       full_exit=kind == "take_profits")):
             below_minimum = qty < minimum
             projected_qty = Decimal(0) if below_minimum else qty
             gross = sign * (_decimal(row["price"]) - basis) * projected_qty
@@ -332,6 +262,9 @@ def _gross_projection(plan, context, *, lots=None,
                     values = [float(reward), float(loss), float(reward / loss)]
                     if all(math.isfinite(v) for v in values):
                         payoff.update(status='AVAILABLE', net_reward=values[0], full_stop_loss=values[1], ratio=values[2])
+                        from live.scenario_fee_projection import DEMO_REFERENCE_BASIS
+                        if full_stop.get('basis') == DEMO_REFERENCE_BASIS:
+                            payoff['fee_basis'] = DEMO_REFERENCE_BASIS
         except (StopIteration, KeyError, IndexError, TypeError, ValueError, OverflowError):
             pass  # Optional arithmetic cannot create an execution/selection veto.
         result['whole_plan_payoff'] = payoff
@@ -554,19 +487,125 @@ def calculate_candidate(wire, context, *, candidate_id, original_input_now=None,
         if strict or context.get('entry_contract_version') == 2:
             raise
         receipt["rejection"] = "wire_economic_or_calculation_invalid"
+    if receipt.get('eligible') is True:
+        from live.scenario_entry_economics import assess
+        economics = assess(receipt['effective_plan'], context, receipt.get('projection', {}))
+        if economics is not None:
+            receipt['entry_economics'] = economics
+            if economics['status'] != 'PASS':
+                receipt.update(eligible=False, rejection_type='PREAUTHORITY_ECONOMIC',
+                    rejection='entry_payoff_below_minimum' if economics['status'] == 'REJECTED'
+                              else 'entry_payoff_unavailable')
     bind_receipt(receipt, context, snapshot=explanation_snapshot)
     receipt["receipt_sha256"] = receipt_hash(receipt)
     return receipt
 
 
-def _model_payload(snapshot, context, response_contract, *, calculated_candidates=None):
-    baseline = _base_model_payload(snapshot, context, response_contract, calculated_candidates=calculated_candidates)
-    if not explanation_enabled(context):
-        baseline = project_holding_price_order_input(baseline)[0]
-    return project_explanation_input(baseline, context, snapshot=snapshot)
+_ENTRY_PROGRESS_INPUT_LIMIT = 100_000
 
 
-def _base_model_payload(snapshot, context, response_contract, *, calculated_candidates=None):
+def _initial_entry_progress_units(context):
+    """Initial entry-to-Mark geometry is neither portfolio PnL nor current risk."""
+    try:
+        evidence = context.get('entry_thesis')
+        positions = context.get('positions')
+        if (not context.get('scenario_id') or context.get('accounting_status') != 'confirmed'
+                or not isinstance(positions, list) or not positions
+                or any(not isinstance(p, dict) or _decimal(p.get('quantity')) <= 0 for p in positions)
+                or not isinstance(evidence, dict) or evidence.get('status') != 'VERIFIED'):
+            return None
+        side = evidence['side']
+        if side not in ('LONG', 'SHORT') or side != context.get('side'):
+            return None
+        average, stop, mark = (_decimal(evidence[k]) for k in ('initial_fill_average', 'initial_hard_stop', 'current_mark'))
+        now, observed, first, captured = (_decimal(v) for v in
+            (context['now'], evidence['observed_at'], evidence['first_fill_at'], context['account_captured_at']))
+        if (min(average, stop, mark, first) <= 0 or not first <= captured <= now
+                or not first <= observed <= now or now - captured > 120 or now - observed > 120
+                or abs(observed - captured) > Decimal('0.001') or mark != _decimal(context['mark_price'])):
+            return None
+        sign = Decimal(1) if side == 'LONG' else Decimal(-1)
+        distance = sign * (average - stop)
+        progress = sign * (mark - average)
+        if distance <= 0 or abs(progress - _decimal(evidence['favorable_price_change_from_initial_average'])) > Decimal('0.000001'):
+            return None
+        value = float(progress / distance)
+        if not math.isfinite(value):
+            return None
+        return dict(value=value, meaning='SIGNED_PRICE_PROGRESS_OVER_INITIAL_STOP_DISTANCE_NOT_PNL_OR_CURRENT_RISK',
+                    positive='FAVORABLE', negative='ADVERSE',
+                    scope='INITIAL_OPEN_ENDPOINT_ONLY_NOT_INTERVENING_PATH_OR_EXIT_RULE')
+    except (AttributeError, KeyError, TypeError, ValueError, ArithmeticError, OverflowError):
+        return None
+
+
+def _project_initial_entry_progress(projected, context):
+    """Add only if the original model input survives unchanged within its cap."""
+    value = _initial_entry_progress_units(context)
+    if value is None:
+        return projected
+    try:
+        from live.scenario_model_input import project_model_input, restore_model_input
+        if len(_encoded(projected).encode()) > _ENTRY_PROGRESS_INPUT_LIMIT:
+            return projected
+        original = restore_model_input(projected)
+        logical = deepcopy(original)
+        target = logical['contract_context']
+        if (target.get('scenario_id') != context.get('scenario_id')
+                or target.get('entry_thesis') != context.get('entry_thesis')
+                or target.get('mark_price') != context.get('mark_price')
+                or target.get('positions') != context.get('positions')
+                or target.get('accounting_status') != context.get('accounting_status')
+                or target.get('account_captured_at') != context.get('account_captured_at')
+                or 'initial_entry_progress_units' in target):
+            return projected
+        target['initial_entry_progress_units'] = value
+        candidate, _ = project_model_input(logical, allow_gap_rescue=True)
+        if len(_encoded(candidate).encode()) > _ENTRY_PROGRESS_INPUT_LIMIT:
+            return projected
+        restored = restore_model_input(candidate)
+        restored['contract_context'].pop('initial_entry_progress_units', None)
+        return candidate if restored == original else projected
+    except (KeyError, TypeError, ValueError, ArithmeticError, OverflowError):
+        return projected
+
+
+def _model_payload(snapshot, context, response_contract, *, calculated_candidates=None, prepared_plans=None):
+    def project(source):
+        baseline = _base_model_payload(source, context, response_contract,
+            calculated_candidates=calculated_candidates, prepared_plans=prepared_plans)
+        if not explanation_enabled(context):
+            baseline = project_holding_price_order_input(baseline)[0]
+        projected = project_explanation_input(baseline, context, snapshot=source)
+        if calculated_candidates is None and context.get('scenario_id') is None:
+            from live.scenario_entry_geometry import project as project_entry_geometry
+            projected = project_entry_geometry(projected, source, context)
+        projected = _project_initial_entry_progress(projected, context)
+        from live.scenario_position_flow import project_holding_management_input
+        return _project_kept_exit_paths(project_holding_management_input(projected, context), context)
+    return project(snapshot)
+
+
+def _receipt_model_view(receipt):
+    """A model summary points to a full host receipt; it is not that receipt."""
+    from live.scenario_model_input import _wrapper_proposal
+    fields = {'id','eligible','template_only','execution_authorized','validation_scope',
+              'effective_plan','projection','entry_economics','resolved_goal','explanation',
+              'error','errors','rejection','rejection_type','rejection_codes'}
+    view = {k:v for k,v in receipt.items() if k in fields}
+    raw = (_wrapper_proposal(receipt) or receipt.get('raw_allocation_proposal')
+           or receipt.get('raw_proposal') or {})
+    if ('effective_plan'not in view and isinstance(receipt.get('raw_proposal'),dict)
+            and (receipt.get('eligible')is True or receipt.get('id')=='WAIT')):
+        view['effective_plan'] = receipt['raw_proposal']
+    if 'receipt_sha256'in receipt:
+        view['host_receipt_sha256'] = receipt['receipt_sha256']
+    view['draft_intent'] = {k:raw[k] for k in
+        ('action','side','rationale','entry_contract','thesis_assessment','review','recovery') if k in raw}
+    return view
+
+
+def _base_model_payload(snapshot, context, response_contract, *, calculated_candidates=None, prepared_plans=None):
     model_context = deepcopy(context)
     model_context.pop('seen_action_ids', None)
     model_context.pop('entry_goal_source', None)
@@ -585,26 +624,49 @@ def _base_model_payload(snapshot, context, response_contract, *, calculated_cand
     model_context["ma_structure"] = build_ma_structure_context(snapshot, context)
     if context.get("scenario_id") is None:
         model_context["current_primary_frame_facts"] = scenario_llm._current_primary_frame_facts(snapshot)
-    if isinstance(context.get("current_plan"), dict):
-        model_context["current_plan"] = {key: value for key, value in context["current_plan"].items()
-                                         if key not in {"rationale", "host_entry_contract_id"}}
-    for field in ("recent_waits", "recent_actions"):
-        if isinstance(context.get(field), list):
-            model_context[field] = [{key: value for key, value in row.items() if key not in {"rationale", "host_entry_contract_id"}}
-                if isinstance(row, dict) else row for row in context[field]]
     payload = dict(market_snapshot=snapshot, contract_context=model_context,
-                   response_contract=response_contract)
+                   response_contract=dict(authority='API response_schema; full contract retained by the host',
+                       **{k:response_contract[k] for k in ('expires_at','reservation_expires_at') if k in response_contract}))
+    if prepared_plans is not None:
+        if calculated_candidates is None:
+            payload['prepared_entry_plans'] = prepared_plans
+        else:
+            payload['prepared_entry_plan_sources'] = [{k:p[k] for k in
+                ('id','side','entry_kind','target_basis','stop_ref','stop_phase')}
+                for p in prepared_plans['layouts']]
     if calculated_candidates is not None:
-        payload["calculated_candidates"] = calculated_candidates
+        view = dict(calculated_candidates)
+        rows = calculated_candidates.get('candidates')
+        if isinstance(rows, list):
+            view['candidates'] = [_receipt_model_view(candidate) for candidate in rows]
+        if isinstance(calculated_candidates.get('wait'), dict):
+            view['wait'] = _receipt_model_view(calculated_candidates['wait'])
+        payload['calculated_candidates'] = view
+        # Full receipts stay in host results/tapes; the model sees one effective plan.
         # Model-only labels: do not change hash-bound numerical receipts or tapes.
         payload["calculation_field_units"] = {"projection.targets": {
             "quantity": "BTC", "gross_pnl": "USDT_FOR_THIS_TARGET_QUANTITY_BEFORE_COSTS",
             "gross_reward_per_btc": "USDT_PER_BTC_NOT_TOTAL_PNL",
             "gross_reward_to_reserved_risk_ratio": "DIMENSIONLESS_NOT_USDT"}}
+        payload['calculation_field_units']['joint_exit_paths'] = dict(
+            columns=['sequence_ids','remaining_before_hard_stop_BTC','gross_pnl_USDT','fee_only'],
+            sequences=dict(TP_STOP='TP legs then residual hard SL',SL_STOP='partial SL legs then residual hard SL',
+                TP1_STOP='first TP then residual hard SL',SL1_STOP='first partial SL then residual hard SL',
+                TP1_SL='first TP then partial SL then residual hard SL',
+                SL1_TP='first partial SL then TP then residual hard SL',STOP='hard SL only'),
+            assumptions='Price-ordered initial revision quotas clipped to remaining lots; omitted legs never apply. Hypothetical fills, not probabilities. Funding/slippage/timing/races unmodelled, not zero.',
+            fee_only=['assumed_entry_fee_USDT','assumed_exit_fee_USDT','estimated_net_before_unmodelled_costs_USDT'],
+            version2='All entries fill; original entry fee charged once.',
+            version3='Confirmed remaining gross only; zero new entry fee; net includes recorded_net once.',
+            unknown='null fee_only is UNKNOWN')
+        payload['calculation_field_units']['whole_plan_payoff'] = dict(
+            net_reward='USDT: all TP legs then residual hard SL; not expected runner profit',
+            full_stop_loss='USDT: full hard SL without partial SL risk credit',
+            ratio='dimensionless conditional payoff, not expectancy/probability')
     payload = analysis_model_view(payload)
     if context.get('scenario_id') is None:
         from live.scenario_entry_display import project_entry_display_input
-        return project_entry_display_input(payload)[0]
+        return project_entry_display_input(payload, source_candidates=calculated_candidates)[0]
     baseline, _ = project_position_flow_input(payload)
     if not calculated_candidates or not context.get('positions') or context.get('accounting_status') != 'confirmed':
         return baseline
@@ -644,19 +706,7 @@ def _base_model_payload(snapshot, context, response_contract, *, calculated_cand
     return augmented if _size(augmented) <= _MODEL_INPUT_LIMIT else baseline
 
 
-ALLOCATION_SINGLE_PROMPT = """
-Research allocation contract: choose direction, strategic prices, SL, TP,
-confidence and allocation_fraction for each NEW entry. Do not emit entry quantity.
-The host converts allocation fractions to BTC using supplied costs, the original
-budget, confidence and existing consumed/reserved risk; total new-entry fractions
-must not exceed one. Fractions allocate the remaining confidence-limited NEW risk
-budget, not equity, margin, existing holdings or TP quantities. Never raise
-confidence to fit size. Cancellations retain reservations until confirmed.
-Positive authorized chase is reserved at the worst permitted price for the whole
-new batch. Host size may therefore be smaller; partial fills do not replenish this allocation.
-No automatic price, stop, confidence or allocation repair is permitted. Below-minimum
-sizes or post-price-adjustment budget excess are rejected, not resized.
-Existing position quantities are observations, not fields for you to rewrite.
+ALLOCATION_SINGLE_PROMPT = """Allocation mode: new entries use allocation_fraction, not BTC quantity. Fractions allocate remaining confidence-limited NEW risk, not equity, margin or holdings; total new-entry fractions must not exceed one. The host owns sizing, costs and lot rounding and may impose a smaller aggregate NEW-entry batch risk ceiling; do not inflate confidence/fractions to pass or compensate. OPEN target fractions use the initial batch; new ADJUST targets use the actual remainder. Never rewrite observed positions. REDUCE uses its separate fields. Failed minimums/budgets are rejected, not repaired.
 """
 
 
@@ -716,9 +766,12 @@ def calculate_economic_candidate(raw, context, *, candidate_id, original_input_n
     )
     if not model_matches(raw, {"anyOf": _action_allocation_branches(context)["anyOf"]}, context):
         raise ValueError("research_allocation_contract")
+    from live.scenario_management_quarantine import entry_aggregate_context
+    limited_entry_management = entry_aggregate_context(context, raw['action'])
     if (context.get("accounting_status") not in {"confirmed", "pending"}
             or (raw["action"] in {"OPEN", "ADJUST"} and context["accounting_status"] != "confirmed")
-            or context.get("protection_ok") is not True or context.get("legacy_fenced") is not False
+            or context.get("protection_ok") is not True
+            or (context.get("legacy_fenced") is not False and not limited_entry_management)
             or type(context.get("new_risk_blocked")) is not bool):
         raise ValueError("research_unsafe_economic_context")
     mark = _number(context.get("mark_price"), "mark_price", positive=True)
@@ -828,26 +881,7 @@ def _bind_model_wrapper(receipt, wrapper, extracted):
 
 
 def allocation_system_prompt(base):
-    # Replace only new-entry sizing instructions; holding/exit quantities and
-    # all directional, lifecycle and safety instructions remain unchanged.
-    base = base.replace("Leverage is FIXED 10, not confidence-dependent. Allocate less quantity to weaker\n"
-        "evidence. Set the structural invalidation first, then size down for the host\n"
-        "risk cap including costs; recovery reduces quantity, not automatically the",
-        "Leverage is FIXED 10, not confidence-dependent. Allocate less new-entry risk to weaker\n"
-        "evidence. Set structural invalidation first, then choose allocation_fraction;\n"
-        "the host calculates size including costs; recovery reduces size, not automatically the")
-    base = base.replace("quantity must be a multiple of quantity_step and satisfy minimum_quantity and\n"
-        "minimum_notional. Round proposed quantity DOWN, never squeeze SL to fit more size.",
-        "the host checks quantity_step, minimum_quantity and minimum_notional after sizing.\n"
-        "Choose allocation_fraction for new entries; never squeeze SL to fit more size.")
-    base = base.replace("Existing sizing cap: sum(new-entry risk) <= min(original_budget*confidence,\n"
-        "budget remaining after consumed/reserved risk). Per-BTC risk is positive entry-to-SL\n"
-        "distance + entry*estimated_cost_rate + hard_stop*slippage_bps/10000; round quantity\n"
-        "DOWN to quantity_step. Never raise confidence or widen SL merely to fit quantity.",
-        "The host computes the new-entry budget and quantity including costs and reserved risk.\n"
-        "Choose allocation_fraction without performing BTC sizing arithmetic. Never raise confidence\n"
-        "or widen SL merely to fit size.")
-    return base
+    return base + ALLOCATION_SINGLE_PROMPT
 
 
 def research_review(snapshot, context, response_contract, *, generate, record,
@@ -891,14 +925,7 @@ def research_review(snapshot, context, response_contract, *, generate, record,
             raise ValueError("research_input_mutated")
         return now
 
-    base = scenario_llm.SYSTEM_PROMPT + scenario_llm.MA_STRUCTURE_PROMPT
-    if context.get('pending_wait_policy_version') == 1:
-        base += scenario_llm.PENDING_WAIT_PROMPT
-    if context.get("entry_contract_version") in (1, 2):
-        base += scenario_llm.entry_contract_prompt(context)
-    if context.get("scenario_id") is None:
-        base += scenario_llm.FLAT_ENTRY_PROMPT
-    base += scenario_llm.convergence_entry_instructions(context)
+    base = scenario_llm.system_instructions(context)
     allocation = research_mode != "legacy"
     if allocation:
         base = allocation_system_prompt(base)
@@ -906,7 +933,7 @@ def research_review(snapshot, context, response_contract, *, generate, record,
     economic_reject = research_mode in ECONOMIC_REJECT_MODES
     action_contract = research_mode in ACTION_ALLOCATION_MODES or economic_reject
     schema = allocation_response_schema(frozen_context) if allocation else response_schema(frozen_context)
-    payload = _model_payload(frozen_snapshot, frozen_context, schema if allocation else contract)
+    payload = _model_payload(frozen_snapshot, frozen_context, contract)
     wait_schema = deepcopy(schema)
     wait_schema["properties"]["action"]["enum"] = ["WAIT"]
     for field in ("side", "hard_stop", "chase", "stop_revision"):
@@ -916,14 +943,17 @@ def research_review(snapshot, context, response_contract, *, generate, record,
         wait_schema["properties"][field]["maxItems"] = 0
     candidate_schema = deepcopy(schema)
     candidate_schema["properties"]["action"]["enum"] = [a for a in candidate_schema['properties']['action']['enum'] if a != 'WAIT']
-    wait_only = schema["properties"]["action"]["enum"] == ["WAIT"]
+    convergence_wait = (frozen_context.get('scenario_id') is None
+        and frozen_context.get('positions') == [] and frozen_context.get('pending_entries') == []
+        and (frozen_context.get('entry_convergence') or {}).get('status') == 'BLOCKED')
+    wait_only = schema["properties"]["action"]["enum"] == ["WAIT"] or convergence_wait
     first_observation = (frozen_context.get("recovery") or {}).get("first_observation") is True
     draft_schema = _object(dict(wait_proposal=wait_schema,
         candidates=dict(type="array", maxItems=0 if wait_only or first_observation else 2,
                         items=candidate_schema), no_candidate_reason=rationale_schema() if explanation_enabled(context) else dict(type="string")))
     if action_contract:
         schema = action_allocation_response_schema(frozen_context)
-        payload = _model_payload(frozen_snapshot, frozen_context, schema)
+        payload = _model_payload(frozen_snapshot, frozen_context, contract)
         draft_schema["properties"]["wait_proposal"] = _action_allocation_branches(frozen_context, {"WAIT"})
         # Empty arrays still need a valid item schema, even in WAIT-only state.
         candidates = _action_allocation_branches(frozen_context, {"OPEN", "ADJUST", "EXIT", "REDUCE"})
@@ -934,12 +964,12 @@ def research_review(snapshot, context, response_contract, *, generate, record,
         prompt = _encoded(data)
         if len(prompt.encode()) > 100_000:
             raise ValueError("research_input_size")
-        system = scenario_llm.immediate_reduce_instructions(base + appendix, frozen_context)
+        system = base + appendix
         if explanation_enabled(frozen_context):
             system += EXPLANATION_PROMPT
         request = dict(system_prompt=system, user_prompt=prompt,
             model=scenario_llm.MODEL, reasoning_effort=scenario_llm.EFFORT,
-            fast_tier=True, timeout=scenario_llm.TIMEOUT_SECONDS - (now - started),
+            fast_tier=False, timeout=scenario_llm.TIMEOUT_SECONDS - (now - started),
             mcp_profile=None, response_schema=output_schema, retry_transport=False)
         request_hash = receipt_hash(request)
         record(deepcopy(dict(kind="MODEL_REQUEST", phase=phase, request=request,
@@ -950,15 +980,27 @@ def research_review(snapshot, context, response_contract, *, generate, record,
         # No retry, fallback model or logical repair on any failure.
         try:
             result = generate(**deepcopy(request))
-        except Exception:
-            record(deepcopy(dict(kind="MODEL_ERROR", phase=phase, code="model_call_failed",
+        except Exception as exc:
+            from live.scenario_oauth import safe_failure_reason
+            message = str(exc)
+            detail = safe_failure_reason(message[len('scenario_oauth_failed:'):]) if message.startswith('scenario_oauth_failed:') else None
+            error_event = dict(kind="MODEL_ERROR", phase=phase, code="model_call_failed",
                 request_sha256=request_hash, prepared_request_sha256=request_hash, actual_request=request,
-                actual_request_sha256=actual_request_hash, elapsed_seconds=clock() - actual_started)))
-            raise ValueError("research_model_call_failed") from None
+                actual_request_sha256=actual_request_hash, elapsed_seconds=clock() - actual_started)
+            if detail is not None:
+                error_event['failure_detail'] = detail
+            wait = getattr(exc, 'retry_after_seconds', None)
+            if type(wait) is int and 0 < wait <= 86400:
+                error_event.update(retry_after_seconds=wait, failed_at=actual_started + error_event['elapsed_seconds'])
+            record(deepcopy(error_event))
+            raise ValueError("research_model_call_failed" + (':' + detail if detail else '')) from None
+        from live.scenario_oauth import usage_counts
+        usage = usage_counts(getattr(result,'usage',None))
         record(deepcopy(dict(kind="MODEL_RAW", phase=phase, request_sha256=request_hash,
                              prepared_request_sha256=request_hash,
                              actual_request=request, actual_request_sha256=actual_request_hash,
-                             raw=result.text, elapsed_seconds=clock() - actual_started)))
+                             raw=result.text, elapsed_seconds=clock() - actual_started,
+                             **({'usage':usage} if usage is not None else {}))))
         fresh()
         parsed = scenario_llm.parse_proposal(result.text)
         if not model_matches(parsed, output_schema, frozen_context):
@@ -979,7 +1021,7 @@ def research_review(snapshot, context, response_contract, *, generate, record,
         return deepcopy(result)
 
     if research_mode in {"allocation-single", "action-allocation-single-v1", "economic-reject-single-v1"}:
-        appendix = ALLOCATION_SINGLE_PROMPT
+        appendix = ""
         if action_contract:
             appendix += "\nReturn exactly the root object {proposal: <action-specific allocation proposal>}. Follow its action branch; inactive fields must be null or empty as specified.\n"
         model_raw = call("single", appendix, payload, schema)
@@ -1034,11 +1076,17 @@ def research_review(snapshot, context, response_contract, *, generate, record,
             raise ValueError("research_selected_expired")
         return deepcopy(result)
     draft_prompt = DRAFT_PROMPT
-    if context.get("entry_contract_version") in (1, 2):
-        draft_prompt += "\nEntry-contract exception: FAILED wait_proposal is a nonexecutable template, not a fallback. Draft assessments must share contract_id/status, not reason wording; supply valid EXIT candidates only when FAILED.\n"
-    if allocation:
-        draft_prompt = draft_prompt.replace("SL, TP, quantities and fractions yourself", "SL, TP, confidence and entry allocation_fraction yourself") + ALLOCATION_SINGLE_PROMPT
-        payload = _model_payload(frozen_snapshot, frozen_context, draft_schema)
+    prepared = None
+    if (action_contract and type(context.get('prepared_entry_plans_version')) is int and context['prepared_entry_plans_version']==1
+            and frozen_context.get('scenario_id') is None and draft_schema['properties']['candidates']['maxItems']>0):
+        from live.scenario_entry_plans import prepare, constrain
+        menu=prepare(frozen_snapshot,frozen_context,build_ma_structure_context(frozen_snapshot,frozen_context))
+        if menu['status']=='AVAILABLE':
+            offered=deepcopy(draft_schema)
+            offered['properties']['candidates']['items']=constrain(offered['properties']['candidates']['items'],menu)
+            proposed_payload=_model_payload(frozen_snapshot,frozen_context,contract,prepared_plans=menu)
+            if len(_encoded(proposed_payload).encode())<=100_000:
+                draft_schema,payload,prepared=offered,proposed_payload,menu
     draft = call("candidate", draft_prompt, payload, draft_schema)
     category = "FIRST_OBSERVATION" if first_observation else "CANDIDATES_PROVIDED" if draft["candidates"] else "NO_CANDIDATES_SUPPLIED"
     if not explanation_enabled(context) and (len(draft["no_candidate_reason"]) > 2000 or (not draft["candidates"] and not draft["no_candidate_reason"].strip())):
@@ -1073,10 +1121,21 @@ def research_review(snapshot, context, response_contract, *, generate, record,
     if action_contract:
         _bind_model_wrapper(wait_receipt, draft, wait_wire)
     calculator = calculate_economic_candidate if economic_reject else calculate_allocation_candidate if allocation else calculate_candidate
-    receipts = [calculator(wire, now_context, candidate_id=f"c{index}",
-                                   original_input_now=frozen_context["now"],
-                                   **({'explanation_snapshot': frozen_snapshot} if explanation_enabled(context) else {}))
-                for index, wire in enumerate(draft["candidates"])]
+    receipts, readiness_reviews = [], []
+    for index, model_wire in enumerate(draft["candidates"]):
+        wire = deepcopy(model_wire)
+        if prepared is not None and wire['action'] == 'OPEN':
+            readiness = wire.pop('entry_readiness')
+            if not 1 <= len(readiness['reason'].strip()) <= 600:
+                raise ValueError('research_entry_readiness_reason')
+            allowed = readiness['status'] == 'SUPPORTED_NOW'
+            readiness_reviews.append(dict(candidate_id=f'c{index}', assessment=readiness,
+                selectable=allowed, source='MODEL_QUALITATIVE_NOT_CALIBRATED'))
+            if not allowed:
+                continue
+        receipts.append(calculator(wire, now_context, candidate_id=f"c{index}",
+            original_input_now=frozen_context["now"],
+            **({'explanation_snapshot': frozen_snapshot} if explanation_enabled(context) else {})))
     if effective_wait.get('pending_renewal'):
         # Preserve the model's exact WAIT proposal as an explicit selectable
         # renewal, plus a separately labelled host-derived inert fallback.
@@ -1103,6 +1162,10 @@ def research_review(snapshot, context, response_contract, *, generate, record,
                   no_candidate_category=category, category_source="HOST_DERIVED_FROM_STATE_AND_ARRAY",
                   no_candidate_reason=draft.get("no_candidate_reason"),
                   qualitative_reason_truth="NOT_MECHANICALLY_VERIFIED")
+    if readiness_reviews:
+        bundle['entry_readiness_reviews'] = readiness_reviews
+        if not receipts:
+            bundle['no_candidate_category'] = 'ENTRY_EVIDENCE_PENDING'
     bundle_sha = receipt_hash(bundle)
     record(deepcopy(dict(kind="CALCULATED_CANDIDATES", body=bundle, sha256=bundle_sha)))
     if economic_reject and receipts and all(
@@ -1116,15 +1179,15 @@ def research_review(snapshot, context, response_contract, *, generate, record,
                                         rationale=rationale_schema() if explanation_enabled(context) else dict(type="string")))
         # Re-project with the phase-specific contract so restoration hashes remain
         # valid. Market/account facts are unchanged; only obsolete output rules go.
-        selection_payload = _model_payload(frozen_snapshot, frozen_context, selection_schema,
-                                          calculated_candidates=bundle)
+        selection_payload = _model_payload(frozen_snapshot, frozen_context, contract,
+                                          calculated_candidates=bundle, prepared_plans=prepared)
         selection_wire = call("selection", SELECT_PROMPT, selection_payload, selection_schema)
         chosen = choices[selection_wire["selection_token"]]
         final = dict(selection=chosen["id"], receipt_sha256=chosen["receipt_sha256"],
                      rationale=selection_wire.get("rationale"))
     else:
         final = dict(selection="WAIT", receipt_sha256=wait_receipt["receipt_sha256"],
-                     rationale=draft.get("no_candidate_reason"))
+                     rationale=wait_wire['rationale'] if readiness_reviews else draft.get("no_candidate_reason"))
     fresh()
     if receipt_hash(bundle) != bundle_sha:
         raise ValueError("research_candidate_mutated")

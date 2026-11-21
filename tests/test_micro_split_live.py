@@ -438,18 +438,18 @@ def test_buy_prompt_block_states_the_frame_and_what_it_supersedes(live_on):
     assert "되돌릴 수 없습니다" not in ko and "올인/올아웃" not in ko and "parabolic" not in ko
     assert "이번 매수는 초분할(최초 비중 + 증액 시나리오)이고 매도는 기존대로 전량입니다(시스템 제약 4)" in ko
     assert "effective_score ≥ 5" in ko and "손익비 ≥ 현재 국면 floor" in ko
-    assert "미진입 단독 사유 1(지지선이 -10% 이하)은 이번 진입에 적용하지 않습니다" in ko
+    # 2026-11-11 prompt diet (audit M1): the shared BUY prompt no longer has the "-10% support" reason, so the
+    # frame no longer carves out an exception for it.
+    assert "단독 사유 1" not in ko and "지지선이 -10% 이하" not in ko
     assert "현재가 +3% 이내이면 그 저항은 목표가 아니라 증액 조건" in ko and "횡보·약세" in ko
     en = live.buy_prompt_block("US", "en")
     assert "scout entry" in en and "(system constraint 4)" in en and "within +3% of the current" in en
     assert "re-caught only when the re-entry rule fires" in en
     assert "cannot be recovered" not in en and "all-in/all-out" not in en and "parabolic" not in en
-    assert "Standalone no-entry reason 1" in en and "effective_score >= 5" in en
-    # 2026-10-04: the 7-holdings "buy_score >= 6 only" portfolio rule keeps precedence over the floor of 5.
-    assert "보유 종목이 7개 이상이면 '6점 이상만 진입' 규칙은 그대로 적용됩니다" in ko
-    assert "7개 이상일 때의 6점 규칙은 예외로 유지" in ko
-    assert "With 7 or more holdings, the 'only buy_score >= 6' rule still applies" in en
-    assert "the 6-point rule for 7 or more holdings stays as an exception" in en
+    assert "no-entry reason 1" not in en and "effective_score >= 5" in en
+    # 2026-11-11 prompt diet (audit M7, user decision): the LLM-only 7-holdings "buy_score >= 6" rule is gone
+    # from the shared prompt and from this frame.
+    assert "7개 이상" not in ko and "7 or more holdings" not in en
     assert live.buy_prompt_block("US", "ko") == ko  # US Korean prompt gets the same block
 
 
@@ -562,8 +562,10 @@ def test_batch_entries_pass_the_trigger_and_reentry_passes_none(path):
              and isinstance(node.func.value, ast.Name) and node.func.value.id == "micro_split_live"]
     assert len(calls) == 1
     value = next(k.value for k in calls[0].keywords if k.arg == "trigger_type")
-    assert isinstance(value, ast.IfExp) and isinstance(value.test, ast.Name)
-    assert value.test.id == "require_micro_plan" and isinstance(value.body, ast.Constant) and value.body.value is None
+    assert isinstance(value, ast.IfExp) and isinstance(value.body, ast.Constant) and value.body.value is None
+    # 2026-11-08: micro-split pyramid rows (PYRAMID_ROWS_MICRO_SPLIT_ENABLED) get no tilt either.
+    assert isinstance(value.test, ast.BoolOp) and isinstance(value.test.op, ast.Or)
+    assert [n.id for n in value.test.values] == ["require_micro_plan", "pyramid_row"]
 
 
 def test_buy_prompt_never_mentions_the_tilt(live_on, monkeypatch):
@@ -588,3 +590,271 @@ def test_untilted_buy_plan_is_not_rebased(live_on):
     _, _, scenario = _tilted(trigger=None, add_plan=raw)
     stored = scenario["micro_split"]["add_plan"]
     assert "rebased" not in stored and [s["target_allocation"] for s in stored["scenarios"]] == ["0.55", "0.60"]
+
+
+def _reentry_prepared(factor, monkeypatch, *, trigger_type=None, buy_score=None, regime=None):
+    if factor is None:
+        monkeypatch.delenv("REENTRY_V3_FIRST_SIZE_FACTOR", raising=False)
+    else:
+        monkeypatch.setenv("REENTRY_V3_FIRST_SIZE_FACTOR", factor)
+    scenario = {"stop_loss": 9300, "reentry": {"version": "reentry_v3"}}
+    if regime is not None:
+        scenario["_deterministic_market_regime"] = regime
+    if buy_score is not None:
+        scenario["buy_score"] = buy_score
+    return live.prepare_entry(_agent(), market="KR", ticker="005930", current_price=10000, scenario=scenario,
+                              decision_ref="reentry_v3:x", account={"buy_amount_krw": 1_000_000},
+                              trigger_type=trigger_type)
+
+
+def test_reentry_first_size_halves_the_b3_initial(live_on, monkeypatch):
+    plan, cash, scenario = _reentry_prepared("0.5", monkeypatch)
+    block = scenario["micro_split"]
+    assert plan["initial_nominal"] == "0.7777"
+    assert block["allocation"] == block["legs"][0]["allocation"] == "0.3888" and cash == 388_800
+    assert block["reentry_size"] == {"base": "0.7777", "sized": "0.3888", "factor": "0.5",
+                                     "reason": live.REENTRY_SIZE_REASON}
+    assert "재진입 첫 비중 축소, 기본 78%에서 하향" in live.entry_message_block(scenario, "KR")[0]
+
+
+@pytest.mark.parametrize("factor", [None, "1", "0", "1.5", "abc"])
+def test_reentry_first_size_off_or_invalid_keeps_b3(live_on, monkeypatch, factor):
+    _, cash, scenario = _reentry_prepared(factor, monkeypatch)
+    assert scenario["micro_split"]["allocation"] == "0.7777" and cash == 777_700
+    assert "reentry_size" not in scenario["micro_split"]
+
+
+def test_regular_entry_ignores_the_reentry_factor(live_on, monkeypatch):
+    monkeypatch.setenv("REENTRY_V3_FIRST_SIZE_FACTOR", "0.5")
+    _, cash, scenario = _prepared()
+    assert scenario["micro_split"]["allocation"] == "0.7777" and "reentry_size" not in scenario["micro_split"]
+
+
+@pytest.mark.parametrize("regime,bucket,else0,else05", [("strong_bull", "bull", "0.7777", "0.7777"),
+                                                         ("sideways", "sideways", "0", "0.3888"),
+                                                         ("moderate_bear", "bear", "0", "0.3888")])
+def test_regime_size_shadow_records_arms_without_changing_the_order(live_on, monkeypatch, regime, bucket, else0, else05):
+    monkeypatch.setenv("REENTRY_REGIME_SIZE_SHADOW", "true")
+    _, cash, scenario = _reentry_prepared("0.5", monkeypatch, regime=regime)
+    block = scenario["micro_split"]
+    assert block["allocation"] == "0.3888" and cash == 388_800          # the order keeps the live 0.5 factor
+    shadow = block["reentry_regime_shadow"]
+    assert shadow["bucket"] == bucket and shadow["applied"] == "0.3888" and shadow["applied_factor"] == "0.5"
+    assert shadow["arms"]["bull1_else0"]["sized"] == else0 and shadow["arms"]["bull1_else05"]["sized"] == else05
+
+
+def test_regime_size_shadow_missing_regime_and_off(live_on, monkeypatch):
+    monkeypatch.setenv("REENTRY_REGIME_SIZE_SHADOW", "true")
+    _, _, scenario = _reentry_prepared("0.5", monkeypatch)
+    shadow = scenario["micro_split"]["reentry_regime_shadow"]
+    assert shadow["bucket"] == "MISSING" and "arms" not in shadow
+    monkeypatch.delenv("REENTRY_REGIME_SIZE_SHADOW")
+    _, _, scenario = _reentry_prepared("0.5", monkeypatch, regime="strong_bull")
+    assert "reentry_regime_shadow" not in scenario["micro_split"]
+
+
+def test_regime_size_shadow_ignores_regular_entries(live_on, monkeypatch):
+    monkeypatch.setenv("REENTRY_REGIME_SIZE_SHADOW", "true")
+    _, _, scenario = _prepared()
+    assert "reentry_regime_shadow" not in scenario["micro_split"]
+
+
+def test_regime_size_shadow_failure_keeps_the_live_entry(live_on, monkeypatch):
+    monkeypatch.setenv("REENTRY_REGIME_SIZE_SHADOW", "true")
+    monkeypatch.setattr(live, "regime_size_shadow", lambda *a, **k: 1 / 0)
+    _, cash, scenario = _reentry_prepared("0.5", monkeypatch, regime="strong_bull")
+    assert scenario["micro_split"]["allocation"] == "0.3888" and cash == 388_800
+    assert "reentry_regime_shadow" not in scenario["micro_split"]
+
+
+@pytest.mark.parametrize("regime,cash,factor", [("strong_bull", 777_700, "1"), ("moderate_bull", 777_700, "1"),
+                                                ("parabolic", 777_700, "1"), ("sideways", 388_800, "0.5"),
+                                                ("strong_bear", 388_800, "0.5"), (None, 388_800, "0.5")])
+def test_reentry_bull_full_size_only_in_bull(live_on, monkeypatch, regime, cash, factor):
+    monkeypatch.setenv("REENTRY_V3_BULL_FULL_SIZE", "true")
+    monkeypatch.setenv("REENTRY_REGIME_SIZE_SHADOW", "true")
+    _, got, scenario = _reentry_prepared("0.5", monkeypatch, regime=regime)
+    block = scenario["micro_split"]
+    assert got == cash and block["reentry_size"]["factor"] == factor
+    assert block["reentry_regime_shadow"]["applied_factor"] == factor
+    msg = live.entry_message_block(scenario, "KR")[0]
+    assert ("재진입 첫 비중 축소" in msg) == (factor == "0.5")
+    if factor == "1":
+        assert block["reentry_size"]["reason"] == live.REENTRY_BULL_SIZE_REASON and block["allocation"] == "0.7777"
+
+
+@pytest.mark.parametrize("regime", ["strong_bull", "sideways", "strong_bear", None])
+def test_ma20r_reentry_takes_the_full_size_in_every_regime(live_on, monkeypatch, regime):
+    # H-1116 LIVE (user decision 2026-11-16): the MA20 recovery re-entry keeps the full B3 initial.
+    monkeypatch.delenv("REENTRY_V3_BULL_FULL_SIZE", raising=False)
+    monkeypatch.setenv("REENTRY_V3_FIRST_SIZE_FACTOR", "0.5")
+    scenario = {"stop_loss": 9300, "reentry": {"version": "reentry_v3", "signal": "MA20R"}}
+    if regime is not None:
+        scenario["_deterministic_market_regime"] = regime
+    _, cash, scenario = live.prepare_entry(_agent(), market="KR", ticker="005930", current_price=10000, scenario=scenario,
+                                           decision_ref="reentry_v3:x", account={"buy_amount_krw": 1_000_000})
+    assert cash == 777_700 and scenario["micro_split"]["reentry_size"]["factor"] == "1"
+    assert scenario["micro_split"]["reentry_size"]["reason"] == live.REENTRY_MA20R_SIZE_REASON
+
+
+def test_reentry_bull_full_size_off_keeps_half(live_on, monkeypatch):
+    monkeypatch.delenv("REENTRY_V3_BULL_FULL_SIZE", raising=False)
+    _, cash, scenario = _reentry_prepared("0.5", monkeypatch, regime="strong_bull")
+    assert cash == 388_800 and scenario["micro_split"]["reentry_size"]["factor"] == "0.5"
+
+
+def test_regular_entry_ignores_the_bull_full_size(live_on, monkeypatch):
+    monkeypatch.setenv("REENTRY_V3_BULL_FULL_SIZE", "true")
+    monkeypatch.setenv("REENTRY_V3_FIRST_SIZE_FACTOR", "0.5")
+    _, cash, scenario = _prepared()
+    assert cash == 777_700 and "reentry_size" not in scenario["micro_split"]
+
+
+@pytest.mark.parametrize("flag,market,factor", [("KR", "KR", "1"), ("KR", "US", "0.5"), ("kr,us", "US", "1"),
+                                                ("true", "US", "1"), ("false", "KR", "0.5")])
+def test_reentry_bull_full_size_market_list(monkeypatch, flag, market, factor):
+    # 2026-11-10 user decision: US bull re-entries back to the half size, KR keeps the full B3 initial.
+    monkeypatch.setenv("REENTRY_V3_BULL_FULL_SIZE", flag)
+    monkeypatch.setenv("REENTRY_V3_FIRST_SIZE_FACTOR", "0.5")
+    scenario = {"reentry": {"version": "reentry_v3"}, "_deterministic_market_regime": "strong_bull"}
+    assert live.reentry_first_size("0.7777", scenario, market)["factor"] == factor
+
+
+@pytest.mark.parametrize("regime,age,early_late,late_bear", [
+    ("strong_bull", 5, "0", "0"), ("moderate_bull", 20, "0", "0"), ("strong_bull", 21, "1", "0.5"),
+    ("sideways", None, "0.5", "0.5"), ("strong_bear", None, "0.5", "1")])
+def test_regime_size_shadow_k8b_age_arms(live_on, monkeypatch, regime, age, early_late, late_bear):
+    monkeypatch.setenv("REENTRY_REGIME_SIZE_SHADOW", "true")
+    monkeypatch.setenv("REENTRY_V3_FIRST_SIZE_FACTOR", "0.5")
+    scenario = {"stop_loss": 9300, "reentry": {"version": "reentry_v3", "k8b": {"label": regime, "bull_age": age}},
+                "_deterministic_market_regime": regime}
+    _, cash, scenario = live.prepare_entry(_agent(), market="KR", ticker="005930", current_price=10000, scenario=scenario,
+                                           decision_ref="reentry_v3:x", account={"buy_amount_krw": 1_000_000})
+    arms = scenario["micro_split"]["reentry_regime_shadow"]["arms"]
+    assert cash == 388_800                                            # the order keeps the live factor
+    assert arms["early0_late1_else05"]["factor"] == early_late and arms["early0_late05_bear1"]["factor"] == late_bear
+
+
+def test_regime_size_shadow_bull_without_k8b_age_keeps_age_arms_missing(live_on, monkeypatch):
+    monkeypatch.setenv("REENTRY_REGIME_SIZE_SHADOW", "true")
+    _, _, scenario = _reentry_prepared("0.5", monkeypatch, regime="strong_bull")
+    shadow = scenario["micro_split"]["reentry_regime_shadow"]
+    assert shadow["k8b_bull_age"] is None and "early0_late1_else05" not in shadow["arms"]
+    assert shadow["arms"]["bull1_else05"]["factor"] == "1"            # the older arms are unchanged
+
+
+@pytest.mark.parametrize("market,table,unit,price,holding,expected", [
+    # 2026-11-14: the add fills the broker holding up to the new allocation (0.8 slot), never above.
+    ("KR", "stock_holdings", 1_000_000, 10200, ("HELD", 45), 341_000),   # 800,000 - 45 x 10,200
+    ("US", "us_stock_holdings", 1000, 102.0, 4, 392.0),                  # $800 - 4 x $102
+    # 2026-11-15: a gap below one share orders one share while the ticker stays within one slot (user decision:
+    # the 5%p steps never reached one share of AAPL/JNJ/BKH, 6/6 adds blocked in the 11/02~15 review).
+    ("KR", "stock_holdings", 1_000_000, 10200, ("HELD", 79), 10200),     # at target, 80 x 10,200 fits the slot
+    ("US", "us_stock_holdings", 1000, 355.0, 3, 0.0),                    # at target, a 4th share would exceed $1,000
+    ("KR", "stock_holdings", 1_000_000, 10200, ("HELD", 98), 0),         # a 99th share would exceed the slot
+    ("KR", "stock_holdings", 1_000_000, 10200, ("UNKNOWN", None), 300_000),  # unknown -> the delta
+    ("KR", "stock_holdings", 1_000_000, 10200, ("FLAT", 0), 300_000),        # never rebuild a flat holding
+    ("US", "us_stock_holdings", 1000, 102.0, 0, 300.0),                  # US 0 may be a failed query
+])
+def test_execute_add_fills_the_broker_holding_to_the_allocation(live_on, monkeypatch, tmp_path, market, table,
+                                                                 unit, price, holding, expected):
+    from observability import events
+    from prism_core import execution_service
+
+    class _Held(_FakeTrading):
+        if market == "KR":
+            def get_holding_quantity_checked(self, symbol):
+                return holding
+        else:
+            def get_holding_quantity(self, symbol):
+                return holding
+
+    scenario = {"micro_split": live.entry_record(
+        plan={"initial_nominal": "0.5", "policy_version": "v3", "plan_hash": "h", "entry_reference": price},
+        unit_amount=unit, market=market, entered_at="t0")}
+    scenario["micro_split"]["add_plan"] = {"plan_hash": "ph", "status": "ACTIVE", "valid_for": "2026-10-05"}
+    meta = {"plan_hash": "ph", "scenario_id": "breakout_1", "scenario_type": "breakout", "session": "2026-10-05"}
+    conn = sqlite3.connect(tmp_path / "h.sqlite")
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, ticker TEXT, company_name TEXT, "
+                 "account_key TEXT, scenario TEXT, buy_price REAL, stop_loss REAL)")
+    conn.execute(f"INSERT INTO {table} VALUES (7, 'ABC', 'Abc', 'acc', ?, ?, ?)", (json.dumps(scenario), price, 1))
+    conn.commit()
+    agent = SimpleNamespace(conn=conn, cursor=conn.cursor(), db_path=str(tmp_path / "h.sqlite"),
+                            account_configs=[{"account_key": "acc", "name": "primary"}],
+                            _set_active_account=lambda account: None, message_queue=[], _msg_types=[])
+    emitted = []
+    monkeypatch.setattr(events, "emit_event", lambda name, **kw: emitted.append((name, kw)))
+    monkeypatch.setattr(execution_service.ExecutionService, "domestic", _Held, raising=False)
+    monkeypatch.setattr(execution_service.ExecutionService, "us", _Held, raising=False)
+    _FakeTrading.calls.clear()
+    campaign = {"position_id": f"legacy:{market}:7", "account_key": "acc", "symbol": "ABC", "campaign_id": "c1"}
+
+    result = asyncio.run(live.execute_add(agent, market=market, campaign=campaign, now="t1", decision={
+        "target_allocation": "0.8", "price": price, "bar_end": "add-plan:2026-10-05:breakout_1", "add_plan": meta}))
+
+    assert result["status"] == "EXECUTED" and result["cash"] == expected
+    if expected:
+        assert _FakeTrading.calls[0]["buy_amount"] == expected
+    else:
+        assert _FakeTrading.calls == [] and result["broker"]["reason_code"] == "micro_split_add_below_one_share"
+    attributes = emitted[-1][1]["attributes"]
+    held = holding[1] if market == "KR" else holding
+    assert attributes["cash_basis"] == (("one_share_floor" if expected == price else "fill_to_target") if held else "delta")
+    stored = json.loads(conn.execute(f"SELECT scenario FROM {table} WHERE id=7").fetchone()[0])
+    leg = stored["micro_split"]["legs"][-1]
+    from prism_core.oneil_adaptive_policy import _hash  # the post-close fill check matches the add by it
+    assert leg["decision_id"] == _hash(["micro-split-add", "c1", "add-plan:2026-10-05:breakout_1"])
+    from prism_core.loop_row_split import row_ledger_quantity
+    if held:  # per-row exit quantities count the shares the add actually sized
+        assert leg["order_cash"] == str(expected)
+        assert row_ledger_quantity(stored) == int(unit * 0.5 // price) + int(expected // price)
+    else:
+        assert "order_cash" not in leg
+
+
+def test_one_share_floor_cash_needs_a_known_holding_inside_one_slot():
+    # 2026-11-15: one share when the gap is below one share and the ticker stays within one slot.
+    assert live.one_share_floor_cash(1000, 1, 355.0, "US") == 355.0        # 2 x $355 = $710 fits the $1,000 slot
+    assert live.one_share_floor_cash(1000, 2, 355.0, "US") == 0            # a 3rd share ($1,065) exceeds the slot
+    assert live.one_share_floor_cash(1000, None, 102.0, "US") == 0         # unknown holding stays blocked
+    assert live.one_share_floor_cash(1_000_000, 79, 10200, "KR") == 10200
+    assert live.one_share_floor_cash(1_000_000, 10, 10200.5, "KR") == 10201  # KR cash is whole won, rounded up
+
+
+def test_a_rejected_add_leg_records_zero_shares(live_on, monkeypatch, tmp_path):
+    # 2026-11-14: a rejected add bought nothing; its leg must not count toward per-row exit shares.
+    from observability import events
+    from prism_core import execution_service
+    from prism_core.loop_row_split import row_ledger_quantity
+
+    class _Rejecting(_FakeTrading):
+        async def execute_buy(self, **kwargs):
+            _FakeTrading.calls.append(kwargs)
+            return {"success": False, "message": "insufficient funds", "intent_status": "FAILED"}
+
+    scenario = {"micro_split": live.entry_record(
+        plan={"initial_nominal": "0.5", "policy_version": "v3", "plan_hash": "h", "entry_reference": 10000},
+        unit_amount=1_000_000, market="KR", entered_at="t0")}
+    scenario["micro_split"]["add_plan"] = {"plan_hash": "ph", "status": "ACTIVE", "valid_for": "2026-10-05"}
+    conn = sqlite3.connect(tmp_path / "h.sqlite")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE stock_holdings (id INTEGER PRIMARY KEY, ticker TEXT, company_name TEXT, "
+                 "account_key TEXT, scenario TEXT, buy_price REAL, stop_loss REAL)")
+    conn.execute("INSERT INTO stock_holdings VALUES (7, 'ABC', 'Abc', 'acc', ?, 10000, 9300)", (json.dumps(scenario),))
+    conn.commit()
+    agent = SimpleNamespace(conn=conn, cursor=conn.cursor(), db_path=str(tmp_path / "h.sqlite"),
+                            account_configs=[{"account_key": "acc", "name": "primary"}],
+                            _set_active_account=lambda account: None, message_queue=[], _msg_types=[])
+    monkeypatch.setattr(events, "emit_event", lambda name, **kw: None)
+    monkeypatch.setattr(execution_service.ExecutionService, "domestic", _Rejecting, raising=False)
+    _FakeTrading.calls.clear()
+    meta = {"plan_hash": "ph", "scenario_id": "breakout_1", "scenario_type": "breakout", "session": "2026-10-05"}
+    asyncio.run(live.execute_add(agent, market="KR", now="t1", decision={
+        "target_allocation": "0.8", "price": 10000, "bar_end": "add-plan:2026-10-05:breakout_1", "add_plan": meta},
+        campaign={"position_id": "legacy:KR:7", "account_key": "acc", "symbol": "ABC", "campaign_id": "c1"}))
+
+    stored = json.loads(conn.execute("SELECT scenario FROM stock_holdings WHERE id=7").fetchone()[0])
+    assert _FakeTrading.calls and stored["micro_split"]["allocation"] == "0.8"   # strategy ledger keeps the add
+    assert stored["micro_split"]["legs"][-1]["order_cash"] == "0"
+    assert row_ledger_quantity(stored) == 50                                      # the entry's shares only

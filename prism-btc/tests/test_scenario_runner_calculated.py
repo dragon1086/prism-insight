@@ -1,3 +1,5 @@
+from utils.btc_review_references import read_tape
+from utils.btc_review_event_references import read_event
 from live.scenario_review_storage import review_text
 """Operational opt-in stays demo-only, durable, no-retry and default-off."""
 from copy import deepcopy
@@ -10,6 +12,7 @@ import pytest
 
 from live import scenario_runner as runner
 from tests.test_scenario_review_runtime import Broker, wire
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 @pytest.mark.parametrize("flags", [[], ["--protect-only"], ["--activate"]])
@@ -62,7 +65,7 @@ def test_protection_has_no_calculated_or_legacy_model(tmp_path, monkeypatch):
     assert result["status"] == "protection_checked" and result["model_called"] is False
 
 
-@pytest.mark.parametrize("failure", [False, True])
+@pytest.mark.parametrize("failure", [False, True, 'http_429', 'incomplete'])
 def test_operational_row_factory_records_real_review_without_legacy_fallback(tmp_path, monkeypatch, failure):
     from live import scenario_oauth
     now = 1800000000.
@@ -78,10 +81,12 @@ def test_operational_row_factory_records_real_review_without_legacy_fallback(tmp
 
     def generate(**request):
         requests.append(request)
-        assert (request['model'], request['reasoning_effort']) == ('gpt-6.1-sol', 'low')
+        assert (request['model'], request['reasoning_effort']) == ('gpt-6.1-terra', 'low')
         assert request["retry_transport"] is False
         assert 0 < request["timeout"] <= 75
         assert conn.execute("SELECT COUNT(*) FROM llm_scenario_review_events").fetchone()[0] > 0
+        if isinstance(failure,str):
+            raise ValueError('scenario_oauth_failed:'+failure)
         if failure:
             raise TimeoutError("fixture transport failure")
         return SimpleNamespace(text=json.dumps(dict(wait_proposal=wire(captured, "WAIT"),
@@ -102,9 +107,21 @@ def test_operational_row_factory_records_real_review_without_legacy_fallback(tmp
             snapshot=lambda: dict(valid=True, as_of_ms=now * 1000),
             proposal=lambda *a: pytest.fail("legacy fallback"))
         assert outcome["status"] == ("blocked" if failure else "wait"), outcome
+        if failure:
+            assert outcome['reason']=='llm_call_failed'
+            assert outcome['failure_code']=='model_transport_failure'
+            if isinstance(failure,str):
+                assert outcome['failure_detail']==failure
+            runner.notify_runtime_status(conn,outcome,clock=lambda:now)
+            notice=conn.execute("SELECT body FROM llm_scenario_outbox WHERE kind='MODEL_ERROR'").fetchone()[0]
+            assert 'LLM 판단 오류'in notice and 'fixture transport failure'not in notice
+            if failure=='http_429':
+                assert '요청 제한'in notice
+            elif failure=='incomplete':
+                assert '완성된 응답'in notice
         assert len(requests) == 1
         assert broker.executed == []
-        envelope = json.loads(review_text(conn.execute("SELECT body FROM llm_scenario_review_tapes").fetchone()[0]))
+        envelope = json.loads(read_tape(conn.execute("SELECT body FROM llm_scenario_review_tapes").fetchone()[0], conn, conn.execute("SELECT slot FROM llm_scenario_review_tapes").fetchone()[0], decode_legacy=review_text))
         assert envelope["outcome"]["status"] == ("FAILED" if failure else "COMPLETE")
         assert envelope["inputs"]["bindings"]["policy"] == runner.CALCULATED_REVIEW_MODE
         assert conn.execute("SELECT COUNT(*) FROM llm_scenario_intents").fetchone()[0] == 0
@@ -162,7 +179,7 @@ def test_operational_holding_row_factory_keeps_prices_and_exits(tmp_path, monkey
 
     def generate(**request):
         calls.append(request)
-        assert (request['model'], request['reasoning_effort']) == ('gpt-6.1-sol', 'low')
+        assert (request['model'], request['reasoning_effort']) == ('gpt-6.1-terra', 'low')
         assert request["retry_transport"] is False
         if "wait_proposal" in request["response_schema"]["properties"]:
             raw = wire(captured, "OPEN" if action == "ADJUST" else "EXIT")
@@ -170,7 +187,7 @@ def test_operational_holding_row_factory_keeps_prices_and_exits(tmp_path, monkey
             body = dict(wait_proposal=wire(captured, "WAIT"), candidates=[raw], no_candidate_reason="")
         else:
             candidate = next(row for row in json.loads(request["user_prompt"])["calculated_candidates"]["candidates"] if row["eligible"])
-            body = dict(selection_token=f"{candidate['id']}:{candidate['receipt_sha256']}", rationale="잔량 검산")
+            body = dict(selection_token=f"{candidate['id']}:{model_receipt_hash(candidate)}", rationale="잔량 검산")
         return SimpleNamespace(text=json.dumps(body))
 
     monkeypatch.setattr(runner.time, "time", lambda: now)
@@ -228,7 +245,7 @@ def test_runner_first_observation_then_host_sized_decision_with_row_factory(tmp_
                 raise TimeoutError("selection fixture")
             bundle = json.loads(request["user_prompt"])["calculated_candidates"]
             candidate = next(row for row in bundle["candidates"] if row["eligible"])
-            body = dict(selection_token=f"{candidate['id']}:{candidate['receipt_sha256']}", rationale="검산 승인")
+            body = dict(selection_token=f"{candidate['id']}:{model_receipt_hash(candidate)}", rationale="검산 승인")
         else:
             first = len(calls) == 1
             raw = wire(captured, "OPEN")
@@ -263,9 +280,39 @@ def test_runner_first_observation_then_host_sized_decision_with_row_factory(tmp_
             submitted = broker.executed[0]
             assert submitted["entries"][0]["quantity"] > 0
             assert "allocation_fraction" not in submitted["entries"][0]
-            events = [json.loads(row[0]) for row in conn.execute("SELECT body FROM llm_scenario_review_events")]
+            events = [json.loads(read_event(body, conn, slot, sequence, decode_legacy=review_text))
+                      for slot, sequence, body in conn.execute(
+                          "SELECT slot,sequence,body FROM llm_scenario_review_events")]
             assert any(row["kind"] == "FINAL_FRESH_REVIEW_RECEIPT" for row in events)
             final = next(row for row in events if row["kind"] == "FINAL_FRESH_REVIEW_RECEIPT")
             assert final["stability_scope"] == "COHERENT_FINAL_OBSERVATION_EXECUTOR_FRESH_PREFLIGHT_REQUIRED"
     finally:
         conn.close()
+
+
+def test_operational_overload_event_drives_next_tick_protection_only(tmp_path,monkeypatch):
+    from live import scenario_oauth
+    from live.scenario_runtime import ScenarioRuntime
+    now=float(int(ScenarioRuntime.__init__.__kwdefaults__['clock']()))
+    broker=Broker(now);requests=[]
+    conn=sqlite3.connect(tmp_path/'cooldown-pipeline.db');conn.row_factory=sqlite3.Row
+    def generate(**q):
+        requests.append(q)
+        raise scenario_oauth.ScenarioOAuthFailure('overloaded',321)
+    monkeypatch.setattr(scenario_oauth,'generate_scenario',generate)
+    monkeypatch.setattr(runner.time,'time',lambda:now)
+    failure=runner.run_once(conn,broker,execute=True,calculated_review=True,
+        snapshot=lambda:dict(valid=True,as_of_ms=now*1000),proposal=lambda *a:pytest.fail('no legacy fallback'))
+    assert failure['reason']=='llm_call_failed'and failure['failure_detail']=='overloaded'
+    runner.notify_runtime_status(conn,failure,clock=lambda:now)
+    retry_at=runner._provider_retry_at(conn,now+1)
+    assert now+321<=retry_at<now+323
+    broker.reconcile=lambda:dict(protection_confirmed=True)
+    monkeypatch.setattr(runner.time,'time',lambda:retry_at-1)
+    deferred=runner.run_once(conn,broker,execute=True,calculated_review=True,
+        snapshot=lambda:pytest.fail('no model snapshot during provider wait'))
+    runner.notify_runtime_status(conn,deferred,clock=lambda:retry_at-1)
+    assert deferred['status']=='model_cooldown'and deferred['model_deferred']is True
+    assert len(requests)==1 and broker.executed==[]
+    assert conn.execute('SELECT active FROM llm_scenario_model_incident').fetchone()[0]==1
+    conn.close()

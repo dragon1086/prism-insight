@@ -3,14 +3,15 @@ REENTRY_V3_LLM_RECHECK=true (.env or environment; default off), never with --no-
 Real buys only when REENTRY_V3_LIVE_ENABLED=true (default off) for a market in
 REENTRY_V3_LIVE_MARKETS, at most 2 per market and session (prism_core/reentry_v3_live.py).
 
-    python tools/run_reentry_v3_shadow.py --market KR --phase intraday   # 14:00 KST decision
+    python tools/run_reentry_v3_shadow.py --market KR --phase intraday   # 15:08 KST decision
     python tools/run_reentry_v3_shadow.py --market KR --phase close      # 16:40 KST after the close
-    python tools/run_reentry_v3_shadow.py --market US --phase intraday   # 13:50 New York decision
+    python tools/run_reentry_v3_shadow.py --market US --phase intraday   # 15:30 New York decision
     python tools/run_reentry_v3_shadow.py --market US --phase close      # 17:20 New York
     python tools/run_reentry_v3_shadow.py --market KR --phase intraday --dry-run   # no LLM, no order, no write
 
-The decision run sits before the afternoon batches (KR 14:46, US 14:30 ET) and before the KR
-closing auction (15:20), where KIS current-price and order behaviour differ.
+The decision run sits after the regular afternoon batches (KR buys 14:57-15:05, US ends ~15:15 ET) and
+before the KR closing auction (15:20) / US auction cutoffs (15:50), where KIS current-price and order
+behaviour differ. Moved from 14:00/13:50 on 2026-11-16 so the signal is judged near the close like the research.
 """
 from __future__ import annotations
 
@@ -74,7 +75,37 @@ def collect(market, tickers, completed, cache_dir=KR_CACHE_DIR):
         return out
     out = collectors.collect_us(tickers, completed)
     out["__regime_rows"] = next(iter((out.get("__benchmark_rows") or {}).values()), [])   # SPY (S&P 500 proxy)
+    out["__k8b"] = us_k8b(completed)
     return out
+
+
+def us_k8b(completed):
+    """Prior-session K8b label and bull age from ^GSPC/^IXIC (yfinance 2y) + the combined Market Pulse replay.
+
+    Bars after ``completed`` (a forming intraday bar) are dropped. Any failure returns None (MISSING)."""
+    try:
+        from cores import regime_policy as rp
+        from prism_core.us_regime_k8b import bull_age
+        mp = rp._load_root_cores("market_pulse")
+        sp = [b for b in rp._fetch_us_bars(mp.DailyBar) if b.date <= completed]
+        nd = [b for b in rp._fetch_us_nasdaq_bars(mp.DailyBar) if b.date <= completed]
+        states, _ = rp.combined_us_states(sp, nd, mp.MarketPulse)
+        nd_by_date, latest, aligned = {b.date: b.close for b in nd}, None, []
+        nd_dates = sorted(nd_by_date)
+        j = 0
+        for b in sp:                     # NASDAQ close on or before each S&P session (research k8b.py ffill)
+            while j < len(nd_dates) and nd_dates[j] <= b.date:
+                latest = nd_by_date[nd_dates[j]]
+                j += 1
+            aligned.append(latest)
+        if None in aligned:
+            raise ValueError("nasdaq history starts after the S&P history")
+        out = bull_age([b.close for b in sp], aligned, states)
+        out["asof"] = sp[-1].date if sp else None
+        return out
+    except Exception as error:  # noqa: BLE001 - the regime stays explicitly missing
+        log.info("US K8b label unavailable for the re-entry gate (%s: %s)", type(error).__name__, str(error)[:120])
+        return None
 
 
 def decision_day(market, now=None):
@@ -180,7 +211,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--market", choices=["KR", "US"], required=True)
     parser.add_argument("--phase", choices=["intraday", "close"], required=True,
-                        help="intraday: decision run (KR 14:00 KST, US 13:50 ET); close: after-close ledger update")
+                        help="intraday: decision run (KR 15:08 KST, US 15:30 ET); close: after-close ledger update")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--db", default=str(V3.DB_PATH))
     parser.add_argument("--state-root", default=str(V3.STATE_DIR))

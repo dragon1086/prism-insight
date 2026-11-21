@@ -18,6 +18,12 @@ import time
 
 from .events import build_event
 from .review_storage import review_text
+from utils.btc_review_event_references import read_event
+from utils.btc_review_references import read_tape
+from utils.btc_financial_references import restore as restore_financial
+from utils.btc_audit_references import read_audit
+from utils.btc_accounting_audit_references import read_accounting
+from utils.btc_recovery_references import read_recovery
 
 STREAMS = ('llm_scenario_audit_events', 'llm_scenario_recovery_events',
            'llm_scenario_broker_evidence', 'llm_scenario_outbox', 'llm_scenario_review_events',
@@ -34,15 +40,15 @@ STREAM_SQL = {
         'SELECT rowid AS source_rowid,* FROM llm_scenario_review_events WHERE rowid>? ORDER BY rowid LIMIT ?'),
     'llm_scenario_audit_events': (
         'SELECT MAX(rowid) FROM llm_scenario_audit_events',
-        'SELECT body FROM llm_scenario_audit_events WHERE rowid=?',
+        'SELECT kind,decision_slot,body FROM llm_scenario_audit_events WHERE rowid=?',
         'SELECT rowid AS source_rowid,* FROM llm_scenario_audit_events WHERE rowid>? ORDER BY rowid LIMIT ?'),
     'llm_scenario_recovery_events': (
         'SELECT MAX(rowid) FROM llm_scenario_recovery_events',
-        'SELECT body FROM llm_scenario_recovery_events WHERE rowid=?',
+        'SELECT slot,kind,body FROM llm_scenario_recovery_events WHERE rowid=?',
         'SELECT rowid AS source_rowid,* FROM llm_scenario_recovery_events WHERE rowid>? ORDER BY rowid LIMIT ?'),
     'llm_scenario_broker_evidence': (
         'SELECT MAX(rowid) FROM llm_scenario_broker_evidence',
-        'SELECT body FROM llm_scenario_broker_evidence WHERE rowid=?',
+        'SELECT kind,body FROM llm_scenario_broker_evidence WHERE rowid=?',
         'SELECT rowid AS source_rowid,* FROM llm_scenario_broker_evidence WHERE rowid>? ORDER BY rowid LIMIT ?'),
     'llm_scenario_outbox': (
         'SELECT MAX(rowid) FROM llm_scenario_outbox',
@@ -164,6 +170,72 @@ def _facts(value, prefix='', depth=0):
     return out
 
 
+def _ticker_observation(body, captured_at):
+    """Keep market fields and their observation times, not account payloads."""
+    result = {'status': 'UNKNOWN', 'basis': 'HTTP_RESPONSE_NOT_QUOTE_UPDATE_OR_FILL'}
+    ticker = body.get('ticker') if isinstance(body, dict) else None
+    timing = body.get('ticker_timing') if isinstance(body, dict) else None
+    if not isinstance(ticker, dict) or ticker.get('symbol') != 'BTCUSDT':
+        return result
+    prices = {}
+    for key in ('markPrice', 'lastPrice', 'bid1Price', 'ask1Price'):
+        value = ticker.get(key)
+        if type(value) not in (str, int, float) or len(str(value)) > 80:
+            continue
+        try:
+            parsed = Decimal(str(value))
+        except InvalidOperation:
+            continue
+        if parsed.is_finite() and parsed > 0:
+            prices[key] = value
+    if ('bid1Price' in prices and 'ask1Price' in prices
+            and Decimal(str(prices['bid1Price'])) > Decimal(str(prices['ask1Price']))):
+        prices.pop('bid1Price')
+        prices.pop('ask1Price')
+        result['book_status'] = 'CROSSED_UNKNOWN'
+    result['prices'] = prices
+    if isinstance(timing, dict):
+        started, received = timing.get('request_started_at'), timing.get('response_received_at')
+        if (type(started) in (int, float) and type(received) in (int, float)
+                and type(captured_at) in (int, float) and 0 < started <= received <= captured_at < 2**53):
+            result['local_request_started_at'] = started
+            result['local_response_received_at'] = received
+        server_ms = timing.get('exchange_response_time_ms')
+        if type(server_ms) is int and 0 < server_ms < 2**53:
+            result['exchange_response_time_ms'] = server_ms
+    if prices:
+        result['status'] = ('OBSERVED' if len(prices) == 4 and 'local_response_received_at' in result
+                            and 'exchange_response_time_ms' in result else 'PARTIAL')
+    return result
+
+
+def _exchange_observation(body):
+    """The local wrapper starts before the final guard, not at HTTP send."""
+    result = {'status': 'UNKNOWN', 'basis': 'LOCAL_WRAPPER_NOT_HTTP_SEND_OR_FILL'}
+    if not isinstance(body, dict):
+        return result
+    method = body.get('method')
+    if not isinstance(method, str) or method not in {'place_order', 'cancel_order', 'set_trading_stop', 'amend_order'}:
+        return result
+    result['method'] = method
+    started, ended = body.get('started_at'), body.get('ended_at')
+    if type(started) in (int, float) and type(ended) in (int, float) and 0 < started <= ended < 2**53:
+        result.update(status='OBSERVED', local_started_at=started, local_ended_at=ended)
+    response_status = body.get('status')
+    if isinstance(response_status, str) and response_status in {'ACK_ONLY', 'UNKNOWN'}:
+        result['response_status'] = response_status
+    request = body.get('request')
+    if isinstance(request, dict):
+        for key, target in (('orderLinkId', 'order_link_ref'), ('orderId', 'request_order_ref')):
+            value = request.get(key)
+            if isinstance(value, str) and 0 < len(value) <= 256:
+                result[target] = _hash(value)
+    response_order = body.get('order_id')
+    if isinstance(response_order, str) and 0 < len(response_order) <= 256:
+        result['response_order_ref'] = _hash(response_order)
+    return result
+
+
 def _identity(path):
     stat = path.stat()
     return _hash(f'{path.resolve()}:{stat.st_dev}:{stat.st_ino}')
@@ -279,15 +351,42 @@ def _model_metadata(body):
     return result
 
 
-def _anchor_hash(stream, row):
+def _source_text(stream, row, source=None):
+    if stream == 'llm_scenario_review_tapes':
+        return read_tape(row['body'], source, row['slot'], decode_legacy=review_text)
+    if stream == 'llm_scenario_review_events':
+        return read_event(row['body'], source, row['slot'], row['sequence'], decode_legacy=review_text)
+    if stream == 'llm_scenario_recovery_events':
+        if row['kind'] in ('MODEL_REQUEST', 'MODEL_RAW', 'INPUT'):
+            return read_recovery(row['body'], source, row['slot'], decode_legacy=review_text,
+                                 expected_kind=row['kind'])
+        return review_text(row['body'])
+    if stream == 'llm_scenario_broker_evidence' and row['kind'] == 'financial':
+        return restore_financial(row['body'])
+    if stream == 'llm_scenario_broker_evidence' and row['kind'] == 'account':
+        return review_text(row['body'])
+    if stream == 'llm_scenario_audit_events' and row['kind'] == 'decision_input':
+        return read_audit(row['body'], source, row['decision_slot'])
+    if stream == 'llm_scenario_audit_events' and row['kind'] == 'accounting_observation':
+        return read_accounting(row['body'], source)
+    return row['body']
+
+
+def _anchor_hash(stream, row, source=None):
     if row is None:
         return None
     if stream == 'llm_scenario_recovery_events':
-        return _hash(review_text(row['body']))
+        return _hash(_source_text(stream, row, source))
     if stream == 'llm_scenario_review_events':
-        return _hash(_json([row['slot'], row['sequence'], review_text(row['body'])]))
+        return _hash(_json([row['slot'], row['sequence'], _source_text(stream, row, source)]))
     if stream == 'llm_scenario_review_tapes':
-        return _hash(_json([row['slot'], review_text(row['body'])]))
+        return _hash(_json([row['slot'], _source_text(stream, row, source)]))
+    if stream == 'llm_scenario_broker_evidence' and row['kind'] in ('financial', 'account'):
+        return _hash(_source_text(stream, row, source))
+    if stream == 'llm_scenario_audit_events' and row['kind'] == 'decision_input':
+        return _hash(_source_text(stream, row, source))
+    if stream == 'llm_scenario_audit_events' and row['kind'] == 'accounting_observation':
+        return _hash(_source_text(stream, row, source))
     return _hash(row['body'])
 
 
@@ -496,9 +595,10 @@ def _capture(source, state, identity, stream, row, manifest_cache=None):
     if stream == 'llm_scenario_outbox':
         _notice(state, identity, row, now)
         return
-    if stream in ('llm_scenario_review_events', 'llm_scenario_review_tapes', 'llm_scenario_recovery_events'):
+    if (stream in ('llm_scenario_review_events', 'llm_scenario_review_tapes', 'llm_scenario_recovery_events')
+            or (stream == 'llm_scenario_broker_evidence' and row['kind'] == 'account')):
         row = dict(row)
-        row['body'] = review_text(row['body'])
+        row['body'] = _source_text(stream, row, source)
     raw = row['body']
     body = json.loads(raw)
     if not isinstance(body, dict):
@@ -510,11 +610,19 @@ def _capture(source, state, identity, stream, row, manifest_cache=None):
         _capture_review_tape(source,state,identity,row,body,now,manifest_cache)
         return
     kind = row['kind']
+    versioned_kinds = {'incident_epoch_v1', 'incident_entry_epoch_v1', 'incident_epoch_halt_v1',
+                       'incident_monitor_release_v1', 'incident_epoch_transport_v1',
+                       'incident_epoch_finance_cursor_v1', 'management_quarantine_v1',
+                       'management_quarantine_exit_v1'}
     attrs = {'source_stream': stream, 'source_rowid': row['source_rowid'],
-             'source_kind': kind if re.fullmatch(r'[A-Za-z_]{1,80}', kind) else 'UNKNOWN',
+             'source_kind': kind if kind in versioned_kinds or re.fullmatch(r'[A-Za-z_]{1,80}', kind) else 'UNKNOWN',
              'body_sha256': _hash(raw), 'facts': _facts(body), 'policy_evidence': 'UNKNOWN'}
     attrs['facts_scope'] = 'ALLOWLISTED_SUBSET_RAW_SOURCE_RETAINED'
     attrs['granular_fill_coverage'] = 'UNKNOWN_NOT_EXTRACTED'
+    if stream == 'llm_scenario_broker_evidence' and kind == 'account':
+        attrs['ticker_observation'] = _ticker_observation(body, row['captured_at'])
+    if stream == 'llm_scenario_audit_events' and kind == 'exchange_call':
+        attrs['exchange_observation'] = _exchange_observation(body)
     stamp = row['observed_at'] if 'observed_at' in row.keys() else row['captured_at']
     slot = row['slot'] if 'slot' in row.keys() else row['decision_slot'] if 'decision_slot' in row.keys() else None
     if slot is not None:
@@ -550,6 +658,8 @@ def _capture(source, state, identity, stream, row, manifest_cache=None):
             for key in decision.keys():
                 value = decision[key]
                 if value:
+                    if key == 'snapshot':
+                        value = review_text(value)
                     attrs[key + '_sha256'] = _hash(value)
                     decoded = json.loads(value)
                     attrs[key + '_facts'] = _facts(decoded)
@@ -639,7 +749,7 @@ def export_once(db_path, state_path, spool_path, limit=100):
                 cutover = 0 if backfill else maximum
                 _query(state, 'save_cursor', parameters=(stream, cutover))
                 anchor = _query(source, (stream, 1), parameters=(cutover,)).fetchone()
-                _query(state, 'save_anchor', parameters=(stream, _anchor_hash(stream, anchor)))
+                _query(state, 'save_anchor', parameters=(stream, _anchor_hash(stream, anchor, source)))
                 _queue(state, identity, 'coverage:' + stream, 'coverage',
                        {'stream': stream, 'coverage_start_after_rowid': cutover,
                         'historical_backfill': backfill,
@@ -651,7 +761,7 @@ def export_once(db_path, state_path, spool_path, limit=100):
                 raise ValueError('source_rowid_regressed')
             anchor = _query(source, (stream, 1), parameters=(cursor[0],)).fetchone()
             expected = _query(state, 'anchor', parameters=(stream,)).fetchone()
-            if not expected or expected[0] != _anchor_hash(stream, anchor):
+            if not expected or expected[0] != _anchor_hash(stream, anchor, source):
                 raise ValueError('source_anchor_changed')
             if state.execute('SELECT COUNT(*) FROM outbox').fetchone()[0] >= 1000:
                 break
@@ -661,8 +771,7 @@ def export_once(db_path, state_path, spool_path, limit=100):
                     break
                 state.execute('SAVEPOINT source_row')
                 try:
-                    raw_body = (review_text(row['body']) if stream in
-                                ('llm_scenario_review_events', 'llm_scenario_review_tapes', 'llm_scenario_recovery_events') else row['body'])
+                    raw_body = _source_text(stream, row, source)
                     if raw_body is not row['body']:
                         row = dict(row)
                         row['body'] = raw_body
@@ -674,7 +783,7 @@ def export_once(db_path, state_path, spool_path, limit=100):
                         break
                     _capture(source, state, identity, stream, row, manifest_cache)
                     _query(state, 'update_cursor', parameters=(row['source_rowid'], stream))
-                    _query(state, 'update_anchor', parameters=(_anchor_hash(stream, row), stream))
+                    _query(state, 'update_anchor', parameters=(_anchor_hash(stream, row, source), stream))
                     state.execute('RELEASE source_row')
                     counts['captured'] += 1
                     counts['source_bytes'] += size

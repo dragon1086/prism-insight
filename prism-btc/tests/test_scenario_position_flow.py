@@ -67,6 +67,148 @@ def test_original_anchor_and_accepted_transitions_are_retained_without_writes(hi
     assert flow["current_context_references"]["advisory_checkpoints_not_exit_rules"] == "review_memory"
 
 
+def pace_snapshot():
+    return dict(valid=True, as_of_ms=9000000, timeframes={
+        '30m': dict(status='ok', confirmed=dict(is_confirmed=True, open_time_ms=7200000,
+                                   atr14_risk_only=196.43535540936193)),
+        '1h': dict(status='ok', confirmed=dict(is_confirmed=True, open_time_ms=3600000,
+                                  atr14_risk_only=400.0))})
+
+
+@pytest.mark.parametrize('side,expected_sign', [('LONG', 1), ('SHORT', -1)])
+def test_mark_pace_uses_same_scenario_timestamps_and_direction(history, side, expected_sign):
+    _, active, ctx, _ = history
+    active['side'] = side
+    ctx['entry_thesis'].update(side=side, first_fill_at=8600, initial_fill_average=77830.)
+    ctx['mark_price'] = 77827.23
+    decision(history, 29)
+    ctx['mark_price'] = 77894.47
+    pace = build_position_flow(history[0], active, ctx, 9000, snapshot=pace_snapshot())['mark_pace']
+    assert pace['status'] == 'AVAILABLE'
+    assert pace['source'] == 'MARK_PAIR_LAST_OHLC_NO_PATH'
+    assert pace['interval_seconds'] == 299
+    assert pace['favorable_usdt_per_btc'] == pytest.approx(expected_sign * 67.24)
+    assert pace['favorable_atr30_per_5m'] == pytest.approx(expected_sign * (67.24 / 196.43535540936193) * 300 / 299, abs=.00005)
+    assert pace['favorable_atr1h_per_5m'] == pytest.approx(expected_sign * (67.24 / 400) * 300 / 299, abs=.00005)
+
+
+@pytest.mark.parametrize('damage', ['no_history', 'before_fill', 'stale', 'missing_mark',
+                                    'missing_atr', 'forming_atr', 'future_snapshot', 'side_mismatch',
+                                    'flat', 'bad_position', 'future_thesis', 'stale_bar',
+                                    'unconfirmed_current', 'unconfirmed_prior'])
+def test_mark_pace_missing_when_inputs_cannot_be_compared(history, damage):
+    _, active, ctx, _ = history
+    active['side'] = 'SHORT'
+    ctx['entry_thesis'].update(side='SHORT', first_fill_at=8600, initial_fill_average=77830.)
+    ctx['mark_price'] = 77827.23
+    if damage != 'no_history': decision(history, 29)
+    if damage == 'unconfirmed_prior':
+        stored = json.loads(history[0].execute('SELECT context FROM llm_scenario_decisions WHERE slot=29').fetchone()[0])
+        stored['accounting_status'] = 'UNKNOWN'
+        history[0].execute('UPDATE llm_scenario_decisions SET context=? WHERE slot=29', (json.dumps(stored),))
+    ctx['mark_price'] = 77894.47
+    snap = pace_snapshot()
+    if damage == 'before_fill': ctx['entry_thesis']['first_fill_at'] = 8800
+    if damage == 'stale': ctx['account_captured_at'] = 9200
+    if damage == 'missing_mark': ctx.pop('mark_price')
+    if damage == 'missing_atr': snap['timeframes']['30m']['confirmed']['atr14_risk_only'] = None
+    if damage == 'forming_atr': snap['timeframes']['30m']['confirmed']['is_confirmed'] = False
+    if damage == 'future_snapshot': snap['as_of_ms'] += 1
+    if damage == 'side_mismatch': ctx['entry_thesis']['side'] = 'LONG'
+    if damage == 'flat': ctx['positions'] = []
+    if damage == 'bad_position': ctx['positions'] = [{'quantity': 'unknown'}]
+    if damage == 'future_thesis': ctx['entry_thesis']['observed_at'] = 9001
+    if damage == 'stale_bar': snap['timeframes']['30m']['confirmed']['open_time_ms'] -= 1800000
+    if damage == 'unconfirmed_current': ctx['accounting_status'] = 'UNKNOWN'
+    assert build_position_flow(history[0], active, ctx, 9000, snapshot=snap)['mark_pace'] == {'status': 'MISSING'}
+
+
+def test_mark_pace_keeps_missing_1h_atr_unknown(history):
+    _, active, ctx, _ = history
+    active['side'] = 'SHORT'
+    ctx['entry_thesis'].update(side='SHORT', first_fill_at=8600, initial_fill_average=77830.)
+    ctx['mark_price'] = 77827.23
+    decision(history, 29)
+    ctx['mark_price'] = 77894.47
+    snap = pace_snapshot()
+    snap['timeframes']['1h']['confirmed']['atr14_risk_only'] = None
+    pace = build_position_flow(history[0], active, ctx, 9000, snapshot=snap)['mark_pace']
+    assert pace['status'] == 'AVAILABLE'
+    assert pace['favorable_atr1h_per_5m'] is None
+
+
+def test_mark_pace_adds_observed_30m_range_without_mixing_price_sources(history):
+    _, active, ctx, _ = history
+    active['side'] = 'SHORT'
+    ctx['entry_thesis'].update(side='SHORT', first_fill_at=8600, initial_fill_average=77830.)
+    ctx['mark_price'] = 77827.23
+    decision(history, 29)
+    ctx['mark_price'] = 77894.47
+    snap = pace_snapshot()
+    snap['timeframes']['30m']['forming'] = dict(observation_kind='observed',
+        open_time_ms=9000000, observed_at_ms=9000000,
+        ohlcv=dict(open=77830., high=77928.4, low=77785.8, close=77890.))
+    pace = build_position_flow(history[0], active, ctx, 9000, snapshot=snap)['mark_pace']
+    assert pace['favorable_usdt_per_btc'] == pytest.approx(-67.24)
+    assert pace['last30_favorable_atr'] == pytest.approx(-60 / 196.43535540936193, abs=.00005)
+    assert pace['last30_range_atr'] == pytest.approx(142.6 / 196.43535540936193, abs=.00005)
+    snap['timeframes']['30m']['forming']['observation_kind'] = 'historical_completed_subbars'
+    pace = build_position_flow(history[0], active, ctx, 9000, snapshot=snap)['mark_pace']
+    assert pace['last30_range_atr'] is None
+    snap['historical_replay'] = dict(source_interval_ms=60000, closed_source_through_ms=9000000,
+                                    zero_progress_synthetic_timeframes=[])
+    pace = build_position_flow(history[0], active, ctx, 9000, snapshot=snap)['mark_pace']
+    assert pace['last30_range_atr'] == pytest.approx(142.6 / 196.43535540936193, abs=.00005)
+    snap['timeframes']['1h'] = 'malformed'
+    pace = build_position_flow(history[0], active, ctx, 9000, snapshot=snap)['mark_pace']
+    assert pace['status'] == 'AVAILABLE'
+    assert pace['favorable_atr1h_per_5m'] is None
+
+
+def test_mark_pace_reaches_model_input_without_changing_source(history):
+    from live.scenario_model_input import restore_model_input
+    conn, active, ctx, _ = history
+    active['side'] = 'SHORT'
+    ctx['entry_thesis'].update(side='SHORT', first_fill_at=8600, initial_fill_average=77830.)
+    ctx['mark_price'] = 77827.23
+    decision(history, 29)
+    ctx['mark_price'] = 77894.47
+    snapshot = pace_snapshot()
+    flow = build_position_flow(conn, active, ctx, 9000, snapshot=snapshot)
+    payload = dict(market_snapshot=snapshot, contract_context=dict(ctx, position_flow=flow))
+    original = copy.deepcopy(payload)
+    projected, _ = project_position_flow_input(payload)
+    restored = restore_model_input(projected)
+    assert restored['contract_context']['position_flow']['mark_pace'] == flow['mark_pace']
+    assert payload == original
+
+
+def test_pace_is_not_crowded_out_by_optional_history(history):
+    conn, active, ctx, _ = history
+    active['side'] = 'SHORT'
+    ctx['entry_thesis'].update(side='SHORT', first_fill_at=7000, initial_fill_average=77830.)
+    ctx['mark_price'] = 77827.23
+    for slot in range(25, 30):
+        decision(history, slot, status='INTACT' if slot % 2 else 'WEAKENING',
+                 reason='x' * 220)
+    ctx['mark_price'] = 77894.47
+    flow = build_position_flow(conn, active, ctx, 9000, snapshot=pace_snapshot())
+    assert flow['mark_pace']['status'] == 'AVAILABLE'
+    assert len(json.dumps(flow, ensure_ascii=False, separators=(',', ':')).encode()) <= MAX_BYTES
+
+
+def test_tiny_nonzero_pace_is_not_rounded_to_zero(history):
+    conn, active, ctx, _ = history
+    active['side'] = 'SHORT'
+    ctx['entry_thesis'].update(side='SHORT', first_fill_at=8600, initial_fill_average=77830.)
+    ctx['mark_price'] = 77827.23
+    decision(history, 29)
+    ctx['mark_price'] = 77827.23001
+    pace = build_position_flow(conn, active, ctx, 9000, snapshot=pace_snapshot())['mark_pace']
+    assert pace['favorable_usdt_per_btc'] < 0
+    assert pace['favorable_atr30_per_5m'] < 0
+
+
 def test_other_scenario_future_and_rejected_are_excluded(history):
     conn, active, ctx, _ = history
     decision(history, 2)
@@ -309,3 +451,39 @@ def test_sql_projection_rejects_non_numeric_scalars(history, bad_value):
     flow = build_position_flow(conn, active, ctx, 9000)
     assert flow["historical_observation_changes"] == []
     assert flow["coverage"]["invalid_rows"] == 1
+
+def test_first_review_partial_keeps_mixed_stream_and_true_mark_distinct(history):
+    conn, active, ctx, _ = history
+    active['side'] = 'LONG'
+    ctx['entry_thesis'].update(side='LONG', first_fill_at=8700., latest_entry_fill_at=8700.,
+                               initial_fill_average=1000., observed_at=9000., additional_entry_fills=0)
+    ctx.update(mark_price=990., now=9001., account_captured_at=9000.)
+    flow = build_position_flow(conn, active, ctx, 9001., snapshot=pace_snapshot())
+    pace = flow['mark_pace']
+    assert pace['status'] == 'PARTIAL'
+    assert pace['source'] == 'FILL_AVG_TO_MARK_DIFFERENT_PRICE_STREAMS'
+    assert pace['favorable_atr30_per_5m'] is None
+    assert pace['fill_to_mark_atr30_per_5m'] == pytest.approx(-10 / 196.43535540936193, abs=.00005)
+    assert pace['fill_to_mark_atr1h_per_5m'] == pytest.approx(-10 / 400., abs=.00005)
+    from live.scenario_model_input import restore_model_input
+    payload = {'market_snapshot': {}, 'contract_context': {'position_flow': flow}}
+    projected, _ = project_position_flow_input(payload)
+    assert restore_model_input(projected)['contract_context']['position_flow']['mark_pace'] == pace
+    del ctx['entry_thesis']['latest_entry_fill_at']
+    assert build_position_flow(conn, active, ctx, 9001., snapshot=pace_snapshot())['mark_pace'] == {'status':'MISSING'}
+
+
+def test_first_review_partial_rejects_stale_thesis_or_snapshot(history):
+    conn, active, ctx, _ = history
+    active["side"] = "LONG"
+    ctx["entry_thesis"].update(side="LONG", first_fill_at=8700., latest_entry_fill_at=8700.,
+                               initial_fill_average=1000., observed_at=9000., additional_entry_fills=0)
+    ctx.update(mark_price=990., now=9001., account_captured_at=9000.)
+    snapshot = pace_snapshot()
+    assert build_position_flow(conn, active, ctx, 9001., snapshot=snapshot)["mark_pace"]["status"] == "PARTIAL"
+    ctx["entry_thesis"]["observed_at"] = 8999.
+    assert build_position_flow(conn, active, ctx, 9001., snapshot=snapshot)["mark_pace"] == {"status": "MISSING"}
+    ctx["entry_thesis"]["observed_at"] = 9000.
+    snapshot["as_of_ms"] = 7200000
+    snapshot["timeframes"]["30m"]["confirmed"]["open_time_ms"] = 5400000
+    assert build_position_flow(conn, active, ctx, 9001., snapshot=snapshot)["mark_pace"] == {"status": "MISSING"}

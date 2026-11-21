@@ -19,8 +19,60 @@ MAX_BYTES = 1_048_576
 MIN_RETRY_SECONDS = 5
 
 
+def usage_counts(value):
+    """Four bounded counters only; never persist attribution or account data."""
+    if not isinstance(value, dict):
+        return None
+    def count(v):
+        return v if type(v) is int and 0 <= v < 2**53 else None
+    details = value.get('input_tokens_details')
+    output_details = value.get('output_tokens_details')
+    result = dict(input_tokens=count(value.get('input_tokens')), output_tokens=count(value.get('output_tokens')),
+        cached_input_tokens=count(value.get('cached_input_tokens', details.get('cached_tokens') if isinstance(details,dict) else None)),
+        reasoning_tokens=count(value.get('reasoning_tokens', output_details.get('reasoning_tokens') if isinstance(output_details,dict) else None)))
+    for subset,total in [('cached_input_tokens','input_tokens'),('reasoning_tokens','output_tokens')]:
+        if result[subset] is not None and (result[total] is None or result[subset] > result[total]):
+            result[subset] = None
+    return result if any(v is not None for v in result.values()) else None
+
+
 class ScenarioOAuthTimeout(ValueError):
     """Safe timeout category for sealed review evidence."""
+
+
+def safe_failure_reason(value):
+    """Only closed categories can cross the trading evidence/notice boundary."""
+    if not isinstance(value, str):
+        return None
+    if value in {'timeout', 'connection', 'upstream_error', 'rate_limited',
+                 'authentication', 'incomplete', 'model_mismatch', 'invalid_response',
+                 'stream_incomplete', 'input_limit', 'output_limit', 'content_filter', 'steered', 'overloaded'}:
+        return value
+    return value if re.fullmatch(r'http_[1-5][0-9]{2}', value) else None
+
+
+class ScenarioOAuthFailure(ValueError):
+    """Closed failure category and optional provider cooldown; no raw details."""
+
+    def __init__(self, reason, retry_after_seconds=None):
+        if safe_failure_reason(reason) is None:
+            raise ValueError('invalid_failure_category')
+        self.retry_after_seconds = retry_after_seconds if type(retry_after_seconds) is int and 0 < retry_after_seconds <= 86400 else None
+        super().__init__('scenario_oauth_failed:' + reason)
+
+
+def retry_after_seconds(headers):
+    if not isinstance(headers, dict):
+        return None
+    headers = {k.lower(): v for k, v in headers.items() if isinstance(k, str)}
+    waits = []
+    for name, divisor in [('retry-after', 1), ('retry-after-ms', 1000)]:
+        value = headers.get(name)
+        if type(value) is int or isinstance(value, str) and re.fullmatch(r'[0-9]{1,8}', value):
+            value = int(value)
+            if 0 < value <= 86400 * divisor:
+                waits.append((value + divisor - 1) // divisor)
+    return max(waits) if waits else None
 
 
 def _unique_object(pairs):
@@ -109,8 +161,8 @@ def generate_scenario(*, system_prompt, user_prompt, model, reasoning_effort,
                       retry_transport=False):
     if type(retry_transport) is not bool:
         raise ValueError("scenario_retry_policy")
-    if ((model, reasoning_effort) not in (("gpt-6.1-sol", "low"), ("gpt-6-luna", "high"), ("gpt-6-luna", "xhigh"))
-            or fast_tier is not True or mcp_profile is not None):
+    if ((model, reasoning_effort) not in (("gpt-6.1-terra", "low"), ("gpt-6.1-sol", "low"), ("gpt-6-luna", "high"), ("gpt-6-luna", "xhigh"))
+            or fast_tier is not False or mcp_profile is not None):
         raise ValueError("scenario_model_policy")
     if type(timeout) not in (int,float) or not math.isfinite(timeout) or not 0 < timeout <= 75:
         raise ValueError("scenario_timeout_policy")
@@ -120,7 +172,7 @@ def generate_scenario(*, system_prompt, user_prompt, model, reasoning_effort,
             or url.path != "/v1/responses" or url.username or url.password or url.query or url.fragment):
         raise ValueError("local_oauth_proxy_required")
     payload = {"model":model,"reasoning":{"effort":reasoning_effort},
-               "service_tier":"priority", "instructions":system_prompt,
+               "instructions":system_prompt,
                "input":[{"role":"user","content":user_prompt}],
                "tools":[],"tool_choice":"none","store":False,"stream":False}
     if not isinstance(response_schema, dict) or response_schema.get("type") != "object":
@@ -134,8 +186,22 @@ def generate_scenario(*, system_prompt, user_prompt, model, reasoning_effort,
         if len(raw)>MAX_BYTES:
             raise ValueError("oauth_response_size")
         result=json.loads(raw)
-        if result.get("status") != "completed":
-            raise ValueError("oauth_not_completed")
+        if (result.get("status") != "completed" or result.get('error') is not None
+                or result.get('incomplete_details') is not None):
+            error = result.get('error')
+            code = error.get('code') if isinstance(error, dict) else None
+            reason = {'server_error':'upstream_error', 'server_is_overloaded':'overloaded', 'rate_limit_exceeded':'rate_limited',
+                      'usage_limit_reached':'rate_limited', 'insufficient_quota':'rate_limited',
+                      'authentication_error':'authentication', 'context_length_exceeded':'input_limit'}.get(code, 'incomplete') if isinstance(code, str) else 'incomplete'
+            if reason == 'incomplete':
+                details = result.get('incomplete_details')
+                why = details.get('reason') if isinstance(details, dict) else None
+                if isinstance(why, str):
+                    reason = {'missing_terminal_event':'stream_incomplete',
+                              'max_output_tokens':'output_limit', 'max_messages':'output_limit',
+                              'content_filter':'content_filter', 'steered':'steered'}.get(why, 'incomplete')
+            wait = retry_after_seconds(error.get('headers')) if isinstance(error, dict) else None
+            raise ScenarioOAuthFailure(reason, wait)
         if result.get("model") != model:
             raise ValueError("oauth_model_mismatch")
         texts=[]
@@ -150,10 +216,20 @@ def generate_scenario(*, system_prompt, user_prompt, model, reasoning_effort,
                 texts.append(block["text"])
         if not texts:
             raise ValueError("model_text_missing")
-        return SimpleNamespace(text="".join(texts))
+        usage = usage_counts(result.get('usage'))
+        return SimpleNamespace(text="".join(texts), **({'usage':usage} if usage is not None else {}))
+    except ScenarioOAuthFailure:
+        raise
+    except HTTPError as exc:
+        reason = safe_failure_reason('http_' + str(exc.code))
+        headers = {k: exc.headers.get(k) for k in ('retry-after', 'retry-after-ms')} if exc.headers else None
+        raise ScenarioOAuthFailure(reason or 'connection', retry_after_seconds(headers)) from None
     except (TimeoutError, URLError) as exc:
         if isinstance(exc, TimeoutError) or isinstance(getattr(exc, 'reason', None), TimeoutError):
-            raise ScenarioOAuthTimeout("scenario_oauth_failed") from None
-        raise ValueError("scenario_oauth_failed") from None
-    except Exception:
-        raise ValueError("scenario_oauth_failed") from None
+            raise ScenarioOAuthTimeout("scenario_oauth_failed:timeout") from None
+        raise ValueError("scenario_oauth_failed:connection") from None
+    except Exception as exc:
+        message = str(exc)
+        reason = ('timeout' if message == 'oauth_deadline' else
+                  safe_failure_reason(message[6:]) if message.startswith('oauth_') else None) or 'invalid_response'
+        raise ValueError('scenario_oauth_failed:' + reason) from None

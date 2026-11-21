@@ -144,7 +144,10 @@ def test_headline_context_phrase_then_all_words(tmp_path):
 
 
 def test_archive_news_headlines_endpoint_is_authenticated_and_bounded(tmp_path, monkeypatch):
-    _store(tmp_path).close()
+    conn = _store(tmp_path)
+    conn.execute("UPDATE news_titles SET published_at = ?", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
+    conn.commit()
+    conn.close()
     monkeypatch.setenv("PRISM_KR_NEWS_DB", str(tmp_path / "news.sqlite"))
     monkeypatch.setattr(archive_api, "_API_KEY", "test-key")
     client = TestClient(archive_api.app)

@@ -14,6 +14,9 @@ python tools/two_week_review.py --dry-run
 python tools/two_week_review.py --start 2026-10-05 --end 2026-10-18
 ```
 
+- **정기 실행(2026-11-07~, 사용자 결정):** 매주 일요일 19:00 KST cron이 `--every 14 --anchor 2026-10-18`로 부르고,
+  기준일에서 14일 배수인 일요일(11/15, 11/29 …)에만 직전 14일을 점검해 유지보수방으로 보냅니다. 운영 감시의 매일
+  아침 요약과 [주의] 메시지는 이 점검으로 대체했습니다([장애]·[복구]는 그대로). 0절에 운영 감시 마지막 실행 시각이 나옵니다.
 - 읽기 전용입니다. 추적 DB와 B3 저장소는 `mode=ro`로 엽니다. 이벤트 스풀, `runtime/` 상태 파일, 로그는 읽기만 합니다.
 - 가격은 주간 주도주 리포트와 같은 경로(KR `cores.stock_chart`, US prism-us `USDataClient`)로 시장당 최대 120회(`--max-price-calls`)
   조회합니다. 반사실 가격(매도 보류·막힌 증액·자리를 잃은 후보)을 먼저 조회해 한도에 밀리지 않게 합니다. DART는 부르지 않습니다.
@@ -41,6 +44,7 @@ python tools/two_week_review.py --start 2026-10-05 --end 2026-10-18
 | 주도주 보유 규칙(#909) | 매도를 막은 순간의 가격이 없어 "막은 게 도움이 됐나"를 판단할 수 없었음 | `runner.sell_blocked`(llm/final/trend_exit 모두)에 `current_price`, `entry_ref`, `buy_price`, `stop_loss`, `peak_close`, `hold_until`, `gain_now_pct`, `phase`. `runner.exit_forced`에 같은 가격 사실, `runner.stop_*`·`runner.detected`에 `current_price`. 로그에도 `price=` |
 | 트리거 품질 우선순위(#907) | 보장을 잃은 후보가 로그에 트리거 이름만 남고, 결과 JSON은 7일 뒤 삭제 | 배치마다 `trigger_quality.selection` 이벤트와 JSON `metadata.trigger_quality.selection`: 예전 방식이면 뽑혔을 후보(`displaced`: 종목·트리거·점수·가중치·기준가), 대신 점수 경쟁으로 뽑힌 후보(`fill_picks`), 보장 제외 트리거, 선발 수. 예전 방식(모든 트리거 1등 보장, 등록 순서, 슬롯 한도)을 같은 top-down 결과에서 그대로 재생해 계산. 로그 `[TRIGGER_QUALITY] displaced ticker=...` |
 | 증액·가속·위험 한도(#875/#876/#908) | 조건은 맞았는데 안전장치(위험 한도·추격 한도·피라미드)로 막힌 증액이 기록되지 않음. 위험 한도 계산에 쓴 손절선이 없음 | 막힌 증액마다(계획·세션·시나리오별 1회) `micro_split.add_blocked` 이벤트 + `b3_events` `add_plan.rail_blocked`(막힌 사유, 그 시점 가격, 유효·최초 손절선, 가속 판정값). `add_plan_qualified`에 `planned_target`, `current_stop`, `initial_stop`. `add_executed`에 브로커 수량·사유, 계획 목표, 트리거 가격, 세션 |
+| 증액 대기 사유(2026-11-08) | 안전장치 차단만 남아, 시나리오가 가격 미도달인지 조건(구간·5분봉·평균가 아래) 때문인지 몰랐음 | 장 마감 판단 때 계획마다 `micro_split.add_plan_day_summary` + `b3_events` `add_plan.day_summary`(시나리오별 대기 사유·횟수, 그날 증액) |
 | 재진입 v3(#900) | 재점검 거절 사유·판단가가 이벤트에 없음, 주문 결과의 체결 기준가 없음 | `reentry_v3.shadow_recheck`에 `rejection_reason`, `decision_price`, `level`. `reentry_v3.live_entry`에 `entry_price`, `holding_count`, `live_skipped`에 `decision_price` |
 | AI 매도 실패 시 대체 규칙 | 대체 규칙이 성공하면 아무 기록이 없고, `trading_history`에는 매도 사유 열이 없어 옛 "+10% 익절"이 AI 매도와 같은 `exit_kind='ai'`로 섞임 | KR·US 대체 경로마다 `sell.fallback_used`(계기 `empty_response/parse_failed/json_error/analysis_error`, 매도 여부, 사유, `legacy_ten_pct_rule`) |
 | KIS 초당 호출 한도(EGW00201) | 표준출력 print뿐이고 KR 배치 표준출력은 일요일마다 비움 | `kis.rate_limited` 이벤트(API 경로, 상태 코드, 응답 앞부분) |
@@ -62,6 +66,15 @@ python tools/two_week_review.py --start 2026-10-05 --end 2026-10-18
 - 반사실: 증액분 손익(증액 다리별 증액가→현재가·청산가, 장부 기준). 증액이 없었다면 그만큼 덜 벌었거나 덜 잃었습니다. 증액 후 손실 종목 수.
 - 위험 한도로 줄어든 증액, 안전장치로 막힌 증액과 그 뒤 가격(오르면 기회 손실).
 - 한계: 증액 체결가는 지정가(전략 장부 가격)입니다. 실제 체결 확인은 브로커 기록을 따로 봐야 합니다.
+- 장 마감 대기 사유(2026-11-08~): `micro_split.add_plan_day_summary`의 시나리오별 마지막 사유와 계획 전체 대기
+  사유(평균가 아래 등). 증액이 안 열린 날 무엇이 막았는지 봅니다.
+
+### 2b) 피라미딩(한 종목 최대 3칸, 칸마다 초분할) · 칸이 차서 못 산 새 종목 (2026-11-08~)
+- 피라미딩 검사 수(종목·하루·단계 기준), 조건 통과, 막힌 사유(`pyramid.gate_evaluated`의 `reason_code`), 새 칸 기록(`pyramid.row_opened`).
+- 피라미딩 칸 성과: 장부의 `micro_split.pyramid_row`가 있는 행만. 이긴 칸·진 칸 평균, 손익비, 계좌 기여, 상위 3칸.
+- 반사실: 막힌 피라미딩의 그 뒤 가격(오르면 기회 손실).
+- 칸이 차서 못 산 새 종목: KR `entry.slot_blocked`, US `candidate.evaluated`의 `SLOT_FULL`. 그때 피라미딩 칸이 있었는지
+  (`pyramid_rows_held`, 없으면 모름), 그 뒤 현재가·최고가·+20% 도달 수. 예비칸(8종목 미만이면 2칸 비움)이 충분한지 판단합니다.
 
 ### 3) 상위 셋업 가중
 - 가중 진입 수, 기본→가중 비중, 가중분(더 산 몫) 손익 = (가중 − 기본) × 첫 매수가 대비 수익률 ÷ 10슬롯.

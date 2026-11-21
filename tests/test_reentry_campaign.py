@@ -429,14 +429,14 @@ def test_shakeout_recovery_needs_projected_volume_and_otherwise_returns_to_norma
     camp = C.replay(yc_setup(bars, 11500), bars, 69)["campaigns"]["L97"]
     assert all(t["trigger"] != "SHAKEOUT_RECLAIM" for t in camp["attempts"])
     assert all(t["date"] != bars[71]["date"] for t in camp["attempts"])
-    # live decision: cumulative volume / time-of-day share (KR default 0.80 at 14:00) vs the 20-day average
+    # live decision: cumulative volume / time-of-day share (KR default 0.86 at 15:08) vs the 20-day average
     bars = _bars(_yc_shakeout_rows())
     setup = yc_setup(bars, 11500)
     before = C.replay(setup, bars[:71], 69)
     nxt = before["next"]["L97"]
     assert nxt["mode"] == "SHAKEOUT" and nxt["window"]["low"] == 11300
-    assert C.projected_volume(1250, "KR") == pytest.approx(1562.5)
-    assert C.projected_volume(700, "US") == pytest.approx(1000.0)
+    assert C.projected_volume(1250, "KR") == pytest.approx(1250 / 0.86)
+    assert C.projected_volume(700, "US") == pytest.approx(700 / 0.79)
     assert C.projected_volume(700, "US", share=0.5) == pytest.approx(1400.0)
     kw = {"bars": bars[:71], "i": 71, "flags": before["flags"], "price": 12100.0, "day_low": 11480.0,
           "regime": "sideways", "window": nxt["window"]}
@@ -494,6 +494,62 @@ def test_pivot_control_is_recorded_without_a_market_ban():
     bars = yc_bars()
     control = C.replay(yc_setup(bars), bars, 69, market="KR")["controls"]["PIVOT"]
     assert set(control) == {"status_counts", "first_trigger", "trade"} and sum(control["status_counts"].values()) > 0
+
+
+def test_ma20_recovery_control_records_the_first_cross_with_volume_and_skips_kr_non_bull():
+    # 2026-11-16 (H-1116-reentry-ma20r-observe): day 70 closes back over the 20-session average on volume == avg.
+    bars = yc_bars()
+    us = C.replay(yc_setup(bars), bars, 69, market="US")["controls"]["MA20R"]
+    assert us["status"] == "OK" and us["first_trigger"]["date"] == bars[70]["date"]
+    assert us["first_trigger"]["entry"] == 12400 and us["first_trigger"]["post_anchor_low"] == 11550
+    assert us["trade"]["status"] == "CLOSED" and us["trade"]["ret"] > 0.10      # rides the rally, E1 MA20 exit
+    kr_no_regime = C.replay(yc_setup(bars), bars, 69, market="KR")["controls"]["MA20R"]
+    assert kr_no_regime["status"] == "SKIPPED_NON_BULL_ANCHOR" and kr_no_regime["first_trigger"] is None
+    kr_bull = C.replay(yc_setup(bars), bars, 69, market="KR", regime_at=lambda d: "strong_bull")["controls"]["MA20R"]
+    assert kr_bull["first_trigger"]["date"] == bars[70]["date"] and kr_bull["anchor_regime"] == "strong_bull"
+    quiet = [dict(b) for b in bars]
+    quiet[70]["volume"] = 500                                                   # cross without volume: not this day
+    later = C.replay(yc_setup(quiet), quiet, 69, market="US")["controls"]["MA20R"]
+    assert later["checks"]["volume_below_avg20"] == 1 and (later["first_trigger"] or {}).get("date") != bars[70]["date"]
+
+
+def test_ma20r_is_the_traded_rule_only_where_the_market_flag_names_it(monkeypatch):
+    # H-1116 LIVE (user decision 2026-11-16): US trades the MA20 recovery rule (no pullback to L needed); KR keeps L97.
+    bars = yc_bars()
+    monkeypatch.setenv("REENTRY_V3_MA20R_LIVE_MARKETS", "US")
+    assert C.policy_for("KR") is C.POLICY and "MA20R" not in C.replay(yc_setup(bars), bars, 69, market="KR")["campaigns"]
+    policy = C.policy_for("US")
+    assert policy["primary_rule"] == "MA20R" and policy["campaign_rules"] == ("L97", "SS", "MA20R")
+    ledger = C.replay(yc_setup(bars), bars, 69, market="US", policy=policy)
+    assert ledger["rule_ids"]["primary_rule"] == "MA20R"
+    first = ledger["campaigns"]["MA20R"]["attempts"][0]
+    # day 70 gaps over L*1.03 (R1C chase, no L97 entry that day) but closes back over the 20-session average on volume
+    assert (first["trigger"], first["label"], first["date"], first["entry"]) == ("MA20R", "20일선 회복 매수", bars[70]["date"], 12400)
+    assert first["stop0"] == pytest.approx(max(11550 * 0.99, 12400 * (1 - C.max_stop("sideways"))))
+    assert first["target"] == pytest.approx(12400 * 1.20) and first["target_rule"] == "ma20r_2a"
+    assert first["rr"] >= first["rr_floor"] and first["stop_rule"] == "POST_ANCHOR_LOW" and first["ma20"] < 12400
+    assert first["exit_reason"] == "ma20" and first["ret"] > 0.10
+    assert ledger["campaigns"]["L97"]["attempts"][0]["date"] == bars[71]["date"]     # level rule still recorded
+    assert ledger["campaigns"]["MA20R"]["end_reason"] == "horizon"                    # no breakdown line, horizon only
+    monkeypatch.delenv("REENTRY_V3_MA20R_LIVE_MARKETS")
+    assert C.policy_for("US") is C.POLICY
+
+
+def test_ma20r_trigger_needs_a_cross_and_volume_at_or_above_the_20_session_average():
+    bars = yc_bars()
+    setup = yc_setup(bars)
+    flags = {"armed": True, "above": False}
+    def check(i, price, volume):
+        return C.evaluate(setup, bars=bars[:i], i=i, flags=flags, price=price, day_low=price * 0.99, regime="sideways",
+                          volume_projected=volume, triggers=("MA20R",))
+    fired = check(70, 12400, 1000)["trigger"]
+    assert fired["trigger"] == "MA20R" and fired["volume_ratio"] == 1.0 and fired["target"] == pytest.approx(12400 * 1.2)
+    assert check(70, 12400, 999)["checks"] == {"MA20R": "volume_below_avg20"}
+    assert check(70, 11650, 1000)["checks"] == {"MA20R": "below_level"}            # still under the average
+    assert check(72, 12300, 1000)["checks"] == {"MA20R": "prev_close_above"}       # already above yesterday
+    assert check(70, 12400, None)["checks"] == {"MA20R": "missing_volume"}
+    assert C.rule_triggers("MA20R", None) == ("MA20R",) and C.rule_triggers("L97", None) == ("R1C", "R2S")
+    assert C.rule_triggers("MA20R", {"R": 1}) == ("MA20R",) and C.rule_triggers("L97", {"R": 1}) == ("SHAKEOUT_RECLAIM",)
 
 
 def test_trigger_registry_is_pluggable():
@@ -661,7 +717,7 @@ def test_runtime_shakeout_recovery_is_decided_per_rule(tmp_path, monkeypatch):
     decision = state["watches"][0]["decisions"][bars[71]["date"]]
     assert decision["by_rule"]["L97"]["trigger"] == "SHAKEOUT_RECLAIM"   # L97 is inside its window
     assert decision["by_rule"]["SS"]["trigger"] == "R1C"                 # SS line 11,400 was not broken
-    assert decision["volume_projected"] == pytest.approx(1562.5) and decision["volume_share"] == 0.8
+    assert decision["volume_projected"] == pytest.approx(1250 / 0.86) and decision["volume_share"] == 0.86
     item = json.loads((root / "reentry_v3_recheck_inputs_kr.jsonl").read_text())
     assert item["trigger"] == "SHAKEOUT_RECLAIM" and item["shakeout"]["shakeout_low"] == 11300
     assert item["stop_rule"] == "SHAKEOUT_LOW" and set(item["attempts"]) == {"L97", "SS"}

@@ -5,9 +5,10 @@ import json
 import math
 from decimal import Decimal, ROUND_DOWN
 
+from core.llm_scenario import target_quantities
 from engine.scenario_ma_context import _frame_points
 from engine.scenario_snapshot import TIMEFRAME_MS
-from live.scenario_analysis_frames import ANALYSIS_FRAMES
+from live.scenario_analysis_frames import AUTHORITY_FRAMES
 
 
 def digest(value):
@@ -32,7 +33,7 @@ def goal_schema():
     def obj(properties):
         return dict(type='object', properties=properties, required=list(properties),
                     additionalProperties=False)
-    ref = obj(dict(frame=dict(type='string', enum=list(ANALYSIS_FRAMES)),
+    ref = obj(dict(frame=dict(type='string', enum=list(AUTHORITY_FRAMES)),
                    phase=dict(type='string', enum=['confirmed', 'forming']),
                    ma=dict(type='string', enum=['ma10', 'ma35'])))
     return dict(anyOf=[
@@ -137,7 +138,7 @@ def resolve_goal(goal, context):
     return dict(result, **deepcopy(point), canonical=canonical)
 
 
-def validate_goal_plan(plan, resolved):
+def validate_goal_plan(plan, resolved, *, full_tp=False):
     if not resolved or resolved['goal']['mode'] != 'BOUNDED_BEFORE' or plan.get('action') in {'WAIT', 'EXIT', 'REDUCE'}:
         return
     bound, side = resolved['price'], plan.get('side')
@@ -152,12 +153,15 @@ def validate_goal_plan(plan, resolved):
                 raise GoalConsistencyRejection('entry_goal_bound_exceeded',
                     dict(field=field, index=index, price=price, bound=bound, side=side,
                          goal=resolved['goal']))
+    if full_tp and sum((Decimal(str(t['fraction'])) for t in plan.get('take_profits', [])), Decimal(0)) != 1:
+        raise GoalConsistencyRejection('entry_goal_bound_requires_full_tp',
+            dict(goal=resolved['goal'], reason='bounded traversal cannot retain an unpriced tail'))
 
 
 def plan_goal(payload, context):
     if payload.get('action') == 'OPEN' and context.get('entry_contract_version') == 2:
         reference = payload['entry_contract']['goal'].get('reference')
-        if isinstance(reference, dict) and reference.get('frame') not in ANALYSIS_FRAMES:
+        if isinstance(reference, dict) and reference.get('frame') not in AUTHORITY_FRAMES:
             raise ValueError('entry_goal_frame_not_allowed_for_new_open')
         return resolve_goal(payload['entry_contract']['goal'], context)
     record = context.get('registered_entry_contract')
@@ -168,7 +172,9 @@ def validate_goal_pair(raw, effective, context):
     resolved = plan_goal(raw, context)
     for phase, plan in [('raw', raw)] + ([('effective', effective)] if effective is not None else []):
         try:
-            validate_goal_plan(plan, resolved)
+            validate_goal_plan(plan, resolved, full_tp=(
+                plan.get('action') == 'OPEN' and context.get('prepared_entry_plans_version') == 1
+                or plan.get('action') == 'ADJUST' and bool(plan.get('take_profits'))))
             if resolved and resolved['goal']['mode'] == 'REFERENCE_EXTENSION' and plan.get('action') == 'OPEN':
                 bound = resolved['price']
                 remainder = Decimal(1) - sum((Decimal(str(t['fraction'])) for t in raw['take_profits']), Decimal(0))
@@ -178,13 +184,10 @@ def validate_goal_pair(raw, effective, context):
                     raise ValueError('entry_goal_instrument_missing')
                 quantity = sum((Decimal(str(e['quantity'])) for e in plan['entries']), Decimal(0))
                 # Same sequential clipping/step/minimum as host TP projection.
-                allocated, beyond = Decimal(0), False
-                for target in plan['take_profits']:
-                    qty = (max(Decimal(0), min(quantity - allocated,
-                        quantity * Decimal(str(target['fraction'])))) / Decimal(str(step))).to_integral_value(
-                            rounding=ROUND_DOWN) * Decimal(str(step))
-                    allocated += qty
-                    if qty >= Decimal(str(minimum)) and (
+                beyond = False
+                for target, qty in zip(plan['take_profits'], target_quantities(
+                        quantity, plan['take_profits'], step, full_exit=True)):
+                    if min(qty, quantity * Decimal(str(target['fraction']))) >= Decimal(str(minimum)) and (
                             target['price'] > bound if plan['side'] == 'LONG' else target['price'] < bound):
                         beyond = True
                 runner = ((quantity * max(remainder, Decimal(0)) / Decimal(str(step)))
@@ -212,7 +215,9 @@ def stored_goal(conn, record):
         "WHERE slot=?", (record['resolved_goal']['decision_slot'],)).fetchall()
     if len(rows) != 1 or any(value is None for value in rows[0]):
         raise ValueError('entry_goal_original_decision_missing')
-    snapshot, context, proposal = map(json.loads, rows[0])
+    from observability.review_storage import review_text
+    snapshot = json.loads(review_text(rows[0][0]))
+    context, proposal = map(json.loads, rows[0][1:])
     if (context.get('entry_contract_version') != 2 or context.get('scenario_id') is not None
             or context.get('input_id') != origin['input_id']
             or context.get('entry_goal_decision_slot') != record['resolved_goal']['decision_slot']

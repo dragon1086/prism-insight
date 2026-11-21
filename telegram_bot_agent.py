@@ -44,7 +44,8 @@ class TelegramBotAgent:
 
         self.bot = Bot(token=self.token, request=request)
 
-    async def send_message(self, chat_id, message, parse_mode="Markdown", retry_count=0, max_retries=3, msg_type=None, *, _raise_on_unknown=False):
+    async def send_message(self, chat_id, message, parse_mode="Markdown", retry_count=0, max_retries=3, msg_type=None, *,
+                           _raise_on_unknown=False, broadcast=False):
         """
         Send message to Telegram channel
 
@@ -62,6 +63,9 @@ class TelegramBotAgent:
         # deployment. Never leak a new internal keyword to Telegram via **kwargs.
         delivery_metadata = ({"message_kind": msg_type} if getattr(
             send_message_once_or_rate_retry, "supports_delivery_metadata", False) is True else {})
+        # Translated broadcast channels resend one ambiguous loss (#1205); main channel never does.
+        resend = ({"resend_unknown_once": True} if broadcast and getattr(
+            send_message_once_or_rate_retry, "supports_resend_unknown_once", False) is True else {})
         try:
             # Attempt to send with specified parse_mode
             result = await send_message_once_or_rate_retry(
@@ -71,6 +75,7 @@ class TelegramBotAgent:
                 parse_mode=parse_mode,
                 attempts=max(1, max_retries - retry_count + 1),
                 **delivery_metadata,
+                **resend,
             )
             logger.info(f"Message sent successfully ({parse_mode}): {chat_id}")
             # Firebase Bridge - save metadata + push notification
@@ -94,9 +99,10 @@ class TelegramBotAgent:
                 raise
             return False
         except TelegramError as e:
-            logger.error(f"Telegram message send failed ({parse_mode}): {e}")
-            # If error occurs, retry with plain text (for parse errors)
-            if isinstance(e, BadRequest) and parse_mode and "parse" in str(e).lower():
+            # A Markdown parse rejection is retried as plain text below, so it is not a failure yet.
+            retry_plain = isinstance(e, BadRequest) and parse_mode and "parse" in str(e).lower()
+            (logger.warning if retry_plain else logger.error)(f"Telegram message send failed ({parse_mode}): {e}")
+            if retry_plain:
                 try:
                     logger.info("Retrying with plain text.")
                     result = await send_message_once_or_rate_retry(

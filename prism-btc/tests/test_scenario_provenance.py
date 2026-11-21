@@ -9,6 +9,142 @@ import pytest
 from live import scenario_provenance as audit
 
 
+def _decision_audit_fixture(tmp_path):
+    from utils.btc_audit_references import canonical, sha
+
+    path = tmp_path / 'audit-writer.sqlite'
+    snapshot, context = {'blob': 'x' * 5000}, {'input_id': 'fixture', 'blob': 'y' * 5000}
+    body = {'snapshot': snapshot, 'context': context, 'input_id': 'fixture',
+            'snapshot_hash': sha(canonical(snapshot)), 'context_hash': sha(canonical(context)), 'schema_version': 1}
+    raw = canonical(body)
+    with sqlite3.connect(path) as conn:
+        conn.execute('CREATE TABLE llm_scenario_decisions(slot INTEGER PRIMARY KEY,snapshot TEXT,context TEXT)')
+        conn.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?)',
+                     (100, json.dumps(snapshot, sort_keys=True), json.dumps(context, sort_keys=True)))
+    event = ('e1', 'run1', 'decision_input', 1000, None, None, 100, 'manifest1', raw)
+    return path, raw, {'path': str(path), 'manifest_id': 'manifest1', 'manifest': '{}', 'events': [event]}
+
+
+def _accounting_audit_fixture(tmp_path):
+    from utils.btc_accounting_audit_references import canonical
+    path = tmp_path / 'accounting-writer.sqlite'
+    account = {'captured_at': 1, 'wallet': {'detail': 'a' * 2000}}
+    financial = {'trades': [], 'raw_executions': [], 'detail': 'b' * 2000}
+    raw = canonical({'observation': account, 'financial_evidence': financial, 'result': {'status': 'confirmed'}})
+    with sqlite3.connect(path) as conn:
+        conn.execute('CREATE TABLE llm_scenario_broker_evidence(kind TEXT,captured_at REAL,body TEXT)')
+        conn.executemany('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)',
+                         [('account', 1, json.dumps(account, sort_keys=True)),
+                          ('financial', 1, json.dumps(financial, sort_keys=True))])
+    event = ('e1', 'run1', 'accounting_observation', 2, None, None, 100, 'manifest1', raw)
+    return path, raw, {'path': str(path), 'manifest_id': 'manifest1', 'manifest': '{}', 'events': [event]}
+
+
+@pytest.mark.parametrize('failure', [None, 'source_changed', 'codec_error'])
+def test_accounting_audit_writer_preserves_original_and_falls_back(tmp_path, monkeypatch, failure):
+    from live import scenario_ledger
+    from observability.review_storage import review_text
+    from utils import btc_accounting_audit_references as refs
+    path, raw, capture = _accounting_audit_fixture(tmp_path)
+    forwarded = []
+    monkeypatch.setattr(scenario_ledger, 'forward_audits', lambda events: forwarded.extend(events))
+    if failure == 'source_changed':
+        with sqlite3.connect(path) as conn:
+            conn.execute("UPDATE llm_scenario_broker_evidence SET body='{}' WHERE kind='account'")
+    elif failure == 'codec_error':
+        monkeypatch.setattr(refs, 'compact', lambda *args: (_ for _ in ()).throw(RuntimeError('fault')))
+    audit._flush(capture)
+    with sqlite3.connect(path) as conn:
+        stored = conn.execute('SELECT body FROM llm_scenario_audit_events').fetchone()[0]
+        assert refs.read_accounting(stored, conn) == raw
+        if failure:
+            assert json.loads(review_text(stored)) == json.loads(raw)
+        else:
+            assert json.loads(review_text(stored))[refs.TAG] == 1 and len(stored) < len(raw)
+    assert len(forwarded) == 1 and forwarded[0][8] == raw
+
+
+def test_accounting_reference_source_cannot_change_during_commit(tmp_path, monkeypatch):
+    from live import scenario_ledger
+    from utils import btc_accounting_audit_references as refs
+    path, raw, capture = _accounting_audit_fixture(tmp_path)
+    other = sqlite3.connect(path, timeout=0)
+    original = refs.compact
+    attempts = []
+    def concurrent_attempt(*args):
+        with pytest.raises(sqlite3.OperationalError, match='locked'):
+            other.execute("UPDATE llm_scenario_broker_evidence SET body='{}' WHERE kind='account'")
+        attempts.append(True)
+        return original(*args)
+    monkeypatch.setattr(refs, 'compact', concurrent_attempt)
+    monkeypatch.setattr(scenario_ledger, 'forward_audits', lambda events: None)
+    audit._flush(capture)
+    assert attempts == [True]
+    with sqlite3.connect(path) as conn:
+        stored = conn.execute('SELECT body FROM llm_scenario_audit_events').fetchone()[0]
+        assert refs.read_accounting(stored, conn) == raw
+    other.close()
+
+
+def test_audit_writer_factors_only_storage_and_forwards_original(tmp_path, monkeypatch):
+    from live import scenario_ledger
+    from utils.btc_audit_references import TAG, read_audit
+
+    path, raw, capture = _decision_audit_fixture(tmp_path)
+    forwarded = []
+    monkeypatch.setattr(scenario_ledger, 'forward_audits', lambda events: forwarded.extend(events))
+    audit._flush(capture)
+    with sqlite3.connect(path) as conn:
+        stored = conn.execute('SELECT body FROM llm_scenario_audit_events').fetchone()[0]
+        assert json.loads(stored)[TAG] == 1 and len(stored) < len(raw)
+        assert read_audit(stored, conn, 100) == raw
+    assert len(forwarded) == 1 and forwarded[0][8] == raw
+
+
+@pytest.mark.parametrize('failure', ['source_changed', 'codec_error'])
+def test_audit_writer_falls_back_to_full_original(tmp_path, monkeypatch, failure):
+    from live import scenario_ledger
+    from utils import btc_audit_references as refs
+
+    path, raw, capture = _decision_audit_fixture(tmp_path)
+    forwarded = []
+    monkeypatch.setattr(scenario_ledger, 'forward_audits', lambda events: forwarded.extend(events))
+    if failure == 'source_changed':
+        with sqlite3.connect(path) as conn:
+            conn.execute("UPDATE llm_scenario_decisions SET context='{}'")
+    else:
+        monkeypatch.setattr(refs, 'compact', lambda *args: (_ for _ in ()).throw(RuntimeError('fault')))
+    audit._flush(capture)
+    with sqlite3.connect(path) as conn:
+        assert conn.execute('SELECT body FROM llm_scenario_audit_events').fetchone() == (raw,)
+    assert len(forwarded) == 1 and forwarded[0][8] == raw
+
+
+def test_audit_reference_source_cannot_change_during_commit(tmp_path, monkeypatch):
+    from live import scenario_ledger
+    from utils import btc_audit_references as refs
+
+    path, raw, capture = _decision_audit_fixture(tmp_path)
+    original = refs.compact
+    other = sqlite3.connect(path, timeout=0)
+    attempts = []
+
+    def concurrent_attempt(*args):
+        with pytest.raises(sqlite3.OperationalError, match='locked'):
+            other.execute("UPDATE llm_scenario_decisions SET context='{}'")
+        attempts.append(True)
+        return original(*args)
+
+    monkeypatch.setattr(refs, 'compact', concurrent_attempt)
+    monkeypatch.setattr(scenario_ledger, 'forward_audits', lambda events: None)
+    audit._flush(capture)
+    assert attempts == [True]
+    with sqlite3.connect(path) as conn:
+        stored = conn.execute('SELECT body FROM llm_scenario_audit_events').fetchone()[0]
+        assert refs.read_audit(stored, conn, 100) == raw
+    other.close()
+
+
 def test_bounded_and_serialization_failure_do_not_escape(tmp_path):
     conn = sqlite3.connect(tmp_path / 'test.sqlite')
     with audit.run_capture(conn):
@@ -233,13 +369,14 @@ def test_actual_lifecycle_self_contained_funding_and_exact_ids(tmp_path, monkeyp
     from tests.test_scenario_execution import live as fixture
     from tests.test_scenario_execution import test_runtime_broker_partial_adjust_exit_settlement_pipeline as pipeline
     from live.scenario_accounting import reconcile_scenario
+    from utils.btc_accounting_audit_references import read_accounting
     live = fixture.__wrapped__(tmp_path)
     broker, exchange = live
     monkeypatch.setattr(audit.time, 'time', lambda: exchange.now)
     with audit.run_capture(broker.conn):
         pipeline(live)
     events = broker.conn.execute('SELECT kind,scenario_id,intent_id,body FROM llm_scenario_audit_events').fetchall()
-    observations = [json.loads(body) for kind, sid, _, body in events if kind == 'accounting_observation']
+    observations = [json.loads(read_accounting(body, broker.conn)) for kind, sid, _, body in events if kind == 'accounting_observation']
     assert observations
     for observation in observations:
         assert 'observed_execution_fee_evidence' not in observation['result']

@@ -1,10 +1,12 @@
 """Explicit judgment-only timeframe view; raw evidence and historical codecs stay intact."""
 from copy import deepcopy
+import math
 import re
 
-ANALYSIS_FRAMES = ('30m', '1h', '4h', '12h', '1d', '1w')
-PRIMARY_FRAMES = ('30m', '1h')
-_RETIRED_TEXT = re.compile(r'(?<![a-z0-9])15[\s_-]*(?:m(?:in(?:ute)?s?)?|분(?:봉)?)(?![a-z0-9])', re.IGNORECASE)
+ANALYSIS_FRAMES = ('1h', '30m', '4h', '1d', '1w')
+AUTHORITY_FRAMES = ANALYSIS_FRAMES
+PRIMARY_FRAMES = ('1h', '30m')
+_RETIRED_TEXT = re.compile(r'(?<![a-z0-9])(?:(?:[1-9]|[12][0-9])[\s_-]*(?:m(?:in(?:ute)?s?)?|분(?:봉)?)|12[\s_-]*(?:h(?:ours?)?|시간(?:봉)?))(?![a-z0-9])', re.IGNORECASE)
 _OPINIONS = {'reason', 'rationale', 'counterevidence', 'invalidation', 'summary', 'note'}
 
 
@@ -27,13 +29,13 @@ def allowed_evidence_path(path):
         return False
     parts = path.split('.')
     return (not ('volume_acceleration' in parts or 'same_progress_profile' in parts)
-            and (not path.startswith('timeframes.') or len(parts) > 1 and parts[1] in ANALYSIS_FRAMES))
+            and (not path.startswith('timeframes.') or len(parts) > 1 and parts[1] in AUTHORITY_FRAMES))
 
 
 def _schema_frames(value, *, field=None, recovery=False):
     if isinstance(value, dict):
         if field == 'frame' and isinstance(value.get('enum'), list):
-            value['enum'] = [v for v in value['enum'] if v != '15m']
+            value['enum'] = [v for v in value['enum'] if v in AUTHORITY_FRAMES]
         if recovery and field == 'changed_evidence':
             items = value.get('items')
             if isinstance(items, dict) and isinstance(items.get('enum'), list):
@@ -58,7 +60,7 @@ def analysis_model_view(payload):
             if isinstance(issue, str) and _RETIRED_TEXT.search(issue) else issue for issue in market['issues']]
     frames = market.get('timeframes')
     if isinstance(frames, dict):
-        market['timeframes'] = {k:v for k,v in frames.items() if k in ANALYSIS_FRAMES}
+        market['timeframes'] = {k:frames[k] for k in ANALYSIS_FRAMES if k in frames}
         for frame in market['timeframes'].values():
             forming = frame.get('forming') if isinstance(frame, dict) else None
             if isinstance(forming, dict):
@@ -67,6 +69,43 @@ def analysis_model_view(payload):
                 if isinstance(projection, dict):
                     projection.pop('same_progress_profile', None)
     ctx = result.get('contract_context', {})
+    flow = ctx.get('position_flow')
+    if isinstance(flow, dict):
+        # Tick-speed summaries bypass the user's30m minimum judgment boundary.
+        flow.pop('mark_pace', None)
+    # Keep one current-risk authority; promotion arithmetic remains host-only.
+    ctx.pop('seen_action_ids', None)
+    if isinstance(ctx.get('current_plan'), dict):
+        ctx['current_plan'] = {k:v for k,v in ctx['current_plan'].items()
+                               if k not in {'risk','rationale','host_entry_contract_id'}}
+    if (type(ctx.get('recovery_contract_version')) is int
+            and ctx['recovery_contract_version'] in (1,2) and isinstance(ctx.get('recovery'), dict)):
+        ctx['recovery'] = {k:v for k,v in ctx['recovery'].items() if k in {
+            'phase','eligible','consumed','entry_deadline','first_observation','changed_evidence',
+            'one_attempt_only','automatic_normal_resume','current_stage','offered_stage'}}
+    if (ctx.get('scenario_id') is None and not ctx.get('positions')
+            and market.get('valid') is True and isinstance(frames, dict)):
+        for tf in PRIMARY_FRAMES:
+            frame = market['timeframes'].get(tf)
+            if not isinstance(frame, dict) or frame.get('status') != 'ok':
+                continue
+            confirmed, forming = frame.get('confirmed'), frame.get('forming')
+            if (not isinstance(confirmed, dict) or not isinstance(forming, dict)
+                    or forming.get('observation_kind') == 'synthetic_boundary'):
+                continue
+            ohlcv = forming.get('ohlcv')
+            if not isinstance(ohlcv, dict) or confirmed.get('is_confirmed') is not True:
+                continue
+            close, ma, atr = ohlcv.get('close'), confirmed.get('ma10'), confirmed.get('atr14_risk_only')
+            if not all(type(v) in (int, float) and math.isfinite(v) and v > 0 for v in (close, ma, atr)):
+                continue
+            ratio = (close - ma) / atr
+            if math.isfinite(ratio):
+                frame['forming_last_vs_confirmed_ma10_atr'] = round(ratio, 3)
+    if (ctx.get('scenario_id') is not None or ctx.get('positions')) and isinstance(frames, dict):
+        primary = market['timeframes'].get('30m')
+        if isinstance(primary, dict):
+            primary.pop('volume_4d_30m', None)
     structure = ctx.get('ma_structure')
     if isinstance(structure, dict):
         structure['primary'] = {k:v for k,v in structure.get('primary', {}).items() if k in PRIMARY_FRAMES}
@@ -78,7 +117,7 @@ def analysis_model_view(payload):
                 if isinstance(structure.get(key), list):
                     structure[key] = [ref for ref in structure[key] if ref in structure['levels']]
         if 'status' in structure:
-            retained = list(structure.get('primary', {}).values()) + list(structure.get('higher_frames', {}).values())
+            retained = [v for k,v in structure.get('primary', {}).items() if k in PRIMARY_FRAMES] + list(structure.get('higher_frames', {}).values())
             structure['status'] = 'available' if any(row.get('status') == 'available' for row in retained) else 'unavailable'
         structure.get('decision_priority', {})['timing_only'] = []
     facts = ctx.get('current_primary_frame_facts')
@@ -97,7 +136,7 @@ def analysis_model_view(payload):
                 'current_plan', 'recent_actions', 'recent_waits'):
         _omit_retired_opinions(ctx.get(key))
     _schema_frames(result.get('response_contract'))
-    ctx['analysis_frame_policy'] = dict(version=1, frames=list(ANALYSIS_FRAMES),
-        scope='CURRENT_JUDGMENT_ONLY_NO_15M_OR_15M_DERIVED_TIMING',
+    ctx['analysis_frame_policy'] = dict(version=3, frames=list(ANALYSIS_FRAMES),
+        scope='MINIMUM_30M_PRIORITY_1H_30M_4H_1D_1W',
         history='Original contracts/IDs/goal prices/failure rules are immutable history, not current lower-frame evidence.')
     return result

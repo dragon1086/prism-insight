@@ -43,7 +43,8 @@ def main():
     root = Path(__file__).resolve().parents[1]
     os.chdir(root)
     sys.path.insert(0, str(root / "prism-btc"))
-    os.environ["PYTHONPATH"] = str(root / "prism-btc")
+    sys.path.insert(1, str(root))
+    os.environ["PYTHONPATH"] = os.pathsep.join((str(root / "prism-btc"), str(root)))
     import pytest
 
     class Results:

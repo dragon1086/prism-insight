@@ -168,6 +168,8 @@ async def main():
     agent._get_current_stock_price = price
     agent._get_trading_value_rank_change = rank
     agent._extract_trading_scenario = fake_extract
+    import prism_core.reentry_v3_live as reentry_live
+    reentry_live.kis_master_sector = lambda ticker: None  # sector fill: no KIS master read here
     sys.modules["pdf_converter"] = SimpleNamespace(pdf_to_markdown_text=lambda path: report)
     agent._report_meta = {"316140": {"sector_profile": BANK}}
     await agent._analyze_report_core("316140_Example.pdf")

@@ -16,7 +16,7 @@ from engine.indicators import atr, sma
 TIMEFRAME_MS = {"15m": 900_000, "30m": 1_800_000, "1h": 3_600_000,
                 "4h": 14_400_000, "12h": 43_200_000, "1d": 86_400_000,
                 "1w": 604_800_000}
-REQUIRED_TIMEFRAMES = ("15m", "30m", "1h")
+REQUIRED_TIMEFRAMES = ("30m", "1h")
 MONDAY_ANCHOR_MS = 345_600_000
 
 
@@ -246,8 +246,9 @@ def build_scenario_snapshot(
     provisional_tf_data: Mapping[str, pd.DataFrame] | None = None,
     observed_at_ms: int | None = None, max_observation_age_ms: int = 120_000,
     observed_at_by_tf_ms: Mapping[str, int] | None = None,
+    volume_history_30m: pd.DataFrame | None = None,
 ) -> dict:
-    """Build required 15m/30m/1h and optional context facts at a bounded clock.
+    """Build required 30m/1h and optional raw/history context facts at a bounded clock.
 
     ``valid`` requires complete MA history plus fresh explicit forming snapshots
     on all required decision frames. Missing context is reported but not a trading gate.
@@ -297,6 +298,35 @@ def build_scenario_snapshot(
                      **{key: float(row[key]) for key in _OHLCV}}
                     for timestamp, row in history.tail(20).iterrows()
                 ]
+            if tf == "30m" and volume_history_30m is not None and not issues:
+                try:
+                    volume_history = _frame(volume_history_30m, duration)
+                    vstarts = volume_history.index.asi8 // 1_000_000
+                    window = _validate_values(volume_history.loc[vstarts + duration <= current_ms].tail(192))
+                    wstarts = window.index.asi8 // 1_000_000
+                    if (len(window) == 192 and wstarts[-1] == current_start - duration
+                            and all(b - a == duration for a, b in zip(wstarts, wstarts[1:]))):
+                        p90 = [float(window.volume.iloc[i:i + 48].quantile(.9))
+                               for i in range(0, 192, 48)]
+                        medians = [float(window.volume.iloc[i:i + 48].median())
+                                   for i in range(0, 192, 48)]
+                        latest_volume = float(history.volume.iloc[-1])
+                        overall_median = float(window.volume.median())
+                        fact["volume_4d_30m"] = {
+                            "scope": "completed_30m_bars_only_oldest_first",
+                            "window_end_ms": current_start,
+                            "medians_btc": medians,
+                            "overall_median_btc": overall_median,
+                            "latest_closed_over_overall_median": (round(ratio, 3) if overall_median > 0 and math.isfinite(ratio := latest_volume / overall_median) else None),
+                            "p90_btc": p90,
+                            "latest_closed_over_median": [round(ratio, 3) if x > 0 and math.isfinite(ratio := latest_volume / x) else None
+                                                          for x in medians],
+                            "latest_closed_over_p90": [round(ratio, 3) if x > 0 and math.isfinite(ratio := latest_volume / x) else None
+                                                       for x in p90],
+                            "bars_per_window": 48,
+                        }
+                except (TypeError, ValueError):
+                    pass  # Missing optional context never invalidates entry/protection.
             provisional = _frame(provisional_tf_data.get(tf), duration)
             if provisional.empty:
                 issues.append("missing_forming_snapshot")

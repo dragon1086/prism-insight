@@ -90,6 +90,7 @@ import sqlite3
 import sys
 import time
 import uuid
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -432,6 +433,58 @@ def _fetch_ma50(market: str, ticker: str) -> float:
         return 0.0
 
 
+def _fetch_daily_bars(market: str, ticker: str) -> List[Dict[str, Any]]:
+    """Daily closes for the entry-below-MA50 check; [] on failure (TIER1.5 then applies as before)."""
+    from prism_core import runner_hold_live
+    return runner_hold_live.fetch_bars_safe(market, ticker)
+
+
+def on_entry_session(market: str, holding: Dict[str, Any], now: Optional[datetime] = None) -> bool:
+    """Whether the position was bought in the session that is still trading (no close since entry).
+
+    TIER1.5 is a daily-close rule; on the entry day it can only sell an intraday wiggle at the
+    50-day line the entry was bought next to (2026-10-29 108490 50MA -3.3% and 2026-10-30 LITE
+    50MA +1.0%, both re-entries sold at -0.6%/-1.5% within hours). The stop_loss and -7% stop
+    still apply that day. Unknown buy_date keeps TIER1.5 armed.
+    """
+    from prism_core import runner_hold
+    try:
+        entry = runner_hold.entry_session(market, holding.get("buy_date"))
+    except (TypeError, ValueError):
+        return False
+    tz = runner_hold._sessions()[str(market).upper()][0]
+    return entry >= (now or _now()).astimezone(tz).date()
+
+
+def ma50_exit_armed(market: str, holding: Dict[str, Any], bars: List[Dict[str, Any]],
+                    now: Optional[datetime] = None) -> bool:
+    """Whether TIER1.5 (below the 50-day MA while losing) applies to this position.
+
+    A position bought below its 50-day MA (a re-entry retest/rebreak may buy there) gets no
+    new information from being below the line, so TIER1.5 would sell it on any loss the same
+    day (2026-10-29 108490 bought 14:00 at 50MA -3.3%, sold 15:10 at -0.6%). It is managed by
+    its stop_loss and the -7% stop until a completed daily close above the 50-day MA after entry.
+    Unknown history (fewer than 50 closes before entry, no buy_date) keeps TIER1.5 armed.
+    """
+    from prism_core import runner_hold
+    try:
+        entry = runner_hold.entry_session(market, holding.get("buy_date")).isoformat()
+        buy_price = float(holding.get("buy_price") or 0)
+    except (TypeError, ValueError):
+        return True
+    closes = [(b["date"], float(b["close"]))
+              for b in runner_hold.completed_bars(bars, market=market, now=now or _now())]
+    before = [c for d, c in closes if d < entry]
+    if len(before) < 50 or buy_price <= 0:
+        return True
+    if buy_price >= sum(before[-50:]) / 50.0:
+        return True
+    for i, (day, close) in enumerate(closes):
+        if day >= entry and i >= 49 and close > sum(c for _, c in closes[i - 49:i + 1]) / 50.0:
+            return True
+    return False
+
+
 def _compute_live_regime(market: str) -> Optional[str]:
     """Compute the LIVE market regime ONCE per market per cycle, the same way the
     batch does. Returns a regime string (e.g. 'moderate_bull') or None on failure.
@@ -444,8 +497,14 @@ def _compute_live_regime(market: str) -> Optional[str]:
             from cores.data_prefetch import _compute_us_regime
             from prism_core.us_market_data import daily_history
             end = _now().date()
-            sp = daily_history("^GSPC", end - timedelta(days=365), end)
-            computed = _compute_us_regime(sp)
+            # 400 days + NASDAQ: the K8b regime needs ~252 sessions of both indexes, same as the batch.
+            sp = daily_history("^GSPC", end - timedelta(days=400), end)
+            try:
+                ndx = daily_history("^IXIC", end - timedelta(days=400), end)
+            except Exception as e:
+                logger.warning("[US] NASDAQ history for live regime failed: %s", e)
+                ndx = None
+            computed = _compute_us_regime(sp, ndx)
         else:
             from cores import market_data as stock
             from cores.data_prefetch import _compute_kr_regime
@@ -511,8 +570,9 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
     """
     summary = {"market": market, "checked": 0, "signaled": 0, "acted": 0,
                "sold": 0, "shadow": 0, "skipped": 0, "pyramided_skipped": 0,
-               "gated": 0, "runner_held": 0}
-    from cores.oneil_fallback import SellInputs, evaluate_oneil_sell
+               "gated": 0, "runner_held": 0, "entry_below_ma50": 0,
+               "entry_day_ma50": 0}
+    from cores.oneil_fallback import SellInputs, entry_regime_of, evaluate_oneil_sell
     from prism_core import runner_hold, runner_hold_live
     from prism_core.loop_row_split import (
         group_rows_by_account,
@@ -522,6 +582,7 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
     conn = _connect()
     agent = {"ref": None}  # lazily created on first LIVE sell
     ma50_cache: Dict[str, float] = {}  # one fetch per ticker per cycle
+    daily_bars: Dict[str, List[Dict[str, Any]]] = {}  # only fetched when TIER1.5 fires
     regime: Dict[str, Any] = {"value": None, "computed": False}
     # Runner hold rule (docs/RUNNER_HOLD_RULE_ko.md), read-only here: the batch persists
     # the runner block and raises the stop; this loop only skips TIER1.5/2/3 for a
@@ -607,8 +668,24 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                                 market_condition=str(regime["value"] or ""),
                                 regime_is_live=bool(regime["value"]),
                                 ma_50=ma_50,
+                                entry_regime=entry_regime_of(h.get("scenario"), market),
                             )
                             should_sell, reason = evaluate_oneil_sell(inp)
+                            if should_sell and reason.startswith("TIER1.5_MA50") and on_entry_session(market, h):
+                                summary["entry_day_ma50"] += 1
+                                logger.info("[%s] %s bought this session -> TIER1.5 waits for a close, "
+                                            "stop_loss/-7%% manage it (%s)", market, ticker, reason)
+                                should_sell, reason = evaluate_oneil_sell(replace(inp, ma_50=0.0))
+                            if should_sell and reason.startswith("TIER1.5_MA50"):
+                                if ticker not in daily_bars:
+                                    daily_bars[ticker] = await asyncio.to_thread(
+                                        _fetch_daily_bars, market, ticker)
+                                if not ma50_exit_armed(market, h, daily_bars[ticker]):
+                                    summary["entry_below_ma50"] += 1
+                                    logger.info("[%s] %s bought below 50MA and no close above it since "
+                                                "-> TIER1.5 off, stop_loss/-7%% manage it (%s)",
+                                                market, ticker, reason)
+                                    should_sell, reason = evaluate_oneil_sell(replace(inp, ma_50=0.0))
                             if view is not None and view.get("phase"):
                                 if view.get("exit"):
                                     language = "en" if market == "US" else "ko"
@@ -654,7 +731,7 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                         summary["acted"] += 1
                         split = None
                         if len(rows) > 1:
-                            split = splits.setdefault(id(rows), new_split_state(len(rows)))
+                            split = splits.setdefault(id(rows), new_split_state(len(rows), rows))
                         h = dict(h)
                         h["current_price"] = cur_price
                         await _act_on_trigger(conn, market, ticker, h, reason, streak,
@@ -994,6 +1071,7 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
             release_lock(conn, ticker, market, run_id, new_state="HOLDING")
             return
         sell_denominator = split["remaining"] if split is not None else 1
+        sell_fraction = None
 
         if market == "US" and stock_data.get("_oneil_owned_exit") is True:
             # Ownership-specific cancellation/reconciliation belongs to the
@@ -1020,9 +1098,12 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
                 sold_qty = int(live_qty or 0)
                 if split is not None:
                     from prism_core.loop_row_split import split_sell_quantity
-                    sold_qty = split_sell_quantity(split, sold_qty)
-                    logger.info("[%s] %s pyramided row sell: %d shares (snapshot %s, remaining rows=%d)",
-                                market, ticker, sold_qty, split["snapshot"], split["remaining"])
+                    sold_qty = split_sell_quantity(split, sold_qty, row_id=stock_data.get("id"))
+                    sell_denominator = split.pop("last_denominator", sell_denominator)
+                    sell_fraction = split.pop("last_fraction", None)
+                    logger.info("[%s] %s pyramided row sell: %d shares (snapshot %s, remaining rows=%d, reason=%s)",
+                                market, ticker, sold_qty, split["snapshot"], split["remaining"],
+                                split.pop("last_reason", "LEGACY_EQUAL_SPLIT"))
                 if sold_qty <= 0:
                     logger.info("[%s] %s already flat at KIS (qty=0); sim closed", market, ticker)
                 else:
@@ -1098,6 +1179,7 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
                 sell_reason=reason,
                 trade_result={"success": bool(ok or sold_qty == 0), "order_no": order_no},
                 sell_denominator=sell_denominator,
+                sell_fraction=sell_fraction,
             )
         except Exception as e:
             logger.warning("[%s] %s sell signal publish failed (non-critical): %s", market, ticker, e)

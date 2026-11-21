@@ -140,7 +140,7 @@ def test_pyramid_step_scenario_count_duplicates_and_chase_clamp():
     plan, issues = _plan(_scenario(), _scenario())
     assert len(plan["scenarios"]) == 1 and issues == [{"id": "breakout_1", "reason": "DUPLICATE_ID"}]
     plan, issues = _plan(dict(_scenario(), max_chase_pct=5), dict(_scenario("b2"), max_chase_pct=1))
-    assert [s["max_chase_pct"] for s in plan["scenarios"]] == [2.0, 1.0]
+    assert [s["max_chase_pct"] for s in plan["scenarios"]] == [2.0, 1.5]  # 1.0 raised to the floor (2026-11-08)
     assert issues == [{"id": "breakout_1", "reason": "CHASE_CLAMPED"}] and plan["dropped"] == []
     cancelled, _ = P.validate_plan({"cancel": True, "reason": "thesis broken"}, market="KR", source="REVIEW",
                                    created_at=_iso(OPEN), valid_for=SESSION, allocation="0.45", last_step="0.45")
@@ -203,6 +203,31 @@ def test_daily_close_pullback_reclaim_waits_for_the_close():
     undercut = [dict(b) for b in daily]
     undercut[-3]["close"] = 9700
     assert P.evaluate_plan(plan, _state(), dict(close, daily=undercut), now=_now(420))["reasons"]["pullback_1"] == \
+        "ZONE_UNDERCUT"
+
+
+def test_pullback_zone_counts_only_sessions_after_the_rise_through_it():
+    # 2026-11-07: AI writes the zone at a level the stock just rose through (HALO 10/29: entry 117.97, zone
+    # 126.03-127.21). Closes below the zone on the way up voided every such October scenario (ZONE_UNDERCUT).
+    pullback = _scenario("pullback_1", "pullback_reclaim", 0.55, zone_low=9800, zone_high=9950,
+                         reclaim_above=10100, confirm="daily_close")
+    plan, issues = _plan(pullback, _scenario(price_above=11000))
+    assert issues == []
+    closes = [9500] * 14 + [9600, 9700, 9900, 10050, 10000, 9960]  # rises through the zone, then dips into it
+    lows = [9450] * 14 + [9550, 9650, 9850, 9900, 9980, 9900]
+    rise = _daily(closes=closes, lows=lows)
+    close = dict(_evidence(closes=(10200, 10210), price=10210, daily=rise), phase="CLOSE", price=10150,
+                 today_daily={"date": SESSION, "open": 9990, "high": 10200, "low": 9970, "close": 10150, "volume": 1200})
+    decision = P.evaluate_plan(plan, _state(), close, now=_now(420))
+    assert decision["action"] == "ADD" and decision["scenario_id"] == "pullback_1"
+    # The rise-through bar's own low is not a pullback: no later low at or below zone_high -> not touched.
+    no_dip = _daily(closes=closes[:17] + [10050, 10100, 10120], lows=lows[:17] + [9900, 10010, 10030])
+    no_dip_close = dict(close, daily=no_dip, today_daily=dict(close["today_daily"], low=10040))
+    assert P.evaluate_plan(plan, _state(), no_dip_close, now=_now(420))["reasons"]["pullback_1"] == "ZONE_NOT_TOUCHED"
+    # A close below zone_low after the rise still voids the scenario.
+    broken = [dict(b) for b in rise]
+    broken[-2]["close"] = 9750
+    assert P.evaluate_plan(plan, _state(), dict(close, daily=broken), now=_now(420))["reasons"]["pullback_1"] == \
         "ZONE_UNDERCUT"
 
 
@@ -710,3 +735,98 @@ def test_tomorrows_review_plan_does_not_replace_todays_plan():
         plan, _ = _plan(valid_for=day, source="REVIEW")
         P.store(block, plan, [], raw={"d": day}, source="REVIEW", created_at=day)
     assert sorted(block["add_plans"]) == ["2026-10-07", "2026-10-08", "2026-10-09"]
+
+
+def test_add_planned_event_keeps_trigger_levels_and_chase_limits(monkeypatch):
+    """The ledger keeps each scenario's numbers so a blocked add can be replayed after the row's plan rolls off."""
+    from prism_core import micro_split_live as live
+    import observability.events as events
+    sent = []
+    monkeypatch.setattr(events, "emit_event", lambda name, **kw: sent.append((name, kw)) or {"ok": 1})
+    plan, issues = _plan(dict(_scenario(), max_chase_pct=1.0), _scenario("accel_1", "acceleration", 0.65, gap_up_min_pct=3))
+    assert plan["status"] == "ACTIVE"
+    live._emit_planned(market="KR", ticker="000001", position_id=None, block={"allocation": "0.45"}, plan=plan,
+                       issues=issues, decision_id="d-1")
+    (name, kw), = sent
+    scenario, = [s for s in kw["attributes"]["scenarios"] if s["id"] == "breakout_1"]
+    assert name == "micro_split.add_planned"
+    assert scenario["trigger"]["price_above"] == 10400 and scenario["max_chase_pct"] == 1.5  # AI wrote 1.0; raised to the 1.5% floor (2026-11-08)
+    assert scenario["max_chase_pct_written"] == 1.0
+    assert scenario["type"] == "breakout" and scenario["target_allocation"] == "0.60"
+    assert json.loads(json.dumps(events._sanitize(kw["attributes"])))["scenarios"][0]["trigger"]["price_above"] == 10400
+
+
+def test_worker_records_each_scenarios_wait_reasons_once_at_the_close(live_worker):
+    # 2026-11-08: only rail blocks reached the ledger; a review could not see why a scenario waited all day.
+    worker = live_worker.worker
+    worker.providers["add_inputs"] = lambda symbol, at, phase, plan, pace_above=None: _evidence(
+        closes=(10300, 10350), price=10350)
+    assert _plan_rows(worker.once())[0]["status"] == "WAIT"
+    assert not [n for n, _ in live_worker.emitted if n == "micro_split.add_plan_day_summary"]  # not before the close
+    worker.providers["session_open"] = lambda moment: False
+    worker.providers["close_ready"] = lambda moment: SESSION
+    worker.providers["add_inputs"] = lambda symbol, at, phase, plan, pace_above=None: dict(
+        _evidence(phase="CLOSE", price=10350), today_daily={"date": SESSION, "open": 10000, "high": 10380,
+                                                            "low": 9990, "close": 10350, "volume": 900})
+    worker.once()
+    summaries = [kw["attributes"] for n, kw in live_worker.emitted if n == "micro_split.add_plan_day_summary"]
+    assert len(summaries) == 1
+    summary = summaries[0]
+    assert summary["evaluations"] == 2 and summary["outcome"] == "WAIT" and summary["session_date"] == SESSION
+    assert summary["scenarios"]["breakout_1"]["reasons"].get("PRICE_NOT_ABOVE", 0) >= 1
+    assert summary["added"] == [] and summary["plan_hash"]
+    kinds = [r[0] for r in sqlite3.connect(live_worker.store.path).execute("SELECT kind FROM b3_events")]
+    assert "add_plan.day_summary" in kinds
+    worker.once()  # the close runs once per session: no second summary
+    assert len([n for n, _ in live_worker.emitted if n == "micro_split.add_plan_day_summary"]) == 1
+
+def test_chase_limit_is_raised_to_the_floor_and_capped():
+    # 2026-11-08: AI-written 0.3-1% limits blocked strong add days (팬오션 +12% day); floor 1.5%, cap 2.0%.
+    for written, stored in ((0.3, 1.5), (1.0, 1.5), (1.8, 1.8), (2.0, 2.0), (3.0, 2.0)):
+        plan, _ = _plan(dict(_scenario(), max_chase_pct=written), _scenario("b2", price_above=10600))
+        assert plan["scenarios"][0]["max_chase_pct"] == stored, written
+        assert plan["scenarios"][0]["max_chase_pct_written"] == written      # the AI's value stays reviewable
+    plan, _ = _plan(dict(_scenario(), max_chase_pct=0.5), _scenario("b2", price_above=10600))
+    # 10400 x 1.015 = 10556: a 1.2% chase now adds, 1.6% does not.
+    assert P.evaluate_plan(plan, _state(), _evidence(closes=(10450, 10525), price=10525), now=_now())["action"] == "ADD"
+    assert P.evaluate_plan(plan, _state(), _evidence(closes=(10450, 10570), price=10570),
+                           now=_now())["reasons"]["breakout_1"] == "CHASE_LIMIT"
+
+
+# ------------------------------------------- close confirmation before the close (2026-11-10)
+
+def test_provisional_close_paces_volume_against_the_same_elapsed_time():
+    """Judged at 15:20 the day's volume is partial, so the pace uses the matched cumulative volume."""
+    from prism_core.b3_ae_worker import provisional_daily
+    plan, _ = _plan(_scenario(target=0.70, price_above=10800), _scenario("b2", target=0.70, price_above=12000))
+    base = _evidence(phase="CLOSE", price=10850, closes=(10820, 10850))   # 12 bars x volume 10 = 120 so far
+    today = provisional_daily(base["today_bars"], 10850, SESSION, base["open_at"])
+    assert today["close"] == 10850 and today["volume"] == 120 and today["provisional"]
+    paced = dict(base, today_daily=today,
+                 prior_cumulative={"end_at": base["today_bars"][-1]["end_at"], "samples": [75] * 20})
+    decision = P.evaluate_plan(plan, _added_today(), paced, now=_now(420))
+    assert decision["action"] == "ADD" and decision["acceleration"]["volume_pace"] == 1.6
+    # Without the matched curve the partial volume is never read as a full day's multiple.
+    unpaced = P.evaluate_plan(plan, _added_today(), dict(base, today_daily=today), now=_now(420))
+    assert unpaced["acceleration"]["reason"] == "VOLUME_PACE_UNAVAILABLE"
+
+
+def test_provisional_close_needs_the_opening_bar_and_a_price():
+    from prism_core.b3_ae_worker import provisional_daily
+    bars = _evidence()["today_bars"]
+    assert provisional_daily(bars[1:], 10460, SESSION, _iso(OPEN)) is None
+    assert provisional_daily(bars, None, SESSION, _iso(OPEN)) is None
+    assert provisional_daily(bars, 10460, SESSION, _iso(OPEN))["open"] == 10000
+    kr_quote = provisional_daily(bars, "10460", SESSION, _iso(OPEN))  # KR quote price is a string
+    assert kr_quote["close"] == 10460.0 and kr_quote["high"] >= kr_quote["close"] >= kr_quote["low"]
+
+
+@pytest.mark.parametrize("market, close_at, inside, outside", [
+    ("KR", datetime(2026, 10, 5, 15, 30, tzinfo=SEOUL), [(15, 20, 0), (15, 27, 59)], [(15, 19, 59), (15, 28, 0), (16, 0, 0)]),
+    ("US", datetime(2026, 10, 5, 16, 0, tzinfo=NY), [(15, 45, 0), (15, 57, 59)], [(15, 44, 59), (15, 58, 0), (16, 15, 0)]),
+])
+def test_close_confirmation_window_is_before_the_close(market, close_at, inside, outside):
+    from prism_core.b3_ae_worker import in_close_window
+    at = lambda h, m, s: close_at.replace(hour=h, minute=m, second=s)  # noqa: E731
+    assert all(in_close_window(market, at(*t), close_at) for t in inside)
+    assert not any(in_close_window(market, at(*t), close_at) for t in outside)

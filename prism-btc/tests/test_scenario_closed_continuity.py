@@ -108,15 +108,17 @@ def test_exit_scan_is_bounded_and_does_not_reuse_stale_opinion(closed):
     assert build_closed_continuity(conn,state,1200)['exit_opinion']['status']=='UNAVAILABLE'
 
 
-def test_retired_opinion_is_omitted_but_original_contract_stays_historical(closed):
+@pytest.mark.parametrize('frame', ['5m', '15m', '30m'])
+def test_retired_opinion_is_omitted_but_original_contract_stays_historical(closed, frame):
     from live.scenario_analysis_frames import analysis_model_view
     conn,state,_,_=closed
     history=build_closed_continuity(conn,state,1200)
-    history['exit_opinion']['rationale']='15m crossed with 2.99x volume'
+    history['exit_opinion']['rationale']=frame+' crossed with 2.99x volume'
     original=deepcopy(history)
     view=analysis_model_view(dict(contract_context=dict(last_closed_trade=history)))
     delivered=view['contract_context']['last_closed_trade']
-    assert delivered['exit_opinion']['rationale']=='OMITTED_RETIRED_TIMEFRAME_OPINION'
+    expected = 'OMITTED_RETIRED_TIMEFRAME_OPINION' if frame in {'5m','15m'} else history['exit_opinion']['rationale']
+    assert delivered['exit_opinion']['rationale'] == expected
     assert delivered['original_contract']==history['original_contract']
     assert history==original
 
@@ -176,13 +178,12 @@ def test_runtime_constructs_missing_continuity_in_frozen_context(tmp_path):
 
 
 def test_stage_a_reasoning_preserves_fast_breaks_and_failed_exit():
-    from live.scenario_llm import SYSTEM_PROMPT,FLAT_ENTRY_PROMPT,MA_STRUCTURE_PROMPT
-    all_text=' '.join((SYSTEM_PROMPT+FLAT_ENTRY_PROMPT+MA_STRUCTURE_PROMPT).split())
-    for phrase in ('independent current price progress', 'Risk capacity and small size are not evidence',
-                   'holding advantage from merely NOT FAILED', 'early failure EXIT',
-                   'no fixed crossing width or duration applies', 'without a mandatory candle close or retest',
-                   'including a supported MA10-to-MA35 traverse'):
-        assert phrase in all_text
+    from live.scenario_llm import system_instructions
+    text=' '.join(system_instructions(dict(scenario_id=None,positions=[],pending_entries=[],entry_contract_version=2)).split())
+    for phrase in ('A prior loss, elapsed time or changing numbers alone creates no edge',
+                   'Already supported progress needs no habitual extra close',
+                   'FAILED requires the allowed full EXIT','never repair a contradiction in prose'):
+        assert phrase in text
 
 
 @pytest.mark.parametrize('fault',['future_exit','other_contract','wrong_intent_input'])

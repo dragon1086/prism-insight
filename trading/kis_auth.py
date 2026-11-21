@@ -826,6 +826,8 @@ class CrossPlatformFileLock:
 
 
 # ============== Retry Logic for Token Request ==============
+KIS_ISSUE_LIMIT_ERROR = "EGW00133"
+KIS_ISSUE_LIMIT_WAIT = 61  # seconds; the limit window is one minute
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=2, min=5, max=60),
@@ -840,14 +842,25 @@ def _request_token_with_retry(url: str, params: dict, headers: dict) -> dict:
     - Does NOT retry on 401/403 (authentication failures)
     - Raises TokenRequestError on failure
     """
-    try:
-        res = requests.post(url, data=json.dumps(params), headers=headers, timeout=30)
-    except requests.RequestException as e:
-        logging.warning(f"Token request network error (will retry): {e}")
-        raise
+    for waited in (False, True):
+        try:
+            res = requests.post(url, data=json.dumps(params), headers=headers, timeout=30)
+        except requests.RequestException as e:
+            logging.warning(f"Token request network error (will retry): {e}")
+            raise
 
-    if res.status_code == 200:
-        return res.json()
+        if res.status_code == 200:
+            return res.json()
+
+        # KIS issues one token per app key per minute. The file lock covers this host only; another
+        # host with the same key (app-server dashboard cron, 11:05) may have just issued, and KIS then
+        # returns that same token to us once the minute has passed.
+        if res.status_code == 403 and KIS_ISSUE_LIMIT_ERROR in res.text and not waited:
+            logging.warning(f"KIS token issue rate-limited ({KIS_ISSUE_LIMIT_ERROR}); "
+                            f"retrying in {KIS_ISSUE_LIMIT_WAIT}s")
+            time.sleep(KIS_ISSUE_LIMIT_WAIT)
+            continue
+        break
 
     # Non-retryable authentication errors
     if res.status_code in (401, 403):
@@ -1122,40 +1135,46 @@ def auth(
     saved_token = read_token(account_key=account_key)
 
     if saved_token is None:
-        # No valid token - request new one
-        token_url = f"{_cfg[svr]}/oauth2/tokenP"
-        logging.info(f"Requesting new token from KIS API ({svr} mode)...")
+        # KIS allows one token issue per minute (EGW00133): serialize issuance across processes and
+        # re-read, since a concurrent job (e.g. news titles at the same cron minute) may have just saved one.
+        with CrossPlatformFileLock(os.path.join(config_root, ".token_issue.lock"),
+                                   timeout=KIS_ISSUE_LIMIT_WAIT + 30):
+            saved_token = read_token(account_key=account_key)
+            if saved_token is None:
+                # No valid token - request new one
+                token_url = f"{_cfg[svr]}/oauth2/tokenP"
+                logging.info(f"Requesting new token from KIS API ({svr} mode)...")
 
-        try:
-            # Use retry logic for transient failures
-            result = _request_token_with_retry(token_url, p, _getBaseHeader())
+                try:
+                    # Use retry logic for transient failures
+                    result = _request_token_with_retry(token_url, p, _getBaseHeader())
 
-            my_token = result.get("access_token")
-            my_expired = result.get("access_token_token_expired")
+                    my_token = result.get("access_token")
+                    my_expired = result.get("access_token_token_expired")
 
-            if not my_token or not my_expired:
-                raise TokenRequestError(
-                    "Invalid response from KIS API: missing token or expiry",
-                    status_code=200,
-                    response_text=str(result)
-                )
+                    if not my_token or not my_expired:
+                        raise TokenRequestError(
+                            "Invalid response from KIS API: missing token or expiry",
+                            status_code=200,
+                            response_text=str(result)
+                        )
 
-            # Save the new token (per-account if account_key provided)
-            save_token(my_token, my_expired, account_key=account_key)
-            logging.info(f"✅ New token obtained and saved (expires: {my_expired})")
+                    # Save the new token (per-account if account_key provided)
+                    save_token(my_token, my_expired, account_key=account_key)
+                    logging.info(f"✅ New token obtained and saved (expires: {my_expired})")
 
-        except TokenRequestError as e:
-            logging.error(f"❌ Token request failed: {e}")
-            logging.error(f"   Status Code: {e.status_code}")
-            logging.error(f"   Response: {e.response_text}")
-            # Re-raise with clear error message
-            raise
+                except TokenRequestError as e:
+                    logging.error(f"❌ Token request failed: {e}")
+                    logging.error(f"   Status Code: {e.status_code}")
+                    logging.error(f"   Response: {e.response_text}")
+                    # Re-raise with clear error message
+                    raise
 
-        except Exception as e:
-            logging.error(f"❌ Unexpected error during token request: {e}")
-            raise TokenRequestError(f"Unexpected error: {e}")
+                except Exception as e:
+                    logging.error(f"❌ Unexpected error during token request: {e}")
+                    raise TokenRequestError(f"Unexpected error: {e}")
 
-    else:
+    if saved_token is not None:
         my_token = saved_token
         logging.info("✅ Using existing valid token")
 

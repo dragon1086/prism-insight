@@ -7,6 +7,21 @@ from backtest.scenario_data import HistoricalScenarioData
 from engine.scenario_snapshot import TIMEFRAME_MS, candle_start
 
 
+def test_replay_does_not_emit_to_shared_observability_spool(tmp_path, monkeypatch):
+    from analysis import scenario_replay
+    from observability.events import emit_event
+    spool = tmp_path / 'events.jsonl'
+    monkeypatch.setenv('PRISM_OBSERVABILITY_SPOOL', str(spool))
+    def fake_replay(*args, **kwargs):
+        emit_event('btc.scenario.settlement_recorded', service='fixture')
+        return {'status': 'fixture'}
+    monkeypatch.setattr(scenario_replay, '_run_replay', fake_replay)
+    assert run_replay(None, None, None)['status'] == 'fixture'
+    assert not spool.exists()
+    emit_event('btc.scenario.decision_input', service='demo')
+    assert spool.exists()
+
+
 def inputs(duration_ms=600000):
     start=1790899200000;end=start+duration_ms
     index=pd.to_datetime(range(start-86400000,end,60000),unit='ms',utc=True)
@@ -91,7 +106,7 @@ def test_assembled_prompt_hashes_use_actual_wire_utf8_basis():
     from live.scenario_llm import SYSTEM_PROMPT, MA_STRUCTURE_PROMPT, FLAT_ENTRY_PROMPT
     b,_=inputs()
     contract=contract_for(b,'OHLC',1.,10000.)
-    assert (contract['model'],contract['effort']) == ('gpt-6.1-sol','low')
+    assert (contract['model'],contract['effort']) == ('gpt-6.1-terra','low')
     assert contract['assembled_prompt_hash_basis']=='sha256_utf8'
     assert contract['assembled_prompt_hashes']['active']==hashlib.sha256((SYSTEM_PROMPT+MA_STRUCTURE_PROMPT).encode()).hexdigest()
     assert contract['assembled_prompt_hashes']['flat']==hashlib.sha256((SYSTEM_PROMPT+MA_STRUCTURE_PROMPT+FLAT_ENTRY_PROMPT).encode()).hexdigest()
@@ -110,7 +125,16 @@ def test_offline_network_boundary_denies_exchange_socket():
     assert blocked==['blocked_network']
 
 
-def test_real_runtime_simulated_open_exit_and_exact_tape_replay(tmp_path):
+def test_real_runtime_simulated_open_exit_and_exact_tape_replay(tmp_path, monkeypatch):
+    from observability import events
+    spool=tmp_path/'shared-events.jsonl'
+    monkeypatch.setenv('PRISM_OBSERVABILITY_SPOOL', str(spool))
+    calls=[]
+    original=events.emit_event
+    def capture(*args, **kwargs):
+        calls.append(args[0])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(events, 'emit_event', capture)
     b,m=inputs();tape=tmp_path/'trade-tape'
     def policy(s,c):
         base=dict(wait_policy(s,c),scenario_id=c['scenario_id'] or 'fixture-trade',
@@ -124,6 +148,8 @@ def test_real_runtime_simulated_open_exit_and_exact_tape_replay(tmp_path):
         first=run_replay(b,m,tmp_path/'open',mode='fixture',tape_path=tape,policy=policy)
         second=run_replay(b,m,tmp_path/'copy',mode='frozen',tape_path=tape)
     assert not blocked
+    assert calls
+    assert not spool.exists()
     assert first['economic']['completed_scenarios']==1
     assert first['economic']['fees']>0 and first['economic']['open_quantity']==0
     assert first['result_hash']==second['result_hash']
@@ -338,12 +364,15 @@ def test_exact_assembled_request_envelope_and_identity_scope_restore(tmp_path):
         assert request['user_prompt']==call['user_prompt']
         assert 'ma_structure' in json.loads(request['user_prompt'])['contract_context']
         assert request['input_projection']
-        assert row['raw_response']['wire_metadata']==dict(model='gpt-6.1-sol',effort='low',fast=True)
+        assert row['raw_response']['wire_metadata']==dict(model='gpt-6.1-terra',effort='low',fast=False)
     journals=[]
+    from live.scenario_review_storage import review_text
+    from utils.btc_recovery_references import read_recovery
     for name in ('audit','audit-frozen'):
         with sqlite3.connect(tmp_path/name/'replay.sqlite') as conn:
-            journals.append([(kind,json.loads(body)) for kind,body in conn.execute(
-                "SELECT kind,body FROM llm_scenario_recovery_events WHERE kind IN ('MODEL_REQUEST','MODEL_RAW') ORDER BY rowid")])
+            journals.append([(kind,json.loads(read_recovery(body, conn, slot, decode_legacy=review_text, expected_kind=kind)))
+                             for slot,kind,body in conn.execute(
+                "SELECT slot,kind,body FROM llm_scenario_recovery_events WHERE kind IN ('MODEL_REQUEST','MODEL_RAW') ORDER BY rowid")])
     assert journals[0]==journals[1]
     with pytest.raises(ValueError):
         run_replay(b,m,tmp_path/'badmode',mode='invalid',tape_path=tmp_path/'unused')

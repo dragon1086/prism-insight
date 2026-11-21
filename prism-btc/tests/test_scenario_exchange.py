@@ -20,6 +20,102 @@ def order(s, side="Buy", qty="1", price="100", **kw):
     return s.place_order(**args)["result"]["orderId"]
 
 
+@pytest.mark.parametrize("attachment", [
+    {"takeProfit": "110", "stopLoss": "95", "tpslMode": "Full"},
+    {"stopLoss": "95", "tpslMode": "Partial"},
+    {"stopLoss": "95", "tpslMode": "Full", "slTriggerBy": "LastPrice"},
+    {"stopLoss": "95", "tpslMode": "Full", "slTriggerBy": "MarkPrice", "slOrderType": "Limit"},
+])
+def test_unsupported_attached_exits_never_create_a_simulated_order(attachment):
+    s = session()
+    with pytest.raises(ValueError, match="attached exit not simulated"):
+        order(s, **attachment)
+    assert not s.orders and not s.writes
+
+
+@pytest.mark.parametrize("extra", [{"takeProfit": "110"}, {"takeProfit": "0"},
+                                   {"trailingStop": "10"}, {"trailingStop": "0"},
+                                   {"activePrice": "110"}])
+def test_unsupported_trading_stop_exit_is_not_silently_ignored(extra):
+    s = session()
+    with pytest.raises(ValueError, match="attached exit not simulated"):
+        s.set_trading_stop(tpslMode="Full", slTriggerBy="MarkPrice", stopLoss="95", **extra)
+    assert not s.writes and not s._queue
+
+
+@pytest.mark.parametrize("change", [{"takeProfit": "110"}, {"takeProfit": "0"},
+                                    {"stopLoss": "95"}, {"stopLoss": "0"}])
+def test_unsupported_exit_amendment_is_not_silently_ignored(change):
+    s = session()
+    ident = order(s)
+    before = list(s.writes)
+    with pytest.raises(ValueError, match="exit amendment not simulated"):
+        s.amend_order(orderId=ident, **change)
+    assert s.writes == before and not s._queue
+@pytest.mark.parametrize('side,limit,first,second', [('Buy', '100', 100, 99), ('Sell', '100', 100, 101)])
+def test_post_only_crossing_is_cancelled_without_a_fill(side, limit, first, second):
+    s = session()
+    ident = order(s, side=side, price=limit, timeInForce='PostOnly')
+    s.advance(100, first, first, 1000)
+    s.advance(200, second, second, 1000)
+    assert s.orders[ident]['orderStatus'] == 'Cancelled'
+    assert not s.executions
+
+
+@pytest.mark.parametrize('side,first,second', [('Buy', 101, 99), ('Sell', 99, 101)])
+def test_post_only_resting_order_can_fill_as_maker(side, first, second):
+    s = session()
+    ident = order(s, side=side, timeInForce='PostOnly')
+    s.advance(100, first, first, 1000)
+    assert s.orders[ident]['orderStatus'] == 'New'
+    s.advance(200, second, second, 1000)
+    assert s.orders[ident]['orderStatus'] == 'Filled'
+    assert s.executions[-1]['isMaker'] is True
+
+
+def test_post_only_crossing_cancels_even_without_fill_capacity():
+    s = session()
+    ident = order(s, timeInForce='PostOnly')
+    s.advance(100, 100, 100, 0)
+    assert s.orders[ident]['orderStatus'] == 'Cancelled'
+    assert not s.executions
+
+
+def test_post_only_requires_limit():
+    s = session()
+    with pytest.raises(ValueError, match='PostOnly requires'):
+        order(s, orderType='Market', timeInForce='PostOnly')
+
+
+def test_post_only_checks_the_synthetic_opposite_quote():
+    s = OfflineBybitSession(slippage_bps=0, spread=.02, maker_fee=0, taker_fee=0)
+    ident = order(s, timeInForce='PostOnly')
+    s.advance(100, 100, 100, 1000)  # synthetic ask is 101
+    assert s.orders[ident]['orderStatus'] == 'New'
+    s.advance(200, 99, 99, 1000)
+    assert s.executions[-1]['isMaker'] is True
+
+
+def test_post_only_checks_quote_when_order_becomes_active():
+    s = session(entry_latency_ms=200)
+    ident = order(s, timeInForce='PostOnly')
+    s.advance(100, 100, 100, 1000)
+    assert s.orders[ident]['orderStatus'] == 'New'
+    s.advance(200, 100, 100, 1000)
+    assert s.orders[ident]['orderStatus'] == 'Cancelled'
+    assert not s.executions
+
+
+def test_post_only_amendment_that_crosses_is_cancelled():
+    s = session()
+    ident = order(s, price='99', timeInForce='PostOnly')
+    s.advance(100, 100, 100, 1000)
+    s.amend_order(orderId=ident, price='101')
+    s.advance(200, 100, 100, 1000)
+    assert s.orders[ident]['orderStatus'] == 'Cancelled'
+    assert not s.executions
+
+
 @pytest.mark.parametrize("side,exit_price", [("Buy", 110), ("Sell", 90)])
 def test_long_short_realized_fees_and_marked_equity(side, exit_price):
     s = OfflineBybitSession(slippage_bps=0, spread=0, maker_fee=.001, taker_fee=.002)

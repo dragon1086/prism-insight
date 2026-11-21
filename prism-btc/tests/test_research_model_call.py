@@ -11,6 +11,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import tools.btc_research_model_call as research_model_call
+
+
+@pytest.fixture(autouse=True)
+def offline_runtime_readiness(monkeypatch):
+    monkeypatch.setattr(research_model_call, '_runtime_readiness', lambda phase, timeout: {'status': 'PASSED', 'phase': phase})
+    monkeypatch.setattr(research_model_call, '_readiness_still_safe', lambda proof, phase, timeout: None)
+
 from live import scenario_oauth
 from tools.btc_research_call_guard import CallGuard, CallGuardError
 from tools.btc_research_model_call import GuardedModelCall, MAX_BYTES
@@ -21,7 +30,7 @@ ENDPOINT = "http://127.0.0.1:18741/v1/responses"
 
 def request(**updates):
     return dict(system_prompt="research", user_prompt="frozen input", model="gpt-6-luna",
-                reasoning_effort="high", fast_tier=True, timeout=10,
+                reasoning_effort="high", fast_tier=False, timeout=10,
                 response_schema={"type": "object", "properties": {}}, **updates)
 
 
@@ -277,3 +286,11 @@ def test_two_arms_cap_race_never_more_than_one_http(tmp_path):
     assert len(opened) <= 1
     assert g.snapshot()["reserved_attempts"] <= 1
     assert g.snapshot()["actual_http_calls"] == len(opened)
+
+
+def test_guard_preserves_overload_category_instead_of_masking_it(tmp_path):
+    body=json.dumps(dict(status='failed',error=dict(code='server_is_overloaded',headers={'retry-after':'321'}))).encode()
+    g,call,events,opened=setup(tmp_path,open_url=lambda *a,**k:Response(body))
+    with pytest.raises(ValueError,match='scenario_oauth_failed:overloaded')as error:call(**request())
+    assert error.value.retry_after_seconds==321
+    assert g.snapshot()['actual_http_calls']==1 and g.snapshot()['stopped']

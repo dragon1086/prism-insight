@@ -13,6 +13,7 @@ from live.scenario_model_input import restore_model_input
 from live.scenario_preview import response_contract
 from tests.test_scenario_calculated_review import context, wire
 from tests.test_scenario_ma_context import NOW, point
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def gap_snapshot(side, provisional=True, *, stationary=False, include_4h=True):
@@ -33,48 +34,31 @@ def gap_snapshot(side, provisional=True, *, stationary=False, include_4h=True):
 
 
 def test_gap_policy_keeps_bounded_thesis_and_existing_host_authority():
-    policy = ' '.join(MA_STRUCTURE_PROMPT.split())
-    for clause in (
-        'gap is still WIDENING',
-        'LONG: MA10 < MA35, actual price rises from below MA10',
-        'SHORT: MA10 > MA35, actual price falls from above MA10',
-        'Do not require convergence, a divergence peak, an MA-order crossover, full trend reversal',
-        'prior MA35 touch/rejection, another closed bar or an additional retest',
-        'Width or WIDENING alone is insufficient',
-        'moving MA passing stationary price',
-        'prefer 1h and available 4h over 30m',
-        'does not replace the global directional priority',
-        "market_snapshot.timeframes['4h'].ma_path own-time points",
-        'host-calculated costs and structural invalidation',
-        'size within the existing risk cap',
-        'No fixed gap threshold or invented probability',
-        'For a NEW gap candidate as well as its holdings',
-        'compare exits at/before MA35 or a nearer actual obstacle',
-        'takes precedence over generic runner/allocation defaults for this setup only',
-        'use existing BREAKOUT regime',
-        'with entry_contract_version=1',
-        'Without version 1, describe the purpose in existing rationale only',
-        'only authoritative numeric failure rule',
-        'do not assume extension beyond MA35',
-        'Arrival/touch alone is not automatic FAILED or EXIT',
-        'Never relabel pre-existing or legacy holdings',
-        'SHORT: rebound above MA10, failed advance at MA35',
-        'LONG: pullback below MA10, defense at MA35',
-    ):
-        assert clause in policy
-    assert entry_contract_schema()['properties']['regime']['enum'] == ['TREND', 'BREAKOUT', 'RANGE']
-    assert '1h > 30m > 4h > 12h > 1d > 1w' in SYSTEM_PROMPT
+    from live.scenario_llm import FLAT_ENTRY_PROMPT,entry_contract_prompt
+    assert 'MA10-MA35 traversal' in FLAT_ENTRY_PROMPT
+    assert 'do not relabel a bounded move' in FLAT_ENTRY_PROMPT
+    assert 'A widening gap alone is not a strong trend' in MA_STRUCTURE_PROMPT
+    assert 'no habitual extra close, crossover or retest' in FLAT_ENTRY_PROMPT
+    assert 'BOUNDED_BEFORE' in entry_contract_prompt({'entry_contract_version':2})
+    assert entry_contract_schema()['properties']['regime']['enum'] == ['TREND','BREAKOUT','RANGE']
+    v1,v2=entry_contract_schema(1),entry_contract_schema(2)
+    assert 'expected_progress' in v1['required'] and 'goal' not in v1['properties']
+    assert 'goal' in v2['required'] and 'expected_progress' not in v2['properties']
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('provisional', [False, True])
-@pytest.mark.parametrize('contract_version', [None, 1])
+@pytest.mark.parametrize('contract_version', [None, 1, 2])
 def test_widening_price_crossing_survives_both_actual_review_requests(side, provisional, contract_version):
     ctx = context()
     ctx.update(now=NOW / 1000, input_captured_at=NOW / 1000, account_captured_at=NOW / 1000)
     if contract_version:
         ctx['entry_contract_version'] = contract_version
     snap = gap_snapshot(side, provisional)
+    if contract_version == 2:
+        from live.scenario_entry_goal import prepare_goal_source
+        ctx['entry_goal_decision_slot'] = NOW // 300000
+        prepare_goal_source(snap, ctx)
     original = deepcopy((snap, ctx))
     calls = []
 
@@ -102,12 +86,17 @@ def test_widening_price_crossing_survives_both_actual_review_requests(side, prov
                 premise = definition(side)
                 premise.update(premise='1h MA10 local breakout into widening gap',
                                expected_progress='Bounded traversal toward MA35, not a full reversal')
+                if contract_version == 2:
+                    premise['version'] = 2
+                    premise.pop('expected_progress')
+                    premise['goal'] = dict(mode='BOUNDED_BEFORE', reference=dict(
+                        frame='1h', phase='forming' if provisional else 'confirmed', ma='ma35'))
                 candidate.update(entry_contract=premise, thesis_assessment=None)
                 wait.update(entry_contract=None, thesis_assessment=None)
             reply = dict(wait_proposal=wait, candidates=[candidate], no_candidate_reason='')
         else:
             candidate = next(c for c in payload['calculated_candidates']['candidates'] if c['eligible'])
-            reply = dict(selection_token=f"{candidate['id']}:{candidate['receipt_sha256']}", rationale='fixture')
+            reply = dict(selection_token=f"{candidate['id']}:{model_receipt_hash(candidate)}", rationale='fixture')
         return SimpleNamespace(text=json.dumps(reply))
 
     result = research_review(snap, ctx, response_contract(ctx), generate=generate,
@@ -118,7 +107,7 @@ def test_widening_price_crossing_survives_both_actual_review_requests(side, prov
     assert (snap, ctx) == original
 
 
-@pytest.mark.parametrize('contract_version', [None, 1])
+@pytest.mark.parametrize('contract_version', [None, 1, 2])
 def test_single_request_keeps_gap_policy_and_legacy_wire_compatibility(contract_version):
     from live.scenario_llm import propose
     ctx = context()

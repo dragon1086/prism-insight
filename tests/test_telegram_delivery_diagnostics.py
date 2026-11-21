@@ -85,3 +85,46 @@ async def test_new_caller_with_old_loaded_helper_does_not_leak_metadata(monkeypa
     agent = caller.TelegramBotAgent.__new__(caller.TelegramBotAgent)
     agent.bot = object()
     assert await agent.send_message("chat", "message", msg_type="analysis") is True
+
+
+@pytest.mark.asyncio
+async def test_broadcast_resends_one_unknown_then_stops(isolated_spool):
+    # es channel read timeouts, 2026-10-29: translated broadcasts prefer a rare duplicate to a miss.
+    sent = SimpleNamespace(message_id=7)
+    bot = SimpleNamespace(send_message=AsyncMock(side_effect=[TimedOut("x"), sent]))
+    assert await send_message_once_or_rate_retry(bot, chat_id=1, text="t", resend_unknown_once=True) is sent
+    assert bot.send_message.await_count == 2
+
+    bot = SimpleNamespace(send_message=AsyncMock(side_effect=[TimedOut("x"), TimedOut("x"), sent]))
+    with pytest.raises(TelegramDeliveryUnknown):
+        await send_message_once_or_rate_retry(bot, chat_id=1, text="t", resend_unknown_once=True)
+    assert bot.send_message.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_bot_agent_resends_only_broadcast_sends(isolated_spool):
+    # en channel US summary read_error, 2026-10-29 23:26.
+    from telegram_bot_agent import TelegramBotAgent
+
+    agent = TelegramBotAgent.__new__(TelegramBotAgent)
+    sent = SimpleNamespace(message_id=7)
+    agent.bot = SimpleNamespace(send_message=AsyncMock(side_effect=[TimedOut("x"), sent]))
+    assert await agent.send_message(1, "t", broadcast=True) is True
+    assert agent.bot.send_message.await_count == 2
+
+    agent.bot = SimpleNamespace(send_message=AsyncMock(side_effect=[TimedOut("x"), sent]))
+    assert await agent.send_message(1, "t") is False
+    assert agent.bot.send_message.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_markdown_parse_rejection_retried_as_plain_text_is_a_warning(isolated_spool, caplog):
+    # US afternoon es/en summaries, 2026-10-30 03:46: plain-text retry delivered, alert was noise.
+    from telegram.error import BadRequest
+    from telegram_bot_agent import TelegramBotAgent
+
+    agent = TelegramBotAgent.__new__(TelegramBotAgent)
+    agent.bot = SimpleNamespace(send_message=AsyncMock(side_effect=[
+        BadRequest("Can't parse entities: can't find end of the entity"), SimpleNamespace(message_id=7)]))
+    assert await agent.send_message(1, "*t") is True
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]

@@ -11,6 +11,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
+import requests
 
 pd = pytest.importorskip("pandas")
 
@@ -310,6 +311,30 @@ def test_rate_limit_gives_up_after_retries(monkeypatch):
     assert len(client.calls) == 3
 
 
+_EXPIRED = '{"rt_cd":"1","msg1":"기간이 만료된 token 입니다.","msg_cd":"EGW00123"}'
+
+
+def test_expired_token_rebuilds_client_once(monkeypatch):
+    """2026-11-04 10:15 B3 KR worker: the cached client kept an expired token until restart."""
+    monkeypatch.setattr("cores.market_data.kis_source.sleep", lambda _s: pytest.fail("slept"))
+    stale, fresh = _RateLimitedThenOk(99, error=_EXPIRED), _FakeClient([[_price_row("20260803")]])
+    source = _source(stale)
+    monkeypatch.setattr(source, "_trading", lambda: source._client or (setattr(source, "_client", fresh) or fresh))
+    frame = source.price_history("005930", "20260803", "20260803")
+    assert frame.loc["2026-08-03", "Close"] == 1000
+    assert len(stale.calls) == 1 and source._client is fresh
+
+
+def test_expired_token_twice_raises(monkeypatch):
+    monkeypatch.setattr("cores.market_data.kis_source.sleep", lambda _s: pytest.fail("slept"))
+    stale, again = _RateLimitedThenOk(99, error=_EXPIRED), _RateLimitedThenOk(99, error=_EXPIRED)
+    source = _source(stale)
+    monkeypatch.setattr(source, "_trading", lambda: source._client or (setattr(source, "_client", again) or again))
+    with pytest.raises(Unavailable, match="EGW00123"):
+        source.price_history("005930", "20260803", "20260803")
+    assert len(stale.calls) == 1 and len(again.calls) == 1
+
+
 def test_other_refusal_is_not_retried(monkeypatch):
     monkeypatch.setattr("cores.market_data.kis_source.sleep", lambda _s: pytest.fail("slept"))
     client = _RateLimitedThenOk(99, error="조회할 자료가 없습니다")
@@ -377,3 +402,43 @@ def test_rejection_includes_the_kis_reason():
     client = _FakeClient(ok=False, error="초당 거래건수를 초과하였습니다")
     with pytest.raises(Unavailable, match="초당 거래건수"):
         _source(client).price_history("005930", "20260803", "20260803")
+
+
+class _DroppedThenOk(_FakeClient):
+    def __init__(self, drops, exc=None):
+        super().__init__([[_price_row("20260803")]])
+        self.drops = drops
+        self.exc = exc or requests.exceptions.ConnectionError(
+            "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))")
+
+    def _request(self, api_url, tr_id, params):
+        if self.drops:
+            self.drops -= 1
+            self.calls.append(params)
+            raise self.exc
+        return super()._request(api_url, tr_id, params)
+
+
+def test_dropped_connection_is_retried(monkeypatch):
+    """2026-10-30: one dropped connection left the KOSPI index (RS line) out of a chart."""
+    waits = []
+    monkeypatch.setattr("cores.market_data.kis_source.sleep", waits.append)
+    frame = _source(_DroppedThenOk(1)).price_history("005930", "20260803", "20260803")
+    assert frame.loc["2026-08-03", "Close"] == 1000
+    assert waits == [0.5]
+
+
+def test_dropped_connection_gives_up_after_retries(monkeypatch):
+    monkeypatch.setattr("cores.market_data.kis_source.sleep", lambda _s: None)
+    client = _DroppedThenOk(99)
+    with pytest.raises(Unavailable, match="Connection aborted"):
+        _source(client).price_history("005930", "20260803", "20260803")
+    assert len(client.calls) == 3
+
+
+def test_other_transport_error_is_not_retried(monkeypatch):
+    monkeypatch.setattr("cores.market_data.kis_source.sleep", lambda _s: pytest.fail("slept"))
+    client = _DroppedThenOk(99, exc=RuntimeError("auth failed"))
+    with pytest.raises(Unavailable, match="auth failed"):
+        _source(client).price_history("005930", "20260803", "20260803")
+    assert len(client.calls) == 1

@@ -171,14 +171,33 @@ def prepare(broker, payload, ident):
                 or child["request"].get("side") != ("Sell" if active["side"] == "LONG" else "Buy")):
             broker._fail("reduce_source_terms_invalid")
         quota = decimal(order["leavesQty"])
-        if quota <= 0 or quota > q:
+        if quota <= 0:
             broker._fail("reduce_source_quota_invalid")
         sources.append(dict(link_id=child["link_id"], order_id=child["order_id"],
                             kind=child["kind"], request=child["request"],
                             quota=str(quota), filled=str(decimal(order["cumExecQty"]))))
-    if any(sum((decimal(s["quota"]) for s in sources if s["kind"] == kind), Decimal(0)) > q
-           for kind in ("tp", "partial_sl")):
-        broker._fail("reduce_source_quota_invalid")
+    group_quotas = {kind: sum((decimal(s["quota"]) for s in sources if s["kind"] == kind), Decimal(0))
+                    for kind in ("tp", "partial_sl")}
+    if any(total > q for total in group_quotas.values()):
+        # A fill in the other exit group can leave reduce-only quotas above current size.
+        owned_fills = {}
+        for child in children:
+            if child["kind"] != "entry":
+                continue
+            for fill in child["evidence"].get("executions", []):
+                if fill.get("execType") != "Trade":
+                    continue
+                exec_id = fill.get("execId")
+                quantity = decimal(fill.get("execQty"))
+                if (not isinstance(exec_id, str) or not exec_id or exec_id in owned_fills or quantity <= 0
+                        or fill.get("orderId") != child["order_id"]
+                        or fill.get("symbol") != "BTCUSDT"
+                        or fill.get("side") != ("Buy" if active["side"] == "LONG" else "Sell")):
+                    broker._fail("reduce_source_quota_invalid")
+                owned_fills[exec_id] = quantity
+        owned = sum(owned_fills.values(), Decimal(0))
+        if q > owned or any(total > owned for total in group_quotas.values()):
+            broker._fail("reduce_source_quota_invalid")
     native_stops = [dict(link_id=c["link_id"], order_id=c["order_id"])
                     for c in children if c["kind"] == "native_sl" and c["status"] == "LIVE"]
     if not native_stops:
@@ -315,14 +334,17 @@ def execute(broker, payload, ident):
         original_remaining = decimal(body["remaining_quantity"])
         # Fixed restoration quotas survive retries and racing restored fills.
         allocated = {"tp": Decimal(0), "partial_sl": Decimal(0)}
+        totals = {kind: sum((decimal(s["unfilled"]) for s in body["sources"] if s["kind"] == kind), Decimal(0))
+                  for kind in allocated}
         for source in body["sources"]:
             observed, size = _observation(broker, body)
             if source['link_id'] in body.get('rejected_restorations', {}):
                 continue
             quota = decimal(source["unfilled"])
-            quantity = (quota * original_remaining / basis / instrument["step"]).to_integral_value(rounding=ROUND_DOWN) * instrument["step"] if basis else Decimal(0)
-            quantity = min(quantity, quota)
             kind = source["kind"]
+            denominator = max(basis, totals[kind])
+            quantity = (quota * original_remaining / denominator / instrument["step"]).to_integral_value(rounding=ROUND_DOWN) * instrument["step"] if denominator else Decimal(0)
+            quantity = min(quantity, quota)
             allocated[kind] += quantity
             if allocated[kind] > original_remaining or quantity > instrument["maximum"]:
                 broker._fail("reduce_restore_quota_invalid")

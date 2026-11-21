@@ -44,11 +44,12 @@ def review_policy_binding(*, research_mode="legacy"):
                       scenario_review_guard, scenario_llm, scenario_oauth, scenario_contract,
                       scenario_model_input, scenario_preview, scenario_runtime,
                       scenario_entry_contract, scenario_position_flow, scenario_pending_renewal, scenario_entry_goal,
-                      scenario_entry_display, scenario_analysis_frames, scenario_explanation, scenario_fee_projection,
+                      scenario_entry_display, scenario_analysis_frames, scenario_explanation, scenario_fee_projection, scenario_entry_economics, scenario_entry_geometry, scenario_entry_plans,
                       scenario_review_storage)
     from core import scenario_limit_prices, llm_scenario, scenario_stop_policy, scenario_convergence
     from core import scenario_pending_renewal as pending_renewal_core
     from engine import scenario_ma_context, scenario_snapshot
+    from utils import btc_review_references
 
     root = Path(__file__).resolve().parents[1]
     modules = {
@@ -72,12 +73,16 @@ def review_policy_binding(*, research_mode="legacy"):
         'engine/scenario_snapshot.py': scenario_snapshot,
         'live/scenario_runtime.py': scenario_runtime,
         'live/scenario_review_storage.py': scenario_review_storage,
+        'utils/btc_review_references.py': btc_review_references,
         'live/scenario_entry_contract.py': scenario_entry_contract,
         'live/scenario_entry_goal.py': scenario_entry_goal,
         'live/scenario_entry_display.py': scenario_entry_display,
         'live/scenario_analysis_frames.py': scenario_analysis_frames,
         'live/scenario_explanation.py': scenario_explanation,
         'live/scenario_fee_projection.py': scenario_fee_projection,
+        'live/scenario_entry_economics.py': scenario_entry_economics,
+        'live/scenario_entry_geometry.py': scenario_entry_geometry,
+        'live/scenario_entry_plans.py': scenario_entry_plans,
         'live/scenario_position_flow.py': scenario_position_flow,
         'live/scenario_immediate_reduce.py': scenario_immediate_reduce,
         'live/scenario_management_quarantine.py': scenario_management_quarantine,
@@ -96,7 +101,7 @@ def review_policy_binding(*, research_mode="legacy"):
     for name, module in modules.items():
         if sys.modules.get(name.removesuffix('.py').replace('/', '.')) is not module:
             raise ValueError('review_mixed_loaded_policy')
-        source = (root / name).read_text()
+        source = ((root.parent if name.startswith('utils/') else root) / name).read_text()
         sources[name] = hashlib.sha256(source.encode()).hexdigest()
         parity[name] = _loaded_parity(name, source)
     if set(parity.values()) != {'VERIFIED'}:
@@ -196,12 +201,16 @@ def _loaded_parity(name, source, selected=None):
 
 
 def _manifest():
+    # Pure optional adapter must also be loaded before legacy provenance checks.
+    from live import scenario_entry_geometry
+    if sys.modules.get('live.scenario_entry_geometry') is not scenario_entry_geometry:
+        raise ValueError('review_mixed_loaded_policy')
     root = Path(__file__).resolve().parents[1]
     policy_files = ['core/scenario_convergence.py', 'live/scenario_llm.py', 'live/scenario_contract.py',
                     'live/scenario_recovery.py',
                     'live/scenario_review_memory.py',
                     'live/scenario_runner_economics.py',
-                    'live/scenario_fee_projection.py',
+                    'live/scenario_fee_projection.py', 'live/scenario_entry_economics.py', 'live/scenario_entry_geometry.py',
                     'live/scenario_management_quarantine.py',
                     'live/scenario_incident_epoch.py',
                     'live/scenario_entry_thesis.py',
@@ -248,6 +257,15 @@ def _manifest():
             judgment_parity[name] = _loaded_parity(name, source, {context_name})
             execution_parity[name] = _loaded_parity(name, source, execution_names)
         parity[name] = _loaded_parity(name, source, selected_names)
+    # Pending-renewal execution may resolve a referenced review tape through this module.
+    from utils import btc_review_references
+    helper_name = 'utils/btc_review_references.py'
+    if sys.modules.get('utils.btc_review_references') is not btc_review_references:
+        raise ValueError('review_mixed_loaded_policy')
+    helper_source = (root.parent / helper_name).read_text()
+    sources[helper_name] = hashlib.sha256(helper_source.encode()).hexdigest()
+    execution[helper_name] = ast.dump(ast.parse(helper_source), include_attributes=False)
+    execution_parity[helper_name] = parity[helper_name] = _loaded_parity(helper_name, helper_source)
     # Recovery contains both judgment evidence and execution authorization.
     execution['live/scenario_recovery.py'] = policy['live/scenario_recovery.py']
     execution_parity['live/scenario_recovery.py'] = judgment_parity['live/scenario_recovery.py']
@@ -466,7 +484,39 @@ def _flush(capture):
                 if not row or json.loads(row[0]) != body['settlement']:
                     _gap()
                     continue
-            conn.execute('INSERT OR IGNORE INTO llm_scenario_audit_events VALUES (?,?,?,?,?,?,?,?,?)', event)
+            stored_event = event
+            if event[2] == 'decision_input' and type(event[6]) is int:
+                try:
+                    from utils.btc_audit_references import compact, read_audit
+                    row = conn.execute('SELECT snapshot,context FROM llm_scenario_decisions WHERE slot=?',
+                                       (event[6],)).fetchone()
+                    if row:
+                        candidate = compact(event[8], row[0], row[1])
+                        if candidate != event[8] and read_audit(candidate, conn, event[6]) == event[8]:
+                            stored_event = (*event[:8], candidate)
+                except Exception:
+                    # Optional deduplication must not discard the original audit.
+                    stored_event = event
+            elif event[2] == 'accounting_observation':
+                try:
+                    from utils.btc_accounting_audit_references import compact, compact_children, read_accounting
+                    candidate = compact(event[8], conn, event[3])
+                    candidate = compact_children(candidate, conn)
+                    if candidate != event[8] and read_accounting(candidate, conn) == event[8]:
+                        stored_event = (*event[:8], candidate)
+                except Exception:
+                    # Optional deduplication must not discard the original audit.
+                    stored_event = event
+                try:
+                    from live.scenario_review_storage import review_storage
+                    from utils.btc_accounting_audit_references import read_accounting
+                    packed = review_storage(stored_event[8])
+                    if packed != stored_event[8] and read_accounting(packed, conn) == event[8]:
+                        stored_event = (*stored_event[:8], packed)
+                except Exception:
+                    # Optional compression must not discard the original audit.
+                    stored_event = event
+            conn.execute('INSERT OR IGNORE INTO llm_scenario_audit_events VALUES (?,?,?,?,?,?,?,?,?)', stored_event)
             written.append(event)
     # Committed rows only; the ClickStack copy is a bounded, ID-free summary.
     try:

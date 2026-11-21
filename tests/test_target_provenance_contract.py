@@ -141,8 +141,9 @@ def test_full_report_is_evidence_not_a_new_rejection_source(relative):
     text = (Path(__file__).resolve().parents[1] / relative).read_text()
     assert '새로운 미진입 사유·감점·점수 기준을 만들지 마십시오' in text
     assert 'Do not derive a new rejection reason, penalty or score rule from it' in text
-    assert text.count('existing standalone reason 4') == 1
-    assert text.count('기존 단독 사유 4로 다룰 수 있습니다') == 1
+    # 2026-11-11 prompt diet (audit M1): reason 1 (-10% support) removed, so the risk-event reason is now 3.
+    assert text.count('existing standalone reason 3') == 1 and 'standalone reason 4' not in text
+    assert text.count('기존 단독 사유 3으로 다룰 수 있습니다') == 1 and '단독 사유 4로' not in text
 
 
 @pytest.mark.parametrize('language', ['ko', 'en'])

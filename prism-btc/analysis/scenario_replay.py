@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from copy import deepcopy
 from contextlib import contextmanager
 import hashlib
 import json
@@ -41,6 +42,15 @@ from live.shared_entry_coordinator import mutation_lock
 
 ROOT=Path(__file__).resolve().parents[2]
 POLICY_PROFILES = {
+    "deployed-main-v3": {"recovery_enabled": True, "automatic_normalization_enabled": True,
+        "entry_contract_enabled": True, "entry_goal_enabled": True, "pending_renewal_enabled": True,
+        "convergence_entry_enabled": True},
+    "deployed-cost-reference-v4": {"recovery_enabled": True, "automatic_normalization_enabled": True,
+        "entry_contract_enabled": True, "entry_goal_enabled": True, "pending_renewal_enabled": True,
+        "convergence_entry_enabled": True},
+    "deployed-entry-plans-v5": {"recovery_enabled": True, "automatic_normalization_enabled": True,
+        "entry_contract_enabled": True, "entry_goal_enabled": True, "pending_renewal_enabled": True,
+        "convergence_entry_enabled": True},
     "current-live-v2": {"recovery_enabled": True, "automatic_normalization_enabled": True},
     "legacy-no-recovery": {"recovery_enabled": False, "automatic_normalization_enabled": False},
     "single-pass-economic-v4": {"recovery_enabled": True, "automatic_normalization_enabled": True},
@@ -91,6 +101,12 @@ RUNTIME_EVENT_QUERIES = {
 
 def _runtime_event_hash(conn):
     from live.scenario_review_storage import review_text
+    from utils.btc_review_event_references import read_event
+    from utils.btc_review_references import read_tape
+    from utils.btc_financial_references import restore as restore_financial
+    from utils.btc_audit_references import read_audit
+    from utils.btc_accounting_audit_references import read_accounting
+    from utils.btc_recovery_references import read_recovery
     event_tables = {}
     for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'llm_scenario%' ORDER BY name"):
         # Schema completeness is part of the hash contract, not optional coverage.
@@ -99,9 +115,39 @@ def _runtime_event_hash(conn):
         cursor = conn.execute(RUNTIME_EVENT_QUERIES[name])
         columns = [field[0] for field in cursor.description]
         rows = cursor.fetchall()
-        if name in ('llm_scenario_review_events', 'llm_scenario_review_tapes', 'llm_scenario_recovery_events') and 'body' in columns:
+        if name == 'llm_scenario_decisions' and 'snapshot' in columns:
+            index = columns.index('snapshot')
+            rows = [tuple(review_text(value) if i == index and value is not None else value
+                          for i, value in enumerate(row)) for row in rows]
+        if name in ('llm_scenario_review_events', 'llm_scenario_review_tapes') and 'body' in columns:
             index = columns.index('body')
-            rows = [tuple(review_text(value) if i == index else value
+            slot_index = columns.index('slot')
+            sequence_index = columns.index('sequence') if name == 'llm_scenario_review_events' else None
+            rows = [tuple((read_tape(value, conn, row[slot_index], decode_legacy=review_text)
+                           if sequence_index is None else read_event(value, conn, row[slot_index], row[sequence_index],
+                                                                     decode_legacy=review_text)) if i == index else value
+                          for i, value in enumerate(row)) for row in rows]
+        if name == 'llm_scenario_recovery_events' and 'body' in columns:
+            index = columns.index('body')
+            slot_index = columns.index('slot') if 'slot' in columns else None
+            kind_index = columns.index('kind') if 'kind' in columns else None
+            rows = [tuple((read_recovery(value, conn, row[slot_index] if slot_index is not None else None,
+                                         decode_legacy=review_text,
+                                         expected_kind=row[kind_index] if kind_index is not None else None)
+                           if kind_index is None or row[kind_index] in ('MODEL_REQUEST', 'MODEL_RAW', 'INPUT') else review_text(value))
+                          if i == index else value
+                          for i, value in enumerate(row)) for row in rows]
+        if name == 'llm_scenario_broker_evidence' and {'body', 'kind'} <= set(columns):
+            index = columns.index('body')
+            kind_index = columns.index('kind')
+            rows = [tuple((restore_financial(value) if row[kind_index] == 'financial' else
+                           review_text(value) if row[kind_index] == 'account' else value) if i == index else value
+                          for i, value in enumerate(row)) for row in rows]
+        if name == 'llm_scenario_audit_events' and {'body', 'kind', 'decision_slot'} <= set(columns):
+            index, kind_index, slot_index = (columns.index(k) for k in ('body', 'kind', 'decision_slot'))
+            rows = [tuple((read_audit(value, conn, row[slot_index]) if row[kind_index] == 'decision_input'
+                           else read_accounting(value, conn) if row[kind_index] == 'accounting_observation' else value)
+                          if i == index else value
                           for i, value in enumerate(row)) for row in rows]
         event_tables[name] = dict(columns=columns, rows=rows)
     return digest(event_tables)
@@ -176,9 +222,45 @@ def network_boundary(mode,endpoint=None):
     finally:active[0]=False
 
 
+def validated_fee_seed(seed, start_ms):
+    from live.scenario_fee_projection import verified_taker_rate
+    if seed is None:
+        return None
+    if (not isinstance(seed, dict) or set(seed)!={'observed_at','evidence','source_sha256','provenance'}
+            or seed['provenance']!='OBSERVED_HISTORICAL_ACCOUNT_CONTEXT'
+            or type(seed['observed_at']) not in (int,float) or not math.isfinite(seed['observed_at'])
+            or not 0<seed['observed_at']<=start_ms/1000
+            or not isinstance(seed['source_sha256'],str) or len(seed['source_sha256'])!=64
+            or any(c not in '0123456789abcdef' for c in seed['source_sha256'])
+            or len(json.dumps(seed,allow_nan=False).encode())>8192):
+        raise ValueError('initial_fee_seed_invalid')
+    verified_taker_rate(seed['evidence'],seed['observed_at'])
+    verified_taker_rate(seed['evidence'],start_ms/1000)
+    return deepcopy(seed)
+
+
+def window_decision_slots(bundle, windows):
+    """Freeze 30m reviews throughout each window, with a normal tick before it."""
+    if not isinstance(windows, list) or not windows:
+        raise ValueError('invalid_review_windows')
+    slots = set()
+    for window in windows:
+        if not isinstance(window, dict):
+            raise ValueError('invalid_review_windows')
+        start, end = window.get('start_ms'), window.get('end_ms')
+        if (type(start) is not int or type(end) is not int
+                or start % 300000 or end % 300000
+                or not bundle['start_ms'] <= start - 300000 < start < end < bundle['end_ms']
+                or (end - start) % 1800000):
+            raise ValueError('invalid_review_windows')
+        slots.add(start - 300000)
+        slots.update(range(start, end + 1, 1800000))
+    return sorted(slots)
+
+
 def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy_profile="current-live-v2",
                  initial_state="fresh-unblocked", *, observed_manifest=None,
-                 market_input_mode="historical", allow_input_gaps=False):
+                 market_input_mode="historical", allow_input_gaps=False, initial_fee_context=None, decision_slots_ms=None, holding_review_slots_ms=None):
     if policy_profile not in POLICY_PROFILES:
         raise ValueError("explicit_replay_policy_profile_required")
     if initial_state not in {"fresh-unblocked","recovery-stage0"}:
@@ -189,6 +271,18 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
         raise ValueError("observed_input_contract_required")
     if observed_manifest is not None and market_input_mode not in {"observed", "reconstructed_at_observed_schedule"}:
         raise ValueError("explicit_observed_input_mode_required")
+    if initial_fee_context is not None and policy_profile not in {'deployed-main-v3','deployed-cost-reference-v4','deployed-entry-plans-v5'}:
+        raise ValueError('initial_fee_seed_requires_explicit_profile')
+    fee_seed=validated_fee_seed(initial_fee_context,bundle['start_ms'])
+    if decision_slots_ms is not None and (not isinstance(decision_slots_ms,list) or not decision_slots_ms
+            or any(type(t) is not int or t%300000 or not bundle['start_ms']<=t<bundle['end_ms'] for t in decision_slots_ms)
+            or sorted(set(decision_slots_ms))!=decision_slots_ms or market_input_mode!='historical'):
+        raise ValueError('invalid_sampled_decision_schedule')
+    if holding_review_slots_ms is not None and (decision_slots_ms is None
+            or not isinstance(holding_review_slots_ms,list) or not holding_review_slots_ms
+            or any(type(t) is not int or t%300000 or not bundle['start_ms']<=t<bundle['end_ms'] for t in holding_review_slots_ms)
+            or sorted(set(holding_review_slots_ms))!=holding_review_slots_ms):
+        raise ValueError('invalid_conditional_holding_schedule')
     package=ROOT/"prism-btc"
     sources={str(p.relative_to(package)):hashlib.sha256(p.read_bytes()).hexdigest()
              for p in sorted(package.rglob("*.py")) if "tests" not in p.relative_to(package).parts}
@@ -205,14 +299,14 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
                                  "flat":hashlib.sha256((SYSTEM_PROMPT+MA_STRUCTURE_PROMPT+FLAT_ENTRY_PROMPT).encode()).hexdigest()},
         request_audit="EXACT_ASSEMBLED_REQUEST_IN_TAPE_RAW_ENVELOPE;FIXTURE_EXPLICITLY_SYNTHETIC",
         start_ms=bundle["start_ms"],end_ms=bundle["end_ms"],path=path,initial_equity=initial_equity,
-        model=scenario_llm.MODEL,effort=scenario_llm.EFFORT,tier="fast",prompt_hash=hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
+        model=scenario_llm.MODEL,effort=scenario_llm.EFFORT,tier="default",prompt_hash=hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
         source_hashes=sources,runtime_versions={"python":sys.version.split()[0],"pandas":pd.__version__,"numpy":np.__version__},
         costs=dict(maker_fee=.0002*cost_multiplier,taker_fee=.00055*cost_multiplier,
                    slippage=.0005*cost_multiplier,spread=.0001,participation=.01),
         latencies=dict(entry=5000,market=5000,cancel=2000,amend=2000,model="measured_and_taped_ms"),
         decision_interval_ms=300000,protection_interval_ms=60000,
         terminal_policy="NO_FORCED_CLOSE_MARK_OPEN_POSITION",liquidity="previous_minute_volume_shared_across_four_path_points")
-    if policy_profile == "economic-reject-goal-v2":
+    if policy_profile in {"economic-reject-goal-v2", "deployed-main-v3", "deployed-cost-reference-v4", "deployed-entry-plans-v5"}:
         contract["context_contracts"].update(entry_contract_version=2, pending_renewal_version=1, entry_convergence_version=1)
     if policy_profile in ECONOMIC_PROFILES:
         import inspect
@@ -224,7 +318,7 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
             phase_contracts={"profile":policy_profile,
                 "schema_builder_sha256":hashlib.sha256(inspect.getsource(response_schema).encode()).hexdigest(),
                 "SINGLE_PASS":hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest()})
-        if policy_profile == "economic-reject-goal-v2":
+        if policy_profile in {"economic-reject-goal-v2", "deployed-main-v3", "deployed-cost-reference-v4", "deployed-entry-plans-v5"}:
             contract["identity_scheme"] = "EXACT_REPLAY_UUID5_CALLSITE_PID0_V2"
         if policy_profile in REVIEW_PROFILES:
             from live.scenario_calculated_review import DRAFT_PROMPT, SELECT_PROMPT, research_review
@@ -274,6 +368,20 @@ def contract_for(bundle,path,cost_multiplier,initial_equity,origin="luna",policy
             clock="OBSERVED_AVAILABILITY_BEFORE_SIMULATED_CONTEXT",
             account_source="INDEPENDENT_SIMULATED_ACCOUNT_ONLY"),
             replay_scope="HYBRID_OBSERVED_INPUT_ASSUMED_EXECUTION")
+    if policy_profile in {'deployed-main-v3','deployed-cost-reference-v4','deployed-entry-plans-v5'}:
+        contract['broker_flags']={'entry_economics_enabled':True}
+        if policy_profile in {'deployed-cost-reference-v4','deployed-entry-plans-v5'}:
+            contract['broker_flags']['entry_fee_reference_enabled']=True
+        if policy_profile=='deployed-entry-plans-v5':
+            contract['broker_flags'].update(prepared_entry_plans_enabled=True,convergence_entry_enabled=True)
+        contract['initial_fee_context']=fee_seed
+        contract['fee_seed_scope']='OBSERVED_RATE_ASSUMPTION_PSEUDONYMOUS_OFFLINE_UID_NO_TRADES_OR_PNL'
+    if decision_slots_ms is not None:
+        contract['sampled_model_decision_slots_ms']=decision_slots_ms.copy()
+        contract['between_model_samples']='NATIVE_PROTECTION_AND_RECONCILIATION_ONLY_NO_FORCED_CLOSE'
+    if holding_review_slots_ms is not None:
+        contract['conditional_holding_review_slots_ms']=holding_review_slots_ms.copy()
+        contract['between_model_samples']='NATIVE_PROTECTION_WITH_REGISTERED_FILLED_POSITION_REVIEWS_NO_FORCED_CLOSE'
     return contract
 
 
@@ -358,8 +466,9 @@ class Driver:
 
 def _single_pass_audit_rows(conn, slot):
     from live.scenario_review_storage import review_text
+    from utils.btc_recovery_references import read_recovery
     rows = conn.execute("SELECT kind,body FROM llm_scenario_recovery_events WHERE slot=? AND kind IN ('MODEL_REQUEST','MODEL_RAW') ORDER BY rowid", (slot,)).fetchall()
-    rows = [(kind, review_text(body)) for kind, body in rows]
+    rows = [(kind, read_recovery(body, conn, slot, decode_legacy=review_text, expected_kind=kind)) for kind, body in rows]
     groups = {kind: [body for row_kind, body in rows if row_kind == kind]
               for kind in ('MODEL_REQUEST', 'MODEL_RAW')}
     if (any(len(group) > 1 for group in groups.values())
@@ -485,8 +594,11 @@ class Decisions:
 
 
 def run_replay(bundle,market,output,**kwargs):
-    with replay_identity_scope(economic=kwargs.get("policy_profile", "") in ECONOMIC_PROFILES,
-                               stable_process_id=kwargs.get("policy_profile") == "economic-reject-goal-v2"):
+    if str(ROOT) not in sys.path:
+        sys.path.append(str(ROOT))
+    from observability.events import suppress_events
+    with suppress_events(), replay_identity_scope(economic=kwargs.get("policy_profile", "") in ECONOMIC_PROFILES,
+                               stable_process_id=kwargs.get("policy_profile") in {"economic-reject-goal-v2", "deployed-main-v3", "deployed-cost-reference-v4", "deployed-entry-plans-v5"}):
         return _run_replay(bundle,market,output,**kwargs)
 
 
@@ -494,8 +606,11 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
                initial_equity=10000.,policy=None,model_generator=None,max_decisions=288,
                policy_profile="current-live-v2",initial_state="fresh-unblocked",clock_monotonic=None,
                observed_packet=None,observed_packet_sha256=None,market_input_mode="historical",
-               allow_input_gaps=False,before_http=None,failure_callback=None):
+               allow_input_gaps=False,before_http=None,failure_callback=None,
+               before_decision=None,initial_fee_context=None,decision_slots_ms=None,holding_review_slots_ms=None):
     """No production paths accepted; fresh DB per run and explicit data provenance."""
+    if before_decision is not None and (not callable(before_decision) or mode=='frozen'):
+        raise ValueError('external_decision_wait_requires_fresh_or_fixture')
     if mode not in {"fresh","frozen","fixture"} or path not in {"OHLC","OLHC"}:
         raise ValueError("explicit_replay_mode_required")
     if mode=="fixture" and policy is None and not (policy_profile in ECONOMIC_PROFILES and model_generator is not None):
@@ -529,20 +644,22 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
                     captured = market.snapshot(item["slot"]*300000)
                     if (not captured.get("valid") or any(
                         item["available_at_ms"]-captured["timeframes"][tf]["forming"]["observed_at_ms"] > 120000
-                        for tf in ("15m","30m","1h"))):
+                        for tf in ("30m","1h"))):
                         raise ValueError("reconstructed_snapshot_stale_at_observed_schedule")
     else:
         raise ValueError("explicit_observed_input_mode_required")
     origin="fixture" if mode=="fixture" else "luna"
     if mode=="frozen":
-        header=json.loads(Path(tape_path).read_text().splitlines()[0])
+        from analysis.scenario_calculated_replay import read_tape_text
+        text=read_tape_text(tape_path) if policy_profile in ECONOMIC_PROFILES else Path(tape_path).read_text()
+        header=json.loads(text.splitlines()[0])
         if header["contract"].get("schema") != (4 if policy_profile in ECONOMIC_PROFILES else 3 if observed is not None else 2):
             raise TapeMismatch("legacy_tape_requires_original_code; record_explicit_legacy-no-recovery_profile_for_new_comparison")
         origin=header["contract"]["decision_origin"]
         if origin not in {"fixture","luna"}:raise ValueError("unknown_decision_origin")
     contract=contract_for(bundle,path,cost_multiplier,initial_equity,origin,policy_profile,initial_state,
         observed_manifest=observed.manifest() if observed is not None else None,
-        market_input_mode=market_input_mode,allow_input_gaps=allow_input_gaps)
+        market_input_mode=market_input_mode,allow_input_gaps=allow_input_gaps,initial_fee_context=initial_fee_context,decision_slots_ms=decision_slots_ms,holding_review_slots_ms=holding_review_slots_ms)
     output=Path(output).resolve()
     if output.exists():raise ValueError("never_overwrite_replay")
     if any(p in output.parts for p in ("state","logs","trading")):
@@ -563,7 +680,18 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
         funding_events=bundle["funding"],config=Config(path=path,**cost))
     if type(session) is not OfflineBybitSession or session.simulation is not True:
         raise ValueError("offline_exchange_required")
-    broker=ScenarioDemoBroker(conn,session=session,expected_main_uid="42",clock=session.clock,execution_enabled=True)
+    broker=ScenarioDemoBroker(conn,session=session,expected_main_uid="42",clock=session.clock,execution_enabled=True,
+        entry_economics_enabled=policy_profile in {'deployed-main-v3','deployed-cost-reference-v4','deployed-entry-plans-v5'},
+        **({'entry_fee_reference_enabled':True} if policy_profile in {'deployed-cost-reference-v4','deployed-entry-plans-v5'} else {}),
+        **({'prepared_entry_plans_enabled':True,'convergence_entry_enabled':True} if policy_profile=='deployed-entry-plans-v5' else {}))
+    seed=contract.get('initial_fee_context')
+    if seed is not None:
+        # Observed rate only: no execution, balance, settlement or prior-loss seed.
+        body=dict(version=1,main_uid="42",environment="demo",endpoint=session.endpoint,
+            symbol="BTCUSDT",captured_at=seed['observed_at'],evidence=seed['evidence'])
+        conn.execute('INSERT INTO llm_scenario_broker_evidence VALUES(?,?,?)',
+            ('review_fee_sidecar_v1',seed['observed_at'],json.dumps(body,sort_keys=True,allow_nan=False)))
+        conn.commit()
     driver=Driver(bundle,market,session,path,broker,conn)
     driver.strict_protection = economic_profile
     clock = (EconomicClock(driver,tape,monotonic=clock_monotonic or time.monotonic)
@@ -593,7 +721,10 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
                                            "consecutive_losses":0,"completed_ids":[]})
             runtime._save(state)
     statuses=Counter();outcome_reasons=Counter();start=bundle["start_ms"];end=bundle["end_ms"]
-    decisions=list(range(start,end,300000))
+    decisions=decision_slots_ms if decision_slots_ms is not None else list(range(start,end,300000))
+    entry_slots=set(decisions)
+    if holding_review_slots_ms is not None:decisions=sorted(entry_slots|set(holding_review_slots_ms))
+    executed_slots=[];executed_holding=[];skipped_flat_holding=[]
     stopped = None
     drain_status = "COMPLETE"
     if len(decisions)>max_decisions:raise ValueError("decision_budget_exceeded")
@@ -602,7 +733,17 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
             release = at if schedule is None else schedule[i]["available_at_ms"]
             if not at <= release < min(at+300000,end):
                 raise ValueError("observed_release_outside_decision_window")
+            if before_decision is not None and holding_review_slots_ms is None:
+                before_decision(dict(index=i,at_ms=at,policy_profile=policy_profile))
             driver.advance_to(release)
+            if holding_review_slots_ms is not None:
+                if at not in entry_slots and not session.position:
+                    skipped_flat_holding.append(at)
+                    continue
+                if before_decision is not None:
+                    before_decision(dict(index=len(executed_slots),at_ms=at,policy_profile=policy_profile))
+                if at not in entry_slots:executed_holding.append(at)
+            executed_slots.append(at)
             if schedule is not None and schedule[i]["status"] == "MISSING":
                 statuses["INPUT_GAP"] += 1
                 outcome_reasons["INPUT_GAP:observed_snapshot_missing"] += 1
@@ -718,15 +859,33 @@ def _run_replay(bundle,market,output,*,mode,tape_path,path="OHLC",cost_multiplie
             report["runtime_event_hash"] = _runtime_event_hash(conn)
             report["execution_status"] = "STOPPED" if stopped else "COMPLETE"
             report["failure_evidence"] = stopped
+            processed = set(executed_slots)
+            recorded = {tick['at_ms'] for tick in tape.ticks
+                        if tick.get('decision') and tick['at_ms'] in processed}
+            period_slots = set(range(start, end, 300000))
             report["coverage"] = dict(planned_slots=len(decisions),processed_slots=sum(statuses.values()),
+                review_scope=('REGISTERED_ENTRY_AND_CONDITIONAL_HOLDING_SCHEDULE' if holding_review_slots_ms is not None else 'FULL_5M_SCHEDULE' if decision_slots_ms is None else 'REGISTERED_SAMPLED_SCHEDULE'),
+                full_period_5m_slots=len(period_slots),model_review_records=len(recorded),
+                slots_without_model_review=sorted((processed if holding_review_slots_ms is not None else set(decisions))-recorded),
+                full_period_model_record_coverage=recorded==period_slots,
                 model_free_drain_status=drain_status,model_free_drain_end_ms=end,
                 final_economic_time_ms=session.ts_ms,eligible=stopped is None and drain_status=="COMPLETE")
             if stopped:
                 report["readiness"]["insufficiency_reasons"].append("STOPPED_TECHNICAL_FAILURE")
+        if holding_review_slots_ms is not None:
+            report['conditional_holding_schedule']=dict(
+                eligibility='CONFIRMED_OFFLINE_FILLED_POSITION_AFTER_NATIVE_RECONCILIATION',
+                entry_slots_ms=decision_slots_ms,holding_candidate_slots_ms=holding_review_slots_ms,
+                executed_holding_slots_ms=executed_holding,skipped_flat_holding_slots_ms=skipped_flat_holding,
+                executed_decision_slots_ms=executed_slots,
+                unprocessed_candidate_slots_ms=sorted(set(decisions)-set(executed_slots)-set(skipped_flat_holding)),
+                full_live_review_cadence=False)
         if policy_profile in REJECTION_PROFILES:
             from live.scenario_review_storage import review_text
-            events = [(slot, json.loads(review_text(body))) for slot, body in conn.execute(
-                "SELECT slot,body FROM llm_scenario_review_events ORDER BY slot,sequence")]
+            from utils.btc_review_event_references import read_event
+            events = [(slot, json.loads(read_event(body, conn, slot, sequence, decode_legacy=review_text)))
+                      for slot, sequence, body in conn.execute(
+                "SELECT slot,sequence,body FROM llm_scenario_review_events ORDER BY slot,sequence")]
             rejected_slots = set()
             candidates = {}
             for slot, event in events:

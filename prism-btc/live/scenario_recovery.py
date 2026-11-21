@@ -15,6 +15,7 @@ import math
 from pathlib import Path
 import uuid
 from live.scenario_analysis_frames import allowed_evidence_path
+from live.scenario_review_storage import review_storage, review_text, snapshot_storage
 
 RISK_FRACTION = .005
 STAGE_FRACTIONS = (.005, .01, .02)
@@ -45,17 +46,76 @@ def ensure_schema(conn):
         event_id TEXT PRIMARY KEY, slot INTEGER, scenario_id TEXT,
         kind TEXT NOT NULL, observed_at REAL NOT NULL, body TEXT NOT NULL)""")
     conn.execute("CREATE INDEX IF NOT EXISTS llm_scenario_recovery_source_lookup ON llm_scenario_recovery_events(scenario_id,kind)")
+    conn.execute("CREATE INDEX IF NOT EXISTS llm_scenario_recovery_slot_kind ON llm_scenario_recovery_events(slot,kind)")
 
 
-def journal(conn, kind, body, now, *, slot=None, scenario_id=None):
+def _reference_storage(conn, kind, slot, sequence, original, fallback):
+    """Use a reference only after its durable source is rechecked under the write lock."""
+    if type(slot) is not int or slot < 0 or type(sequence) is not int or sequence < 0:
+        return fallback
+    try:
+        from utils.btc_recovery_references import compact, pack, read_recovery
+        from utils.btc_review_event_references import read_event
+        rows = conn.execute('SELECT body FROM llm_scenario_review_events WHERE slot=? AND sequence=? LIMIT 2',
+                            (slot, sequence)).fetchall()
+        if len(rows) != 1:
+            return fallback
+        candidate = compact(read_event(rows[0][0], conn, slot, sequence, decode_legacy=review_text), original, slot, sequence)
+        if candidate == original:
+            return fallback
+        candidate = pack(candidate)
+        fallback_bytes = len(fallback.encode('utf-8')) if isinstance(fallback, str) else len(fallback)
+        if len(candidate) >= fallback_bytes:
+            return fallback
+        if not conn.in_transaction:
+            conn.execute('BEGIN IMMEDIATE')
+        if read_recovery(candidate, conn, slot, decode_legacy=review_text, expected_kind=kind) == original:
+            return candidate
+    except Exception:
+        return fallback
+    return fallback
+
+
+def journal(conn, kind, body, now, *, slot=None, scenario_id=None, review_sequence=None):
     if slot is not None and "input_id" not in body:
         row = conn.execute("SELECT context FROM llm_scenario_decisions WHERE slot=?", (slot,)).fetchone()
         if row and row[0]:
             body = dict(body, input_id=json.loads(row[0]).get("input_id"))
     event_id = str(uuid.uuid4())
+    text = encoded(body)
+    stored = (snapshot_storage(text) if kind == "RECHECK" else
+              review_storage(text) if kind in {"MODEL_REQUEST", "MODEL_RAW"} else text)
+    if kind in {"MODEL_REQUEST", "MODEL_RAW"} and body.get('calculated_review_version') == 1:
+        stored = _reference_storage(conn, kind, slot, review_sequence, text, stored)
     conn.execute("INSERT INTO llm_scenario_recovery_events VALUES(?,?,?,?,?,?)",
-                 (event_id, slot, scenario_id, kind, now, encoded(body)))
+                 (event_id, slot, scenario_id, kind, now, stored))
     return event_id
+
+
+def compact_input_event(conn, event_id, slot):
+    """Compact only within the transaction that saved the matching decision input."""
+    if not conn.in_transaction:
+        raise ValueError('recovery_input_transaction_required')
+    row = conn.execute("SELECT r.body,d.context FROM llm_scenario_recovery_events r "
+                       "JOIN llm_scenario_decisions d ON d.slot=r.slot "
+                       "WHERE r.event_id=? AND r.slot=? AND r.kind='INPUT'", (event_id, slot)).fetchone()
+    if row is None:
+        return False
+    original, context = row
+    try:
+        from utils.btc_recovery_references import compact_input, pack, read_recovery
+        candidate = compact_input(context, original, slot)
+        if candidate == original:
+            return False
+        candidate = pack(candidate)
+        if len(candidate) >= len(original.encode('utf-8')):
+            return False
+        if read_recovery(candidate, conn, slot, decode_legacy=review_text, expected_kind='INPUT') != original:
+            return False
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return conn.execute("UPDATE llm_scenario_recovery_events SET body=? WHERE event_id=? AND body=?",
+                        (candidate, event_id, original)).rowcount == 1
 
 
 @contextmanager
@@ -538,10 +598,10 @@ def prepare_input(conn, state, context, snapshot, slot, now):
     context["recovery"] = metadata
     context["recovery_contract_version"] = recovery.get("policy_version", 1)
     context["scenario_risk_fraction"] = metadata["risk_fraction"]
-    journal(conn, "INPUT", {"input_id": context["input_id"],
+    event_id = journal(conn, "INPUT", {"input_id": context["input_id"],
             "snapshot_hash": digest(snapshot), "context_hash": digest(context),
             "decision_slot": slot, "versions": version_evidence, "recovery": metadata}, now, slot=slot)
-    return metadata
+    return event_id
 
 
 def validate_metadata(value):

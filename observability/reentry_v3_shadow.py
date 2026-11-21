@@ -200,11 +200,13 @@ def _refresh(watch, frames, completed, market, ctx):
     if anchor is None:
         watch["last_missing"] = completed
         return False
+    policy = C.policy_for(market)
     ledger = C.replay(watch["setup"], bars, anchor, decisions=watch.get("decisions"), regime_at=ctx.regime_at,
-                      pulse_at=ctx.pulse_fn(bench), stop_dates=watch.get("stop_dates") or (), market=market)
+                      pulse_at=ctx.pulse_fn(bench), stop_dates=watch.get("stop_dates") or (), market=market,
+                      policy=policy)
     watch["ledger"], watch["asof"] = ledger, completed
     camps = ledger["campaigns"]
-    primary = camps[C.POLICY["primary_rule"]]
+    primary = camps[policy["primary_rule"]]
     if primary["status"] == "ENDED":
         watch["watch_ended"] = primary["end_date"]       # point-in-time dedupe (V2._blocked) follows L97
     real_open = any(att.get("real") and att["status"] == "OPEN" for c in camps.values() for att in c["attempts"])
@@ -257,18 +259,20 @@ def decide(watch, quote, frames, completed, decision_day, market, ctx):
     share = quote.get("volume_share")
     projected = C.projected_volume(quote.get("volume"), market, share)
     regime = ctx.regime_detail(decision_day)
+    policy = C.policy_for(market)
     eligible = {rule: info for rule, info in ledger["next"].items() if info["eligible"]}
     by_rule, checks, details, results = {}, {}, {}, {}
     for rule, info in eligible.items():
         window = info.get("window")
-        key = (window["R"], window["start_date"]) if window else None
+        triggers = C.rule_triggers(rule, window, policy)
+        key = ((window["R"], window["start_date"]) if window else None, triggers)
         if key not in results:
             results[key] = C.evaluate(watch["setup"], bars=bars, i=len(bars), flags=ledger["flags"],
                                       price=quote["price"], day_low=quote.get("low"), regime=regime["effective"],
-                                      window=window, volume_projected=projected)
+                                      window=window, volume_projected=projected, policy=policy, triggers=triggers)
         by_rule[rule], checks[rule] = results[key]["trigger"], results[key]["checks"]
         details[rule] = results[key].get("details") or {}
-    primary = C.POLICY["primary_rule"]
+    primary = policy["primary_rule"]
     trigger = by_rule.get(primary)       # only the primary L97 rule is rechecked / traded; SS is a record
     first = next(iter(results.values()))
     decision = {"phase": "intraday", "decision_day": decision_day, "decision_time": quote["observed_at"],
@@ -307,6 +311,7 @@ def freeze_inputs(market, watch, decision, frames, completed, reports_root, arch
     """Everything the LLM recheck needs, fixed at the decision. Report text by reference + hash."""
     bars, bench = _frames_for(watch, frames, completed)
     setup, ledger, trigger, row = watch["setup"], watch["ledger"], decision["trigger"], watch["row"]
+    policy = C.policy_for(market)
     day = decision["decision_day"]
     atr = C.atr14(bars)
     alloc, _ = C.b3_allocation(decision["decision_price"], atr)
@@ -317,19 +322,20 @@ def freeze_inputs(market, watch, decision, frames, completed, reports_root, arch
         prior = [{k: t.get(k) for k in ("date", "trigger", "entry", "exit_date", "exit_reason", "ret", "mode",
                                         "real")}
                  for t in ledger["campaigns"][rule]["attempts"]]
-        attempts[rule] = {"attempt": number, "max": C.POLICY["max_attempts"], "prior": prior}
+        attempts[rule] = {"attempt": number, "max": policy["max_attempts"], "prior": prior}
     broke = ledger["flags"]["above"]
     reclaim = C.reclaim_level(setup, broke)
-    primary_window = (decision["windows"] or {}).get(C.POLICY["primary_rule"]) or {}
+    primary_window = (decision["windows"] or {}).get(policy["primary_rule"]) or {}
     reclaim_ref = primary_window.get("R") or reclaim
     reclaim_basis = ("L" if reclaim_ref == setup["L"]
                      else next((k for k in ("primary_support", "secondary_support")
                                 if setup["levels"].get(k) == reclaim_ref), None))
-    end_levels = {rule: C.CAMPAIGN_RULES[rule](setup, broke) for rule in C.POLICY["campaign_rules"]}
+    end_levels = {rule: C.CAMPAIGN_RULES[rule](setup, broke) for rule in policy["campaign_rules"]}
     item = {
         "contract": INPUT_CONTRACT, "policy_version": C.POLICY_VERSION, "market": market,
         "event_id": _hash(watch["watch_id"], day, trigger["trigger"]), "watch_ref": watch["watch_id"],
-        "ticker": watch["ticker"], "source": watch["source"], "trigger_date": day, "trigger": trigger["trigger"], "live_rule": C.POLICY["primary_rule"],
+        "ticker": watch["ticker"], "source": watch["source"], "trigger_date": day, "trigger": trigger["trigger"], "live_rule": policy["primary_rule"],
+        "ma20": trigger.get("ma20"),
         "trigger_label": trigger["label"], "entry": decision["decision_price"],
         "decision_price": decision["decision_price"], "decision_time": decision["decision_time"],
         "decision_time_local": _local_time(decision["decision_time"], market), "day_low": decision["day_low"],
@@ -346,14 +352,16 @@ def freeze_inputs(market, watch, decision, frames, completed, reports_root, arch
         "regime": decision["regime"], "regime_detail": decision["regime_detail"],
         "regime_missing": decision["regime_missing"],
         "market_pulse": decision["market_pulse"], "attempts": attempts,
-        "campaign": {"rules": list(C.POLICY["campaign_rules"]), "eligible_rules": sorted(decision["eligible_rules"]),
+        "campaign": {"rules": list(policy["campaign_rules"]), "eligible_rules": sorted(decision["eligible_rules"]),
                      "fired_rules": sorted(attempts), "anchor_date": setup["anchor_date"],
-                     "elapsed": ledger["elapsed"], "horizon": C.POLICY["horizon"],
+                     "elapsed": ledger["elapsed"], "horizon": policy["horizon"],
                      "end_levels": {k: (round(v, 4) if v else None) for k, v in end_levels.items()},
                      "reclaim_level": reclaim, "reclaim_basis": reclaim_basis,
                      "deep_level": round(reclaim * C.SHAKEOUT_DEEP, 4) if reclaim else None,
                      "shakeout_window_sessions": C.SHAKEOUT_WINDOW, "windows": decision["windows"]},
         "rule_ids": ledger["rule_ids"], "allocation": alloc, "atr14": round(atr, 6) if atr else None,
+        "ma50": LIVE.ma50_with_price(bars, decision["decision_price"]),
+        "k8b": frames.get("__k8b"),
         "gates": {"G1_step16": C.g1_blocked(set(watch.get("stop_dates") or [])
                                             | {d for c in ledger["campaigns"].values()
                                                for d in c["virtual_stop_dates"]}
@@ -380,7 +388,8 @@ def freeze_inputs(market, watch, decision, frames, completed, reports_root, arch
 # Primary-rule misses worth keeping as evidence (the rule's own filters), per trigger. Structural
 # non-events (not armed, no touch, previous close on the wrong side) are not near misses.
 NEAR_MISS = {"R2S": ("rr_below_floor", "target_unsupported", "chase", "below_level", "stale_levels"),
-             "R1C": ("chase",), "SHAKEOUT_RECLAIM": ("chase", "volume_below_avg20")}
+             "R1C": ("chase",), "SHAKEOUT_RECLAIM": ("chase", "volume_below_avg20"),
+             "MA20R": ("volume_below_avg20",)}
 
 
 def near_misses(decision, rule=None):
@@ -411,7 +420,7 @@ def observe(watch, decision, frames, completed):
             "volume_projected": decision.get("volume_projected"),
             "volume_share_source": decision.get("volume_share_source"),
             "elapsed": ledger.get("elapsed"), "anchor_date": setup.get("anchor_date"),
-            "prior_attempts": prior.get(C.POLICY["primary_rule"]) or [],
+            "prior_attempts": prior.get(C.policy_for(watch["market"])["primary_rule"]) or [],
             "original": {"decided_on": row.get("exit_date"), "skip_reason": row.get("skip_reason"),
                          "buy_score": row.get("buy_score"), "min_score": row.get("min_score"),
                          "entry_price": row.get("entry_price"), "exit_price": row.get("exit_price"),
@@ -450,7 +459,7 @@ def intraday(state, market, decision_day, frames, completed, quote_fn, ctx, repo
             continue    # no decision: the close phase falls back to the close (BACKFILL, no LLM)
         decision = decide(watch, quote, frames, completed, decision_day, market, ctx)
         counts["decisions"] += 1
-        misses = near_misses(decision)
+        misses = near_misses(decision, C.policy_for(market)["primary_rule"])
         counts["near_misses"] += len(misses)
         if observed is not None and (decision["trigger"] or misses):
             observed.append((watch, decision, misses))
@@ -746,7 +755,8 @@ def _approve_deterministic(state, market, completed, p, decision_day):
     results = []
     for watch, event_id, rc in todo:
         item = items.get(event_id)
-        if item is None or item.get("trigger_date") != decision_day or item.get("live_rule") != LIVE.PRIMARY_RULE:
+        if item is None or item.get("trigger_date") != decision_day \
+                or item.get("live_rule") != C.policy_for(market)["primary_rule"]:
             continue
         record = LIVE.deterministic_record(item, market)
         record.update(attempt=rc["attempts"], trigger=item["trigger"], decision_price=item["decision_price"],

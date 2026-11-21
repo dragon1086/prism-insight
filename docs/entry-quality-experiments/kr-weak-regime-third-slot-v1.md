@@ -73,7 +73,7 @@ Secondary:
 2026-09-15 스크리닝 가공 손익비 제거 이후에는
 `kr-weak-regime-third-slot-v1-screening-v2`로 관측을 분리한다. 기존 v1 기록과
 그 후속 성과는 유지하며 새 버전 표본에 합산하지 않는다. 슬롯 규칙·활성화 상태는
-변경하지 않는다. 상세 변경 계약은 `docs/SCREENING_NO_FABRICATED_RR_20260915_ko.md`에 있다.
+변경하지 않는다(스크리닝은 근거 없는 목표·손절·손익비를 NULL로 두고, 항상 포화되던 agent 점수 항목을 선발 공식에서 뺐다).
 
 기준 미달이면 2종목 cap을 유지한다. threshold, 레짐 범위, 순위 방법을 바꾸면 새
 실험 버전과 새 prospective 시작점이 필요하다. 어떤 결과도 자동으로 LIVE에 반영하지

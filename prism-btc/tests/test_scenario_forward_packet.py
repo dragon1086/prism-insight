@@ -75,6 +75,48 @@ def scenario(db):
     return result["scenarios"][0]
 
 
+def test_compressed_decision_snapshot_preserves_forward_input(db):
+    import gzip
+    from observability.review_storage import MAGIC
+    snapshot = '{"frame":"fixture"}'
+    with sqlite3.connect(db) as conn:
+        conn.execute('ALTER TABLE llm_scenario_decisions ADD COLUMN snapshot TEXT')
+        conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (snapshot,))
+    before = packet._read(db)
+    with sqlite3.connect(db) as conn:
+        conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + gzip.compress(snapshot.encode()),))
+    assert packet._read(db) == before
+    with sqlite3.connect(db) as conn:
+        conn.execute('UPDATE llm_scenario_decisions SET snapshot=?', (MAGIC + b'corrupt',))
+    with pytest.raises(ValueError):
+        packet._read(db)
+
+
+def test_financial_reference_preserves_forward_packet_business_facts(db):
+    import sys
+    sys.path.append(str(Path(__file__).resolve().parents[2]))
+    from utils.btc_financial_references import compact
+
+    execution = {'execId': 'fixture', 'private': 'x' * 4000}
+    transaction = {'tradeId': 'fixture', 'private': 'y' * 4000}
+    body = {'raw_executions': [execution], 'raw_transactions': [transaction], 'funding': [],
+            'trades': [{'execution_id': 'fixture', 'raw_execution': execution, 'raw_transaction': transaction}]}
+    raw = json.dumps(body, sort_keys=True)
+    encoded = compact(raw)
+    assert encoded != raw
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO llm_scenario_broker_evidence VALUES('financial',1001,?)", (raw,))
+    original = packet.build_packet(db)
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE llm_scenario_broker_evidence SET body=? WHERE kind='financial'", (encoded,))
+    referenced = packet.build_packet(db)
+    assert original['status'] == referenced['status'] == 'AVAILABLE'
+    assert original['input_sha256'] != referenced['input_sha256']
+    assert original['packet_id'] != referenced['packet_id']
+    assert {k: v for k, v in original.items() if k not in {'input_sha256', 'packet_id'}} == {
+        k: v for k, v in referenced.items() if k not in {'input_sha256', 'packet_id'}}
+
+
 def test_missing_database_never_created(tmp_path):
     path = tmp_path / "absent"
     result = packet.build_packet(path)
@@ -398,6 +440,27 @@ def audit_event(db, kind, body, *, event_id="event", sid="private-scenario"):
                      (event_id, kind, sid, manifest_id, json.dumps(dict(schema_version=1, **body))))
 
 
+def test_audit_reference_preserves_complete_forward_packet(db):
+    from utils.btc_audit_references import canonical, compact, sha
+
+    snapshot, context = {'data': 'x' * 5000}, {'input_id': 'input-1', 'data': 'y' * 5000}
+    event = {'snapshot': snapshot, 'context': context, 'input_id': 'input-1',
+             'snapshot_hash': sha(canonical(snapshot)), 'context_hash': sha(canonical(context)), 'schema_version': 1}
+    audit_event(db, 'decision_input', {})
+    s, c, raw = json.dumps(snapshot, sort_keys=True), json.dumps(context, sort_keys=True), canonical(event)
+    with sqlite3.connect(db) as conn:
+        conn.execute('UPDATE llm_scenario_decisions SET snapshot=?,context=? WHERE slot=1', (s, c))
+        conn.execute("UPDATE llm_scenario_audit_events SET body=? WHERE kind='decision_input'", (raw,))
+    before = packet.build_packet(db)
+    assert before['status'] == 'AVAILABLE'
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE llm_scenario_audit_events SET body=? WHERE kind='decision_input'", (compact(raw, s, c),))
+    assert packet.build_packet(db) == before
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE llm_scenario_decisions SET snapshot='{}' WHERE slot=1")
+    assert packet.build_packet(db)['status'] == 'INPUT_UNAVAILABLE'
+
+
 def accounting_body(db):
     children, owned, trades = [], [], []
     with sqlite3.connect(db) as conn:
@@ -701,3 +764,14 @@ def test_unmapped_event_never_uses_overall_verified_as_domain_proof(db):
     assert item["loaded_code_status"] == "UNKNOWN"
     assert item["audit_links"][0]["loaded_code_status"] == "UNKNOWN"
     assert item["manifest_loaded_code_statuses"] == ["VERIFIED"]
+
+
+def test_compressed_account_preserves_forward_packet_source(db):
+    from live.scenario_review_storage import review_storage
+    raw = json.dumps({'ticker': {'price': '100'}, 'detail': 'x' * 2000})
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO llm_scenario_broker_evidence VALUES('account', 1, ?)", (raw,))
+    expected = packet._read(db)
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE llm_scenario_broker_evidence SET body=? WHERE kind='account' AND captured_at=1", (review_storage(raw),))
+    assert packet._read(db) == expected

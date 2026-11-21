@@ -11,6 +11,7 @@ from live.scenario_immediate_reduce import initialize
 from live.scenario_model_input import restore_model_input
 from tests.test_scenario_replay import inputs
 from tests.test_scenario_calculated_replay import wire
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def test_empty_reduction_table_is_part_of_runtime_event_hash():
@@ -47,7 +48,7 @@ def test_native_reduce_fresh_frozen_includes_exact_durable_state(tmp_path,side):
         if 'selection_token' in request['response_schema']['properties']:
             candidates=payload['calculated_candidates']
             chosen=next((c for c in candidates['candidates'] if c['eligible']),candidates['wait'])
-            value=dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}",rationale='Synthetic replay')
+            value=dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}",rationale='Synthetic replay')
         else:
             action=('REDUCE' if ctx['revision']==1 else 'EXIT') if ctx.get('scenario_id') else ('OPEN' if ctx['now']<start+300 else 'WAIT')
             candidate=wire(ctx,'WAIT' if action=='REDUCE' else action)

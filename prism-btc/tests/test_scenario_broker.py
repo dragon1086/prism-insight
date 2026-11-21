@@ -80,6 +80,26 @@ def test_fresh_read_only_snapshot_has_no_fake_execution_capability(setup):
         b.execute({}, "intent")
 
 
+def test_account_evidence_omits_whitespace_without_losing_observation(setup):
+    import json
+    b, _ = setup
+    observed = b.capture_account()
+    stored = b.conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='account' ORDER BY rowid DESC LIMIT 1").fetchone()[0]
+    from observability.review_storage import review_text
+    assert json.loads(review_text(stored)) == json.loads(json.dumps(observed, allow_nan=False, sort_keys=True))
+    assert review_text(stored) == json.dumps(observed, allow_nan=False, sort_keys=True, separators=(',', ':'))
+    assert len(stored) < len(json.dumps(observed, allow_nan=False, sort_keys=True))
+
+
+def test_other_broker_evidence_keeps_its_existing_serialization(setup):
+    import json
+    b, _ = setup
+    body = {'message': 'keep spaces', 'nested': [1, 2]}
+    b._save('other', body)
+    stored = b.conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='other'").fetchone()[0]
+    assert stored == json.dumps(body, allow_nan=False, sort_keys=True)
+
+
 def test_nonflat_legacy_exposure_is_not_adopted(setup):
     b, s = setup
     s.size = "1"
@@ -140,6 +160,44 @@ def test_funding_sign_and_execution_cashflow_join(setup):
     assert result["trades"][0]["gross_pnl"] == 5
     assert result["funding"][0]["funding_net"] == -2
     assert result["funding_complete"] is False
+
+
+def test_financial_record_deduplicates_without_changing_returned_evidence(setup, tmp_path):
+    import json
+    from utils.btc_financial_references import TAG, restore
+    from observability import btc_scenario_export
+    b, s = setup
+    db = tmp_path / 'broker.db'
+    state, spool = tmp_path / 'export.sqlite', tmp_path / 'spool.jsonl'
+    btc_scenario_export.export_once(db, state, spool)
+    s.get_executions = lambda **kw: reply([dict(execId='trade1', orderId='order1', symbol='BTCUSDT',
+        execType='Trade', execQty='1', execPrice='100', execFee='.05', execTime='1799999500000', extra='x'*4000)])
+    s.get_transaction_log = lambda **kw: reply([
+        dict(id='t1', type='TRADE', symbol='BTCUSDT', currency='USDT', tradeId='trade1', orderId='order1',
+             cashFlow='5', fee='.05', funding='', transactionTime='1799999500000', extra='y'*4000),
+        dict(id='f1', type='SETTLEMENT', symbol='BTCUSDT', currency='USDT', funding='-2', fee='0',
+             cashFlow='0', transactionTime='1799999600000', extra='z'*4000)])
+    result = b.capture_financial_evidence(1799999000000, 1800000000000)
+    stored = b.conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='financial'").fetchone()[0]
+    assert json.loads(stored)[TAG] == 1
+    assert json.loads(restore(stored)) == result
+    assert result['trades'][0]['raw_execution']['execId'] == 'trade1'
+    assert result['funding'][0]['raw']['id'] == 'f1'
+    assert btc_scenario_export.export_once(db, state, spool)['captured'] == 1
+    events = [json.loads(line) for line in spool.read_text().splitlines() if line.strip()]
+    event = next(row for row in events if row.get('attributes', {}).get('source_kind') == 'financial')
+    assert event['attributes']['body_sha256'] == btc_scenario_export._hash(restore(stored))
+
+
+def test_financial_deduplication_failure_keeps_full_evidence(setup, monkeypatch):
+    import json
+    from utils import btc_financial_references as refs
+    b, _ = setup
+    original = {'trades': [], 'funding': [], 'raw_executions': [], 'raw_transactions': []}
+    monkeypatch.setattr(refs, 'compact', lambda _: (_ for _ in ()).throw(RuntimeError('failed')))
+    b._save('financial', original)
+    stored = b.conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='financial'").fetchone()[0]
+    assert json.loads(stored) == original
 
 
 def funding_capture_fixture(session):
@@ -329,7 +387,8 @@ def test_ticker_request_span_is_saved_without_extra_read_or_changed_account_vers
     assert calls == [dict(category='linear', symbol='BTCUSDT')]
     assert observed['ticker_timing'] == dict(request_started_at=1800000000.0,
         response_received_at=1800000000.125, exchange_response_time_ms=1800000000100)
-    saved = json.loads(b.conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='account' ORDER BY rowid DESC LIMIT 1").fetchone()[0])
+    from observability.review_storage import review_text
+    saved = json.loads(review_text(b.conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='account' ORDER BY rowid DESC LIMIT 1").fetchone()[0]))
     assert saved['ticker_timing'] == observed['ticker_timing']
     assert observed['account_version'] == before['account_version']
     assert observed['execution_ready'] is before['execution_ready'] is False
@@ -356,3 +415,15 @@ def test_ticker_timing_does_not_extend_snapshot_freshness(setup):
     session.get_tickers = slow_ticker
     with pytest.raises(BrokerNotReady, match='account_snapshot_stale'):
         b.capture_account()
+
+
+def test_account_compression_failure_preserves_original_observation(setup, monkeypatch):
+    import json
+    b, _ = setup
+    def fail(_):
+        raise RuntimeError('compression unavailable')
+    monkeypatch.setattr('live.scenario_review_storage.snapshot_storage', fail)
+    observed = b.capture_account()
+    stored = b.conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='account' ORDER BY rowid DESC LIMIT 1").fetchone()[0]
+    assert isinstance(stored, str)
+    assert json.loads(stored) == json.loads(json.dumps(observed, allow_nan=False))

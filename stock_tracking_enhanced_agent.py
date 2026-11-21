@@ -29,6 +29,7 @@ from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmented
 # Import core agents
 from cores.agents.trading_agents import create_sell_decision_agent
 from cores.utils import parse_llm_json
+from cores.oneil_fallback import entry_regime_of
 from prism_core.sell_regime_context import kr_live_regime_block
 from prism_core.execution_service import ExecutionService, OrderOutcomeUnknown
 from prism_core.order_intents import OrderIntent
@@ -945,16 +946,38 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 ),
             )
         micro_plan = None
-        if effects is None and not is_add and not rebound_pilot:
+        from prism_core import micro_split_live, pyramid_ledger
+        pyramid_row = bool(is_add) and micro_split_live.pyramid_rows_enabled()
+        if effects is None and (not is_add or pyramid_row) and not rebound_pilot:
             # Micro-split LIVE: B3 first allocation sizes the real order (legacy full slot if OFF/unavailable).
-            from prism_core import micro_split_live
+            # A pyramid row (flag on) is its own micro-split position, sized like a first entry without tilt.
             # Conviction tilt only for regular batch entries; re-entry v3 (require_micro_plan) passes none.
+            if pyramid_row:
+                def _pyramid_gate(ok, reason, allocation=None):
+                    pyramid_ledger.emit_gate(
+                        self, market="KR", ticker=ticker, stage="sizing", allowed=ok, reason=reason,
+                        existing={"avg_buy_price": analysis_result.get("existing_avg_buy_price"),
+                                  "row_count": analysis_result.get("existing_row_count")},
+                        current_price=current_price, regime=scenario.get("_deterministic_market_regime"),
+                        planned_allocation=allocation, decision_id=source_decision_id)
+                # Free-row reserve before sizing, so a blocked row never records an add plan.
+                _row_ok, _row_reason = micro_split_live.pyramid_slot_check(
+                    self, market="KR", ticker=ticker, logger=logger)
+                if not _row_ok:
+                    _pyramid_gate(False, _row_reason)
+                    return 0
             micro_plan, micro_cash, scenario = micro_split_live.prepare_entry(
                 self, market="KR", ticker=ticker, current_price=current_price, scenario=scenario,
                 decision_ref=scenario.get("_decision_id") or source_decision_id,
                 account=getattr(self, "active_account", None), logger=logger,
-                trigger_type=None if require_micro_plan else (
-                    (getattr(self, "trigger_info_map", None) or {}).get(ticker) or {}).get("trigger_type"))
+                trigger_type=None if (require_micro_plan or pyramid_row) else (
+                    (getattr(self, "trigger_info_map", None) or {}).get(ticker) or {}).get("trigger_type"),
+                pyramid_row=pyramid_ledger.lineage(self, "KR", ticker) if pyramid_row else None)
+            if pyramid_row:
+                if micro_plan is None:  # never a full-slot pyramid row
+                    _pyramid_gate(False, "PYRAMID_ROW_NO_MICRO_PLAN")
+                    return 0
+                _pyramid_gate(True, _row_reason, micro_split_live.allocation(scenario))
             if micro_plan is not None:
                 entry_cash_amount = micro_cash
                 analysis_result["scenario"] = scenario
@@ -1032,7 +1055,10 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     return 0
                 self._complete_pending_kr_entry(prepared)
                 self._record_broker_entry_observation(ticker, source_decision_id, getattr(prepared.intent, "source_position_id", None), prepared.intent.id, trade_result)
-                if not is_add and not rebound_pilot:
+                if is_add:
+                    pyramid_ledger.emit_row_opened(self, market="KR", ticker=ticker, scenario=scenario,
+                                                   position_id=getattr(prepared.intent, "source_position_id", None))
+                if (not is_add or micro_plan is not None) and not rebound_pilot:
                     try:  # fail-open: never affects the entry
                         from observability.b3_ae_capture import capture_entry as _b3_ae_entry
                         _b3_ae_entry(
@@ -1131,7 +1157,10 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             opened_position_id = legacy_position_id(
                 "KR", buy_result.legacy_holding_id
             )
-            if not is_add and not rebound_pilot:
+            if is_add:
+                pyramid_ledger.emit_row_opened(self, market="KR", ticker=ticker, scenario=scenario,
+                                               position_id=opened_position_id)
+            if (not is_add or micro_plan is not None) and not rebound_pilot:
                 # B3 all-entries SHADOW: fail-open, before the broker order.
                 try:  # fail-open: never affects the entry
                     from observability.b3_ae_capture import capture_entry as _b3_ae_entry
@@ -1174,6 +1203,9 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                             quote_validator=self._buy_quote_validator(scenario, is_add=is_add, ticker=ticker, account_key=order_intent.account_id),
                             **({"strict_budget": True} if ((scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" or scenario.get("micro_split")) else {}),
                         )
+                        if scenario.get("micro_split"):  # strict budget sizes at int(limit_price)
+                            micro_split_live.record_order_price(self, market="KR", row_id=buy_result.legacy_holding_id,
+                                                                price=int(current_price), logger=logger)
             except OrderOutcomeUnknown as error:
                 self._link_position_entry_intent(
                     legacy_holding_id=buy_result.legacy_holding_id,
@@ -1772,7 +1804,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             # TIER2 loop trails on the same value, so the AI must not judge it separately.
             live_regime = getattr(self, "_live_regime_cache", None)
             live_regime_block = kr_live_regime_block(
-                live_regime, getattr(self, "_live_market_context", None), self.language)
+                live_regime, getattr(self, "_live_market_context", None), self.language,
+                entry_regime_of(stock_data.get("scenario"), "KR"))
             logger.info(f"[sell] {ticker} AI sell regime input: {live_regime or 'unavailable'}")
 
             # Prepare prompt based on language (Korean text preserved for language == "ko" blocks)
@@ -1787,7 +1820,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 - 현재가: {current_price:,.0f}원
                 - 목표가: {target_price:,.0f}원 (최초 시나리오: {initial_target_price:,.0f}원)
                 - 손절가: {stop_loss:,.0f}원 (최초 시나리오: {initial_stop_loss:,.0f}원)
-                - 진입 후 최고가: {highest_price:,.0f}원{' (⚠️ 첫 추적 - get_stock_ohlcv로 진입 다음 거래일부터의 고가를 확인하세요. 진입일 봉 고가는 매수 전에 찍혔을 수 있어 넣지 않으며, 오늘 산 종목이면 이 값을 그대로 쓰세요)' if highest_price_initialized else ''}
+                - 진입 후 최고가: {highest_price:,.0f}원{' (첫 추적: 시스템 저장 고점입니다. 진입일 봉 고가는 매수 전에 찍혔을 수 있어 넣지 않으며, 도구로 고점을 다시 확인하지 말고 이 값을 그대로 쓰세요)' if highest_price_initialized else ''}
                 - 트레일링 스탑 조정 임계값: {trailing_stop_threshold_pct:.1f}% (이 값 이상 상향 시만 손절가 조정 가능)
                 - 수익률: {profit_rate:.2f}%
                 - 보유기간: {days_passed}일
@@ -1818,7 +1851,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 - Current Price: {current_price:,.0f} KRW
                 - Target Price: {target_price:,.0f} KRW (initial scenario: {initial_target_price:,.0f} KRW)
                 - Stop Loss: {stop_loss:,.0f} KRW (initial scenario: {initial_stop_loss:,.0f} KRW)
-                - Highest Price Since Entry: {highest_price:,.0f} KRW{' (⚠️ First tracking - verify the peak from the session after entry via get_stock_ohlcv. Leave out the entry-day high, which may predate the buy; if bought today, use this value as is)' if highest_price_initialized else ''}
+                - Highest Price Since Entry: {highest_price:,.0f} KRW{' (First tracking: this is the system-stored peak. Leave out the entry-day high, which may predate the buy; do not re-check the peak with tools, use this value as is)' if highest_price_initialized else ''}
                 - Trailing Stop Adjustment Threshold: {trailing_stop_threshold_pct:.1f}% (adjust the stop only if the new value is at least this much higher)
                 - Return: {profit_rate:.2f}%
                 - Holding Period: {days_passed} days
@@ -2038,7 +2071,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
         try:
             from cores.oneil_fallback import evaluate_oneil_sell, from_stock_data
             should_sell, reason = evaluate_oneil_sell(
-                from_stock_data(stock_data, live_regime=getattr(self, "_live_regime_cache", None)))
+                from_stock_data(stock_data, live_regime=getattr(self, "_live_regime_cache", None), market="KR"))
             logger.info(f"{stock_data.get('ticker', '')} O'Neil rule-based sell (AI fallback): "
                         f"{'Sell' if should_sell else 'Hold'} | {reason}")
             return should_sell, reason

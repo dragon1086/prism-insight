@@ -1,11 +1,14 @@
 """Private verified BTC database/Git archive over existing host-verified SSH."""
 import argparse
+import base64
 from contextlib import closing
 import fcntl
 import gzip
 import hashlib
 import ipaddress
 import json
+import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -25,7 +28,9 @@ RESERVE = 5 * 1024**3
 CAP = 10 * 1024**3
 RAW_CAP = 20 * 1024**3
 REMOTE_ROOT = Path('/root/prism-btc-archive')
+REPLAY_ROOT = Path('/root/prism-btc-replays')
 FILES = ('snapshot.sqlite.gz', 'snapshot.manifest.json', 'history.bundle', 'archive.json')
+ZERO_BLOCK = bytes(4096)
 COMMIT_KEYS = {'git_revision', 'source_commit', 'code_commit', 'source_reference'}
 EVIDENCE_QUERIES = {
     'llm_scenario_audit_manifests': {'body': 'SELECT body FROM llm_scenario_audit_manifests'},
@@ -88,21 +93,70 @@ def validate_host(host):
         ipaddress.IPv4Address(host)
 
 
-def ssh_archive(host, needed, *, stream=None):
+def ssh_archive(host, needed, *, stream=None, restore=None):
     validate_host(host)
     if type(needed) is not int or not 0 <= needed <= 4 * RAW_CAP:
         raise ValueError('invalid_space_requirement')
+    if restore is not None and (stream is not None or not isinstance(restore, str)
+            or not re.fullmatch(r'archive-[a-f0-9]{32}', restore)):
+        raise ValueError('invalid_restore_request')
     source = Path(__file__).read_text()
-    suffix = ('\nprivate_root(REMOTE_ROOT); space(REMOTE_ROOT, ' + str(needed) + '); print("READY")\n'
-              if stream is None else '\nprint(json.dumps(receive(sys.stdin.buffer, REMOTE_ROOT, ' + str(needed) + ')))\n')
-    command = '/usr/bin/python3 -c ' + shlex.quote(
-        "exec(compile(" + repr(source + suffix) + ", '<archive>', 'exec'), {'__name__':'offsite_receiver'})")
+    event_refs_source = Path(__file__).with_name('btc_review_event_references.py').read_text()
+    refs_source = Path(__file__).with_name('btc_review_references.py').read_text()
+    audit_source = Path(__file__).with_name('btc_audit_references.py').read_text()
+    recovery_source = Path(__file__).with_name('btc_recovery_references.py').read_text()
+    financial_source = Path(__file__).with_name('btc_financial_references.py').read_text()
+    accounting_source = Path(__file__).with_name('btc_accounting_audit_references.py').read_text()
+    storage_source = Path(__file__).resolve().parent.parent.joinpath('observability/review_storage.py').read_text()
+    retention_source = Path(__file__).with_name('btc_review_retention.py').read_text()
+    event_proof_source = Path(__file__).with_name('btc_review_event_proof.py').read_text()
+    prelude = ("import sys,types\n"
+               "_btc_event_refs=types.ModuleType('btc_review_event_refs_embedded')\n"
+               "exec(compile(" + repr(event_refs_source) + ",'<btc_review_event_refs>','exec'),_btc_event_refs.__dict__)\n"
+               "sys.modules['btc_review_event_refs_embedded']=_btc_event_refs\n"
+               "_btc_financial=types.ModuleType('btc_financial_refs_embedded')\n"
+               "exec(compile(" + repr(financial_source) + ",'<btc_financial_refs>','exec'),_btc_financial.__dict__)\n"
+               "sys.modules['btc_financial_refs_embedded']=_btc_financial\n"
+               "_btc_accounting=types.ModuleType('btc_accounting_refs_embedded')\n"
+               "exec(compile(" + repr(accounting_source) + ",'<btc_accounting_refs>','exec'),_btc_accounting.__dict__)\n"
+               "sys.modules['btc_accounting_refs_embedded']=_btc_accounting\n"
+               "_btc_refs=types.ModuleType('btc_review_refs_embedded')\n"
+               "exec(compile(" + repr(refs_source) + ",'<btc_review_refs>','exec'),_btc_refs.__dict__)\n"
+               "sys.modules['btc_review_refs_embedded']=_btc_refs\n"
+               "_btc_storage=types.ModuleType('btc_review_storage_embedded')\n"
+               "exec(compile(" + repr(storage_source) + ",'<btc_review_storage>','exec'),_btc_storage.__dict__)\n"
+               "sys.modules['btc_review_storage_embedded']=_btc_storage\n"
+               "_btc_retention=types.ModuleType('btc_retention_embedded')\n"
+               "exec(compile(" + repr(retention_source) + ",'<btc_retention>','exec'),_btc_retention.__dict__)\n"
+               "sys.modules['btc_retention_embedded']=_btc_retention\n"
+               "_btc_audit=types.ModuleType('btc_audit_refs_embedded')\n"
+               "exec(compile(" + repr(audit_source) + ",'<btc_audit_refs>','exec'),_btc_audit.__dict__)\n"
+               "sys.modules['btc_audit_refs_embedded']=_btc_audit\n"
+               "_btc_recovery=types.ModuleType('btc_recovery_refs_embedded')\n"
+               "exec(compile(" + repr(recovery_source) + ",'<btc_recovery_refs>','exec'),_btc_recovery.__dict__)\n"
+               "sys.modules['btc_recovery_refs_embedded']=_btc_recovery\n"
+               "_btc_event_proof=types.ModuleType('btc_review_event_proof_embedded')\n"
+               "exec(compile(" + repr(event_proof_source) + ",'<btc_review_event_proof>','exec'),_btc_event_proof.__dict__)\n"
+               "sys.modules['btc_review_event_proof_embedded']=_btc_event_proof\n")
+    if restore is not None:
+        suffix = '\nprint(json.dumps(restore_archive(REMOTE_ROOT, ' + repr(restore) + ', REPLAY_ROOT)))\n'
+    else:
+        suffix = ('\nprepare_archive(REMOTE_ROOT, ' + str(needed) + '); print("READY")\n'
+                  if stream is None else '\nprint(json.dumps(receive(sys.stdin.buffer, REMOTE_ROOT, ' + str(needed) + ')))\n')
+    packed = base64.b85encode(zlib.compress((prelude + source).encode('utf-8'), 9)).decode('ascii')
+    bootstrap = ("import base64,zlib;ns={'__name__':'offsite_receiver'};"
+                 "exec(compile(zlib.decompress(base64.b85decode(" + repr(packed) + ")), '<archive>', 'exec'),ns);"
+                 "ns['REMOTE_ROOT']=ns['Path'](" + repr(str(REMOTE_ROOT)) + ");"
+                 "ns['REPLAY_ROOT']=ns['Path'](" + repr(str(REPLAY_ROOT)) + ");exec(" + repr(suffix) + ",ns)")
+    command = '/usr/bin/python3 -c ' + shlex.quote(bootstrap)
+    if len(command.encode()) > 120000:
+        raise ValueError('archive_bootstrap_too_large')
     # Only this repository's receiver source and a bounded integer reach the remote command.
     return subprocess.run(['/usr/bin/ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',  # nosec B603  # nosemgrep
                            '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=15',
                            '-o', 'ServerAliveCountMax=3', 'root@' + host, command],
                           stdin=stream, capture_output=True, check=True, shell=False,
-                          timeout=60 if stream is None else 1800)
+                          timeout=1800 if stream is not None or restore is not None else 60)
 
 
 def digest(path):
@@ -129,7 +183,7 @@ def private_root(root):
         raise ValueError('archive_root_not_private')
 
 
-def space(root, needed):
+def space(root, needed, *, staging=False):
     if not isinstance(needed, int) or not 0 <= needed <= 4 * RAW_CAP:
         raise ValueError('invalid_space_requirement')
     usage = 0
@@ -138,11 +192,121 @@ def space(root, needed):
             raise ValueError('archive_symlink')
         if p.is_file():
             usage += p.stat().st_size
-    if usage + needed > CAP or shutil.disk_usage(root).free < RESERVE + needed:
+    if usage + (0 if staging else needed) > CAP or shutil.disk_usage(root).free < RESERVE + needed:
         raise OSError('archive_space_limit')
 
 
-def restore_snapshot(zipped, manifest, raw):
+def _published_archive(directory):
+    """Only this receiver's immutable, private, completely published artifacts."""
+    required = set(FILES) | {'receipt.json'}
+    info = directory.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077
+            or {p.name for p in directory.iterdir()} != required):
+        raise ValueError('archive_retention_directory_invalid')
+    identities = {}
+    for name in required:
+        item = (directory / name).lstat()
+        if (not stat.S_ISREG(item.st_mode) or item.st_uid != os.getuid()
+                or item.st_mode & 0o077 or item.st_nlink != 1):
+            raise ValueError('archive_retention_file_invalid')
+        identities[name] = (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
+    if any(identities[name][2] > 4*1024**2 for name in ('receipt.json', FILES[1], FILES[3])):
+        raise ValueError('archive_retention_metadata_large')
+    receipt = json.loads((directory / 'receipt.json').read_text())
+    metadata = json.loads((directory / FILES[3]).read_text())
+    manifest = json.loads((directory / FILES[1]).read_text())
+    if not all(isinstance(value, dict) for value in (receipt, metadata, manifest)):
+        raise ValueError('archive_retention_receipt_invalid')
+    hashes = dict(zip(FILES, (receipt.get('compressed_sha256'), receipt.get('manifest_sha256'),
+                             receipt.get('bundle_sha256'), receipt.get('archive_metadata_sha256'))))
+    if (receipt.get('status') != 'VERIFIED'
+            or not isinstance(receipt.get('raw_sha256'), str)
+            or not re.fullmatch('[a-f0-9]{64}', receipt['raw_sha256'])
+            or any(not isinstance(h, str) or not re.fullmatch('[a-f0-9]{64}', h) for h in hashes.values())
+            or any(metadata.get('sha256', {}).get(name) != hashes[name] for name in FILES[:-1])
+            or manifest.get('compressed_sha256') != hashes[FILES[0]]
+            or manifest.get('compressed_bytes') != identities[FILES[0]][2]
+            or manifest.get('raw_sha256') != receipt.get('raw_sha256')
+            or digest(directory / FILES[1]) != hashes[FILES[1]]
+            or digest(directory / FILES[3]) != hashes[FILES[3]]):
+        raise ValueError('archive_retention_receipt_invalid')
+    return identities, hashes
+
+
+def prepare_archive(root, needed):
+    """The caller already verified a new local snapshot; retain the last good remote copy.
+
+    Keep one previous point while replacing it, hence two after successful upload.
+    Do not accumulate whole-database copies until verification scratch space runs out.
+    """
+    private_root(root)
+    if type(needed) is not int or not 0 <= needed <= 4*RAW_CAP:
+        raise ValueError('invalid_space_requirement')
+    lock_fd = os.open(root / '.receive.lock', os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    try:
+        lock = os.fstat(lock_fd)
+        if not stat.S_ISREG(lock.st_mode) or lock.st_uid != os.getuid() or lock.st_nlink != 1:
+            raise ValueError('unsafe_archive_lock')
+        os.fchmod(lock_fd, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if any(p.is_symlink() for p in root.rglob('*')):
+            raise ValueError('archive_symlink')
+        archives = sorted((p for p in root.iterdir() if re.fullmatch('archive-[a-f0-9]{32}', p.name)),
+                          key=lambda p: (p / 'receipt.json').lstat().st_mtime_ns)
+        if needed and len(archives) > 1:
+            checked = {p: _published_archive(p) for p in archives}
+            latest = archives[-1]
+            for name, expected in checked[latest][1].items():
+                if digest(latest / name) != expected:
+                    raise ValueError('archive_retention_latest_corrupt')
+            for directory in archives:
+                for name, identity in checked[directory][0].items():
+                    item = (directory / name).lstat()
+                    if identity != (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns):
+                        raise ValueError('archive_retention_changed')
+            for directory in archives[:-1]:
+                for name in checked[directory][0]:
+                    (directory / name).unlink()
+                directory.rmdir()
+            sync_dir(root)
+        space(root, needed, staging=True)
+    finally:
+        os.close(lock_fd)
+
+
+def _zero_bytes(chunk):
+    return sum(4096 for offset in range(0, len(chunk) - 4095, 4096)
+               if chunk[offset:offset + 4096] == ZERO_BLOCK)
+
+
+def _sparse_raw_bound(raw_bytes, zero_bytes):
+    if (type(raw_bytes) is not int or not 0 < raw_bytes <= RAW_CAP or type(zero_bytes) is not int
+            or not 0 <= zero_bytes <= raw_bytes or zero_bytes % 4096):
+        raise ValueError('sparse_bound_invalid')
+    data = raw_bytes - zero_bytes
+    return min(raw_bytes, data + max(64 * 1024**2, data // 20))
+
+
+def _require_sparse(root):
+    if os.statvfs(root).f_frsize != 4096:
+        raise ValueError('sparse_filesystem_unsupported')
+    fd, name = tempfile.mkstemp(prefix='.sparse-probe-', dir=root)
+    try:
+        if os.pwrite(fd, b'A' * 4096, 0) != 4096 or os.pwrite(fd, b'B' * 4096, 1024 * 1024) != 4096:
+            raise OSError('sparse_probe_short_write')
+        os.fsync(fd)
+        info = os.fstat(fd)
+        if (info.st_size != 1024 * 1024 + 4096 or info.st_blocks * 512 > 64 * 1024
+                or os.pread(fd, 4096, 0) != b'A' * 4096
+                or os.pread(fd, 4096, 4096) != ZERO_BLOCK
+                or os.pread(fd, 4096, 1024 * 1024) != b'B' * 4096):
+            raise ValueError('sparse_filesystem_unsupported')
+    finally:
+        os.close(fd)
+        os.unlink(name)
+
+
+def restore_snapshot(zipped, manifest, raw, *, expected_zero_bytes=None):
     if (manifest.get('sqlite_quick_check') != 'ok' or
             manifest.get('decompression_verified') is not True or
             manifest.get('source_writes') != 0 or
@@ -151,16 +315,64 @@ def restore_snapshot(zipped, manifest, raw):
             zipped.stat().st_size != manifest.get('compressed_bytes') or
             digest(zipped) != manifest.get('compressed_sha256')):
         raise ValueError('snapshot_manifest_mismatch')
-    total = 0
+    total = zero_bytes = data_bytes = 0
+    sparse_bound = None
+    if expected_zero_bytes is not None:
+        sparse_bound = _sparse_raw_bound(manifest['raw_bytes'], expected_zero_bytes)
     deadline = time.monotonic() + 600
-    with gzip.open(zipped, 'rb') as src, raw.open('xb') as dst:
+    with gzip.open(zipped, 'rb') as src, raw.open('xb', buffering=0) as dst:
         while chunk := src.read(1024 * 1024):
+            start = total
             total += len(chunk)
             if total > manifest['raw_bytes'] or time.monotonic() > deadline:
                 raise ValueError('snapshot_expansion_bound')
-            dst.write(chunk)
-        dst.flush()
+            if total < manifest['raw_bytes'] and len(chunk) % 4096:
+                raise ValueError('snapshot_block_alignment')
+            if shutil.disk_usage(raw.parent).free < RESERVE + len(chunk):
+                raise OSError('snapshot_restore_space_reserve_lost')
+            if expected_zero_bytes is None:
+                data = memoryview(chunk)
+                while data:
+                    written = os.pwrite(dst.fileno(), data, start)
+                    if written <= 0:
+                        raise OSError('snapshot_restore_short_write')
+                    start += written
+                    data = data[written:]
+                continue
+            offset = 0
+            while offset < len(chunk):
+                begin = offset
+                end = min(begin + 4096, len(chunk))
+                empty = end - begin == 4096 and chunk[begin:end] == ZERO_BLOCK
+                offset = end
+                while offset < len(chunk):
+                    end = min(offset + 4096, len(chunk))
+                    next_empty = end - offset == 4096 and chunk[offset:end] == ZERO_BLOCK
+                    if next_empty != empty:
+                        break
+                    offset = end
+                if empty:
+                    zero_bytes += offset - begin
+                else:
+                    data_bytes += offset - begin
+                    if data_bytes > manifest['raw_bytes'] - expected_zero_bytes:
+                        raise ValueError('sparse_zero_mismatch')
+                    data = memoryview(chunk)[begin:offset]
+                    position = start + begin
+                    while data:
+                        written = os.pwrite(dst.fileno(), data, position)
+                        if written <= 0:
+                            raise OSError('snapshot_restore_short_write')
+                        position += written
+                        data = data[written:]
+        if expected_zero_bytes is not None and zero_bytes != expected_zero_bytes:
+            raise ValueError('sparse_zero_mismatch')
+        os.ftruncate(dst.fileno(), total)
         os.fsync(dst.fileno())
+        if sparse_bound is not None and os.fstat(dst.fileno()).st_blocks * 512 > sparse_bound:
+            raise ValueError('sparse_allocation_exceeded')
+        if shutil.disk_usage(raw.parent).free < RESERVE:
+            raise OSError('snapshot_restore_space_reserve_lost')
     if total != manifest['raw_bytes'] or digest(raw) != manifest.get('raw_sha256'):
         raise ValueError('snapshot_raw_mismatch')
     with closing(sqlite3.connect(raw.as_uri() + '?mode=ro', uri=True)) as db:
@@ -169,7 +381,87 @@ def restore_snapshot(zipped, manifest, raw):
             raise ValueError('snapshot_quick_check')
 
 
-def referenced_commits(raw):
+def verify_streamed_snapshot(zipped, manifest):
+    """Verify bytes without a second on-disk copy; receiver rechecks SQLite and refs."""
+    if (manifest.get('sqlite_quick_check') != 'ok' or manifest.get('decompression_verified') is not True
+            or manifest.get('source_writes') != 0 or type(manifest.get('raw_bytes')) is not int
+            or not 0 < manifest['raw_bytes'] <= RAW_CAP
+            or zipped.stat().st_size != manifest.get('compressed_bytes')
+            or digest(zipped) != manifest.get('compressed_sha256')):
+        raise ValueError('snapshot_manifest_mismatch')
+    total, zero_bytes, raw_hash = 0, 0, hashlib.sha256()
+    deadline = time.monotonic() + 600
+    with gzip.open(zipped, 'rb') as source:
+        while chunk := source.read(1024 * 1024):
+            total += len(chunk)
+            if total > manifest['raw_bytes'] or time.monotonic() > deadline:
+                raise ValueError('snapshot_expansion_bound')
+            if total < manifest['raw_bytes'] and len(chunk) % 4096:
+                raise ValueError('snapshot_block_alignment')
+            raw_hash.update(chunk)
+            zero_bytes += _zero_bytes(chunk)
+    if total != manifest['raw_bytes'] or raw_hash.hexdigest() != manifest.get('raw_sha256'):
+        raise ValueError('snapshot_raw_mismatch')
+    return zero_bytes
+
+
+def verify_retention_index(raw, manifest):
+    if 'btc_retention_index' not in manifest:
+        return False
+    started = manifest.get('started_at')
+    if type(started) not in (int, float) or not math.isfinite(started) or started <= 7 * 86400:
+        raise ValueError('retention_snapshot_time_invalid')
+    if 'btc_retention_embedded' in sys.modules:
+        from btc_retention_embedded import snapshot_index
+    elif __package__:
+        from .btc_review_retention import snapshot_index
+    else:
+        from btc_review_retention import snapshot_index
+    deadline = time.monotonic() + 600
+    def guard():
+        if time.monotonic() > deadline:
+            raise TimeoutError('retention_index_deadline')
+    with closing(sqlite3.connect(raw.as_uri() + '?mode=ro', uri=True)) as db:
+        db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
+        index = manifest['btc_retention_index']
+        after_slot = index.get('after_slot') if isinstance(index, dict) else -1
+        if snapshot_index(db, int(started), after_slot=after_slot, guard=guard) != index:
+            raise ValueError('retention_index_mismatch')
+    return True
+
+
+def verify_event_proof_index(raw, manifest):
+    """Recompute optional event evidence from the restored snapshot itself."""
+    status = manifest.get('btc_review_event_proof_status')
+    has_index = 'btc_review_event_proof_index' in manifest
+    if status is None and not has_index:
+        return False
+    if status == 'UNAVAILABLE' and not has_index:
+        return False
+    if status != 'CAPTURED' or not has_index:
+        raise ValueError('event_proof_status_mismatch')
+    started, index = manifest.get('started_at'), manifest['btc_review_event_proof_index']
+    if (type(started) not in (int, float) or not math.isfinite(started) or started <= 7 * 86400
+            or not isinstance(index, dict) or index.get('version') != 2):
+        raise ValueError('event_proof_index_invalid')
+    if 'btc_review_event_proof_embedded' in sys.modules:
+        from btc_review_event_proof_embedded import snapshot_event_index
+    else:
+        from utils.btc_review_event_proof import snapshot_event_index
+    deadline = time.monotonic() + 600
+    def guard():
+        if time.monotonic() >= deadline:
+            raise TimeoutError('event_proof_index_deadline')
+    with closing(sqlite3.connect(raw.as_uri() + '?mode=ro', uri=True)) as db:
+        db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
+        db.execute('PRAGMA query_only=ON')
+        db.execute('BEGIN')
+        if snapshot_event_index(db, int(started), after_slot=index.get('after_slot'), guard=guard) != index:
+            raise ValueError('event_proof_index_mismatch')
+    return True
+
+
+def referenced_commits(raw, *, deadline=None):
     """Find exact observed revisions in retained JSON; never manufacture missing refs."""
     found = set()
     coverage = dict(scope='WELL_FORMED_STORED_REVISIONS_IN_KNOWN_EVIDENCE_COLUMNS_ONLY',
@@ -190,18 +482,50 @@ def referenced_commits(raw):
         elif isinstance(x, list):
             for value in x:
                 walk(value)
-    deadline = time.monotonic() + 600
+    # Multi-GB histories exceed ten minutes; the caller's tighter deadline still wins.
+    deadline = min(time.monotonic() + 1200, deadline) if deadline is not None else time.monotonic() + 1200
+    if time.monotonic() > deadline:
+        raise TimeoutError('commit_scan_deadline')
     with closing(sqlite3.connect(raw.as_uri() + '?mode=ro', uri=True)) as db:
         db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
         # Only known evidence columns, not unrelated application secrets/settings.
         for table, queries in EVIDENCE_QUERIES.items():
+            logging.getLogger(__name__).info('archive_commit_scan_table=%s', table)
             cols = [r[0] for r in db.execute('SELECT name FROM pragma_table_info(?)', (table,))]
             if table == 'llm_scenario_audit_manifests':
                 coverage['manifest_table_present'] = bool(cols)
             for col, query in queries.items():
                 if col not in cols:
                     continue
-                for (value,) in db.execute(query):
+                with_slot = table == 'llm_scenario_review_tapes' and 'slot' in cols
+                with_review_event = table == 'llm_scenario_review_events' and {'slot', 'sequence'} <= set(cols)
+                with_audit = table == 'llm_scenario_audit_events' and {'kind', 'decision_slot'} <= set(cols)
+                with_recovery = table == 'llm_scenario_recovery_events' and {'kind', 'slot'} <= set(cols)
+                selected_query = ('SELECT slot,sequence,body FROM llm_scenario_review_events' if with_review_event else
+                                  'SELECT slot,body FROM llm_scenario_review_tapes' if with_slot else
+                                  'SELECT kind,decision_slot,body FROM llm_scenario_audit_events' if with_audit else
+                                  'SELECT kind,slot,body FROM llm_scenario_recovery_events' if with_recovery else query)
+                for row in db.execute(selected_query):
+                    if with_review_event:
+                        slot, sequence, value = row
+                        kind = None
+                    else:
+                        kind, slot, value = row if with_audit or with_recovery else (None, *row) if with_slot else (None, None, row[0])
+                        sequence = None
+                    is_reference = (table == 'llm_scenario_review_tapes' and isinstance(value, bytes)
+                                    and value.startswith(b'PRISM_REVIEW_REFS_V1\x00'))
+                    is_audit_reference = (kind == 'decision_input' and isinstance(value, str)
+                                          and '$btc_audit_input_refs_v1' in value)
+                    is_accounting_reference = (kind == 'accounting_observation'
+                                               and (isinstance(value, bytes) or (isinstance(value, str)
+                                                    and '$btc_accounting_refs_v1' in value)))
+                    is_recovery_reference = (table == 'llm_scenario_recovery_events' and isinstance(value, bytes)
+                                             and value.startswith(b'PRISM_RECOVERY_REFS_V1\x00'))
+                    is_event_reference = (table == 'llm_scenario_review_events' and isinstance(value, bytes)
+                                          and value.startswith(b'PRISM_REVIEW_EVENT_REF_V1\x00'))
+                    is_snapshot_compressed = (table == 'llm_scenario_decisions' and col == 'snapshot'
+                                              and isinstance(value, bytes)
+                                              and value.startswith(b'PRISM_REVIEW_GZIP_V1\x00'))
                     if time.monotonic() > deadline:
                         raise TimeoutError('commit_scan_deadline')
                     if value is None or value == '':
@@ -209,16 +533,78 @@ def referenced_commits(raw):
                         coverage['missing_evidence_values'] += 1
                     else:
                         try:
-                            if table in ('llm_scenario_review_events', 'llm_scenario_review_tapes', 'llm_scenario_recovery_events'):
+                            if is_reference:
+                                if 'btc_review_refs_embedded' in sys.modules:
+                                    from btc_review_refs_embedded import read_tape
+                                elif __package__:
+                                    from .btc_review_references import read_tape
+                                else:
+                                    from btc_review_references import read_tape
+                                value = read_tape(value, db, slot, decode_legacy=review_text)
+                            elif is_audit_reference:
+                                if 'btc_audit_refs_embedded' in sys.modules:
+                                    from btc_audit_refs_embedded import read_audit
+                                elif __package__:
+                                    from .btc_audit_references import read_audit
+                                else:
+                                    from btc_audit_references import read_audit
+                                value = read_audit(value, db, slot)
+                            elif is_accounting_reference:
+                                if 'btc_accounting_refs_embedded' in sys.modules:
+                                    from btc_accounting_refs_embedded import read_accounting
+                                elif __package__:
+                                    from .btc_accounting_audit_references import read_accounting
+                                else:
+                                    from btc_accounting_audit_references import read_accounting
+                                value = read_accounting(value, db)
+                            elif table == 'llm_scenario_recovery_events':
+                                if kind is None or kind in ('MODEL_REQUEST', 'MODEL_RAW', 'INPUT'):
+                                    if 'btc_recovery_refs_embedded' in sys.modules:
+                                        from btc_recovery_refs_embedded import read_recovery
+                                    elif __package__:
+                                        from .btc_recovery_references import read_recovery
+                                    else:
+                                        from btc_recovery_references import read_recovery
+                                    value = read_recovery(value, db, slot, decode_legacy=review_text,
+                                                          expected_kind=kind)
+                                else:
+                                    value = review_text(value)
+                            elif table == 'llm_scenario_review_events' and with_review_event and is_event_reference:
+                                if 'btc_review_event_refs_embedded' in sys.modules:
+                                    from btc_review_event_refs_embedded import read_event
+                                elif __package__:
+                                    from .btc_review_event_references import read_event
+                                else:
+                                    from btc_review_event_references import read_event
+                                value = read_event(value, db, slot, sequence, decode_legacy=review_text)
+                            elif table in ('llm_scenario_review_events', 'llm_scenario_review_tapes'):
+                                value = review_text(value)
+                            elif is_snapshot_compressed:
                                 value = review_text(value)
                             parsed = json.loads(value)
-                        except (TypeError, ValueError):
+                        except (TypeError, ValueError, sqlite3.Error) as exc:
+                            if time.monotonic() > deadline:
+                                raise TimeoutError('commit_scan_deadline') from exc
+                            if is_reference:
+                                raise ValueError('reference_tape_unresolved') from exc
+                            if is_audit_reference:
+                                raise ValueError('reference_audit_unresolved') from exc
+                            if is_accounting_reference:
+                                raise ValueError('reference_accounting_unresolved') from exc
+                            if is_recovery_reference:
+                                raise ValueError('reference_recovery_unresolved') from exc
+                            if is_event_reference:
+                                raise ValueError('reference_review_event_unresolved') from exc
+                            if is_snapshot_compressed:
+                                raise ValueError('snapshot_compression_unresolved') from exc
                             parsed = None
                             coverage['malformed_evidence_rows'] += 1
                     if table == 'llm_scenario_audit_manifests' and (
                             not isinstance(parsed, dict) or 'git_revision' not in parsed):
                         coverage['missing_manifest_git_revision'] += 1
                     walk(parsed)
+                    if time.monotonic() > deadline:
+                        raise TimeoutError('commit_scan_deadline')
     coverage['unique_known_revision_count'] = len(found)
     return sorted(found), coverage
 
@@ -252,7 +638,7 @@ def receive(stream, root, needed):
             raise ValueError('unsafe_archive_lock')
         os.fchmod(lock_fd, 0o600)
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        space(root, needed)
+        space(root, needed, staging=True)
         stage = Path(tempfile.mkdtemp(prefix='.incoming-', dir=root))
         seen, transferred = set(), 0
         with tarfile.open(fileobj=stream, mode='r|') as tar:
@@ -279,11 +665,21 @@ def receive(stream, root, needed):
                 raise ValueError('archive_checksum_mismatch')
         if metadata['required_space'] != needed:
             raise ValueError('archive_space_binding')
-        if needed < (transferred + int(manifest['raw_bytes']) + 3 * (stage / 'history.bundle').stat().st_size):
+        zero_bytes = metadata.get('sparse_zero_bytes')
+        raw_bound = (int(manifest['raw_bytes']) if zero_bytes is None else
+                     _sparse_raw_bound(manifest['raw_bytes'], zero_bytes))
+        if needed < (transferred + raw_bound + 3 * (stage / 'history.bundle').stat().st_size):
             raise ValueError('archive_restore_space_bound')
-        space(root, needed - transferred)
+        space(root, needed - transferred, staging=True)
+        if zero_bytes is not None:
+            _require_sparse(root)
         raw = stage / 'restored.sqlite'
-        restore_snapshot(stage / FILES[0], manifest, raw)
+        if zero_bytes is None:
+            restore_snapshot(stage / FILES[0], manifest, raw)
+        else:
+            restore_snapshot(stage / FILES[0], manifest, raw, expected_zero_bytes=zero_bytes)
+        retention_verified = verify_retention_index(raw, manifest)
+        event_proof_verified = verify_event_proof_index(raw, manifest)
         actual, coverage = referenced_commits(raw)
         if actual != metadata['referenced_commits']:
             raise ValueError('archive_commit_manifest_mismatch')
@@ -306,10 +702,15 @@ def receive(stream, root, needed):
                    bundle_sha256=metadata['sha256'][FILES[2]],
                    archive_metadata_sha256=digest(stage / 'archive.json'),
                    referenced_commit_count=len(actual), code_reference_coverage=coverage)
+        if retention_verified:
+            ack['retention_index_verified'] = True
+        if event_proof_verified:
+            ack['review_event_proof_index_verified'] = True
         with (stage / 'receipt.json').open('x') as dst:
             json.dump(ack, dst)
             dst.flush()
             os.fsync(dst.fileno())
+        space(root, 0)
         sync_dir(stage)
         destination = root / ('archive-' + uuid.uuid4().hex)
         os.rename(stage, destination)
@@ -319,6 +720,98 @@ def receive(stream, root, needed):
         if stage is not None and stage.exists():
             shutil.rmtree(stage)
         os.close(lock_fd)
+
+
+def restore_archive(root, name, output_root):
+    """Restore one verified archive and its code to a separate private directory."""
+    root, output_root = Path(root), Path(output_root)
+    if not isinstance(name, str) or not re.fullmatch(r'archive-[a-f0-9]{32}', name) or not root.is_dir():
+        raise ValueError('restore_request_invalid')
+    private_root(root)
+    resolved_root, resolved_output = root.resolve(), output_root.resolve()
+    if (resolved_root == resolved_output or resolved_root in resolved_output.parents
+            or resolved_output in resolved_root.parents):
+        raise ValueError('restore_root_overlap')
+    private_root(output_root)
+    if any(p.name.startswith('restore-') for p in output_root.iterdir()):
+        raise ValueError('restore_already_present')
+    archive = root / name
+    if archive.is_symlink() or not archive.is_dir():
+        raise ValueError('restore_archive_missing')
+    private_root(archive)
+    lock = root / '.receive.lock'
+    lock_fd = os.open(lock, os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0))
+    previous_umask = os.umask(0o077)
+    stage = None
+    try:
+        lock_stat = os.fstat(lock_fd)
+        if not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_uid != os.getuid() or lock_stat.st_nlink != 1:
+            raise ValueError('unsafe_archive_lock')
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for filename in (*FILES, 'receipt.json'):
+            path = archive / filename
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise ValueError('restore_archive_file_invalid')
+        receipt_path, metadata_path = archive / 'receipt.json', archive / 'archive.json'
+        manifest_path = archive / 'snapshot.manifest.json'
+        if any(p.stat().st_size > 4 * 1024 * 1024 for p in (receipt_path, metadata_path, manifest_path)):
+            raise ValueError('restore_metadata_too_large')
+        receipt, metadata, manifest = (json.loads(p.read_text()) for p in (receipt_path, metadata_path, manifest_path))
+        if receipt.get('status') != 'VERIFIED' or digest(metadata_path) != receipt.get('archive_metadata_sha256'):
+            raise ValueError('restore_receipt_invalid')
+        for filename, key in ((FILES[0], 'compressed_sha256'), (FILES[1], 'manifest_sha256'),
+                              (FILES[2], 'bundle_sha256')):
+            actual = digest(archive / filename)
+            if actual != metadata.get('sha256', {}).get(filename) or actual != receipt.get(key):
+                raise ValueError('restore_archive_checksum_mismatch')
+        if receipt.get('raw_sha256') != manifest.get('raw_sha256'):
+            raise ValueError('restore_receipt_invalid')
+        zero_bytes = metadata.get('sparse_zero_bytes')
+        raw_bound = (int(manifest['raw_bytes']) if zero_bytes is None else
+                     _sparse_raw_bound(manifest['raw_bytes'], zero_bytes))
+        needed = raw_bound + 4 * (archive / FILES[2]).stat().st_size + 1024**2
+        if needed <= 0 or needed > 4 * RAW_CAP or shutil.disk_usage(output_root).free < RESERVE + needed:
+            raise OSError('restore_space_limit')
+        if zero_bytes is not None:
+            _require_sparse(output_root)
+        stage = Path(tempfile.mkdtemp(prefix='.restoring-', dir=output_root))
+        raw = stage / 'snapshot.sqlite'
+        restore_snapshot(archive / FILES[0], manifest, raw, expected_zero_bytes=zero_bytes)
+        checked = verify_retention_index(raw, manifest)
+        if 'btc_retention_index' in manifest and (not checked or receipt.get('retention_index_verified') is not True):
+            raise ValueError('restore_retention_index_unverified')
+        checked_events = verify_event_proof_index(raw, manifest)
+        if 'btc_review_event_proof_index' in manifest and (
+                not checked_events or receipt.get('review_event_proof_index_verified') is not True):
+            raise ValueError('restore_event_proof_index_unverified')
+        commits, coverage = referenced_commits(raw)
+        if commits != metadata.get('referenced_commits') or coverage != metadata.get('code_reference_coverage'):
+            raise ValueError('restore_reference_mismatch')
+        head = metadata.get('source_head')
+        if not isinstance(head, str) or not re.fullmatch('[0-9a-f]{40}', head):
+            raise ValueError('restore_source_head_invalid')
+        bare = stage / 'history.git'
+        run(['git', 'clone', '--bare', str(archive / FILES[2]), str(bare)])
+        for commit in [*commits, head]:
+            run(['git', 'cat-file', '-e', commit + '^{commit}'], cwd=bare)
+        run(['git', 'fsck', '--full'], cwd=bare)
+        proof = {'archive': name, 'source_head': head, 'raw_sha256': manifest['raw_sha256'],
+                 'referenced_commit_count': len(commits)}
+        with (stage / 'restore-proof.json').open('x') as output:
+            json.dump(proof, output, sort_keys=True)
+            output.flush()
+            os.fsync(output.fileno())
+        destination = output_root / ('restore-' + uuid.uuid4().hex)
+        os.rename(stage, destination)
+        sync_dir(output_root)
+        return {'status': 'VERIFIED', 'directory': str(destination), 'source_head': head,
+                'raw_sha256': manifest['raw_sha256'], 'referenced_commit_count': len(commits)}
+    finally:
+        if stage is not None and stage.exists():
+            shutil.rmtree(stage)
+        os.close(lock_fd)
+        os.umask(previous_umask)
 
 
 def backend_host(config):
@@ -348,22 +841,39 @@ def archive(repo, snapshot, config):
     if not git_objects.is_absolute():
         git_objects = repo / git_objects
     objects_size = sum(p.stat().st_size for p in git_objects.rglob('*') if p.is_file())
-    local_need = int(manifest['raw_bytes']) + 4 * objects_size + 2 * snapshot.stat().st_size + 1024**2
+    scan = manifest.get('code_reference_scan')
+    if scan is not None and (not isinstance(scan, dict) or set(scan) != {'commits', 'coverage'}
+            or not isinstance(scan['commits'], list) or not isinstance(scan['coverage'], dict)
+            or any(not isinstance(c, str) or not re.fullmatch('[0-9a-f]{40}', c) for c in scan['commits'])):
+        raise ValueError('snapshot_reference_scan_invalid')
+    local_need = (0 if scan is not None else int(manifest['raw_bytes'])) + 4 * objects_size + 2 * snapshot.stat().st_size + 1024**2
     if shutil.disk_usage(private).free < RESERVE + local_need:
         raise OSError('local_archive_space_limit')
     with tempfile.TemporaryDirectory(prefix='.btc-offsite-', dir=private) as tmp:
         stage = Path(tmp)
-        raw = stage / 'snapshot.sqlite'
-        restore_snapshot(snapshot, manifest, raw)
-        commits, coverage = referenced_commits(raw)
+        if scan is None:
+            raw = stage / 'snapshot.sqlite'
+            restore_snapshot(snapshot, manifest, raw)
+            commits, coverage = referenced_commits(raw)
+            zero_bytes = None
+        else:
+            zero_bytes = verify_streamed_snapshot(snapshot, manifest)
+            commits, coverage = scan['commits'], scan['coverage']
         source_head = run(['git', 'rev-parse', 'HEAD'], cwd=repo).strip()
         bundle = stage / 'history.bundle'
         make_bundle(repo, bundle, sorted(set(commits) | {source_head}), stage / 'source.git')
         hashes = {FILES[0]: digest(snapshot), FILES[1]: digest(manifest_path), FILES[2]: digest(bundle)}
         # Includes gz+manifest+bundle, raw SQLite, bare Git expansion and conservative slack.
-        needed = snapshot.stat().st_size + manifest_path.stat().st_size + int(manifest['raw_bytes']) + 4 * bundle.stat().st_size + 1024**2
+        raw_bound = int(manifest['raw_bytes'])
+        if zero_bytes is not None and _sparse_raw_bound(raw_bound, zero_bytes) < raw_bound:
+            raw_bound = _sparse_raw_bound(raw_bound, zero_bytes)
+        else:
+            zero_bytes = None
+        needed = snapshot.stat().st_size + manifest_path.stat().st_size + raw_bound + 4 * bundle.stat().st_size + 1024**2
         metadata = dict(schema_version=1, source_head=source_head, referenced_commits=commits,
                         code_reference_coverage=coverage, sha256=hashes, required_space=needed)
+        if zero_bytes is not None:
+            metadata['sparse_zero_bytes'] = zero_bytes
         meta = stage / 'archive.json'
         meta.write_text(json.dumps(metadata, sort_keys=True))
         if ssh_archive(host, needed).stdout.decode().strip() != 'READY':
@@ -381,6 +891,10 @@ def archive(repo, snapshot, config):
                 ack.get('bundle_sha256') != hashes[FILES[2]] or ack.get('archive_metadata_sha256') != digest(meta) or
                 ack.get('referenced_commit_count') != len(commits) or ack.get('code_reference_coverage') != coverage):
             raise ValueError('archive_ack_mismatch')
+        if 'btc_retention_index' in manifest and ack.get('retention_index_verified') is not True:
+            raise ValueError('archive_retention_index_unverified')
+        if 'btc_review_event_proof_index' in manifest and ack.get('review_event_proof_index_verified') is not True:
+            raise ValueError('archive_event_proof_index_unverified')
         return ack
 
 

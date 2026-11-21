@@ -429,3 +429,14 @@ def test_all_real_order_entrypoints_route_through_execution_service():
                         )
 
     assert violations == [], "direct order entrypoints remain:\n" + "\n".join(violations)
+
+
+def test_sell_with_no_shares_in_account_logs_a_warning_not_an_error():
+    # LLY 2026-10-30: the buy was skipped for under one share, so the later sell found nothing to sell.
+    import logging
+    from prism_core.execution_service import ExecutionService
+
+    assert ExecutionService._log_level(False, {"message": "LLY not found in portfolio"}) == logging.WARNING
+    assert ExecutionService._log_level(False, {"message": "Stock 028050 not found in portfolio"}) == logging.WARNING
+    assert ExecutionService._log_level(False, {"message": "주문가능금액 부족"}) == logging.ERROR
+    assert ExecutionService._log_level(True, {"message": "ok"}) == logging.INFO

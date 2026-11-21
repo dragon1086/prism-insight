@@ -1,10 +1,29 @@
-"""Retired lower-frame facts never enter new model judgment inputs."""
+"""Current decisions use the requested30m minimum and explicit priority."""
 from copy import deepcopy
 import json
 
 import pytest
 
 from live.scenario_analysis_frames import analysis_model_view, allowed_evidence_path
+
+
+def test_entry_extension_is_optional_signed_and_not_stored():
+    frame = {'status': 'ok', 'confirmed': {'is_confirmed': True, 'ma10': 100., 'atr14_risk_only': 10.},
+             'forming': {'ohlcv': {'close': 130.}}}
+    raw = {'market_snapshot': {'valid': True, 'timeframes': {'30m': frame}}, 'contract_context': {}}
+    before = deepcopy(raw)
+    assert analysis_model_view(raw)['market_snapshot']['timeframes']['30m']['forming_last_vs_confirmed_ma10_atr'] == 3.
+    assert raw == before
+    raw['market_snapshot']['timeframes']['30m']['forming']['observation_kind'] = 'synthetic_boundary'
+    assert 'forming_last_vs_confirmed_ma10_atr' not in analysis_model_view(raw)['market_snapshot']['timeframes']['30m']
+    del raw['market_snapshot']['timeframes']['30m']['forming']['observation_kind']
+    raw['market_snapshot']['timeframes']['30m']['forming']['ohlcv']['close'] = 80.
+    assert analysis_model_view(raw)['market_snapshot']['timeframes']['30m']['forming_last_vs_confirmed_ma10_atr'] == -2.
+    raw['contract_context']['positions'] = [{'size': 1}]
+    assert 'forming_last_vs_confirmed_ma10_atr' not in analysis_model_view(raw)['market_snapshot']['timeframes']['30m']
+    raw['contract_context']['positions'] = []
+    raw['market_snapshot']['timeframes']['30m']['confirmed']['atr14_risk_only'] = 0.
+    assert 'forming_last_vs_confirmed_ma10_atr' not in analysis_model_view(raw)['market_snapshot']['timeframes']['30m']
 
 
 def source():
@@ -22,7 +41,7 @@ def source():
                 'enum':['timeframes.15m.forming.close','timeframes.30m.forming.close']}}}}]}}})
 
 
-def test_model_view_removes_direct_and_derived_15m_without_source_mutation():
+def test_model_view_removes_15m_timing_without_source_mutation():
     raw=source()
     before=deepcopy(raw)
     view=analysis_model_view(raw)
@@ -41,10 +60,11 @@ def test_model_view_removes_direct_and_derived_15m_without_source_mutation():
     assert view['response_contract']['properties']['recovery']['anyOf'][0]['properties']['changed_evidence']['items']['enum']==['timeframes.30m.forming.close']
 
 
-def test_lower_frame_perturbation_cannot_change_current_judgment_facts():
+def test_5m_perturbation_cannot_change_current_judgment_facts():
     raw=source()
+    raw['market_snapshot']['timeframes']['5m']=deepcopy(raw['market_snapshot']['timeframes']['15m'])
     altered=deepcopy(raw)
-    altered['market_snapshot']['timeframes']['15m']['forming']['ohlcv']['close']=999999
+    altered['market_snapshot']['timeframes']['5m']['forming']['ohlcv']['close']=999999
     for frame in altered['market_snapshot']['timeframes'].values():
         frame['forming']['volume_acceleration']['recent_15m_volume']=999999
         frame['forming']['volume_projection']['same_progress_profile']['current_volume']=999999
@@ -58,19 +78,20 @@ def test_current_recovery_paths_deny_15m_but_keep_non_candle_market_facts():
     assert allowed_evidence_path('market.spread')
 
 
-def test_new_goal_rejects_15m_but_original_goal_resolution_stays_supported():
+@pytest.mark.parametrize('frame',['15m','12h'])
+def test_new_goal_rejects_retired_frame_but_original_goal_resolution_stays_supported(frame):
     from live.scenario_entry_goal import goal_schema, valid_goal, prepare_goal_source, resolve_goal, plan_goal
     from live.scenario_contract import _matches
     from tests.test_scenario_ma_context import NOW, point, snapshot
-    goal=dict(mode='BOUNDED_BEFORE',reference=dict(frame='15m',phase='confirmed',ma='ma35'))
+    goal=dict(mode='BOUNDED_BEFORE',reference=dict(frame=frame,phase='confirmed',ma='ma35'))
     assert valid_goal(goal)  # Immutable old contracts remain valid definitions.
     assert not _matches(goal,goal_schema())
-    market=snapshot('15m',before=point('15m',2))
+    market=snapshot(frame,before=point(frame,2))
     market['valid']=True
     ctx=dict(now=NOW/1000,input_id='old-original',entry_contract_version=2,entry_goal_decision_slot=1)
     prepare_goal_source(market,ctx)
     original=resolve_goal(goal,ctx)
-    assert original['goal']['reference']['frame']=='15m'
+    assert original['goal']['reference']['frame']==frame
     with pytest.raises(ValueError,match='frame_not_allowed_for_new_open'):
         plan_goal(dict(action='OPEN',entry_contract={'goal':goal}),ctx)
     active=dict(ctx,scenario_id='old-active',registered_entry_contract={'version':2,'resolved_goal':original})
@@ -90,7 +111,7 @@ def test_original_numeric_codec_keeps_15m_but_new_wire_evidence_does_not():
     assert schema['items']['enum']==['timeframes.30m.forming.close']
 
 
-def test_calculated_flat_and_active_requests_have_no_live_15m():
+def test_calculated_flat_and_active_requests_exclude_15m_timing():
     from live.scenario_calculated_review import _model_payload
     from live.scenario_model_input import restore_model_input
     from tests.test_scenario_calculated_review import context
@@ -100,7 +121,6 @@ def test_calculated_flat_and_active_requests_have_no_live_15m():
         ctx.update(scenario_id=scenario,recovery=raw['contract_context']['recovery'])
         result=restore_model_input(_model_payload(raw['market_snapshot'],ctx,{}))
         assert '15m' not in result['market_snapshot']['timeframes']
-        assert '15m' not in result['contract_context']['ma_structure']['primary']
         assert '15m' not in result['contract_context'].get('entry_display',{}).get('confirmed_close_tail',{})
         assert '15m' not in json.dumps(result['contract_context']['recovery'])
 
@@ -165,15 +185,15 @@ def test_retired_historical_opinions_are_omitted_without_mutating_registered_con
         'goal':{'reference':{'frame':'15m'}},'explicit_failure':{'price':123}}}
     ctx=raw['contract_context']
     ctx['registered_entry_contract']=deepcopy(contract)
-    ctx['previous_thesis_assessment']={'status':'WEAKENING','reason':'15분봉 반등 2.99x'}
-    ctx['position_flow']={'thesis_transitions':[{'reason':'15m drop 88','price':123}]}
+    ctx['previous_thesis_assessment']={'status':'WEAKENING','reason':'5분봉 반등 2.99x'}
+    ctx['position_flow']={'thesis_transitions':[{'reason':'5m drop 88','price':123}]}
     ctx['current_plan']={'action':'WAIT','rationale':'15-minute weakness','entry_contract':deepcopy(contract)}
     ctx['review_memory']={'items':[{'id':'keep','reason':'30m support 15000'}]}
     before=deepcopy(raw)
     result=analysis_model_view(raw)['contract_context']
     assert result['previous_thesis_assessment']=={'status':'WEAKENING','reason':'OMITTED_RETIRED_TIMEFRAME_OPINION'}
     assert result['position_flow']['thesis_transitions']==[{'reason':'OMITTED_RETIRED_TIMEFRAME_OPINION','price':123}]
-    assert result['current_plan']['rationale']=='OMITTED_RETIRED_TIMEFRAME_OPINION'
+    assert 'rationale'not in result['current_plan']
     assert result['registered_entry_contract']==contract
     assert result['current_plan']['entry_contract']==contract
     assert result['review_memory']==ctx['review_memory']
@@ -262,3 +282,21 @@ def test_only_recovery_changed_evidence_enum_is_filtered():
     result=analysis_model_view(raw)['response_contract']['properties']
     assert result['changed_evidence']==item
     assert result['recovery']['anyOf'][0]['properties']['changed_evidence']['items']['enum']==['timeframes.30m.forming.close']
+
+
+@pytest.mark.parametrize('retired',['15m','12h'])
+def test_retired_frame_changes_cannot_change_current_model_data(retired):
+    raw=source()
+    raw['market_snapshot']['timeframes'][retired]=deepcopy(raw['market_snapshot']['timeframes']['30m'])
+    raw['contract_context']['ma_structure']['higher_frames']={retired:{'status':'available'}}
+    modified=deepcopy(raw)
+    modified['market_snapshot']['timeframes'][retired]['forming']['ohlcv']['close']=999999
+    modified['contract_context']['ma_structure']['higher_frames'][retired]['status']='unavailable'
+    assert analysis_model_view(raw)==analysis_model_view(modified)
+
+
+def test_retired_lower_frame_and_twelve_hour_opinions_are_not_current_evidence():
+    raw=source()
+    raw['contract_context']['recent_waits']=[{'reason':'15분봉 반등'},{'reason':'12h confirmed decline'}]
+    view=analysis_model_view(raw)
+    assert all(x['reason']=='OMITTED_RETIRED_TIMEFRAME_OPINION'for x in view['contract_context']['recent_waits'])

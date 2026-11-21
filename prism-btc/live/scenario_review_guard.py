@@ -5,6 +5,7 @@ import math
 
 from analysis.scenario_review_tape import replay_review
 from core.scenario_limit_prices import validate_execution_prices
+from core.scenario_stop_policy import is_widening
 from live.scenario_calculated_review import (
     ECONOMIC_REJECT_MODES, _supplied_instrument_filters, receipt_hash, research_review,
 )
@@ -23,7 +24,7 @@ _REQUIRED_STABLE = (
     "accounting_status", "protection_ok", "legacy_fenced",
 )
 _OPTIONAL_STABLE = (
-    'entry_convergence', 'management_quarantine',
+    'entry_convergence', 'entry_economics', 'management_quarantine',
     'management_quarantine_block',
     "side", "scenario_risk_fraction", "seen_action_ids", "current_plan", "stop_policy",
     "execution_price_policy", "conditional_entry_version",
@@ -69,6 +70,22 @@ def guard_rejected_review(snapshot, context, response_contract, envelope, *, bin
                 execution_authorized=False)
 
 
+def failed_model_call(outcome):
+    """Classify a failed transcript without changing its no-order disposition."""
+    from live.scenario_oauth import safe_failure_reason
+    error = outcome.get('error')
+    message = error.get('message') if isinstance(error, dict) else None
+    if outcome.get('status') != 'FAILED' or not isinstance(message, str):
+        return None
+    if message == 'research_model_call_failed':
+        return 'review_model_call_failed'
+    if message.startswith('research_model_call_failed:'):
+        detail = safe_failure_reason(message[len('research_model_call_failed:'):])
+        if detail is not None:
+            return 'review_model_call_failed:' + detail
+    return None
+
+
 def guard_review(snapshot, original_context, response_contract, envelope, fresh_context,
                  *, bindings=None, research_mode="legacy"):
     """Replay exact evidence, then reprice the original wire once on fresh facts.
@@ -83,6 +100,9 @@ def guard_review(snapshot, original_context, response_contract, envelope, fresh_
     outcome = replay_review(envelope, review, snapshot, original_context,
                             response_contract, bindings=bindings)
     if outcome.get("status") != "COMPLETE":
+        model_failure = failed_model_call(outcome)
+        if model_failure is not None:
+            raise ValueError(model_failure)
         raise ValueError("review_guard_incomplete_review")
     result = outcome["result"]
     selected = result["selected"]
@@ -90,6 +110,20 @@ def guard_review(snapshot, original_context, response_contract, envelope, fresh_
     actionable = selected["raw_proposal"]["action"] in {"OPEN", "ADJUST", "REDUCE"} or renewal
     original, fresh = deepcopy(original_context), deepcopy(fresh_context)
     selected_plan = selected['raw_proposal']
+    plan = selected.get("effective_plan") or {}
+    previous_plan = original.get("current_plan")
+    # Reuse the replayed core plan: no new exposure and a strictly stronger stop.
+    tightening_adjust = (selected_plan["action"] == "ADJUST" and not renewal
+        and bool(original.get("positions")) and not original.get("pending_entries")
+        and (original.get("unknown_intents") is False or original.get("unknown_intents") == [])
+        and isinstance(previous_plan, dict) and previous_plan.get("partial_stops") == []
+        and not plan.get("entries") and not plan.get("cancel_entry_ids")
+        and not plan.get("partial_stops") and original.get("side") in {"LONG", "SHORT"}
+        and plan.get("side") == original["side"]
+        and plan["hard_stop"] != original["previous_hard_stop"]
+        and not is_widening(original["side"], plan["hard_stop"], original["previous_hard_stop"]))
+    risk_reducing = selected_plan["action"] == "REDUCE" or tightening_adjust
+    entry_gate_sensitive = actionable and not risk_reducing
     goal_independent = (original.get('entry_contract_version') == 2 and not renewal
         and (selected_plan['action'] in {'WAIT', 'EXIT', 'REDUCE'}
              or (selected_plan['action'] == 'ADJUST' and not selected_plan.get('entries')
@@ -117,7 +151,7 @@ def guard_review(snapshot, original_context, response_contract, envelope, fresh_
         raise ValueError("review_guard_stale_account")
     for key in _REQUIRED_STABLE:
         if (key not in original or key not in fresh
-                or (original[key] != fresh[key] and (actionable or key != "new_risk_blocked"))):
+                or (original[key] != fresh[key] and (entry_gate_sensitive or key != "new_risk_blocked"))):
             raise ValueError("review_guard_context_changed:" + key)
     for key in _OPTIONAL_STABLE:
         if key == 'immediate_reduce_available' and selected_plan['action'] != 'REDUCE':
@@ -127,14 +161,17 @@ def guard_review(snapshot, original_context, response_contract, envelope, fresh_
         if (goal_independent and fresh.get('entry_goal_untrusted') is True
                 and key in {'pending_renewal_version', 'pending_renewal_offer'} and key not in fresh):
             continue  # A disappearing unused offer grants no new authority.
-        if not actionable and key in {"recovery_hard_blocked", "stop_policy"}:
+        # Entry/widening permissions do not authorize or veto verified de-risking.
+        if (not actionable or risk_reducing) and key in {"recovery_hard_blocked", "stop_policy"}:
             continue
         if (key in original) != (key in fresh) or original.get(key) != fresh.get(key):
             raise ValueError("review_guard_context_changed:" + key)
+    from live.scenario_management_quarantine import entry_aggregate_context
+    limited_entry_management = entry_aggregate_context(fresh, selected_plan['action'])
     if ((actionable and fresh["accounting_status"] != "confirmed")
             or fresh["accounting_status"] not in {"confirmed", "pending"}
             or fresh["protection_ok"] is not True
-            or fresh["legacy_fenced"] is not False
+            or (fresh["legacy_fenced"] is not False and not limited_entry_management)
             or type(fresh["new_risk_blocked"]) is not bool
             or ("recovery_hard_blocked" in fresh and type(fresh["recovery_hard_blocked"]) is not bool)):
         raise ValueError("review_guard_unsafe_lifecycle")
@@ -179,11 +216,22 @@ def guard_review(snapshot, original_context, response_contract, envelope, fresh_
             raise ValueError("review_guard_effective_plan_changed")
         if validated.get("risk") != expected.get("risk"):
             raise ValueError("review_guard_risk_changed")
+    if core['action'] == 'OPEN' and fresh.get('entry_economics') is not None:
+        from live.scenario_entry_economics import assess
+        from live.scenario_calculated_review import _gross_projection
+        economics = assess(validated, fresh, _gross_projection(validated, fresh))
+        if economics is None or economics['status'] != 'PASS':
+            raise ValueError('review_guard_entry_economics_changed')
     receipt = dict(status="FRESH_VALIDATED_NOT_AUTHORIZED", checked_at=now,
         envelope_sha256=envelope["sha256"], bundle_sha256=result["bundle_sha256"],
         selected_receipt_sha256=selected["receipt_sha256"],
         original_context_sha256=receipt_hash(original), fresh_context_sha256=receipt_hash(fresh),
         payload_sha256=receipt_hash(payload), validated_sha256=receipt_hash(validated),
         execution_authorized=False, orders_submitted=0)
+    if risk_reducing:
+        changed_entry_state = [key for key in ("new_risk_blocked", "recovery_hard_blocked", "stop_policy")
+            if (key in original) != (key in fresh) or original.get(key) != fresh.get(key)]
+        if changed_entry_state:
+            receipt["entry_only_state_changes"] = changed_entry_state
     receipt["sha256"] = receipt_hash(receipt)
     return dict(payload=deepcopy(payload), validated=deepcopy(validated), receipt=receipt)

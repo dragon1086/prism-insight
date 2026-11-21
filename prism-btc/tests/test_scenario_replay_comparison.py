@@ -71,6 +71,20 @@ def registered(tmp_path):
     return variants
 
 
+def test_default_oauth_tier_matches_registry_without_accepting_mismatch(tmp_path):
+    variant = fixture(tmp_path)
+    registry = registry_for(tmp_path, [variant])
+    contract = comparison.read(tmp_path / 'A/fresh/report.json')['contract']
+    contract['tier'] = 'default'
+    registry['service_tier'] = 'default'
+    registry['expected_contract_common_hash'] = comparison.digest(
+        {k: v for k, v in contract.items() if k not in {'path', 'costs'}})
+    comparison.verify_registry_contract(contract, registry)
+    registry['service_tier'] = 'priority'
+    with pytest.raises(ValueError, match='registry_service_tier_mismatch'):
+        comparison.verify_registry_contract(contract, registry)
+
+
 def rehash(root, mode="fresh"):
     folder = root / "A" / mode
     report = comparison.read(folder / "report.json")

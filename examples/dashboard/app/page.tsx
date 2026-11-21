@@ -220,7 +220,9 @@ function DashboardContent() {
               realPortfolio={data.real_portfolio || []}
               tradingHistoryCount={data.trading_history?.length || 0}
               tradingHistoryTotalProfit={
-                data.trading_history?.reduce((sum, trade) => sum + trade.profit_rate, 0) || 0
+                // Slot-weighted total behind the cumulative chart (chart % = this / 10)
+                data.prism_performance?.at(-1)?.cumulative_realized_profit ??
+                (data.trading_history?.reduce((sum, trade) => sum + trade.profit_rate, 0) || 0)
               }
               tradingHistoryAvgProfit={
                 data.trading_history?.length > 0

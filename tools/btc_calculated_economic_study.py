@@ -84,6 +84,12 @@ def predecessor_manifest(root, registry_sha256):
                 and event["arm"] == saved["arm"] and event["phase"] == saved["phase"]
                 and event["generate_kwargs"]["retry_transport"] is False and "headers" not in event,
                 "predecessor_wire_request_mismatch")
+        if 'runtime_readiness_sha256' in saved:
+            readiness = event.get('runtime_readiness')
+            require(isinstance(readiness, dict) and readiness.get('status') == 'PASSED'
+                    and hashlib.sha256(json.dumps(readiness, sort_keys=True, separators=(',', ':'),
+                                                  ensure_ascii=True, allow_nan=False).encode()).hexdigest()
+                        == saved['runtime_readiness_sha256'], "predecessor_runtime_readiness_mismatch")
     for kind in ("HTTP_RESPONSE", "MODEL_RESULT"):
         rows = [event for event in events if event["kind"] == kind]
         require(len(rows) == len(reservations)
@@ -225,7 +231,7 @@ def prepare(root, market_path, observed_path, observed_sha256, source_reference,
             observed_path=str(observed_path), observed_sha256=observed_sha256, full_data_hash=full["data_hash"]),
         pilot_data_hash=pilot["data_hash"], schedule=observed.schedule(start, end), variants=variants,
         start=utc(start), end=utc(end), initial_equity=initial_equity,
-        model=first["model"], reasoning=first["effort"], service_tier="priority",
+        model=first["model"], reasoning=first["effort"], service_tier=("priority" if first["tier"] == "fast" else "default"),
         expected_data_hash=pilot["data_hash"], expected_source_hashes_sha256=digest(first["source_hashes"]),
         expected_runtime_versions=first["runtime_versions"],
         funding_mark_basis="ASSUMED_PREVIOUS_CONFIRMED_MINUTE_MARK_NOT_EXCHANGE_EVENT_MARK",

@@ -9,6 +9,7 @@ from core.scenario_convergence import entry_convergence, require_entry_convergen
 from core.llm_scenario import ScenarioValidationError, validate_scenario
 from tests.test_llm_scenario import sample, active
 from tests.test_scenario_review_runtime import runtime, wire
+from tests.test_scenario_review_guard import model_receipt_hash
 
 
 def snapshot(now=1800000000, h1=-1, m30=-1):
@@ -99,19 +100,21 @@ def test_actual_review_rejects_entry_but_preserves_early_30m_expansion(tmp_path,
         if 'selection_token' in request['response_schema']['properties']:
             candidates = data['calculated_candidates']
             chosen = next((x for x in candidates['candidates'] if x['eligible']), candidates['wait'])
-            result = dict(selection_token=f"{chosen['id']}:{chosen['receipt_sha256']}", rationale='fixture')
+            result = dict(selection_token=f"{chosen['id']}:{model_receipt_hash(chosen)}", rationale='fixture')
         else:
             plan = wire(ctx, 'OPEN')
             if mode != 'legacy':
                 plan['entries'][0].pop('quantity')
                 plan['entries'][0]['allocation_fraction'] = .01
             result = dict(wait_proposal=wire(ctx, 'WAIT'), candidates=[plan], no_candidate_reason='')
+            if request['response_schema']['properties']['candidates']['maxItems']==0:
+                result.update(candidates=[],no_candidate_reason='host entry restriction')
         return SimpleNamespace(text=json.dumps(result))
     r.calculated_review_propose = make_calculated_review_proposer(generate=generate, clock=lambda:r.test_clock[0], research_mode=mode)
     outcome = r.tick()
     assert outcome['status'] == expected, outcome
     assert len(broker.executed) == (1 if m30 == 1 else 0)
-    assert all('one gap widening or unchanged' in x['system_prompt'] for x in seen)
+    assert all('One narrowing frame alone is not this block' in x['system_prompt'] for x in seen)
 
 
 def test_pending_entries_cancel_without_calling_model(tmp_path):
@@ -141,6 +144,10 @@ def test_executor_uses_original_snapshot_not_forged_allowed_context(tmp_path):
     c.execute('INSERT INTO llm_scenario_decisions VALUES(?,?,?)',
         (json.dumps(snap), json.dumps(ctx), json.dumps(dict(action_id='a'))))
     executor = ScenarioExecution();executor.conn=c;executor.convergence_entry_enabled=True;executor.clock=lambda:1800000000
+    with pytest.raises(ValueError, match='entry_convergence_restricted'):
+        executor._check_entry_convergence(dict(action_id='a', input_id='i'))
+    from live.scenario_review_storage import review_storage
+    c.execute('UPDATE llm_scenario_decisions SET snapshot=?', (review_storage(json.dumps(snap)),))
     with pytest.raises(ValueError, match='entry_convergence_restricted'):
         executor._check_entry_convergence(dict(action_id='a', input_id='i'))
     ctx['entry_convergence']['status'] = 'ALLOWED'
@@ -186,7 +193,7 @@ def test_native_pending_order_is_cancelled_without_resetting_state_or_replaying_
         if 'selection_token' in request['response_schema']['properties']:
             choices = data['calculated_candidates']
             selected = next((x for x in choices['candidates'] if x['eligible']), choices['wait'])
-            result = dict(selection_token=f"{selected['id']}:{selected['receipt_sha256']}", rationale='fixture')
+            result = dict(selection_token=f"{selected['id']}:{model_receipt_hash(selected)}", rationale='fixture')
         else:
             wait = replay_wire(ctx, 'WAIT')
             wait.update(entry_contract=None, thesis_assessment=None)
@@ -274,3 +281,94 @@ def test_final_pure_validation_cannot_carry_entry_permission_across_half_hour(tm
     assert result['reason'] == 'entry_convergence_stale'
     assert not broker.executed
     assert r.conn.execute('SELECT count(*) FROM llm_scenario_intents').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('first',[False,True,None])
+def test_flat_blocked_context_flag_alone_cannot_skip_initial_model_review(tmp_path,first):
+    r,broker,calls=runtime(tmp_path,empty=True)
+    original=r._context
+    def context(state,**kwargs):
+        c=original(state,**kwargs);c['recovery']=dict(first_observation=first);return c
+    r._context=context;r.convergence_entry_enabled=True
+    r.snapshot=lambda:snapshot(r.test_clock[0])
+    out=r.tick()
+    assert out['status']=='wait'and len(calls)==1
+    assert calls[0]['response_schema']['properties']['candidates']['maxItems']==0
+    assert broker.executed==[]
+
+
+@pytest.mark.parametrize('automatic',[False,True])
+def test_real_recovery_sequence_observes_without_model_and_resumes_on_expansion(tmp_path,automatic):
+    from tests.test_scenario_review_runtime import observing_runtime
+    from live.scenario_runner import notify_runtime_status
+    r,broker,calls,_=observing_runtime(tmp_path,empty=True)
+    r.automatic_normalization_enabled=automatic
+    r.convergence_entry_enabled=True
+    def market(change=-1):
+        value=snapshot(r.test_clock[0],m30=change)
+        for frame in value['timeframes'].values():
+            frame['confirmed']=dict(frame['ma_path']['confirmed_points'][-1],close=100,high=102,low=98,open=100)
+        return value
+    r.snapshot=market
+    first=r.tick()
+    assert first['status']=='wait'and len(calls)==1, first
+    baseline=r.state()['recovery']
+    assert baseline['baseline_input_id']and baseline['baseline_slot']==int(r.test_clock[0]//300)
+    r.test_clock[0]+=300;broker.ctx['account_captured_at']=r.test_clock[0]
+    # prepare_input adds recovery.first_observation later; the early gate must use durable state.
+    assert 'recovery'not in r._context(r.state())
+    before=r.state();out=r.tick()
+    assert out['status']=='observation_only'and out['model_called']is False
+    facts=out['market_observation_facts']
+    assert facts['scope']=='PRIMARY_MA_CONTEXT_NOT_MODEL_REVIEW_OR_ORDER_AUTHORITY'
+    assert list(facts['primary'])==['1h','30m']
+    assert facts['decision_priority']['descending']==['1h','30m','4h','1d','1w']
+    assert facts['entry_convergence']['status']=='BLOCKED'
+    assert all(row['state']=='NARROWING'for row in facts['entry_convergence']['frames'].values())
+    assert all(row['confirmed_gap']is None for row in facts['primary'].values())  # Fixture has no aggregate provenance; unknown is not zero.
+    assert len(json.dumps(facts).encode())<=12000
+    assert len(calls)==1 and broker.executed==[] and r.state()==before
+    assert r.conn.execute('SELECT snapshot,context FROM llm_scenario_decisions ORDER BY slot DESC LIMIT 1').fetchone()==(None,None)
+    assert r.conn.execute('SELECT COUNT(*)FROM llm_scenario_review_tapes').fetchone()[0]==1
+    notify_runtime_status(r.conn,dict(status='blocked',reason='llm_call_failed'),clock=lambda:r.test_clock[0])
+    notify_runtime_status(r.conn,out,clock=lambda:r.test_clock[0])
+    assert r.conn.execute('SELECT active FROM llm_scenario_model_incident').fetchone()[0]==1
+    assert r.conn.execute("SELECT COUNT(*)FROM llm_scenario_outbox WHERE kind='MODEL_RECOVERED'").fetchone()[0]==0
+    r.test_clock[0]+=300;broker.ctx['account_captured_at']=r.test_clock[0]
+    r.snapshot=lambda:market(1)
+    resumed=r.tick()
+    assert resumed['status']=='wait'and len(calls)==2 and broker.executed==[]
+
+
+def test_convergence_observation_records_real_gap_statistics_without_model_or_state_change(tmp_path):
+    import math
+    from tests.test_scenario_review_runtime import observing_runtime
+    from tests.test_scenario_snapshot import frames
+    from engine.scenario_snapshot import build_scenario_snapshot
+    r,broker,calls,_=observing_runtime(tmp_path,empty=True)
+    r.convergence_entry_enabled=True
+    def market():
+        at=int(r.test_clock[0]*1000)
+        history,forming=frames(at)
+        for tf in ['1h','30m']:
+            prices=[100+10*(1-math.exp(-i/10))for i in range(len(history[tf]))]
+            for name in ['open','close']:history[tf][name]=prices
+            history[tf]['high']=[x+1 for x in prices]
+            history[tf]['low']=[x-1 for x in prices]
+            last=100+10*(1-math.exp(-len(prices)/10))
+            for name in ['open','close']:forming[tf][name]=last
+            forming[tf]['high'],forming[tf]['low']=last+1,last-1
+        return build_scenario_snapshot(history,at,provisional_tf_data=forming,observed_at_ms=at)
+    r.snapshot=market
+    assert r.tick()['status']=='wait'and len(calls)==1
+    r.test_clock[0]+=300;broker.ctx['account_captured_at']=r.test_clock[0]
+    before=r.state();result=r.tick();facts=result['market_observation_facts']
+    assert result['status']=='observation_only'and result['model_called']is False
+    assert len(calls)==1 and not broker.executed and r.state()==before
+    for row in facts['primary'].values():
+        assert row['confirmed_gap']['state']=='NARROWING'
+        assert row['confirmed_gap']['consecutive_narrowing_bars']>0
+        assert all('relative_crossings'in t for t in row['transitions'])
+    assert len(json.dumps(facts).encode())<=12000
+    recorded=json.loads(r.conn.execute('SELECT outcome FROM llm_scenario_decisions ORDER BY slot DESC LIMIT 1').fetchone()[0])
+    assert recorded['market_observation_facts']==facts

@@ -75,7 +75,7 @@ def source_from_structure(structure, context):
     points = []
     if _number(context.get('mark_price')) and _number(context.get('account_captured_at')):
         points.append(['MARK', context['mark_price'], 'MARK', context['account_captured_at'] * 1000])
-    for frame in ('30m', '1h'):
+    for frame in ('1h', '30m'):
         for index, point in enumerate((structure.get('primary', {}).get(frame, {}).get('points') or [])[:4]):
             phase = point.get('phase')
             if (phase not in {'CONFIRMED', 'FORMING'} or not _number(point.get('as_of_ms'))
@@ -86,11 +86,11 @@ def source_from_structure(structure, context):
                     points.append([f'P:{frame}:{index}:{field}', point[field], phase, point['as_of_ms']])
     for ref, level in sorted(structure.get('levels', {}).items()):
         frame = ref.split('.')[0]
-        if (frame not in {'4h', '12h', '1d', '1w'} or not _number(level.get('price'))
+        if (frame not in {'4h', '1d', '1w'} or not _number(level.get('price'))
                 or not _number(level.get('as_of_ms')) or type(level.get('is_confirmed')) is not bool):
             continue
         points.append(['MA:' + ref, level['price'], 'CONFIRMED' if level['is_confirmed'] else 'FORMING', level['as_of_ms']])
-    body = dict(version=1, points=points[:57])
+    body = dict(version=1, points=points[:77])
     return dict(body, sha256=digest(body))
 
 
@@ -142,7 +142,7 @@ def compile_explanation(raw, context, plan, *, scope, snapshot=None):
     if valid:
         for row in source['points']:
             if (isinstance(row, list) and len(row) == 4 and isinstance(row[0], str)
-                    and (row[0] == 'MARK' or row[0].startswith(('P:30m:', 'P:1h:', 'MA:4h.', 'MA:12h.', 'MA:1d.', 'MA:1w.')))
+                    and (row[0] == 'MARK' or row[0].startswith(('P:30m:', 'P:1h:', 'MA:4h.', 'MA:1d.', 'MA:1w.')))
                     and _number(row[1]) and row[2] in {'MARK', 'CONFIRMED', 'FORMING'} and _number(row[3])):
                 levels[row[0]] = dict(ref=row[0], price=row[1], phase=row[2], as_of_ms=row[3])
     data = raw if isinstance(raw, dict) else {}
@@ -207,36 +207,15 @@ def compile_explanation(raw, context, plan, *, scope, snapshot=None):
     return dict(receipt, sha256=digest(receipt))
 
 
-PROMPT = ''.join((f'''
-Holding explanation_contract_version=1 replaces rationale with an object:
-This overrides earlier free-text rationale formatting, never economic or FAILED safety rules.
-interpretation (up to {MAX_INTERPRETATION} characters, explicitly unverified model opinion),
-evidence_refs (up to {MAX_EVIDENCE_REFS}), comparisons (up to {MAX_COMPARISONS} objects containing only level_ref,target_ref).
-''', '''\
-Use interpretation only for qualitative market interpretation and action tradeoffs.
-Delegate market prices, source phases and before/after-TP relationships to references
-and comparisons; do not restate these numeric/source/order claims in interpretation.
-Never supply source values, prices or relations in comparison objects. explanation_source.points
-rows are [ref, frozen price, phase, as_of_ms]. P references retain their point's own phase/time;
-15m references are forbidden. Missing references mean UNKNOWN; equal numbers mean EQUAL.
-Output evidence_refs/level_ref use only explanation_source.points references; old
-holding_price_order helper IDs M, T0 and 1h.index.low are not output references.
-WAIT/REDUCE/EXIT target refs are CURRENT:TP:<current_plan target id>.
-ADJUST candidate index zero uses c0:TP:<its target id>, index one uses c1:TP:<its target id>.
-SELECT must use only its selected candidate's target refs; never another candidate's targets.
-The host compares ADJUST effective prices after calculation; other actions use current_plan.
-This display is not proof of live orders, support/resistance, travel order or fills.
-The original interpretation and other free-text fields remain unverified and auditable.
-Do not use absent explanation facts as a new WAIT gate or delay protective/FAILED EXIT.
-Lossless v1 input references: restore existing schema/table/gap/wrapper/proposal/recovery
-references first. A registered $explanation_copy raw copies this same receipt's original
-wrapper proposal rationale (WAIT=wait_proposal; c0/c1=candidates[0/1]); text copies its
-effective_plan.rationale. The sole bundle no_candidate_reason copy uses the WAIT wrapper's
-no_candidate_reason. They retain exact original text, values and canonical receipt hashes.
-A registered $explanation_source ma-structure-v1 rebuilds the source catalog from existing
-ma_structure and account facts: MARK uses mark_price and account_captured_at*1000;
-P:30m|1h:index:high|low|close|ma10|ma35 uses the same primary point's field, phase and as_of_ms;
-MA:level_id uses higher-frame level price, confirmed/forming phase and as_of_ms.
-Keep source numeric types and verify restored_sha256. No market data is omitted by these
-fixed references. Expand them before reading the source catalog or interpreting receipt hashes.
-'''))
+PROMPT = """Holding explanations follow the structured rationale schema. interpretation is
+unverified qualitative opinion; evidence_refs and comparisons identify frozen facts,
+not newly calculated prices. Never put literal values/relations in comparison objects.
+Use explanation_source references: MARK, P:30m|1h:index:field, or MA:level_id.
+Respect each point's phase/time; no analysis below 30m or on 12h. If the catalog is factored, point
+IDs refer to the supplied ma_structure primary points/levels and account Mark.
+WAIT/REDUCE/EXIT targets use CURRENT:TP:<current target id>; ADJUST uses its own
+c0/c1:TP:<target id>. SELECT uses only the selected candidate's target references.
+The host checks effective prices and reference bindings; do not compute hashes.
+Missing references stay UNKNOWN, not a new entry veto or reason to delay protection.
+A displayed comparison proves neither support, active orders nor future fills.
+"""

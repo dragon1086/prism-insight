@@ -1,9 +1,10 @@
 import json
 import sqlite3
+from decimal import Decimal
 
 import pytest
 
-from live.scenario_daily_report import build_report
+from live.scenario_daily_report import build_report, _decision
 from live.telegram_reporter import build_message
 
 
@@ -37,6 +38,56 @@ def fixture():
     return conn
 
 
+def _add_wait_review(conn, *, mismatch=False, tamper=False, compressed=False):
+    from backtest.scenario_tape import digest
+    from live.scenario_calculated_review import receipt_hash
+    from live.scenario_review_storage import review_storage
+
+    slot = int(NOW // 300)
+    proposal = dict(action='WAIT', rationale='초안의 잘못된 가격 순서', input_id='input-1',
+                    action_id='action-1', scenario_id=None, revision=1)
+    conn.execute('UPDATE llm_scenario_decisions SET proposal=? WHERE slot=?',
+                 (json.dumps(proposal, ensure_ascii=False), slot))
+    selected_raw = dict(proposal, action_id='other' if mismatch else proposal['action_id'])
+    selected = dict(id='WAIT', raw_proposal=selected_raw, input_sha256='a' * 64)
+    selected['receipt_sha256'] = receipt_hash(selected)
+    inputs = dict(snapshot={}, context={}, contract={}, bindings={})
+    tape = dict(version=1, kind='EXACT_ORDER_FREE_REVIEW', inputs=inputs,
+                inputs_sha256=digest(inputs), operations=[], calls=2, executable=False,
+                outcome=dict(status='COMPLETE', result=dict(selected=selected, selection=dict(
+                    selection='WAIT', receipt_sha256=selected['receipt_sha256'],
+                    rationale='최종 비교에서 올바른 가격 순서를 확인했습니다.'))))
+    tape['sha256'] = digest(tape)
+    if tamper:
+        tape['outcome']['result']['selection']['rationale'] = '변조된 최종 설명'
+    text = json.dumps(tape, ensure_ascii=False)
+    conn.execute('CREATE TABLE llm_scenario_review_tapes(slot INTEGER PRIMARY KEY,body BLOB)')
+    conn.execute('INSERT INTO llm_scenario_review_tapes VALUES(?,?)',
+                 (slot, review_storage(text) if compressed else text))
+
+
+@pytest.mark.parametrize('compressed', [False, True])
+def test_wait_report_prefers_bound_final_selection_without_writing(compressed):
+    conn = fixture()
+    _add_wait_review(conn, compressed=compressed)
+    before = conn.total_changes
+    text = '\n'.join(_decision(conn, Decimal(str(NOW))))
+    assert '최종 비교' in text and '올바른 가격 순서' in text
+    assert '초안의 잘못된 가격 순서' not in text
+    assert conn.total_changes == before
+
+
+@pytest.mark.parametrize('kind', ['missing', 'tampered', 'wrong_identity'])
+def test_wait_report_labels_draft_when_final_reason_is_unverified(kind):
+    conn = fixture()
+    if kind != 'missing':
+        _add_wait_review(conn, mismatch=kind == 'wrong_identity', tamper=kind == 'tampered')
+    text = '\n'.join(_decision(conn, Decimal(str(NOW))))
+    assert '초안' in text
+    assert '최종 비교' not in text
+    assert '변조된 최종 설명' not in text
+
+
 def test_legacy_two_trades_never_pollute_five_settled_scenarios(monkeypatch):
     conn = fixture()
     monkeypatch.setattr('live.scenario_daily_report.time.time', lambda: NOW)
@@ -44,6 +95,16 @@ def test_legacy_two_trades_never_pollute_five_settled_scenarios(monkeypatch):
     assert '종료 5건' in text and '+50.00 USDT' in text
     assert '9,647.71 USDT' in text and 'KST' in text
     assert '-999' not in text and '70' not in text and 'exchangefill' not in text
+
+
+def test_compact_account_produces_the_same_daily_report(monkeypatch):
+    conn = fixture()
+    monkeypatch.setattr('live.scenario_daily_report.time.time', lambda: NOW)
+    before = build_message(conn, 'demo')
+    raw = conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='account'").fetchone()[0]
+    conn.execute("UPDATE llm_scenario_broker_evidence SET body=? WHERE kind='account'",
+                 (json.dumps(json.loads(raw), sort_keys=True, separators=(',', ':')),))
+    assert build_message(conn, 'demo') == before
 
 
 @pytest.mark.parametrize('state', ['active','paused','transition'])
@@ -278,3 +339,12 @@ def test_long_reason_explicitly_marks_a_bounded_excerpt():
     result = _safe_reason(text)
     assert len(result) <= 100 and result.endswith('…')
     assert _safe_reason('짧은 근거입니다.') == '짧은 근거입니다.'
+
+
+def test_compressed_account_produces_same_daily_report():
+    from live.scenario_review_storage import review_storage
+    conn = fixture()
+    expected = build_report(conn, now=NOW)
+    raw = conn.execute("SELECT body FROM llm_scenario_broker_evidence WHERE kind='account'").fetchone()[0]
+    conn.execute("UPDATE llm_scenario_broker_evidence SET body=? WHERE kind='account'", (review_storage(raw),))
+    assert build_report(conn, now=NOW) == expected

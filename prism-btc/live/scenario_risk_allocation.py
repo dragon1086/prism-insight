@@ -12,6 +12,9 @@ from core.llm_scenario import EconomicProposalRejection, ScenarioValidationError
 from core.scenario_limit_prices import possible_entry_price_anchor
 
 
+MAX_NEW_ENTRY_BATCH_BUDGET_USAGE = Decimal("0.30")
+
+
 def _number(value, name, *, positive=False):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ScenarioValidationError(f"allocation_{name}: finite number required")
@@ -117,7 +120,8 @@ def allocate_entry_risk(proposal, context):
             raise ScenarioValidationError("allocation_entry_id")
         ids.add(entry_id)
         fractions.append(_number(row.get("allocation_fraction"), "fraction", positive=True))
-    if sum(fractions) > 1:
+    fraction_sum = sum(fractions)
+    if fraction_sum > 1:
         raise ScenarioValidationError("allocation_fraction_sum")
     step, minimum, min_notional = _filters(plan, context)
     base = _risk(plan, context, [])
@@ -125,12 +129,14 @@ def allocate_entry_risk(proposal, context):
     reserved = Decimal(str(base["total_risk"]))
     confidence_cap = budget * confidence
     available = max(Decimal(0), budget - reserved)
-    ceiling = min(confidence_cap, available)
+    batch_limit = budget * MAX_NEW_ENTRY_BATCH_BUDGET_USAGE
+    ceiling = min(confidence_cap, available, batch_limit / fraction_sum)
     receipt = dict(version="risk-allocation-v1", executable=False,
         model_side=plan["side"], model_hard_stop=plan["hard_stop"],
         budget=float(budget), confidence=float(confidence), confidence_cap=float(confidence_cap),
         reserved_risk_at_proposed_stop=float(reserved), available_risk=float(available),
-        new_risk_ceiling=float(ceiling), allocation_fraction_sum=float(sum(fractions)),
+        new_risk_ceiling=float(ceiling), allocation_fraction_sum=float(fraction_sum),
+        new_entry_batch_risk_limit=float(batch_limit),
         cancellation_requests_release_risk=False, model_chase=deepcopy(plan.get("chase")),
         quantity_basis="FULL_BATCH_WORST_AUTHORIZED_CHASE_NO_RISK_RECYCLING", entries=[])
     for row, fraction in zip(entries, fractions):
@@ -185,14 +191,20 @@ def validate_allocation_prices(effective_plan, receipt, context):
             or effective_plan["confidence"] != receipt["confidence"]):
         raise ScenarioValidationError("allocation_model_decision_changed")
     step, minimum, min_notional = _filters(effective_plan, context)
+    new_entry_batch_risk = Decimal(0)
     for row, allocated in zip(rows, receipt["entries"]):
         qty = _number(row["quantity"], "quantity", positive=True)
         if row["id"] != allocated["id"] or qty != Decimal(str(allocated["quantity"])):
             raise ScenarioValidationError("allocation_quantity_changed")
         if qty % step or qty < minimum or qty * Decimal(str(row["price"])) < min_notional:
             raise ScenarioValidationError("allocation_instrument_filters")
-        if qty * _worst_unit_risk(effective_plan, context, row["price"]) > Decimal(str(allocated["allocation_budget"])):
+        worst_risk = qty * _worst_unit_risk(effective_plan, context, row["price"])
+        new_entry_batch_risk += worst_risk
+        if worst_risk > Decimal(str(allocated["allocation_budget"])):
             raise EconomicProposalRejection("allocation_budget_exceeded", dict(allocation_receipt=receipt))
     risk = _risk(effective_plan, context, rows)
+    if new_entry_batch_risk > Decimal(str(risk["budget"])) * MAX_NEW_ENTRY_BATCH_BUDGET_USAGE:
+        raise EconomicProposalRejection("allocation_batch_risk_limit_exceeded",
+            dict(risk=risk, allocation_receipt=receipt))
     if not risk["within_budget"]:
         raise EconomicProposalRejection("allocation_total_budget_exceeded", dict(risk=risk, allocation_receipt=receipt))

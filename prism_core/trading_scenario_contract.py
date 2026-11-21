@@ -25,11 +25,16 @@ _ONEIL_BREAKOUT_TOLERANCE = 0.01
 # prism-us/cores/oneil_fallback.py TRAIL_ACTIVATION_PCT=5, TRAIL_DROP_BULL=0.92,
 # TRAIL_DROP_WEAK=0.95, TRAIL_DROP_UNKNOWN=0.90); trend weakness is the SELL prompt's
 # Tier 3 (all three). Pinned by tests/test_buy_prompt_alignment_20261019.py.
+# 2026-11-11 prompt diet (audit M5): the per-stock trailing line in the SELL input is the
+# authority; a position bought in a sideways/bear regime arms at +3% with x0.94/x0.96
+# (trail_params, SELL_TIGHT_NONBULL). Defaults listed for reference only.
 _SELL_TRIGGERS_KO = (
     ('익절 마일스톤: 목표가·주요 저항선 도달은 어떤 국면에서도 매도 사유가 아닙니다. '
-    '추세가 유지되면 보유하고, 이익은 현재 매도 에이전트의 trailing stop 규율로 지킵니다'
-    '(고점이 매수가 대비 +5% 이상이 된 뒤 활성화; 강세 국면 고점 × 0.92(-8%), 횡보·약세 국면 '
-    '고점 × 0.95(-5%), 국면 확인 불가 시 고점 × 0.90(-10%)).'),
+    '추세가 유지되면 보유하고, 이익은 현재 매도 에이전트의 trailing stop 규율로 지킵니다. '
+    '활성화 기준과 밴드는 매도 입력의 종목별 트레일링 줄을 따릅니다'
+    '(기본: 고점이 매수가 대비 +5% 이상이 된 뒤 활성화; 강세 국면 고점 × 0.92(-8%), 횡보·약세 국면 '
+    '고점 × 0.95(-5%), 국면 확인 불가 시 고점 × 0.90(-10%); 횡보·약세 국면에서 매수한 종목은 '
+    '+3%, × 0.94/× 0.96).'),
     ('추세 약화: 매도 에이전트의 3단계 규칙(매수 후 3거래일 연속 종가 하락 + 평균 이상 거래량 + 20일선 아래 '
     '마감, 셋 모두 충족)을 적용합니다. 매수 시나리오의 자유서술로 새로운 단독 매도 조건을 만들지 않습니다.'),
     ('하드 스탑: 장중 현재가가 stop_loss×0.995(0.5% 꼬리 버퍼) 이하가 되면 장중 하드스탑이 '
@@ -40,9 +45,11 @@ _SELL_TRIGGERS_KO = (
 )
 _SELL_TRIGGERS_EN = (
     ('Target/resistance is never a sell reason in any regime. Retain intact trends '
-    'and protect the gain with the live SELL agent trailing policy (active once the '
+    'and protect the gain with the live SELL agent trailing policy. Activation and bands follow '
+    'the per-stock trailing line in the SELL input (defaults: active once the '
     'peak is +5% above entry; peak × 0.92 (-8%) in bull regimes, peak × 0.95 (-5%) '
-    'in sideways/bear, peak × 0.90 (-10%) when the live regime is unavailable).'),
+    'in sideways/bear, peak × 0.90 (-10%) when the live regime is unavailable; a position '
+    'bought in a sideways/bear regime arms at +3% with × 0.94/× 0.96).'),
     ('Trend weakening follows the SELL agent Tier 3 rule (3 consecutive lower closes after the entry + '
     'above-average volume + close below the 20d MA, all three). BUY free text cannot '
     'create a new standalone exit rule.'),
@@ -183,7 +190,7 @@ def buy_scenario_prompt_contract(language: str = 'ko') -> str:
   target and dependent risk fields, not a synthetic price. Preserve all existing entry gates.
 - Map each BUY conclusion to report section, supplied evidence ID (if any) and source asof.
   Separate actual results from forecasts/guidance; ownership and volume proxies are not net buys.
-- sell_triggers must use the supplied policy template. Do not add highest-close 7%
+- sell_triggers: leave the placeholder; the system installs the SELL policy template. Do not add highest-close 7%
   trailing, 5-day MA full exits, or convert a report's partial-exit idea into a rule.
   BUY prose cannot override the existing live SELL policy or adjustment rules.
 '''
@@ -209,7 +216,7 @@ def buy_scenario_prompt_contract(language: str = 'ko') -> str:
   종속 손익비 필드는 null로 두세요. 기존 진입 기준은 모두 유지합니다.
 - BUY 판단마다 보고서 절·제공된 근거 ID(있을 때)·자료 기준일을 연결하세요.
   실제 실적과 전망·가이던스를 구분하고 기관 보유량·거래량 대용치를 순매수로 읽지 마세요.
-- sell_triggers는 제공된 정책 템플릿을 따르세요. 최고 종가 대비 7% trailing이나 5일선
+- sell_triggers는 자리표시자만 두세요. 시스템이 매도 정책 템플릿을 설치합니다. 최고 종가 대비 7% trailing이나 5일선
   단독 전량매도 규칙을 추가하거나 보고서의 부분축소 아이디어를 전량매도 규칙으로
   바꾸지 마세요. 매수 자유서술은 기존 매도·손절 조정 규율보다 우선하지 않습니다.
 '''

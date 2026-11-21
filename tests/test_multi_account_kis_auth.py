@@ -249,3 +249,45 @@ def test_get_configured_accounts_rejects_too_many_accounts(monkeypatch):
 
     with pytest.raises(ValueError, match="Too many accounts configured"):
         ka.get_configured_accounts()
+
+
+def test_auth_rereads_token_under_issue_lock_before_requesting(monkeypatch, tmp_path):
+    # 2026-11-09 13:57: two cron jobs saw the expired token together; the second hit EGW00133 (1/min).
+    cfg = {**_base_cfg(), "paper_app": "PSVTTESTKEY", "paper_sec": "paper-secret", "vps": "https://example.com"}
+    _patch_cfg(monkeypatch, cfg)
+    monkeypatch.setattr(ka, "config_root", str(tmp_path))
+    reads = iter([None, "token-saved-by-peer"])
+    monkeypatch.setattr(ka, "read_token", lambda account_key=None: next(reads))
+    monkeypatch.setattr(ka, "_request_token_with_retry", lambda *a, **k: pytest.fail("must not request a new token"))
+    seen = {}
+    monkeypatch.setattr(ka, "changeTREnv", lambda token, *a, **k: seen.setdefault("token", token))
+
+    ka.auth(svr="vps")
+
+    assert seen["token"] == "token-saved-by-peer"
+    assert not (tmp_path / ".token_issue.lock").exists()
+
+
+def test_token_request_waits_out_the_per_minute_issue_limit_once(monkeypatch):
+    """EGW00133 (another host issued within the minute): wait a minute and retry; KIS then returns that token."""
+    import trading.kis_auth as ka
+
+    class Response:
+        def __init__(self, status_code, text):
+            self.status_code, self.text = status_code, text
+
+        def json(self):
+            return {"access_token": "peer-token", "access_token_token_expired": "2026-11-13 11:05:07"}
+
+    responses = [Response(403, '{"error_code":"EGW00133"}'), Response(200, "{}")]
+    slept = []
+    monkeypatch.setattr(ka.requests, "post", lambda *a, **k: responses.pop(0))
+    monkeypatch.setattr(ka.time, "sleep", slept.append)
+    assert ka._request_token_with_retry("https://kis/oauth2/tokenP", {}, {})["access_token"] == "peer-token"
+    assert slept == [ka.KIS_ISSUE_LIMIT_WAIT] and not responses
+
+    responses[:] = [Response(403, '{"error_code":"EGW00133"}')] * 2
+    slept.clear()
+    with pytest.raises(ka.TokenRequestError):  # still limited after the wait: fail, never loop
+        ka._request_token_with_retry("https://kis/oauth2/tokenP", {}, {})
+    assert slept == [ka.KIS_ISSUE_LIMIT_WAIT] and not responses

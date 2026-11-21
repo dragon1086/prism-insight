@@ -99,8 +99,8 @@ def test_regular_hours_only_never_in_auctions_and_an_order_deadline():
     assert LIVE.in_safe_window("US", US_1350) and LIVE.before_deadline("US", US_1350)
     assert not LIVE.in_safe_window("US", utc(19, 50))      # 15:50 ET closing-auction cutoffs
     assert not LIVE.in_safe_window("KR", datetime(2026, 10, 10, 5, 0, tzinfo=timezone.utc))   # Saturday
-    assert not LIVE.before_deadline("KR", utc(5, 40)) and LIVE.before_deadline("KR", utc(5, 39))   # 14:40 KST
-    assert not LIVE.before_deadline("US", utc(18, 25)) and LIVE.before_deadline("US", utc(18, 24))  # 14:25 EDT
+    assert not LIVE.before_deadline("KR", utc(6, 13)) and LIVE.before_deadline("KR", utc(6, 12))   # 15:13 KST
+    assert not LIVE.before_deadline("US", utc(19, 40)) and LIVE.before_deadline("US", utc(19, 39))  # 15:40 EDT
 
 
 def test_signal_price_bands_on_a_fresh_quote():
@@ -109,6 +109,8 @@ def test_signal_price_bands_on_a_fresh_quote():
     assert LIVE.price_in_band("RETEST", 100, 100) and LIVE.price_in_band("RETEST", 100, 105)
     assert not LIVE.price_in_band("RETEST", 100, 99.9) and not LIVE.price_in_band("RETEST", 100, 105.1)
     assert LIVE.price_in_band("SHAKEOUT_RECLAIM", 100, 105) and not LIVE.price_in_band("SHAKEOUT_RECLAIM", 100, 100)
+    assert LIVE.price_in_band("MA20R", 100, 105) and not LIVE.price_in_band("MA20R", 100, 100)
+    assert not LIVE.price_in_band("MA20R", 100, 105.1)
 
 
 def test_scenario_carries_reentry_metadata_capped_stop_and_buy_rule_target():
@@ -210,6 +212,32 @@ def test_only_primary_rule_signals_trade(tmp_path, live_on):
     assert results == [] and executor.calls == []
 
 
+def _ma20r_item(n=1, live_rule="MA20R", trigger="MA20R"):
+    item = _item(n, trigger=trigger, live_rule=live_rule, rr=2.9)
+    item.update(stop=11785.0, target=14580.0, stop_rule="POST_ANCHOR_LOW", target_rule="ma20r_2a", ma20=12010.0,
+                attempts={live_rule: {"attempt": 1, "max": 3, "prior": []}})
+    return item
+
+
+def test_ma20r_market_trades_only_ma20r_signals_with_the_ma20_band(tmp_path, live_on, monkeypatch):
+    # H-1116 LIVE (user decision 2026-11-16): REENTRY_V3_MA20R_LIVE_MARKETS=US -> US orders MA20R items only.
+    monkeypatch.setenv("REENTRY_V3_MA20R_LIVE_MARKETS", "US")
+    executor = FakeExecutor()
+    items = {"ev1": _ma20r_item(1), "ev2": _item(2)}                              # ev2: an L97 retest, record only
+    _, results = _process(tmp_path, [_record(1), _record(2)], items, executor, now=US_1350, market="US")
+    assert [(r["ticker"], r["signal"], r["status"]) for r in results] == [("000001", "MA20R", "BOUGHT")]
+    scenario = executor.calls[0][1][0]["scenario"]
+    meta = scenario["reentry"]
+    assert meta["signal"] == "MA20R" and meta["rule"] == "MA20R" and meta["band_level"] == 12010.0
+    assert meta["band_basis"] == "ma20" and meta["signal_ko"] == "20일선 회복 매수"
+    assert scenario["target_price"] == 14580.0 and scenario["stop_loss"] == 11785.0
+    assert scenario["trigger_type"] == "Re-entry (MA20R)" and scenario["risk_reward_ratio"] > 1.8
+    assert "20일 이동평균선 위로" in LIVE.deterministic_record(items["ev1"], "US")["scenario"]["rationale"]
+    kr = FakeExecutor()                                                           # KR keeps L97: MA20R is a record
+    _, results = _process(tmp_path, [_record(1)], {"ev1": _ma20r_item(1)}, kr, market="KR")
+    assert results == [] and kr.calls == []
+
+
 def test_rerun_never_buys_twice_and_one_ticker_per_session(tmp_path, live_on):
     executor = FakeExecutor()
     _process(tmp_path, [_record()], {"ev1": _item()}, executor)
@@ -235,7 +263,7 @@ def test_daily_cap_of_two_per_market_in_rank_order(tmp_path, live_on):
 def test_no_buy_after_the_deadline_outside_hours_or_when_not_approved(tmp_path, live_on):
     executor = FakeExecutor()
     _, late = _process(tmp_path, [_record()], {"ev1": _item()}, executor,
-                       now=datetime(2026, 10, 7, 5, 45, tzinfo=timezone.utc))        # 14:45 KST
+                       now=datetime(2026, 10, 7, 6, 14, tzinfo=timezone.utc))        # 15:14 KST, after the 15:13 deadline
     assert late[0]["status"] == "SKIPPED_DEADLINE" and executor.calls == []
     _, results = _process(tmp_path, [_record()], {"ev1": _item()}, executor,
                           now=datetime(2026, 10, 7, 6, 20, tzinfo=timezone.utc))
@@ -321,7 +349,7 @@ def test_agent_errors_auction_hours_and_the_deadline_never_buy():
                                             now=datetime(2026, 10, 7, 6, 21, tzinfo=timezone.utc)))
     assert out["reason"] == "outside_regular_hours" and late.calls == []
     out = asyncio.run(LIVE.enter_with_agent(late, "KR", _entry(),
-                                            now=datetime(2026, 10, 7, 5, 41, tzinfo=timezone.utc)))
+                                            now=datetime(2026, 10, 7, 6, 14, tzinfo=timezone.utc)))
     assert out["reason"] == "deadline" and late.calls == []
     assert LIVE.outcome_status(out) == "SKIPPED_DEADLINE"
     assert LIVE.outcome_status({"bought": False, "reason": "no_micro_plan"}) == "SKIPPED_NO_MICRO_PLAN"
@@ -1007,3 +1035,58 @@ def test_us_reentry_compares_the_ai_cap_with_slot_weighted_usage(monkeypatch, no
     legacy = _Agent("us_stock_holdings", slots=6)                       # legacy rows count as one slot each
     assert asyncio.run(_us(legacy, monkeypatch)(**_kwargs("US") | {"scenario": kwargs["scenario"]})) == \
         {"bought": False, "reason": "max_slots"}
+
+
+def test_a_signal_without_a_buy_target_is_skipped_not_an_order_error(tmp_path, live_on):
+    # SPOT 2026-10-30: SHAKEOUT_RECLAIM with target_rule "unsupported" raised in the BUY scenario contract
+    executor = FakeExecutor()
+    item = dict(_item(trigger="SHAKEOUT_RECLAIM"), target=None, target_rule="unsupported")
+    _, results = _process(tmp_path, [_record()], {"ev1": item}, executor)
+    assert [(r["reason"], r["status"]) for r in results] == [("no_target", "SKIPPED_NO_TARGET")]
+    assert executor.calls == []
+
+
+# ---------------------------------------------------------------- H-1110 KR 50-day line gate
+def test_ma50_with_price_uses_the_decision_price_as_today_close():
+    bars = [{"close": 100.0}] * 49
+    assert LIVE.ma50_with_price(bars, 150.0) == 101.0
+    assert LIVE.ma50_with_price(bars[:48], 150.0) is None           # short history stays MISSING
+    assert LIVE.ma50_with_price(bars[:48] + [{"close": None}], 150.0) is None
+
+
+def test_ma50_gate_blocks_kr_below_the_line_before_the_daily_cap(tmp_path, monkeypatch, live_on):
+    monkeypatch.setenv("REENTRY_V3_MA50_GATE_MARKETS", "KR")
+    below = dict(_item(1), ma50=12500.0)                           # decision price 12150 < 12500
+    above = dict(_item(2), ma50=12000.0)
+    missing = _item(3)                                             # older inputs without the value
+    items = {i["event_id"]: i for i in (below, above, missing)}
+    to_submit, skipped = LIVE.plan("KR", DAY, [_record(1), _record(2), _record(3)], items, [], KR_1400)
+    assert [e["event_id"] for e in to_submit] == ["ev2", "ev3"]     # the blocked signal used no cap slot
+    assert [(e["event_id"], e["reason"]) for e in skipped] == [("ev1", "below_ma50")]
+    assert LIVE.REASON_STATUS["below_ma50"] == "SKIPPED_BELOW_MA50"
+
+
+def test_ma50_gate_off_for_us_and_by_default(monkeypatch):
+    item = dict(_item(1), ma50=12500.0)
+    monkeypatch.delenv("REENTRY_V3_MA50_GATE_MARKETS", raising=False)
+    assert not LIVE.below_ma50("KR", item)
+    monkeypatch.setenv("REENTRY_V3_MA50_GATE_MARKETS", "KR")
+    assert LIVE.below_ma50("KR", item) and not LIVE.below_ma50("US", item)
+
+
+# ---------------------------------------------------------------- H-1110 US K8b early-bull gate
+def test_k8b_early_bull_gate_blocks_us_in_the_first_20_bull_sessions(tmp_path, monkeypatch, live_on):
+    monkeypatch.setenv("REENTRY_V3_K8B_EARLY_BULL_MARKETS", "US")
+    early = dict(_item(1), k8b={"label": "strong_bull", "bull_age": 5, "asof": "2026-10-06"})
+    late = dict(_item(2), k8b={"label": "moderate_bull", "bull_age": 21, "asof": "2026-10-06"})
+    side = dict(_item(3), k8b={"label": "sideways", "bull_age": 0, "asof": "2026-10-06"})
+    missing = _item(4)
+    items = {i["event_id"]: i for i in (early, late, side, missing)}
+    to_submit, skipped = LIVE.plan("US", DAY, [_record(n) for n in (1, 2, 3, 4)], items, [], US_1350)
+    assert [e["event_id"] for e in to_submit] == ["ev2", "ev3"]      # daily cap 2 still applies after the gate
+    assert [(e["event_id"], e["reason"]) for e in skipped] == [("ev1", "k8b_early_bull"), ("ev4", "daily_cap")]
+    assert LIVE.REASON_STATUS["k8b_early_bull"] == "SKIPPED_K8B_EARLY_BULL"
+    assert not LIVE.k8b_early_bull("KR", early)                       # market list
+    monkeypatch.delenv("REENTRY_V3_K8B_EARLY_BULL_MARKETS")
+    assert not LIVE.k8b_early_bull("US", early)                       # default off
+    assert LIVE.build_scenario(early, _record(1), "US")["reentry"]["k8b"]["bull_age"] == 5

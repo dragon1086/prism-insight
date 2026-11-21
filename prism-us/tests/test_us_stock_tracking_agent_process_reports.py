@@ -949,8 +949,10 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(
         ("vps:us-primary:01", "legacy:US:1"),
         ("vps:us-secondary:01", "legacy:US:2"),
     ]
-    assert len(redis_calls) == (0 if broker_failure else 1)
-    assert len(gcp_calls) == (0 if broker_failure else 1)
+    # The signal mirrors the simulator whatever our own order did (LITE 2026-10-30, issue #1219).
+    assert len(redis_calls) == 1
+    assert len(gcp_calls) == 1
+    assert gcp_calls[0]["trade_result"]["success"] is (not broker_failure)
     assert watchlist_calls == []
     if not broker_failure:
         assert "partial success" in caplog.text.lower()

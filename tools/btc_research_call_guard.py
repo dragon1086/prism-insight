@@ -122,6 +122,9 @@ class CallGuard:
                     fields |= {"version", "registry_sha256", "max_calls"}
                 elif kind == "reserve":
                     fields |= {"attempt_id", "arm", "phase", "request_sha256"}
+                    if 'runtime_readiness_sha256' in record:
+                        fields.add('runtime_readiness_sha256')
+                        _sha(record['runtime_readiness_sha256'])
                     if state["stopped"] or state["inflight"] or state["reserved_attempts"] >= self.max_calls:
                         raise ValueError("illegal reservation")
                     state["reserved_attempts"] += 1
@@ -164,8 +167,10 @@ class CallGuard:
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             raise CallGuardError("invalid research call ledger; no HTTP permitted") from exc
 
-    def reserve(self, arm, phase, request_sha256):
+    def reserve(self, arm, phase, request_sha256, *, runtime_readiness_sha256=None):
         arm, phase, request_sha256 = _token(arm), _token(phase), _sha(request_sha256)
+        if runtime_readiness_sha256 is not None:
+            runtime_readiness_sha256 = _sha(runtime_readiness_sha256)
         with self._locked():
             records, state = self._read()
             if state["stopped"] or state["inflight"]:
@@ -174,8 +179,11 @@ class CallGuard:
                 self._append(records, {"kind": "stop", "reason": "call_cap_reached"})
                 raise CallGuardError("research HTTP attempt cap reached")
             attempt_id = f"attempt-{state['reserved_attempts'] + 1:06d}"
-            self._append(records, {"kind": "reserve", "attempt_id": attempt_id,
-                                  "arm": arm, "phase": phase, "request_sha256": request_sha256})
+            reservation = {"kind": "reserve", "attempt_id": attempt_id,
+                           "arm": arm, "phase": phase, "request_sha256": request_sha256}
+            if runtime_readiness_sha256 is not None:
+                reservation['runtime_readiness_sha256'] = runtime_readiness_sha256
+            self._append(records, reservation)
             return attempt_id
 
     def finish(self, attempt_id, status, actual_http_calls=None):

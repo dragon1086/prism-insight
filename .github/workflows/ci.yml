@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   license-compliance:
     name: Third-party license compliance
@@ -33,6 +37,12 @@ jobs:
         env:
           PRISM_DISABLE_SIGNAL_PUBLISH: "1"
         run: python -m pytest tests/test_ohlcv_shape.py tests/test_kr_screening_ohlcv_shape.py tests/test_us_batch_ohlcv_shape_integration.py tests/test_kis_corporate_action_snapshot.py -q
+
+      # Separate lane package: offline (no network, account or .env), no order code.
+      - name: Inverse ETF lane (prism_inverse)
+        env:
+          PRISM_DISABLE_SIGNAL_PUBLISH: "1"
+        run: python -m pytest prism_inverse/tests -q
 
       - name: Offline BUY runtime safety regression
         env:
@@ -196,8 +206,9 @@ jobs:
           # Offline research logging: no broker, model, or channel calls.
           python -m pytest tests/test_observability_events.py tests/test_observability_shipper.py \
             tests/test_btc_scenario_export.py tests/test_btc_scenario_export_shapes.py \
-            tests/test_btc_review_event_export.py tests/test_btc_offsite_archive.py \
-            tests/test_btc_shipper_integration.py tests/test_sqlite_snapshot.py -q
+            tests/test_btc_review_event_export.py tests/test_btc_review_references.py tests/test_btc_financial_references.py tests/test_btc_audit_references.py tests/test_btc_offsite_archive.py tests/test_btc_archive_budget.py \
+            tests/test_btc_shipper_integration.py tests/test_sqlite_snapshot.py tests/test_btc_review_retention.py -q
+          PYTHONPATH=prism-btc:. python -m pytest tests/test_btc_review_retention_runtime.py -q
 
   dashboard:
     name: Dashboard production build
@@ -250,6 +261,7 @@ jobs:
 
       - name: Run tests
         run: |
+          python -m pytest tests/test_btc_research_summary.py -q
           python -m pytest cores/llm/tests/ -q
           python -m pytest --noconftest tests/test_buy_codex_settings.py \
             tests/test_trading_scenario_contract.py tests/test_codex_oauth_fast_backend.py \
@@ -285,6 +297,7 @@ jobs:
             prism-btc/tests/test_review_capture_boundaries.py \
             prism-btc/tests/test_scenario_stop_revision.py \
             prism-btc/tests/test_scenario_snapshot_lock.py \
+            prism-btc/tests/test_scenario_closed_continuity.py \
             prism-btc/tests/test_scenario_net_recovery.py \
             prism-btc/tests/test_scenario_net_recovery_prompt.py \
             prism-btc/tests/test_scenario_fee_projection.py \
@@ -298,6 +311,11 @@ jobs:
             prism-btc/tests/test_scenario_normalization_execution.py \
             prism-btc/tests/test_scenario_tp_ladder.py \
             prism-btc/tests/test_scenario_prompt_logic.py \
+            prism-btc/tests/test_scenario_entry_plans.py \
+            prism-btc/tests/test_scenario_timeframe_priority.py \
+            prism-btc/tests/test_scenario_analysis_frames.py \
+            prism-btc/tests/test_scenario_mark_pace_policy.py \
+            prism-btc/tests/test_scenario_30m_policy.py \
             prism-btc/tests/test_scenario_entry_contract_runtime.py \
             prism-btc/tests/test_scenario_entry_contract_wire.py \
             prism-btc/tests/test_scenario_entry_contract_provenance.py \
@@ -306,24 +324,40 @@ jobs:
             prism-btc/tests/test_scenario_oauth.py \
             prism-btc/tests/test_scenario_preview.py \
             prism-btc/tests/test_scenario_runtime.py \
+            prism-btc/tests/test_scenario_runner_calculated.py \
             prism-btc/tests/test_scenario_pending_renewal_runtime.py \
             prism-btc/tests/test_scenario_review_storage.py \
+            prism-btc/tests/test_scenario_financial_storage.py \
+            prism-btc/tests/test_scenario_audit_storage.py \
             prism-btc/tests/test_scenario_safety_detail.py \
             prism-btc/tests/test_scenario_limit_prices.py \
             prism-btc/tests/test_scenario_limit_price_execution.py \
             prism-btc/tests/test_scenario_runner.py \
             prism-btc/tests/test_scenario_provenance.py \
             prism-btc/tests/test_scenario_incident_epoch.py \
+            prism-btc/tests/test_scenario_cursor_covering_read.py \
             prism-btc/tests/test_scenario_monitor_timing.py \
             prism-btc/tests/test_research_call_guard.py \
+            prism-btc/tests/test_research_model_call.py \
+            prism-btc/tests/test_research_runtime_guard.py \
             prism-btc/tests/test_incident_epoch_legacy_blocker.py \
             prism-btc/tests/test_review_policy_imports.py \
             prism-btc/tests/test_scenario_model_input.py \
             prism-btc/tests/test_scenario_model_input_gaps.py \
             prism-btc/tests/test_scenario_calculated_review.py \
+            prism-btc/tests/test_initial_entry_progress_context.py \
+            prism-btc/tests/test_scenario_entry_economics.py \
+            prism-btc/tests/test_scenario_entry_geometry.py \
+            prism-btc/tests/test_scenario_deployed_replay.py \
+            prism-btc/tests/test_scenario_holding_management.py \
+            prism-btc/tests/test_scenario_kept_exit_paths.py \
+            prism-btc/tests/test_entry_economics_retention.py \
             prism-btc/tests/test_scenario_calculated_replay.py \
+            prism-btc/tests/test_scenario_fixed_benchmark.py \
             prism-btc/tests/test_scenario_review_guard.py \
+            prism-btc/tests/test_scenario_review_runtime.py \
             prism-btc/tests/test_scenario_risk_allocation.py \
+            prism-btc/tests/test_scenario_new_risk_ceiling.py \
             prism-btc/tests/test_scenario_allocation_chase.py \
             prism-btc/tests/test_scenario_allocation_review.py \
             prism-btc/tests/test_scenario_priced_risk_allocation.py \
@@ -355,6 +389,7 @@ jobs:
             prism-btc/tests/test_scenario_execution.py \
             prism-btc/tests/test_scenario_control.py \
             prism-btc/tests/test_scenario_data.py \
+            prism-btc/tests/test_scenario_boundary_levels.py \
             prism-btc/tests/test_scenario_dataset.py \
             prism-btc/tests/test_scenario_exchange.py \
             prism-btc/tests/test_scenario_replay.py \

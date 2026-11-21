@@ -251,6 +251,12 @@ def emit_trading_context(
             # A re-entry position keeps its own trace; this points back to the stopped-out
             # or skipped original, whose trace carries the whole re-entry campaign.
             attributes["origin_trace_id"] = _stable_hex("trade-trace", normalized_market, origin, length=32)
+        # A pyramid row (2026-11-08) is a new position with its own trace, linked to the ticker's earlier rows.
+        micro = _load_scenario(scenario).get("micro_split")
+        pyramid = micro.get("pyramid_row") if isinstance(micro, Mapping) else None
+        if isinstance(pyramid, Mapping) and pyramid.get("origin_trace_id"):
+            attributes["origin_trace_id"] = pyramid["origin_trace_id"]
+            attributes["parent_trace_ids"] = list(pyramid.get("parent_trace_ids") or [])
         trace_id = _stable_hex("trade-trace", normalized_market, identity, length=32)
         event = emit_event(
             event_type,

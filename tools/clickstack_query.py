@@ -140,6 +140,16 @@ def cmd_trace(args) -> None:
             print(json.dumps(body, ensure_ascii=False))
             continue
         print(f"{row['kst'][:19]}  {row['event']:<34} {summarize(body, 0 if args.full else 220)}")
+    # Positions that point back here (re-entry buys, pyramid rows 2/3): their own traces.
+    linked = run_query(
+        "SELECT TraceId AS trace, toString(toTimeZone(min(Timestamp), 'Asia/Seoul')) AS first_kst,"
+        " any(LogAttributes['event.name']) AS event FROM otel_logs"
+        " WHERE TimestampTime >= now() - INTERVAL 180 DAY AND TraceId != {trace:String}"
+        " AND JSONExtractString(Body, 'attributes', 'origin_trace_id') = {trace:String}"
+        " GROUP BY TraceId ORDER BY min(Timestamp)",
+        {"trace": args.trace_id}, local=args.local)
+    for row in linked:
+        print(f"linked trace {row['trace']} (origin_trace_id = this trace, from {row['first_kst'][:16]})")
 
 
 def cmd_ticker(args) -> None:
@@ -149,12 +159,14 @@ def cmd_ticker(args) -> None:
         " toString(toTimeZone(max(Timestamp), 'Asia/Seoul')) AS last_kst,"
         " arrayStringConcat(arrayDistinct(arrayMap(x -> x.2, arraySort(groupArray((Timestamp, LogAttributes['event.name']))))), ' > ') AS path"
         " FROM otel_logs WHERE LogAttributes['prism.ticker'] = {ticker:String}"
-        " AND TimestampTime >= now() - toIntervalDay({days:UInt16}) AND TraceId != ''"
+        " AND TimestampTime >= now() - toIntervalDay({days:UInt16})"
+        " AND Timestamp <= now() + INTERVAL 5 MINUTE AND TraceId != ''"
         " GROUP BY TraceId"
         # watchlist/micro-split side events get their own one-event traces; hide them unless --all
         " HAVING {all:UInt8} OR countIf(LogAttributes['event.name'] IN"
         " ('candidate.evaluated', 'entry.executed', 'holding.evaluated', 'exit.executed')"
-        " OR startsWith(LogAttributes['event.name'], 'reentry')) > 0"
+        " OR startsWith(LogAttributes['event.name'], 'reentry')"
+        " OR startsWith(LogAttributes['event.name'], 'btc.scenario.')) > 0"
         " ORDER BY min(Timestamp) DESC LIMIT {limit:UInt16}",
         {"ticker": args.ticker, "days": args.days, "limit": args.limit, "all": int(args.all)}, local=args.local)
     if not rows:
@@ -165,13 +177,17 @@ def cmd_ticker(args) -> None:
 
 def cmd_events(args) -> None:
     rows = run_query(
-        "SELECT LogAttributes['event.name'] AS event, LogAttributes['prism.market'] AS market, count() AS n,"
-        " toString(toTimeZone(max(Timestamp), 'Asia/Seoul')) AS last_kst FROM otel_logs"
+        "SELECT LogAttributes['event.name'] AS event, LogAttributes['prism.market'] AS market,"
+        " countIf(Timestamp <= now() + INTERVAL 5 MINUTE) AS n,"
+        " countIf(Timestamp > now() + INTERVAL 5 MINUTE) AS future,"
+        " toString(toTimeZone(maxIf(Timestamp, Timestamp <= now() + INTERVAL 5 MINUTE), 'Asia/Seoul')) AS last_kst FROM otel_logs"
         " WHERE TimestampTime >= now() - toIntervalDay({days:UInt16}) AND startsWith(event, {prefix:String})"
         " GROUP BY event, market ORDER BY event, market",
         {"days": args.days, "prefix": args.prefix}, local=args.local)
     for row in rows:
-        print(f"{row['event']:<40} {row['market'] or '-':<4} {row['n']:>7}  last {row['last_kst'][:16]}")
+        last = row['last_kst'][:16] if row['n'] else '-'
+        future = f"  future={row['future']}" if row['future'] else ""
+        print(f"{row['event']:<40} {row['market'] or '-':<4} {row['n']:>7}  last {last}{future}")
 
 
 def cmd_sql(args) -> None:

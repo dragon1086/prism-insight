@@ -173,15 +173,22 @@ python examples/messaging/gcp_pubsub_subscriber_example.py
   "scenario_type": "breakout",
   "acceleration": false,
   "trade_success": true,
-  "trade_message": ""
+  "trade_message": "",
+  "ticker_allocation_before": 0.5,
+  "ticker_allocation_after": 0.8,
+  "ticker_rows": 1
 }
 ```
 
+- `ticker_allocation_before/after`, `ticker_rows`(2026-11-08~): 피라미딩으로 한 종목을 최대 3칸(행)까지 가질 때
+  그 종목 전체 비중(슬롯)과 칸 수입니다. 증권사 잔고는 종목 합계만 보이므로, 크기 상한은 이 합계로 비교하십시오.
+  없거나 이상한 값이면 `allocation_after`와 1칸으로 보십시오.
 - `delta_fraction`은 1슬롯 기준 증가분입니다(`position_fraction`과 같은 기준). 따라 사려면
   `매수금액 = 본인 1슬롯 금액 × delta_fraction`.
 - 이미 보유한 종목에만 적용하십시오. 보유하지 않은 종목의 ADD로 새 포지션을 열면 안 됩니다.
 - `signal_id`는 증액마다 고유합니다. 재시작·재전달로 같은 ADD를 두 번 사지 않도록 처리 여부를 기록하십시오.
-- 예제 구독자의 규칙: 보유 중일 때만, 본인 보유 평가액이 `allocation_after × 1슬롯`과 1슬롯을 넘지 않도록 줄여서,
+- 예제 구독자의 규칙: 보유 중일 때만, 본인 보유 평가액이 `ticker_allocation_after × 1슬롯`(없으면 `allocation_after`)과
+  `ticker_rows`슬롯을 넘지 않도록 줄여서,
   `signal_id`당 한 번(주문 전에 `runtime/subscriber_add_signals.jsonl`에 기록), 정규장에서만, 지정가·예산 엄수로
   매수합니다. 끄려면 `.env`에 `SUBSCRIBER_FOLLOW_ADDS=false`.
 - 손절가 변경(주도주 손절가를 매수가로 옮김, AI 손절가 상향)은 시그널로 보내지 않습니다. 손절은 PRISM이 SELL
