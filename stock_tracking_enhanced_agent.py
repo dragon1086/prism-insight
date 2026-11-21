@@ -962,7 +962,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         planned_allocation=allocation, decision_id=source_decision_id)
                 # Free-row reserve before sizing, so a blocked row never records an add plan.
                 _row_ok, _row_reason = micro_split_live.pyramid_slot_check(
-                    self, market="KR", ticker=ticker, logger=logger)
+                    self, market="KR", ticker=ticker, logger=logger,
+                    regime=scenario.get("_deterministic_market_regime"))
                 if not _row_ok:
                     _pyramid_gate(False, _row_reason)
                     return 0
@@ -1302,7 +1303,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 return {"bought": False, "reason": "holdings_check_error"}
             if held:
                 return {"bought": False, "reason": "already_held"}
-            if slots_used >= self.max_slots:
+            if self._rows_full(slots_used, scenario):
                 return {"bought": False, "reason": "max_slots"}
             if not await self._check_sector_diversity(sector):
                 return {"bought": False, "reason": "sector_limit"}
@@ -1751,7 +1752,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
             # Portfolio information string
             portfolio_info = f"""
-            Current Holdings: {len(holdings)}/{self.max_slots}
+            Current Holdings: {len(holdings)}/{self._row_cap_now()}
             Sector Distribution: {json.dumps(sector_distribution, ensure_ascii=False)}
             Investment Period Distribution: {json.dumps(investment_periods, ensure_ascii=False)}
             """

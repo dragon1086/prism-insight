@@ -190,10 +190,19 @@ def test_execute_add_updates_row_orders_delta_and_reports(live_on, monkeypatch, 
                                             now="t1"))["status"] == status
     assert _FakeTrading.calls == [] and agent.message_queue == []
 
-    result = asyncio.run(live.execute_add(
-        agent, market=market, campaign=campaign,
-        decision={"target_allocation": "0.8", "price": price, "bar_end": "add-plan:2026-10-05:breakout_1",
-                  "add_plan": meta}, now="t1"))
+    # H-1121 money slots: an add that would push the account's invested weight past MAX_SLOTS never orders.
+    add = {"target_allocation": "0.8", "price": price, "bar_end": "add-plan:2026-10-05:breakout_1", "add_plan": meta}
+    monkeypatch.setenv("BULL_MONEY_SLOT_MARKETS", market)
+    conn.executemany(f"INSERT INTO {table} VALUES (?, ?, 'Full', 'acc', '{{}}', 1, 1)",
+                     [(100 + i, f"F{i}") for i in range(10)])   # ten legacy full-slot rows: 10.5 slots used
+    conn.commit()
+    assert asyncio.run(live.execute_add(agent, market=market, campaign=campaign, decision=add,
+                                        now="t1"))["status"] == "MONEY_SLOT_CAP"
+    assert _FakeTrading.calls == [] and agent.message_queue == []
+    conn.execute(f"DELETE FROM {table} WHERE id >= 100")
+    conn.commit()
+
+    result = asyncio.run(live.execute_add(agent, market=market, campaign=campaign, decision=add, now="t1"))
 
     assert result["status"] == "EXECUTED" and result["allocation"] == pytest.approx(0.8)
     stored = conn.execute(f"SELECT scenario, buy_price FROM {table} WHERE id=7").fetchone()
