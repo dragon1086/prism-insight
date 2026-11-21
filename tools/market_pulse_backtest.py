@@ -113,22 +113,10 @@ def fetch_us_bars(years: int) -> List[DailyBar]:
 
 
 def _df_to_bars(df, close_col: str, vol_col: Optional[str]) -> List[DailyBar]:
-    import pandas as pd
+    """Same converter as production (cores.regime_policy), so research bars match live ones."""
+    from cores.regime_policy import _df_to_bars as production_df_to_bars
 
-    bars: List[DailyBar] = []
-    for idx, row in df.iterrows():
-        c = float(row[close_col])
-        if c <= 0:
-            continue
-        v: Optional[float] = None
-        if vol_col is not None:
-            raw = row[vol_col]
-            if raw is not None and not pd.isna(raw):
-                v = float(raw)
-                if v <= 0:
-                    v = None
-        bars.append(DailyBar(date=idx.strftime("%Y-%m-%d"), close=c, volume=v))
-    return bars
+    return production_df_to_bars(df, close_col, vol_col, DailyBar)
 
 
 # --------------------------------------------------------------------------- #
