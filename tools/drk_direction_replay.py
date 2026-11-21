@@ -54,14 +54,14 @@ def equity_stats(bars, invested):
 
 
 def segments(dates, flags):
+    """Contiguous (first_date, last_date) runs where ``flags`` is true."""
     out, start = [], None
-    for d, f in zip(dates + [None], flags + [False]):
-        if f and start is None:
-            start = d
-        if not f and start is not None:
-            out.append((start, last))
+    for k, flag in enumerate(flags):
+        if flag and start is None:
+            start = k
+        if start is not None and (not flag or k == len(flags) - 1):
+            out.append((dates[start], dates[k if flag else k - 1]))
             start = None
-        last = d
     return out
 
 

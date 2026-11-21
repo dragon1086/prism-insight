@@ -41,7 +41,6 @@ runs and the record says ``candle_unknown``. Missing volume: no distribution day
 
 from __future__ import annotations
 
-import math
 import statistics
 from dataclasses import dataclass, field
 from datetime import date as _date
