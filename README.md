@@ -245,6 +245,13 @@ docker exec prism-insight-container python3 stock_analysis_orchestrator.py --mod
 
 **Full Setup Guide**: [docs/SETUP.md](docs/SETUP.md)
 
+### Using Monid (optional)
+
+Set `MONID_API_KEY` in your environment to route Firecrawl URL scrapes for bounded report research through Monid.
+This applies when report research enrichment is enabled.
+Monid provides the same Firecrawl data with one API key, pay per call.
+See the [Monid docs](https://docs.monid.ai).
+
 ---
 
 ## What is PRISM-INSIGHT?

@@ -85,7 +85,43 @@ def _decode(result):
         return {"text": text}
 
 
+async def _monid_scrape(key, arguments):
+    import httpx
+
+    payload = {"provider": "firecrawl", "endpoint": "/scrape", "input": {"body": arguments}}
+    async with httpx.AsyncClient(
+        base_url="https://api.monid.ai",
+        headers={"Authorization": f"Bearer {key}"},
+        timeout=60,
+    ) as client:
+        response = await client.post(
+            "/v1/run",
+            content=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json; charset=utf-8"},
+        )
+        response.raise_for_status()
+        run = response.json()
+        if response.status_code == 202:
+            run_path = f"/v1/runs/{run['runId']}"
+            while True:
+                await asyncio.sleep(2)
+                response = await client.get(run_path)
+                response.raise_for_status()
+                run = response.json()
+                if run.get("status") in {"COMPLETED", "FAILED", "TIMED_OUT", "STOPPED", "BLOCKED"}:
+                    break
+    if run.get("status") not in (None, "COMPLETED"):
+        raise ValueError("monid_run_failed")
+    if (run.get("providerResponse") or {}).get("httpStatus", 200) >= 400:
+        raise ValueError("provider_error")
+    return _decode(run["output"])
+
+
 async def native_call(server, tool, arguments):
+    if server == "firecrawl" and tool == "firecrawl_scrape":
+        if key := os.environ.get("MONID_API_KEY"):
+            return await asyncio.wait_for(_monid_scrape(key, arguments), timeout=60)
+
     # Deliberately lazy: OFF must not load SDKs, secrets, or registry.
     import contextlib
 

@@ -2,6 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from prism_core import report_research_prefetch as research
@@ -147,6 +148,88 @@ def test_partial_scrape_keeps_one_source(tmp_path):
     assert packet["receipt"]["usable_sources"] == 1
     assert packet["receipt"]["calls"] == 3
     assert "SCRAPE_UNAVAILABLE" in packet["receipt"]["gaps"]
+
+
+@pytest.mark.parametrize("vendor_error", [False, True])
+def test_monid_scrapes_report_sources(tmp_path, monkeypatch, vendor_error):
+    from cores.llm import config_loader
+
+    monkeypatch.setenv("MONID_API_KEY", "test-key")
+    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+    monkeypatch.setattr(config_loader, "load_report_mcp_registry",
+                        lambda: pytest.fail("Firecrawl registry must not be loaded"))
+    client = httpx.AsyncClient
+    urls = []
+
+    def handle(request):
+        assert request.method == "POST"
+        assert str(request.url) == "https://api.monid.ai/v1/run"
+        assert request.headers["Authorization"] == "Bearer test-key"
+        assert request.headers["Content-Type"] == "application/json; charset=utf-8"
+        url = f"https://example.com/news/{len(urls)}"
+        assert json.loads(request.content) == {
+            "provider": "firecrawl", "endpoint": "/scrape",
+            "input": {"body": {"url": url, "formats": ["markdown"], "onlyMainContent": True}},
+        }
+        urls.append(url)
+        if vendor_error and len(urls) == 2:
+            return httpx.Response(200, json={"status": "COMPLETED", "providerResponse": {
+                "httpStatus": 404, "error": {"message": "not found"},
+            }})
+        return httpx.Response(200, json={"output": {"success": True, "data": {
+            "markdown": TEXT, "metadata": {"publishedTime": "2025-01-01"},
+        }}})
+
+    monkeypatch.setattr(httpx, "AsyncClient",
+                        lambda **kwargs: client(transport=httpx.MockTransport(handle), **kwargs))
+
+    async def transport(server, tool, arguments):
+        if server == "perplexity":
+            return await Transport()(server, tool, arguments)
+        return await research.native_call(server, tool, arguments)
+
+    packet = run(tmp_path, transport)
+    assert len(urls) == 2
+    assert packet["receipt"]["usable_sources"] == (1 if vendor_error else 2)
+    assert ("SCRAPE_UNAVAILABLE" in packet["receipt"]["gaps"]) is vendor_error
+    assert packet["receipt"]["sources"][0]["url"] == urls[0]
+    assert packet["receipt"]["sources"][0]["published"] == "2025-01-01"
+
+
+def test_monid_scrape_polls_until_completed(monkeypatch):
+    monkeypatch.setenv("MONID_API_KEY", "test-key")
+    client = httpx.AsyncClient
+    output = {"success": True, "data": {"markdown": TEXT}}
+    polls = []
+
+    def handle(request):
+        if request.method == "POST":
+            assert request.url.path == "/v1/run"
+            return httpx.Response(202, json={"runId": "test-run"})
+        assert request.method == "GET"
+        assert request.url.path == "/v1/runs/test-run"
+        polls.append(request.url.path)
+        return httpx.Response(200, json={"status": "COMPLETED", "output": output})
+
+    monkeypatch.setattr(httpx, "AsyncClient",
+                        lambda **kwargs: client(transport=httpx.MockTransport(handle), **kwargs))
+    assert asyncio.run(research.native_call(
+        "firecrawl", "firecrawl_scrape", {"url": "https://example.com/news"},
+    )) == output
+    assert len(polls) == 1
+
+
+def test_native_scrape_without_monid_keeps_firecrawl_key_check(monkeypatch):
+    from types import SimpleNamespace
+
+    from cores.llm import config_loader
+
+    monkeypatch.delenv("MONID_API_KEY", raising=False)
+    monkeypatch.setattr(config_loader, "load_report_mcp_registry", lambda: {
+        "firecrawl": SimpleNamespace(env={"FIRECRAWL_API_KEY": ""}),
+    })
+    with pytest.raises(ValueError, match="^missing_credentials$"):
+        asyncio.run(research.native_call("firecrawl", "firecrawl_scrape", {}))
 
 
 def test_context_budget_and_hashes(tmp_path):
