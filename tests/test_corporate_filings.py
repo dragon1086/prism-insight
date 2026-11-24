@@ -140,6 +140,13 @@ def test_reentry_us_blocks_tender_and_bankruptcy_not_listing_notices():
     assert out["blocking"] == ["2026-09-17 SC TO-T", "2026-09-22 8-K (1.03)"]
 
 
+@pytest.mark.parametrize("form", ["PREM14A", "DEFM14A", "PREM14C", "DEFM14C"])
+def test_reentry_us_blocks_a_merger_proxy_but_not_ordinary_proxies(form):
+    fetch = _sec([(form, "2026-09-20", "", "000119312526000001"), ("DEF 14A", "2026-09-19", "", "000119312526000002"),
+                  ("DEFA14A", "2026-09-18", "", "000119312526000003")])
+    assert cf.reentry_blocking_events("US", "ACVA", today=TODAY, us_fetch=fetch)["blocking"] == [f"2026-09-20 {form}"]
+
+
 def test_reentry_lookup_failure_is_unknown_not_clear(monkeypatch):
     def boom(*_a, **_k):
         raise OSError("http_403")
