@@ -333,6 +333,16 @@ def test_kr_entry_goes_through_the_agent_once_with_trigger_type_and_decision_bar
     assert agent._decision_input_bars["000001"]["market"] == "KR" and len(agent._decision_input_bars["000001"]["bars"]) == 80
 
 
+@pytest.mark.parametrize("market,now", [("KR", KR_1400), ("US", US_1350)])
+def test_resolved_sector_reaches_the_scenario_the_holding_row_and_sector_cap_read(market, now):
+    # 2026-11-24 PANW: rule-approved re-entries were stored as Unknown and not counted by the sector cap.
+    agent, entry = FakeAgent(accounts=[{"name": "a"}]), _entry(market)
+    entry["scenario"].pop("sector", None)
+    asyncio.run(LIVE.enter_with_agent(agent, market, entry, now=now))
+    assert agent.calls[0]["scenario"]["sector"] == agent.calls[0]["sector"] == "반도체"
+    assert "sector" not in entry["scenario"]
+
+
 def test_us_entry_fans_out_per_account_like_the_batch():
     agent = FakeAgent(accounts=[{"name": "a"}, {"name": "b"}])
     out = asyncio.run(LIVE.enter_with_agent(agent, "US", _entry("US"), now=US_1350))
@@ -439,6 +449,9 @@ class _Agent:
 
     async def _check_sector_diversity(self, sector, is_pyramiding_add=False):
         return self._sector_ok
+
+    def _rows_full(self, current_slots, scenario):
+        return current_slots >= self.max_slots
 
     def _evaluate_production_buy_gate(self, scenario, price, score_override=None, is_add=False):
         return {"allowed": self._gate, "reason": "ok" if self._gate else "rr_below_floor", "findings": []}

@@ -176,6 +176,7 @@ jobs:
             tests/test_decision_inputs_packet.py tests/test_replay_buy_decision_facts.py tests/test_pivot_reentry.py \
             tests/test_position_peak.py tests/test_trend_exit_seller.py tests/test_reentry_v2_shadow.py \
             tests/test_hardstop_seller.py tests/test_loop_publish.py \
+            tests/test_reentry_v3_live.py tests/test_corporate_filings.py \
             tests/test_runner_hold.py tests/test_runner_hold_prompts.py -q
           python -m pytest prism-us/tests/test_trend_exit_seller_us.py prism-us/tests/test_runner_hold_us.py -q
           python -m pytest tests/test_core_hold.py tests/test_core_hold_live.py tests/test_ops_watchdog.py tests/test_sell_facts.py -q

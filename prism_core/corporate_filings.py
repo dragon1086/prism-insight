@@ -307,7 +307,10 @@ def _timed_out(*_args, **_kwargs):
 # meaning does not depend on reading the document: US Form 25/15 can be an exchange transfer or a
 # non-common class and 8-K 3.01 is often a deficiency notice; KR titles saying the halt/delisting was
 # lifted or that the listing moved markets are not in progress.
-_US_REENTRY_BLOCK_FORMS = {"SC TO-T", "SC TO-C", "SC 14D9", "SC 13E3"}
+# Merger proxies block too (CCC 2026-11-24: bought at 7.71 under a 7.75 cash merger, a +20% target was impossible).
+# shortcut: an acquirer asking its own holders to vote files the same form and is skipped as well; read the
+# document's role if those skips start to matter.
+_US_REENTRY_BLOCK_FORMS = {"SC TO-T", "SC TO-C", "SC 14D9", "SC 13E3", "PREM14A", "DEFM14A", "PREM14C", "DEFM14C"}
 _US_REENTRY_BLOCK_8K = ("8-K 1.03",)
 _KR_REENTRY_BLOCK = re.compile(r"공개매수|상장폐지|정리매매|거래정지")
 _KR_REENTRY_NOT_IN_PROGRESS = re.compile(r"해제|해소|철회|취소|재개|이전상장|자기주식|자사주")

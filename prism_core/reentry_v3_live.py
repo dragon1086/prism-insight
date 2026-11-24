@@ -734,9 +734,11 @@ async def enter_with_agent(agent, market, entry, *, now=None):
             bars = agent._decision_input_bars = {}
         bars[ticker] = {"market": market, "bars": list(entry.get("bars") or [])[-80:],
                         "captured_at": datetime.now(timezone.utc).isoformat()}
+        sector = entry.get("sector") or "Unknown"
         kwargs = {"ticker": ticker, "company_name": entry.get("company_name") or ticker,
-                  "current_price": entry["price"], "scenario": dict(entry["scenario"]),
-                  "sector": entry.get("sector") or "Unknown", "source_decision_id": entry["scenario"]["_decision_id"]}
+                  # The holding row and the sector cap read scenario["sector"]; a rule-approved scenario has none.
+                  "current_price": entry["price"], "scenario": dict(entry["scenario"], sector=sector),
+                  "sector": sector, "source_decision_id": entry["scenario"]["_decision_id"]}
         if market == "KR":
             return await agent.enter_reentry_candidate(**kwargs)
         outcomes = []
