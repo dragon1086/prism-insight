@@ -8,11 +8,13 @@ guards, ledger writes and broadcasts stay in the trading adapter (per the
 migration plan, those move no earlier than Phase 2-3).
 """
 import datetime
+import logging
 import os
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 KST = ZoneInfo("Asia/Seoul")
+logger = logging.getLogger(__name__)
 
 
 def now_kst() -> datetime.datetime:
@@ -35,6 +37,24 @@ def regular_session(day: datetime.date) -> tuple:
         except ValueError:
             continue
     return datetime.time(9, 0), datetime.time(15, 30)
+
+
+def us_regular_session(now: Optional[datetime.datetime] = None) -> bool:
+    """True inside the NYSE regular session (holidays and early closes included).
+
+    The US sell loops also fire outside it, where KIS quotes follow pre/after-market trades: on 2026-11-06
+    the 09:28 ET run stopped MSFT on a pre-market quote and queued a reserved sell for the next session.
+    Without the exchange calendar the plain weekday 09:30-16:00 ET clock applies, so stops keep running."""
+    local = (now or now_kst()).astimezone(ZoneInfo("America/New_York"))
+    if local.weekday() >= 5 or not datetime.time(9, 30) <= local.time() < datetime.time(16, 0):
+        return False
+    try:
+        import pandas_market_calendars as calendars
+        schedule = calendars.get_calendar("NYSE").schedule(local.date(), local.date())
+        return bool(len(schedule) and schedule.iloc[0]["market_open"] <= local < schedule.iloc[0]["market_close"])
+    except Exception as error:  # noqa: BLE001 - a missing calendar must not switch the stops off
+        logger.warning("NYSE calendar unavailable, using 09:30-16:00 ET: %s", error)
+        return True
 
 
 def _shift(t: datetime.time, minutes: int) -> datetime.time:

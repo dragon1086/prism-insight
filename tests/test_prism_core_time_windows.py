@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from prism_core.time_windows import domestic_order_window, KST
+from prism_core.time_windows import domestic_order_window, KST, us_regular_session
 
 
 def _at(h, m, s=0):
@@ -77,3 +77,19 @@ def test_session_override_shifts_regular_closing_and_reserved_for_that_day_only(
         ["unavailable", "regular", "regular", "regular", "unavailable", "closing", "closing", "reserved"]
     assert domestic_order_window(_at(15, 45)) == "closing"           # other days unchanged
     assert domestic_order_window(datetime.datetime(2026, 11, 19, 6, 45, tzinfo=ZoneInfo("UTC"))) == "regular"  # 15:45 KST
+
+
+def test_us_regular_session_knows_holidays_early_closes_and_a_missing_calendar(monkeypatch):
+    import sys
+    et = ZoneInfo("America/New_York")
+    at = lambda day, hour, minute: us_regular_session(datetime.datetime(2026, 11, day, hour, minute, tzinfo=et))  # noqa: E731
+    assert not at(6, 9, 28)        # MSFT pre-market stop
+    assert at(6, 9, 34)
+    assert at(6, 15, 59)
+    assert not at(6, 16, 6)
+    assert not at(26, 11, 0)       # Thanksgiving
+    assert at(27, 12, 56)
+    assert not at(27, 13, 6)       # early close 13:00 ET
+    monkeypatch.setitem(sys.modules, "pandas_market_calendars", None)
+    assert at(6, 9, 34)            # no calendar: the clock rule keeps the stops on
+    assert not at(6, 16, 6)

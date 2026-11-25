@@ -83,6 +83,7 @@ def tmp_db(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
     monkeypatch.setattr(lb, "DB_PATH", str(db))
+    monkeypatch.setattr("prism_core.time_windows.us_regular_session", lambda: True)
     return str(db)
 
 
@@ -331,3 +332,10 @@ def test_holding_highest_price_prefers_scenario_and_tolerates_garbage():
     assert lb.holding_highest_price({"scenario": "not json", "highest_price": 110}) == 110.0
     assert lb.holding_highest_price({"scenario": None}) == 0.0
     assert lb.holding_highest_price({"scenario": '{"highest_price": "x"}'}) == 0.0
+
+
+def test_us_trend_exit_waits_for_the_regular_session(tmp_db, monkeypatch):
+    # KIS quotes follow pre/after-market trades: they must neither sell nor move the breach streak.
+    monkeypatch.setattr("prism_core.time_windows.us_regular_session", lambda: False)
+    monkeypatch.setattr(lb, "_connect", lambda: (_ for _ in ()).throw(AssertionError("no DB read")))
+    assert asyncio.run(lb.run_market(MKT, "after"))["skipped_outside_session"] is True

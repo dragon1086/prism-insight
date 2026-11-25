@@ -579,6 +579,11 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
         new_split_state,
         pyramid_protectable,
     )
+    from prism_core import time_windows
+    if market == "US" and not time_windows.us_regular_session():
+        summary["skipped_outside_session"] = True
+        logger.info("[US] outside the regular session -> skip (extended-hours prices are not a close)")
+        return summary
     conn = _connect()
     agent = {"ref": None}  # lazily created on first LIVE sell
     ma50_cache: Dict[str, float] = {}  # one fetch per ticker per cycle
