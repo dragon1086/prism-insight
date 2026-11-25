@@ -162,7 +162,7 @@ def test_stopped_loop_alerts_inside_its_window_and_recovers(tmp_path, monkeypatc
 
 
 def test_no_stale_alert_outside_session_or_window(tmp_path, monkeypatch):
-    state = {"started": "2026-10-24T08:00:00+09:00"}
+    state = {"started": "2026-10-24T10:00:00+09:00"}                        # after the last US deadline (20:45 ET)
     monkeypatch.setattr(W, "_is_session", lambda market, day: day.weekday() < 5)
     saturday = datetime(2026, 10, 24, 12, 0, tzinfo=KST)
     assert W.stale_jobs(state, saturday) == []

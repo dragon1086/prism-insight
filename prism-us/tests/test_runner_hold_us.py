@@ -60,6 +60,7 @@ def tmp_db(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
     monkeypatch.setattr(lb, "DB_PATH", str(db))
+    monkeypatch.setattr("prism_core.time_windows.us_regular_session", lambda: True)
     return str(db)
 
 

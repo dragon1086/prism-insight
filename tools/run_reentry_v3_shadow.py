@@ -6,7 +6,7 @@ REENTRY_V3_LIVE_MARKETS, at most 2 per market and session (prism_core/reentry_v3
     python tools/run_reentry_v3_shadow.py --market KR --phase intraday   # 15:08 KST decision
     python tools/run_reentry_v3_shadow.py --market KR --phase close      # 16:40 KST after the close
     python tools/run_reentry_v3_shadow.py --market US --phase intraday   # 15:30 New York decision
-    python tools/run_reentry_v3_shadow.py --market US --phase close      # 17:20 New York
+    python tools/run_reentry_v3_shadow.py --market US --phase close      # 20:40 New York (KIS bars settle after 20:00)
     python tools/run_reentry_v3_shadow.py --market KR --phase intraday --dry-run   # no LLM, no order, no write
 
 The decision run sits after the regular afternoon batches (KR buys 14:57-15:05, US ends ~15:15 ET) and
