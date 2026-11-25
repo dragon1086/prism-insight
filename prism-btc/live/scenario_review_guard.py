@@ -1,6 +1,10 @@
 """Fresh-state check of a completely replayed review, never order authorization."""
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from functools import partial
+from hashlib import sha256
+import json
 import math
 
 from analysis.scenario_review_tape import replay_review
@@ -86,6 +90,34 @@ def failed_model_call(outcome):
     return None
 
 
+_review_replay_scope = ContextVar("scenario_review_replay", default=None)
+
+
+@contextmanager
+def _reuse_guard_replay():
+    """Reuse immutable review evidence within one post-model validation section."""
+    token = _review_replay_scope.set([])
+    try:
+        yield
+    finally:
+        _review_replay_scope.reset(token)
+
+
+def _replay_guard_evidence(envelope, review, snapshot, context, contract, bindings, mode):
+    cache = _review_replay_scope.get()
+    if cache is None:
+        return replay_review(envelope, review, snapshot, context, contract, bindings=bindings)
+
+    # Preserve insertion order as well as values: model projection can depend on both.
+    key = sha256(json.dumps((envelope, snapshot, context, contract, bindings, mode),
+                            allow_nan=False, separators=(",", ":")).encode()).digest()
+    if cache and cache[0][0] == key:
+        return deepcopy(cache[0][1])
+    outcome = replay_review(envelope, review, snapshot, context, contract, bindings=bindings)
+    cache[:] = [(key, deepcopy(outcome))]
+    return outcome
+
+
 def guard_review(snapshot, original_context, response_contract, envelope, fresh_context,
                  *, bindings=None, research_mode="legacy"):
     """Replay exact evidence, then reprice the original wire once on fresh facts.
@@ -97,8 +129,8 @@ def guard_review(snapshot, original_context, response_contract, envelope, fresh_
                              "action-allocation-single-v1", "action-allocation-calculated-v1"} | ECONOMIC_REJECT_MODES:
         raise ValueError("research_review_mode")
     review = research_review if research_mode == "legacy" else partial(research_review, research_mode=research_mode)
-    outcome = replay_review(envelope, review, snapshot, original_context,
-                            response_contract, bindings=bindings)
+    outcome = _replay_guard_evidence(envelope, review, snapshot, original_context,
+                                     response_contract, bindings, research_mode)
     if outcome.get("status") != "COMPLETE":
         model_failure = failed_model_call(outcome)
         if model_failure is not None:
