@@ -23,7 +23,7 @@ from tools import run_reentry_shadow as collectors  # noqa: E402
 from tools.run_reentry_v3_shadow import KR_CACHE_DIR  # noqa: E402
 
 NEAR, MID = 0.03, 0.10
-HOLDINGS = {"KR": "stock_holdings", "US": "us_stock_holdings"}
+HELD_SQL = {"KR": "SELECT ticker FROM stock_holdings", "US": "SELECT ticker FROM us_stock_holdings"}
 
 
 def proximity(price, level):
@@ -89,7 +89,7 @@ def main(argv=None):
     expected = collectors.completed_session(args.market)
     db = sqlite3.connect(f"file:{V3.DB_PATH}?mode=ro", uri=True)
     try:
-        held = {ticker for (ticker,) in db.execute(f"SELECT ticker FROM {HOLDINGS[args.market]}")}
+        held = {ticker for (ticker,) in db.execute(HELD_SQL[args.market])}
     finally:
         db.close()
 
