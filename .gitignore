@@ -106,6 +106,7 @@ nohup.out
 # Dashboard generated data
 examples/dashboard/public/*_dashboard_data*.json
 examples/dashboard/public/dashboard_data*.json
+examples/dashboard/public/reentry_watch_*.json
 
 # MCP servers (should be installed separately)
 perplexity-ask/
