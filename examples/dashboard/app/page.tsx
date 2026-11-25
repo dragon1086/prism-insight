@@ -6,7 +6,6 @@ import { DashboardHeader } from "@/components/dashboard-header"
 import { OperatingCostsCard } from "@/components/operating-costs-card"
 import { MetricsCards } from "@/components/metrics-cards"
 import { HoldingsTable } from "@/components/holdings-table"
-import { ReentryWatchCard } from "@/components/reentry-watch-card"
 import { PerformanceChart } from "@/components/performance-chart"
 import { AIDecisionsPage } from "@/components/ai-decisions-page"
 import { TradingHistoryPage } from "@/components/trading-history-page"
@@ -277,9 +276,6 @@ function DashboardContent() {
               isRealTrading={false}
               market={market}
             />
-
-            {/* 재진입 감시 */}
-            <ReentryWatchCard market={market} />
 
           </div>
         )}
