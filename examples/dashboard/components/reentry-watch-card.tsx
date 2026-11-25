@@ -72,7 +72,7 @@ export function ReentryWatchCard({ market }: { market: Market }) {
         <TableHeader>
           <TableRow className="hover:bg-transparent">
             <TableHead className="pl-5 text-xs font-normal text-muted-foreground">{ko ? "종목명" : "Stock"}</TableHead>
-            <TableHead className="text-right text-xs font-normal text-muted-foreground">{ko ? "감시 시작" : "Since"}</TableHead>
+            <TableHead className="hidden sm:table-cell text-right text-xs font-normal text-muted-foreground">{ko ? "감시 시작" : "Since"}</TableHead>
             <TableHead className="text-right text-xs font-normal text-muted-foreground">{ko ? "남은 거래일" : "Sessions left"}</TableHead>
             <TableHead className="pr-5 text-right text-xs font-normal text-muted-foreground">{ko ? "기준선까지" : "To trigger"}</TableHead>
           </TableRow>
@@ -80,11 +80,11 @@ export function ReentryWatchCard({ market }: { market: Market }) {
         <TableBody>
           {rows.map((i) => (
             <TableRow key={i.ticker} className="font-mono tabular-nums text-[13px]">
-              <TableCell className="pl-5 font-sans">
+              <TableCell className="pl-5 font-sans whitespace-normal">
                 <p className="font-medium text-foreground">{i.name}</p>
                 <p className="text-xs text-muted-foreground">{i.ticker}</p>
               </TableCell>
-              <TableCell className="text-right text-muted-foreground">{i.since}</TableCell>
+              <TableCell className="hidden sm:table-cell text-right text-muted-foreground">{i.since}</TableCell>
               <TableCell className="text-right text-muted-foreground">{i.sessions_left}</TableCell>
               <TableCell className="pr-5 text-right font-sans">
                 <Badge
