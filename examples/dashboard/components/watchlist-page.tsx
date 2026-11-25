@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { ChevronDown, ChevronUp } from "lucide-react"
+import { ReentryWatchCard } from "@/components/reentry-watch-card"
 import { useLanguage } from "@/components/language-provider"
 import { formatCurrency as formatCurrencyUtil } from "@/lib/currency"
 import type { WatchlistStock, Market } from "@/types/dashboard"
@@ -116,6 +117,9 @@ export function WatchlistPage({ watchlist, market = "KR" }: WatchlistPageProps) 
           {t("watchlist.totalStocks")} {totalStocks}{t("watchlist.stocksUnit")}
         </span>
       </div>
+
+      {/* 재진입 감시 */}
+      <ReentryWatchCard market={market} />
 
       {/* 통계 카드 */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
