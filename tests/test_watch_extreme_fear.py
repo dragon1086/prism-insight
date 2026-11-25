@@ -31,3 +31,14 @@ def test_missing_input_is_an_error_not_a_miss():
 def test_watchdog_reads_the_summary_line():
     job = next(j for j in ops_watchdog.JOBS if j.key == "extreme_fear_us")
     assert job.heartbeat in open(W.__file__, encoding="utf-8").read()
+
+
+def test_today_comes_from_the_index_not_the_after_hours_bar():
+    days = pd.to_datetime(["2026-11-23", "2026-11-24", "2026-11-25"])
+    ndx = pd.Series([100.0, 100.0, 90.0], index=days)
+    qqq = pd.Series([50.0, 50.0, 48.0], index=days)    # 48 = after-hours print
+    assert W.qqq_closes(qqq, ndx, days[-1].date()).tolist() == [50.0, 50.0, 45.0]
+    with pytest.raises(ValueError):
+        W.qqq_closes(qqq, ndx[:2], days[-1].date())    # index not updated yet
+    with pytest.raises(ValueError):
+        W.qqq_closes(qqq.iloc[[0, 2]], ndx, days[-1].date())    # a settled session is missing
