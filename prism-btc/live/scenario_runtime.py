@@ -1009,7 +1009,10 @@ class ScenarioRuntime:
                               (persisted_proposal_json, slot))
             self.conn.commit()
             stage = "post_model_reconcile"
-            with _post_model_mutation_lock(self.conn):
+            with _post_model_mutation_lock(self.conn), ExitStack() as review_checks:
+                if self.calculated_review_enabled:
+                    from live.scenario_review_guard import _reuse_guard_replay
+                    review_checks.enter_context(_reuse_guard_replay())
                 state = self.state()
                 verified_flat_version = self._reconcile(state)
                 fresh = self._context(state)

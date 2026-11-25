@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from copy import deepcopy
 import json
 from types import SimpleNamespace
@@ -360,3 +361,60 @@ def test_other_adjustments_still_reject_changed_recovery_gate(kind, gate):
     fresh[gate] = {"widening_eligible": False} if gate == "stop_policy" else True
     with pytest.raises(ValueError, match="review_guard_context_changed:" + gate):
         check(args, fresh)
+
+
+
+def test_reuse_skips_only_the_second_exact_replay_and_refreshes_economic_validation(monkeypatch):
+    from live import scenario_review_guard as module
+    args = taped()
+    real = module.replay_review
+    calls = []
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(module, 'replay_review', counted)
+    with module._reuse_guard_replay():
+        first = check(args)
+        later = dict(args[1], now=1002, account_captured_at=1002)
+        second = check(args, later)
+        assert first['receipt']['checked_at'] == 1001
+        assert second['receipt']['checked_at'] == 1002
+        assert first['validated'] == second['validated']
+        assert len(calls) == 1
+        with pytest.raises(ValueError, match='review_guard_stale_account'):
+            check(args, dict(later, account_captured_at=0))
+        assert len(calls) == 1
+    check(args)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize('change', ['tape', 'snapshot', 'input_order', 'bindings'])
+def test_reuse_requires_the_original_exact_evidence(monkeypatch, change):
+    from live import scenario_review_guard as module
+    args = taped()
+    real = module.replay_review
+    calls = []
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(module, 'replay_review', counted)
+    with module._reuse_guard_replay():
+        expected = check(args)
+        with pytest.raises(ValueError, match='review_tape_') if change != 'input_order' else nullcontext():
+            if change == 'tape':
+                args[3]['calls'] += 1
+                check(args)
+            elif change == 'snapshot':
+                args[0]['as_of_ms'] -= 1
+                check(args)
+            elif change == 'bindings':
+                guard_review(*args, dict(args[1], now=1001, account_captured_at=1001),
+                             bindings={'code': 'different'})
+            else:
+                reordered = dict(reversed(list(args[1].items())))
+                assert check((args[0], reordered, *args[2:])) == expected
+        assert len(calls) == 2
