@@ -1103,3 +1103,20 @@ def test_k8b_early_bull_gate_blocks_us_in_the_first_20_bull_sessions(tmp_path, m
     monkeypatch.delenv("REENTRY_V3_K8B_EARLY_BULL_MARKETS")
     assert not LIVE.k8b_early_bull("US", early)                       # default off
     assert LIVE.build_scenario(early, _record(1), "US")["reentry"]["k8b"]["bull_age"] == 5
+
+
+# ---------------------------------------------------------------- H-1126 US stop-exit source only
+def test_stop_source_only_gate_blocks_heldoff_watches_in_the_listed_market(monkeypatch, live_on):
+    monkeypatch.setenv("REENTRY_V3_STOP_SOURCE_ONLY_MARKETS", "US")
+    stop = dict(_item(1), source="STOP_EXIT")
+    held = dict(_item(2), source="LOCATION_SKIP")
+    gate = dict(_item(3), source="ENTER_BLOCKED")
+    missing = {k: v for k, v in _item(4).items() if k != "source"}
+    items = {i["event_id"]: i for i in (stop, held, gate, missing)}
+    to_submit, skipped = LIVE.plan("US", DAY, [_record(n) for n in (1, 2, 3, 4)], items, [], US_1350)
+    assert [e["event_id"] for e in to_submit] == ["ev1", "ev4"]      # blocked signals used no cap slot
+    assert [(e["event_id"], e["reason"]) for e in skipped] == [("ev2", "heldoff_source"), ("ev3", "heldoff_source")]
+    assert LIVE.REASON_STATUS["heldoff_source"] == "SKIPPED_HELDOFF_SOURCE"
+    assert not LIVE.heldoff_source("KR", held)                        # market list
+    monkeypatch.delenv("REENTRY_V3_STOP_SOURCE_ONLY_MARKETS")
+    assert not LIVE.heldoff_source("US", held)                        # default off

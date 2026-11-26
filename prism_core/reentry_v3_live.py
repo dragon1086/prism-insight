@@ -62,7 +62,8 @@ SUBPROCESS_TIMEOUT = 600
 # Status of an outcome reason (the rest is BOUGHT / NOT_BOUGHT / ERROR).
 REASON_STATUS = {"deadline": "SKIPPED_DEADLINE", "no_micro_plan": "SKIPPED_NO_MICRO_PLAN",
                  "outside_band": "SKIPPED_BAND", "entry_lock_busy": "SKIPPED_LOCK", "no_target": "SKIPPED_NO_TARGET",
-                 "below_ma50": "SKIPPED_BELOW_MA50", "k8b_early_bull": "SKIPPED_K8B_EARLY_BULL"}
+                 "below_ma50": "SKIPPED_BELOW_MA50", "k8b_early_bull": "SKIPPED_K8B_EARLY_BULL",
+                 "heldoff_source": "SKIPPED_HELDOFF_SOURCE"}
 # H-1110 (2026-11-10, user decision, US): no re-entry during the first sessions of a K8b bull label.
 K8B_EARLY_BULL_SESSIONS = 20
 
@@ -113,6 +114,20 @@ def k8b_early_bull(market, item):
     age = (item.get("k8b") or {}).get("bull_age")
     return (str(market).upper() in k8b_early_bull_markets() and isinstance(age, int)
             and 1 <= age <= K8B_EARLY_BULL_SESSIONS)
+
+
+def stop_source_only_markets():
+    """H-1126-reentry-stop-source-only LIVE (2026-11-26, user decision, US only): re-entry buys only stocks we
+    stopped out of; held-off and gate-blocked watches stay a record."""
+    return {m.strip().upper() for m in os.getenv("REENTRY_V3_STOP_SOURCE_ONLY_MARKETS", "").split(",") if m.strip()}
+
+
+def heldoff_source(market, item):
+    """True when the market's gate is on and the watch did not start from a stop exit.
+
+    An item without a source (older inputs) is not blocked: MISSING is not a failure."""
+    source = item.get("source")
+    return str(market).upper() in stop_source_only_markets() and source is not None and source != "STOP_EXIT"
 
 
 def deterministic_enabled():
@@ -431,6 +446,8 @@ def plan(market, decision_day, records, items, journal, now):
             reason = "below_ma50"        # before the daily cap so a blocked signal never uses a slot
         elif k8b_early_bull(market, item):
             reason = "k8b_early_bull"
+        elif heldoff_source(market, item):
+            reason = "heldoff_source"    # before the daily cap: the slot stays free for stop-exit re-entries
         elif len(to_submit) >= remaining:
             reason = "daily_cap"
         elif not in_safe_window(market, now):
