@@ -3,7 +3,7 @@ load_dotenv()  # Load environment variables from .env file
 
 import numpy as np
 from scipy import stats
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 from datetime import datetime, timedelta
 from stock_tracking_agent import (
     StockTrackingAgent,
@@ -1372,7 +1372,9 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     self, market="KR", ticker=ticker, current_price=current_price,
                     stop_loss=scenario.get("stop_loss")):
                 return {"bought": False, "reason": "no_micro_plan"}
-            scenario["_decision_context"] = {"decision": "Enter", "buy_score": buy_score, "min_score": min_score,
+            # A rule-approved re-entry has no AI score: record unknown, not 0 (MISSING stays MISSING).
+            scenario["_decision_context"] = {"decision": "Enter", "buy_score": None if rule_approved else buy_score,
+                                             "min_score": None if rule_approved else min_score,
                                              "gate_allowed": True, "gate_reason": buy_gate.get("reason"),
                                              "gate_findings": buy_gate.get("findings") or [], "sector_diverse": True,
                                              "is_add": False, "rebound_pilot": False, "slots_used": slots_used,
@@ -2029,7 +2031,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                         # Process portfolio_adjustment
                         if portfolio_adjustment.get("needed", False):
-                            await self._process_portfolio_adjustment(ticker, company_name, portfolio_adjustment, analysis_summary, current_price, row_id=stock_data.get('id'))
+                            await self._process_portfolio_adjustment(ticker, company_name, portfolio_adjustment, analysis_summary, current_price, row_id=stock_data.get('id'),
+                                                                    applied=stock_data.setdefault("_review_applied", {}))
                 except EffectsFailure:
                     raise
                 except Exception as db_err:
@@ -2171,7 +2174,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             logger.error(f"Error in fallback sell analysis: {str(e)}")
             return False, "Analysis error"
 
-    async def _process_portfolio_adjustment(self, ticker: str, company_name: str, portfolio_adjustment: Dict[str, Any], analysis_summary: Dict[str, Any], current_price: float = 0, row_id: int = None):
+    async def _process_portfolio_adjustment(self, ticker: str, company_name: str, portfolio_adjustment: Dict[str, Any], analysis_summary: Dict[str, Any], current_price: float = 0, row_id: int = None, applied: Optional[Dict[str, float]] = None):
         """Process DB updates and Telegram notifications based on portfolio_adjustment
 
         row_id: pyramiding (#288) — when provided, all UPDATEs/SELECT target only
@@ -2229,6 +2232,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         )
                     self.conn.commit()
                     db_updated = True
+                    if applied is not None:
+                        applied["target_price"] = target_price_num
                     if target_price_num == old_target_price:
                         direction = "유지"
                     elif target_price_num > old_target_price:
@@ -2273,6 +2278,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                             )
                         self.conn.commit()
                         db_updated = True
+                        if applied is not None:
+                            applied["stop_loss"] = stop_loss_num
                         if stop_loss_num == old_stop_loss:
                             direction = "유지"
                         elif stop_loss_num > old_stop_loss:

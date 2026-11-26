@@ -71,6 +71,12 @@ def emit_holding_evaluation(
             if buy_price and current_price
             else None
         )
+        # Levels in force after this review: a hold review may raise the stop / move the target in the DB
+        # (portfolio_adjustment) after the holding row was read, so the row values alone are stale.
+        applied = stock.get("_review_applied") if isinstance(stock.get("_review_applied"), Mapping) else {}
+        stop_before, target_before = _number(stock.get("stop_loss")), _number(stock.get("target_price"))
+        stop_loss = _number(applied.get("stop_loss")) or stop_before
+        target_price = _number(applied.get("target_price")) or target_before
         return emit_event(
             EVENT_TYPE,
             service=f"prism-{normalized_market.lower()}-sell-decision",
@@ -89,8 +95,10 @@ def emit_holding_evaluation(
                 "buy_price": buy_price,
                 "current_price": current_price,
                 "profit_rate_pct": profit,
-                "stop_loss": _number(stock.get("stop_loss")),
-                "target_price": _number(stock.get("target_price")),
+                "stop_loss": stop_loss,
+                "target_price": target_price,
+                "stop_loss_before": stop_before if stop_loss != stop_before else None,
+                "target_price_before": target_before if target_price != target_before else None,
                 "holding_days": _holding_days(stock.get("buy_date"), now or datetime.now()),
             },
         )

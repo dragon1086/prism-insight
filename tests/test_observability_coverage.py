@@ -172,6 +172,18 @@ def test_holding_evaluation_shares_the_position_trace(spool):
     assert attrs["holding_days"] == 2 and attrs["reason"] == "추세 유지"
 
 
+def test_holding_evaluation_reports_levels_raised_by_the_review(spool):
+    # 2026-11-26 나무가: the review raised the stop 15,580 -> 17,002 in the DB, the event kept 15,580.
+    stock = {"id": 133, "ticker": "190510", "buy_price": 16390, "current_price": 17710, "stop_loss": 15580,
+             "target_price": 19640, "buy_date": "2026-11-24 15:08:29", "_review_applied": {"stop_loss": 17002.0}}
+    holding_decisions.emit_holding_evaluation("KR", stock, False, "보유", source="sell_review")
+    holding_decisions.emit_holding_evaluation("KR", {**stock, "_review_applied": {}}, False, "보유", source="sell_review")
+    raised, unchanged = (e["attributes"] for e in spool())
+    assert raised["stop_loss"] == 17002.0 and raised["stop_loss_before"] == 15580.0
+    assert raised["target_price"] == 19640.0 and raised["target_price_before"] is None
+    assert unchanged["stop_loss"] == 15580.0 and unchanged["stop_loss_before"] is None
+
+
 def test_holding_evaluation_never_raises(spool):
     assert holding_decisions.emit_holding_evaluation("US", None, True, "x", source="sell_review") is None
 
