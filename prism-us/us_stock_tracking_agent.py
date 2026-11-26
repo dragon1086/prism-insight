@@ -2762,7 +2762,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             if not should_sell and portfolio_adjustment.get("needed", False):
                 await self._process_portfolio_adjustment(
                     ticker, company_name, portfolio_adjustment, analysis_summary, current_price,
-                    row_id=stock_data.get('id')
+                    row_id=stock_data.get('id'), applied=stock_data.setdefault("_review_applied", {})
                 )
 
             return should_sell, sell_reason
@@ -3093,7 +3093,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         portfolio_adjustment: Dict[str, Any],
         analysis_summary: Dict[str, Any],
         current_price: float = 0,
-        row_id: int = None
+        row_id: int = None,
+        applied: Optional[Dict[str, float]] = None,
     ):
         """Process DB updates and Telegram notifications based on portfolio_adjustment
 
@@ -3152,6 +3153,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         )
                     self.conn.commit()
                     db_updated = True
+                    if applied is not None:
+                        applied["target_price"] = target_price_num
                     if target_price_num > old_target_price:
                         direction = "upward"
                     elif target_price_num < old_target_price:
@@ -3195,6 +3198,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             )
                         self.conn.commit()
                         db_updated = True
+                        if applied is not None:
+                            applied["stop_loss"] = stop_loss_num
                         if stop_loss_num > old_stop_loss:
                             direction = "upward"
                         elif stop_loss_num < old_stop_loss:
@@ -5317,8 +5322,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     self, market="US", ticker=ticker, current_price=current_price,
                     stop_loss=scenario.get("stop_loss")):
                 return {"bought": False, "reason": "no_micro_plan"}
-            scenario["_decision_context"] = {"decision": "entry", "adjusted_score": adjusted_score,
-                                             "min_score": min_score, "gate_allowed": True,
+            # A rule-approved re-entry has no AI score: record unknown, not 0 (MISSING stays MISSING).
+            scenario["_decision_context"] = {"decision": "entry", "adjusted_score": None if rule_approved else adjusted_score,
+                                             "min_score": None if rule_approved else min_score, "gate_allowed": True,
                                              "gate_reason": buy_gate.get("reason"),
                                              "gate_findings": buy_gate.get("findings") or [], "sector_diverse": True,
                                              "rebound_pilot": False, "slots_used": current_slots,
