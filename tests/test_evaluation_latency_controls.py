@@ -86,6 +86,7 @@ def test_cached_kr_report_avoids_perplexity_and_supports_no_tool_fallback(
         return "📌 결론: 보유\n보고서 기준 대응"
 
     monkeypatch.setattr(report_generator, "_generate_telegram_text", fake_generate)
+    monkeypatch.setattr(report_generator, "build_evaluation_frame", lambda *a: "")
 
     result = asyncio.run(
         report_generator.generate_evaluation_response(
@@ -114,6 +115,7 @@ def test_uncached_kr_evaluation_keeps_full_tool_set(monkeypatch) -> None:
         return "📌 결론: 관망"
 
     monkeypatch.setattr(report_generator, "_generate_telegram_text", fake_generate)
+    monkeypatch.setattr(report_generator, "build_evaluation_frame", lambda *a: "")
 
     result = asyncio.run(
         report_generator.generate_evaluation_response(

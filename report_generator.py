@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 import markdown
 
 from cores.agents.report_agent import ReportAgent as Agent
+from cores.evaluation_frame import build_evaluation_frame
 from cores.llm.agent_bridge import ensure_openai_agents_configured
 from cores.llm.backends.openai_agents_backend import OpenAIAgentsBackend
 from cores.llm.config_loader import load_report_mcp_registry
@@ -947,6 +948,40 @@ async def generate_follow_up_response(ticker, ticker_name, conversation_context,
         return "죄송합니다. 응답 생성 중 오류가 발생했습니다. 다시 시도해주세요."
 
 
+EVALUATION_FRAME_TIMEOUT_SECONDS = _positive_number_env("EVALUATION_FRAME_TIMEOUT_SECONDS", 40.0)
+
+
+async def _evaluation_frame(market: str, ticker: str, avg_price, period) -> str:
+    """The trading loop's regime/trend/threshold facts for this position; "" when unavailable."""
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(build_evaluation_frame, market, str(ticker), float(avg_price), float(period or 0)),
+            timeout=EVALUATION_FRAME_TIMEOUT_SECONDS,
+        )
+    except Exception as error:  # noqa: BLE001 - evaluation continues without the frame
+        logger.warning("평가 판단 틀 계산 실패: market=%s ticker=%s error=%s", market, ticker, error)
+        return ""
+
+
+def _evaluation_frame_guide(prism_frame: str) -> str:
+    """Prompt section: reason inside PRISM's frame; the tone changes wording, not the verdict."""
+    if not prism_frame:
+        return """### 판단 기준
+                        - 시스템 판단 틀을 계산하지 못했습니다. 첫 줄에 '📌 프리즘 기준: 시스템 지표 확인 불가'라고 쓰고 조회한 데이터로 판단하세요.
+                        - 오닐식 추세추종 원칙을 따르세요: 50일선 아래 손실 종목은 정리, 손실 종목 물타기 금지, 목표가 도달만으로 매도하지 않음."""
+    return f"""### 판단 기준 (가장 중요)
+                        아래 'PRISM 판단 틀'은 본 매매 시스템이 같은 시점에 쓰는 계산값과 기준입니다.
+                        - 국면·이동평균·손절선·이익 보호선·손익비 하한은 이 값을 그대로 쓰고 다시 추정하지 마세요. '확인 불가'는 모른다고 쓰세요.
+                        - 매도 신호가 하나라도 있으면 판정은 '매도'입니다. 없으면 추세가 살아 있는 한 '보유'가 기본입니다.
+                        - 추가매수는 수익 중이고 50일선 위이며, 확정 저항까지 여력이 손익비 하한을 넘을 때만 '추가매수 가능'으로 하세요. 손실 종목 물타기는 권하지 마세요.
+                        - 응답 첫 줄은 반드시 다음 형식입니다(말투와 무관):
+                          📌 프리즘 기준: <보유|매도|추가매수 가능|관망> · <국면 한글명> · <오닐 상태(분산일 N일)> · <50일선 위/아래> · <이익 보호선 또는 손절선 가격>
+                        - 둘째 줄부터는 사용자가 원한 말투로 자유롭게 풀어 쓰되, 판정과 숫자는 첫 줄과 같아야 합니다. 말투가 판정을 바꾸지 않습니다.
+                        - 사용자 질문이 신규 매수 관점이면 '신규·추가 매수 기준'으로 답하세요.
+
+{prism_frame}"""
+
+
 async def _generate_evaluation_fallback(
     *,
     ticker: str,
@@ -957,6 +992,7 @@ async def _generate_evaluation_fallback(
     background: str,
     report_content: str,
     currency: str,
+    prism_frame: str = "",
 ) -> str:
     """Produce a bounded no-tool answer from the already available report."""
     agent = Agent(
@@ -964,7 +1000,7 @@ async def _generate_evaluation_fallback(
         instruction=f"""당신은 텔레그램 주식 평가 전문가입니다.
 외부 도구를 호출하지 말고 제공된 보고서와 사용자 정보만 사용하세요.
 보고서 기준일이 현재보다 이전일 수 있음을 한 문장으로 알리고, 확인되지 않은 최신 수치는 만들지 마세요.
-첫 줄은 반드시 '📌 결론: 매수/보유/매도/관망' 중 하나로 시작하세요.
+{_evaluation_frame_guide(prism_frame) if prism_frame else "첫 줄은 반드시 '📌 결론: 매수/보유/매도/관망' 중 하나로 시작하세요."}
 판단 근거 2~3개와 구체적인 행동 기준을 제시하고 2500자 이내의 자연스러운 한국어로 답하세요.
 사용자 요청 톤: {tone}
 종목: {ticker_name}({ticker}), 평단: {avg_price}{currency}, 보유기간: {period}개월
@@ -1000,6 +1036,7 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
         str: AI 응답
     """
     report_content = ""
+    prism_frame = ""
     try:
         # 현재 날짜 정보 가져오기
         current_date = datetime.now().strftime('%Y%m%d')
@@ -1039,6 +1076,8 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
                         """
 
         # 에이전트 생성
+        prism_frame = await _evaluation_frame("KR", ticker, avg_price, period)
+        frame_guide = _evaluation_frame_guide(prism_frame)
         agent = Agent(
             name="evaluation_agent",
             instruction=f"""당신은 텔레그램 채팅에서 주식 평가를 제공하는 전문가입니다. 형식적인 마크다운 대신 자연스러운 채팅 방식으로 응답하세요.
@@ -1083,29 +1122,7 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
                            - 언어적 특징, 문장 구조, 어휘 선택 등에서 스타일을 반영
                            - 해당 스타일에 맞는 고유한 표현과 문장 패턴 창조
                         
-                        ### 투자 상황별 조언 스타일
-                        
-                        1. 수익 포지션 (현재가 > 평균매수가):
-                           - 더 적극적이고 구체적인 매매 전략 제시
-                           - 예: "이익 실현 구간을 명확히 잡아 절반은 익절하고, 절반은 더 끌고가는 전략도 괜찮을 것 같아"
-                           - 다음 목표가와 손절선 구체적 제시
-                           - 현 상승세의 지속 가능성 분석에 초점
-                        
-                        2. 손실 포지션 (현재가 < 평균매수가):
-                           - 감정적 공감과 함께 객관적 분석 제공
-                           - 예: "지금 답답한 마음 이해해. 하지만 기업 펀더멘털을 보면..."
-                           - 회복 가능성 또는 손절 필요성에 대한 명확한 의견 제시
-                           - 평균단가 낮추기나 손절 등 구체적 대안 제시
-                        
-                        3. 단기 투자 (보유기간 < 3개월):
-                           - 기술적 분석과 단기 모멘텀에 집중
-                           - 예: "단기적으로는 230일선 돌파가 중요한 변곡점이야. 이거 뚫으면 한번 달릴 수 있어"
-                           - 단기 매매 타이밍과 기술적 패턴 강조
-                        
-                        4. 장기 투자 (보유기간 > 12개월):
-                           - 펀더멘털과 산업 전망에 중점
-                           - 예: "이 기업은 장기적으로 신사업 성장성이 좋아 3-5년 관점에선 충분히 가치가 있다고 봐"
-                           - 배당, 장기 성장성, 산업 트렌드 중심 분석
+                        {frame_guide}
                         
                         ## 메시지 포맷팅 팁
                         - 이모티콘을 적극 활용 (📈 📉 💰 🔥 💎 🚀 등)
@@ -1115,7 +1132,7 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
                         - 절대 마크다운 형식으로 쓰지 말고, 텔레그램 메시지로 보낸다고 생각하고 사람처럼 자연스럽게 말할 것
                         
                         ## 주의사항
-                        - 사용자가 요청한 스타일({tone})을 최우선적으로 적용하세요
+                        - 사용자가 요청한 스타일({tone})은 표현에 최우선 적용하되, 판정과 숫자는 판단 기준 블록을 따르세요
                         - 실제 최신 데이터를 사용하되, 사용자 입력 스타일에 따라 자유롭게 표현하세요
                         - 마크다운이나 형식적인 구조 대신 대화체로 작성하세요
                         - 사용자가 원하는 스타일대로 응답하되, 투자 정보의 본질은 유지하세요
@@ -1165,6 +1182,7 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
                     background=background,
                     report_content=report_content,
                     currency="원",
+                    prism_frame=prism_frame,
                 )
             except Exception as fallback_error:
                 logger.error("평가 fallback 실패: %s", fallback_error)
@@ -1184,6 +1202,7 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
                     background=background,
                     report_content=report_content,
                     currency="원",
+                    prism_frame=prism_frame,
                 )
             except Exception as fallback_error:
                 logger.error("평가 fallback 실패: %s", fallback_error)
@@ -1211,6 +1230,7 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
         str: AI 응답
     """
     report_content = ""
+    prism_frame = ""
     try:
         # 현재 날짜 정보 가져오기
         current_date = datetime.now().strftime('%Y%m%d')
@@ -1250,6 +1270,8 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
         background_text = f"\n- 매매 배경/히스토리: {background}" if background else ""
 
         # 에이전트 생성 (US 주식용)
+        prism_frame = await _evaluation_frame("US", ticker, avg_price, period)
+        frame_guide = _evaluation_frame_guide(prism_frame)
         agent = Agent(
             name="us_evaluation_agent",
             instruction=f"""당신은 텔레그램 채팅에서 미국 주식 평가를 제공하는 전문가입니다. 형식적인 마크다운 대신 자연스러운 채팅 방식으로 응답하세요.
@@ -1294,29 +1316,7 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
                            - 언어적 특징, 문장 구조, 어휘 선택 등에서 스타일을 반영
                            - 해당 스타일에 맞는 고유한 표현과 문장 패턴 창조
 
-                        ### 투자 상황별 조언 스타일
-
-                        1. 수익 포지션 (현재가 > 평균매수가):
-                           - 더 적극적이고 구체적인 매매 전략 제시
-                           - 예: "이익 실현 구간을 명확히 잡아 절반은 익절하고, 절반은 더 끌고가는 전략도 괜찮을 것 같아"
-                           - 다음 목표가와 손절선 구체적 제시
-                           - 현 상승세의 지속 가능성 분석에 초점
-
-                        2. 손실 포지션 (현재가 < 평균매수가):
-                           - 감정적 공감과 함께 객관적 분석 제공
-                           - 예: "지금 답답한 마음 이해해. 하지만 기업 펀더멘털을 보면..."
-                           - 회복 가능성 또는 손절 필요성에 대한 명확한 의견 제시
-                           - 평균단가 낮추기나 손절 등 구체적 대안 제시
-
-                        3. 단기 투자 (보유기간 < 3개월):
-                           - 기술적 분석과 단기 모멘텀에 집중
-                           - 예: "단기적으로는 50일선 돌파가 중요한 변곡점이야. 이거 뚫으면 한번 달릴 수 있어"
-                           - 단기 매매 타이밍과 기술적 패턴 강조
-
-                        4. 장기 투자 (보유기간 > 12개월):
-                           - 펀더멘털과 산업 전망에 중점
-                           - 예: "이 기업은 장기적으로 신사업 성장성이 좋아 3-5년 관점에선 충분히 가치가 있다고 봐"
-                           - 배당, 장기 성장성, 산업 트렌드 중심 분석
+                        {frame_guide}
 
                         ## 메시지 포맷팅 팁
                         - 이모티콘을 적극 활용 (📈 📉 💰 🔥 💎 🚀 🇺🇸 💵 등)
@@ -1327,7 +1327,7 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
                         - 가격은 반드시 달러($) 단위로 표시
 
                         ## 주의사항
-                        - 사용자가 요청한 스타일({tone})을 최우선적으로 적용하세요
+                        - 사용자가 요청한 스타일({tone})은 표현에 최우선 적용하되, 판정과 숫자는 판단 기준 블록을 따르세요
                         - 실제 최신 데이터를 사용하되, 사용자 입력 스타일에 따라 자유롭게 표현하세요
                         - 마크다운이나 형식적인 구조 대신 대화체로 작성하세요
                         - 사용자가 원하는 스타일대로 응답하되, 투자 정보의 본질은 유지하세요
@@ -1380,6 +1380,7 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
                     background=background,
                     report_content=report_content,
                     currency="$",
+                    prism_frame=prism_frame,
                 )
             except Exception as fallback_error:
                 logger.error("US 평가 fallback 실패: %s", fallback_error)
@@ -1399,6 +1400,7 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
                     background=background,
                     report_content=report_content,
                     currency="$",
+                    prism_frame=prism_frame,
                 )
             except Exception as fallback_error:
                 logger.error("US 평가 fallback 실패: %s", fallback_error)
