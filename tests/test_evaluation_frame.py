@@ -78,3 +78,15 @@ def test_frame_failure_keeps_evaluation_working(monkeypatch):
     monkeypatch.setattr(report_generator, "build_evaluation_frame", boom)
     assert asyncio.run(report_generator._evaluation_frame("KR", "005930", 1, 1)) == ""
     assert "확인 불가" in report_generator._evaluation_frame_guide("")
+
+
+def test_holder_gets_stop_and_protection_prices_even_with_zero_month_period():
+    # 나무가 11/27 case: period 0 left no peak, so the answer had no protection line
+    closes = [15000.0] * 250 + [17570.0, 18050.0]
+    f = ef.holding_facts(_frame(closes), market="KR", avg_price=16420.0, period_months=0,
+                         regime="moderate_bear", now=NOW)
+    assert f["peak"] == 18050.0 and f["trail_line"] == 18050.0 * 0.95
+    assert round(f["stop_price"]) == 15271
+    text = ef.render("KR", "moderate_bear", None, f, stop_rr_facts("moderate_bear", "", f["close"], 1.0))
+    assert "손절가: 15,271원" in text and "이익 보호선(익절선): 17,148원" in text
+    assert "보유분 손절가와 다름" in text

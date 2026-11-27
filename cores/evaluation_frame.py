@@ -103,7 +103,8 @@ def holding_facts(df, *, market: str, avg_price: float, period_months: float, re
     profit = _pct(close, avg_price)
     start = (now - timedelta(days=max(float(period_months or 0), 0) * 30.44)).date()
     since = close_s[[d.date() >= start for d in df.index]]
-    peak = float(since.max()) if len(since) else None
+    # a holding shorter than the data's last bar (period 0) still has today's close as its peak
+    peak = max(float(since.max()), close) if len(since) else close
     bull = regime in BULL
     trail_active = peak is not None and avg_price > 0 and peak >= avg_price * TRAIL_ACTIVATE
     trail_line = peak * TRAIL_BAND[bull] if trail_active else None
@@ -121,10 +122,13 @@ def holding_facts(df, *, market: str, avg_price: float, period_months: float, re
     if profit is not None and profit <= -HARD_STOP_PCT:
         signals.append(f"평단 대비 {profit:.1f}%로 -7% 손절선 도달")
     if profit is not None and profit < 0 and ma50 is not None and close <= ma50 * MA50_EXIT_BUFFER:
-        signals.append("손실 중 50일선 아래(시스템 자동 매도 조건)")
+        signals.append("손실 중 50일선 아래(프리즘 매도 조건)")
     if trail_line is not None and close < trail_line:
         signals.append(f"이익 보호선 {trail_line:,.{0 if market == 'KR' else 2}f} 아래")
-    return dict(close=close, profit=profit, ma20=ma20, ma20_up=ma20_up, ma50=ma50, ma50_up=ma50_up,
+    stop_price = avg_price * (1 - HARD_STOP_PCT / 100) if avg_price > 0 else None
+    return dict(close=close, profit=profit, stop_price=stop_price,
+                trail_activate_price=avg_price * TRAIL_ACTIVATE if avg_price > 0 else None,
+                ma50_exit=ma50 * MA50_EXIT_BUFFER if ma50 is not None else None, ma20=ma20, ma20_up=ma20_up, ma50=ma50, ma50_up=ma50_up,
                 ma200=ma200, ma200_up=ma200_up, atr20=atr20, peak=peak, peak_start=start.isoformat(),
                 trail_active=trail_active, trail_line=trail_line, bull=bull,
                 t1=ma50 is not None and close < ma50,
@@ -172,12 +176,21 @@ def render(market: str, regime: str | None, pulse, facts: dict, rr: dict) -> str
         "- 목표가 도달·보유 기간 경과는 매도 사유가 아님. 추세가 살아 있으면 보유",
         "- 손실 종목 물타기(평단 낮추기)는 하지 않음. 추가매수는 수익 중이고 추세가 강할 때만",
         "- 이 기준의 매도 신호: " + ("; ".join(f["sell_signals"]) if f["sell_signals"] else "없음"),
+        "### 보유자 가격선 (사용자에게 이 가격으로 안내)",
+        f"- 손절가: {money(f['stop_price'])} (평단 -7%, 종가 기준 이탈 시 매도)",
+        ("- 손실 중 50일선 매도선: " + money(f["ma50_exit"]) + " (손실 상태에서 종가가 이 아래면 매도)")
+        if f["profit"] is not None and f["profit"] < 0 else
+        "- 50일선 매도선: 수익 중이라 해당 없음",
+        (f"- 이익 보호선(익절선): {money(f['trail_line'])} (보유 중 최고 종가 {money(f['peak'])}×{TRAIL_BAND[f['bull']]}, 종가가 이 아래면 매도, 고점이 오르면 같이 올림)"
+         if f["trail_active"] else
+         f"- 이익 보호선(익절선): 아직 없음. 종가가 {money(f['trail_activate_price'])}(평단 +5%)를 넘으면 그 뒤 최고 종가×{TRAIL_BAND[f['bull']]}로 생김"),
+        "- 고정 목표가로 파는 익절은 하지 않음. 오르는 동안은 보호선을 따라 올리며 보유",
         "### 신규·추가 매수 기준 (본로직 매수 관문)",
     ]
     if rr.get("status") == "OK":
         lines += [
             f"- 이 국면의 최대 손절폭 {rr['max_loss_pct']:.1f}%, 손익비 하한 {rr['rr_floor']}",
-            f"- 지금 가격에서 사려면: 손절 {money(rr['max_stop_price'])}일 때 목표(확정 저항)가 "
+            f"- 지금 가격에서 새로 사려면(보유분 손절가와 다름): 새 매수분 손절 {money(rr['max_stop_price'])}일 때 목표(확정 저항)가 "
             f"{money(rr['min_target_at_max_stop'])} 이상이어야 함",
             "- 확정 저항은 오늘 장중 고가가 아닌 과거 확정 고점·매물대. 저항까지 여력이 손절폭×하한보다 작으면 매수 보류",
         ]
