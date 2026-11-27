@@ -174,8 +174,12 @@ def test_profile_employee_zero_is_valid_and_not_all_staff(monkeypatch):
 
 def test_dated_historical_flow_fallback_never_claims_current_institutional_flow(monkeypatch):
     prefetch = load("data_prefetch")
-    end = pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(None) - pd.Timedelta(days=1)
-    index = pd.bdate_range(end=end, periods=60)
+    import pandas_market_calendars as mcal
+    # NYSE sessions, not weekdays: on the day after a holiday (Thanksgiving) a weekday index
+    # contains a non-session row and the dated window is correctly refused.
+    today = pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(None)
+    sessions = mcal.get_calendar("NYSE").valid_days(start_date=today - pd.Timedelta(days=150), end_date=today)
+    index = pd.DatetimeIndex([d for d in sessions.tz_localize(None) if d < today][-60:])
     data = pd.DataFrame({"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1000}, index=index)
     data.loc[index[-1], "close"] = np.nan
     calls = []
