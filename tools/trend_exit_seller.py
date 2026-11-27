@@ -674,6 +674,7 @@ async def _run_market(market: str, run_id: str) -> Dict[str, Any]:
                                 regime_is_live=bool(regime["value"]),
                                 ma_50=ma_50,
                                 entry_regime=entry_regime_of(h.get("scenario"), market),
+                                market=market,
                             )
                             should_sell, reason = evaluate_oneil_sell(inp)
                             if should_sell and reason.startswith("TIER1.5_MA50") and on_entry_session(market, h):

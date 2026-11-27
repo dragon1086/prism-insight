@@ -289,6 +289,7 @@ class DomesticStockTrading:
                     'current_price': int(data.get('stck_prpr', 0)),  # Current price
                     'change_rate': _safe_float(data.get('prdy_ctrt', 0)),  # Change rate from previous day
                     'volume': int(data.get('acml_vol', 0)),  # Cumulative volume
+                    'day_high': _safe_float(data.get('stck_hgpr', 0)),  # today's intraday high (peak ratchet)
                     # 종목상태/시장경고 (이벤트 강제청산 자동탐지용 — cores.corporate_status)
                     # iscd_stat_cls_code: 00/55 정상, 51 관리종목, 52 투자위험, 53 투자경고, 58 거래정지
                     'iscd_stat_cls_code': data.get('iscd_stat_cls_code', ''),

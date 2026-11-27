@@ -57,3 +57,8 @@ def test_rules_live_since_20261121():
     assert buy_gate.NONBULL_52W_MIN_RATIO == 0.75, WHY
     assert micro_split_live.MONEY_SLOT_ROW_CAP == 16, WHY
     assert micro_split_live._MONEY_SLOT_BULL == buy_gate._BULL_REGIMES == {"parabolic", "strong_bull", "moderate_bull"}, WHY
+
+
+def test_market_band_switches_20261128():
+    """Widened trail per market (KR bull, US non-bull) behind switches; engine sets sl_hibc (KR, PEAK=high) / sl_bwo (US)."""
+    assert (sell.WIDE_DROP_BULL, sell.WIDE_DROP_WEAK) == (0.90, 0.93), WHY

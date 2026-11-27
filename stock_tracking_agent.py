@@ -3136,7 +3136,7 @@ class StockTrackingAgent:
         if _ONEIL_FALLBACK_AVAILABLE:
             try:
                 live_regime = getattr(self, "_live_regime_cache", None)
-                inp = _oneil_from(stock_data, live_regime=live_regime)
+                inp = _oneil_from(stock_data, live_regime=live_regime, market="KR")
                 should_sell, reason = _oneil_eval(inp)
                 logger.info(
                     f"{stock_data.get('ticker','')} O'Neil rule-based sell: "
@@ -3917,6 +3917,7 @@ class StockTrackingAgent:
             # (관리종목/투자위험/거래정지 자동 포착 → _analyze_sell_decision의 TIER0.)
             # 실패해도 override 경로는 독립 동작하므로 빈 dict로 안전 폴백.
             kis_status_map: Dict[str, str] = {}
+            day_high_map: Dict[str, float] = {}  # SELL_PEAK_DAY_HIGH_MARKETS: today's high for the peak ratchet
             try:
                 if effects is not None:
                     kis_status_map = {h["ticker"]: effects.corporate_status(h["ticker"]) for h in holdings}
@@ -3925,6 +3926,7 @@ class StockTrackingAgent:
                     kis_status_map = await fetch_status_codes(
                         [h.get("ticker") for h in holdings],
                         account_name=holdings[0].get("account_name") if holdings else None,
+                        day_highs=day_high_map,
                     )
             except EffectsFailure:
                 raise
@@ -3961,6 +3963,7 @@ class StockTrackingAgent:
 
                 # 이벤트 자동탐지용 KIS 종목상태코드 주입(TIER0가 _analyze_sell_decision에서 사용)
                 stock['_kis_stat_code'] = kis_status_map.get(ticker)
+                stock['_day_high'] = day_high_map.get(ticker)
 
                 # Check scenario JSON string
                 scenario_str = stock.get('scenario', '{}')

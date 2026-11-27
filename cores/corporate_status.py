@@ -67,7 +67,8 @@ def check_event_exit(
     return False, ""
 
 
-async def fetch_status_codes(tickers, account_name: Optional[str] = None) -> dict:
+async def fetch_status_codes(tickers, account_name: Optional[str] = None,
+                             day_highs: Optional[dict] = None) -> dict:
     """보유종목들의 KIS 종목상태코드(iscd_stat_cls_code)를 일괄 조회.
 
     KIS 토큰 발급 레이트리밋을 피하려고 **AsyncTradingContext를 1회만** 열고
@@ -76,6 +77,7 @@ async def fetch_status_codes(tickers, account_name: Optional[str] = None) -> dic
     않고, 가능한 만큼만 채운 dict를 반환한다(자동탐지만 비활성, 매도 본로직은 정상).
 
     Returns: { ticker: "iscd_stat_cls_code" }  (조회 실패 종목은 누락)
+    day_highs: 주어지면 같은 시세 응답의 당일 장중 고가를 { ticker: 고가 } 로 채운다(추가 조회 없음).
     """
     import asyncio
 
@@ -91,6 +93,8 @@ async def fetch_status_codes(tickers, account_name: Optional[str] = None) -> dic
                     info = await asyncio.to_thread(trading.get_current_price, t)
                     if info:
                         out[t] = str(info.get("iscd_stat_cls_code", "") or "")
+                        if day_highs is not None and (info.get("day_high") or 0) > 0:
+                            day_highs[t] = float(info["day_high"])
                 except Exception as e:  # 개별 종목 실패는 건너뜀
                     logger.warning(f"{t} KIS 상태코드 조회 실패: {e}")
     except Exception as e:  # 컨텍스트/자격증명 실패 → 전체 스킵(안전)

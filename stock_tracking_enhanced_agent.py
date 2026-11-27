@@ -1682,7 +1682,15 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                     from prism_core.position_peak import ratchet_highest_price
                     highest_price_initialized = 'highest_price' not in scenario_data
-                    highest_price, persist_peak = ratchet_highest_price(scenario_data, buy_price, current_price)
+                    from cores.oneil_fallback import peak_day_high_markets
+                    peak_px = current_price
+                    day_high = stock_data.get('_day_high')
+                    # 2026-11-28 (SELL_PEAK_DAY_HIGH_MARKETS): from the session after the buy the peak also takes today's
+                    # intraday high, as the research engine's PEAK=high mode (the buy session's own high is not a post-entry peak).
+                    if ("KR" in peak_day_high_markets() and day_high and float(day_high) > 0
+                            and buy_datetime.date() < datetime.now().date()):
+                        peak_px = max(float(current_price), float(day_high))
+                    highest_price, persist_peak = ratchet_highest_price(scenario_data, buy_price, peak_px)
                     if highest_price_initialized:
                         logger.info(f"{ticker} highest_price not in scenario, initialized to {highest_price:,.0f} KRW")
 
