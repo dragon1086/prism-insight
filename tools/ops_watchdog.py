@@ -91,9 +91,9 @@ JOBS = (
     # Re-entry intraday runs moved to 15:08 KST / 15:30 ET on 2026-11-16 (#1386); deadlines sit after the order cutoffs.
     Job("reentry_kr", "재진입", "KR", "logs/reentry_v3_shadow_kr.log", r'"phase": "intraday"', deadline="15:30"),
     Job("reentry_us", "재진입", "US", "logs/reentry_v3_shadow_us.log", r'"phase": "intraday"', deadline="15:50"),
-    # Record-only core long-term holding observer (tools/run_core_hold_observer.py, cron 16:40 KST / 20:20 ET:
-    # the KIS US daily bar follows after-hours trades until 20:00 ET).
-    Job("core_hold_kr", "장기 보유 기록", "KR", "logs/core_hold_observer_kr.log", r"Core-hold KR summary", deadline="17:00"),
+    # Record-only core long-term holding observer (tools/run_core_hold_observer.py, cron 08:40 KST next session day /
+    # 20:20 ET: KIS daily bars follow after-hours trades; KR settled 05:30-05:45 KST next day, US after 20:00 ET).
+    Job("core_hold_kr", "장기 보유 기록", "KR", "logs/core_hold_observer_kr.log", r"Core-hold KR summary", deadline="09:00"),
     Job("core_hold_us", "장기 보유 기록", "US", "logs/core_hold_observer_us.log", r"Core-hold US summary", deadline="20:45"),
     # User's extreme-fear alert (tools/watch_extreme_fear.py, cron 16:45 ET; retries up to ~7 minutes).
     Job("extreme_fear_us", "극단 공포 알림", "US", "logs/extreme_fear.log", r"Extreme-fear US summary", deadline="17:05"),

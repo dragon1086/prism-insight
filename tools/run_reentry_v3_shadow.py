@@ -4,7 +4,7 @@ Real buys only when REENTRY_V3_LIVE_ENABLED=true (default off) for a market in
 REENTRY_V3_LIVE_MARKETS, at most 2 per market and session (prism_core/reentry_v3_live.py).
 
     python tools/run_reentry_v3_shadow.py --market KR --phase intraday   # 15:08 KST decision
-    python tools/run_reentry_v3_shadow.py --market KR --phase close      # 16:40 KST after the close
+    python tools/run_reentry_v3_shadow.py --market KR --phase close      # 08:40 KST next weekday (KIS KR bars settle ~05:45)
     python tools/run_reentry_v3_shadow.py --market US --phase intraday   # 15:30 New York decision
     python tools/run_reentry_v3_shadow.py --market US --phase close      # 20:40 New York (KIS bars settle after 20:00)
     python tools/run_reentry_v3_shadow.py --market KR --phase intraday --dry-run   # no LLM, no order, no write
