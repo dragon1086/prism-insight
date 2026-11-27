@@ -46,6 +46,11 @@ WEAK_REGIMES = {"sideways", "moderate_bear", "strong_bear"}
 TIGHT_ACTIVATION_PCT = 3.0
 TIGHT_DROP_BULL = 0.94
 TIGHT_DROP_WEAK = 0.96
+# 2026-11-28 sell-band round (89th-round full-ops engine, 10 clones x 300 seeds, user-approved per market):
+# the normal (non-TIGHT) trail is widened per market. KR bull -8% -> -10% (paired with the intraday-high peak,
+# SELL_PEAK_DAY_HIGH_MARKETS), US non-bull -5% -> -7%. Rollback = remove the market from the switch.
+WIDE_DROP_BULL = 0.90           # SELL_WIDE_BULL_BAND_MARKETS
+WIDE_DROP_WEAK = 0.93           # SELL_WIDE_WEAK_BAND_MARKETS
 # TIER3 목표가 자동익절 '보류' 조건 — 레짐은 약세/횡보인데 개별 종목만 강할 때.
 # regime 은 지수(S&P500/KOSPI) 기준이라, 시장과 무관하게 치고 나가는 주도주를
 # 상승 초입에 잘라내는 문제가 있었다(2026-07-29 INCY: 목표가 도달 당일 +11%
@@ -67,14 +72,25 @@ class SellInputs:
     regime_is_live: bool = False        # True 면 trailing 밴드를 신뢰, False(=stale)면 보수적
     ma_50: float = 0.0                  # 개별종목 50일선(주입 시에만 TIER1.5 작동, 0이면 dormant)
     entry_regime: str = ""              # 매수 시점 시스템 국면(scenario.market_condition) — 트레일링 폭 선택용
+    market: str = ""                    # "KR"/"US" — 시장별 트레일링 폭 스위치용
 
 
-def tight_nonbull_markets() -> set:
-    """스위치 값: 시장 목록("KR", "KR,US") 또는 true(둘 다). 2026-11-10 사용자 결정으로 KR만 켬."""
-    raw = os.getenv("SELL_TIGHT_NONBULL_ENABLED", "").strip()
+def _switch_markets(name: str) -> set:
+    """스위치 값: 시장 목록("KR", "KR,US") 또는 true(둘 다)."""
+    raw = os.getenv(name, "").strip()
     if raw.lower() in {"1", "true", "yes", "on"}:
         return {"KR", "US"}
     return {m.strip().upper() for m in raw.split(",")} & {"KR", "US"}
+
+
+def tight_nonbull_markets() -> set:
+    """2026-11-10 사용자 결정으로 KR만 켬."""
+    return _switch_markets("SELL_TIGHT_NONBULL_ENABLED")
+
+
+def peak_day_high_markets() -> set:
+    """2026-11-28: 이 시장은 보유 점검 때 진입 후 고점을 그날 장중 고가로 올린다(매수 다음 세션부터)."""
+    return _switch_markets("SELL_PEAK_DAY_HIGH_MARKETS")
 
 
 def tight_nonbull_enabled() -> bool:
@@ -93,15 +109,19 @@ def entry_regime_of(scenario, market=None) -> str:
     return str((scenario or {}).get("market_condition") or "") if isinstance(scenario, dict) else ""
 
 
-def trail_params(live_regime: str, regime_is_live: bool, entry_regime: str = "") -> Tuple[float, float]:
+def trail_params(live_regime: str, regime_is_live: bool, entry_regime: str = "",
+                 market: str = "") -> Tuple[float, float]:
     """TIER2 트레일링의 (활성화 %, 고점 대비 배수). 매도 규칙·AI 지시문·사실값이 모두 이 값을 쓴다."""
     tight = tight_nonbull_enabled() and str(entry_regime or "").strip().lower() in WEAK_REGIMES
+    m = str(market or "").upper()
     if not regime_is_live:
         drop = TRAIL_DROP_UNKNOWN                     # stale/불명 → 보수적(-10%)
     elif _normalize_regime(live_regime) in BULL_REGIMES:
-        drop = TIGHT_DROP_BULL if tight else TRAIL_DROP_BULL
+        drop = TIGHT_DROP_BULL if tight else (
+            WIDE_DROP_BULL if m in _switch_markets("SELL_WIDE_BULL_BAND_MARKETS") else TRAIL_DROP_BULL)
     else:
-        drop = TIGHT_DROP_WEAK if tight else TRAIL_DROP_WEAK
+        drop = TIGHT_DROP_WEAK if tight else (
+            WIDE_DROP_WEAK if m in _switch_markets("SELL_WIDE_WEAK_BAND_MARKETS") else TRAIL_DROP_WEAK)
     return (TIGHT_ACTIVATION_PCT if tight else TRAIL_ACTIVATION_PCT), drop
 
 
@@ -151,7 +171,7 @@ def evaluate_oneil_sell(inp: SellInputs) -> Tuple[bool, str]:
         return True, f"TIER1.5_MA50: below 50MA({inp.ma_50:.4f}) while losing ({profit:.2f}%)"
 
     # ── TIER 2: 트레일링 스톱 (승자 보호, +5% 활성화 이후만; 횡보·약세 매수분은 trail_params) ───
-    act_pct, drop = trail_params(regime, inp.regime_is_live, inp.entry_regime)
+    act_pct, drop = trail_params(regime, inp.regime_is_live, inp.entry_regime, inp.market)
     activated = peak >= bp * (1.0 + act_pct / 100.0)
     if activated:
         # 트레일링도 종가 기준 → 동일 wick 버퍼로 '명확한' 이탈만 매도
@@ -239,6 +259,7 @@ def from_stock_data(stock_data: dict, live_regime: Optional[str] = None,
         regime_is_live=is_live,
         ma_50=_f(ma_50),
         entry_regime=entry_regime_of(scen, market),
+        market=str(market or "").upper(),
     )
 
 

@@ -29,12 +29,12 @@ def enabled():
 
 
 def trailing_state(*, buy_price, highest_price, stop_loss, current_price, regime, threshold_pct, last_close,
-                   entry_regime=""):
+                   entry_regime="", market=""):
     """Trailing line and stop-raise eligibility exactly as the exit code computes them."""
     buy, peak = R._num(buy_price), R._num(highest_price)
     if buy is None or peak is None:
         return None
-    act, drop = trail_params(regime or "", bool(regime), entry_regime)
+    act, drop = trail_params(regime or "", bool(regime), entry_regime, market)
     line = peak * drop
     stop, price, close = R._num(stop_loss), R._num(current_price), R._num(last_close)
     gap = (line - stop) / stop * 100 if stop else None
@@ -177,7 +177,7 @@ def prompt_block(*, market, language, stock_data, highest_price, threshold_pct, 
         t = trailing_state(buy_price=stock_data.get("buy_price"), highest_price=highest_price,
                            stop_loss=stock_data.get("stop_loss"), current_price=stock_data.get("current_price"),
                            regime=regime, threshold_pct=threshold_pct, last_close=last_close,
-                           entry_regime=entry_regime_of(stock_data.get("scenario"), market))
+                           entry_regime=entry_regime_of(stock_data.get("scenario"), market), market=market)
         if t is None:
             lines.append("- 트레일링: 확인 불가" if ko else "- Trailing stop: unknown")
         elif not t["activated"]:

@@ -21,7 +21,7 @@ def kr_live_regime_block(regime, context=None, language="ko", entry_regime=""):
         return ("### 현재 시장 국면 (시스템 계산 불가)\n"
                 "시스템 국면을 계산하지 못했습니다. 국면을 직접 판단하지 마세요.\n" if ko else
                 "### Current Market Regime (system value unavailable)\n"
-                "The system regime could not be computed. Do not judge the regime yourself.\n") + trailing_band_line(None, language, entry_regime)
+                "The system regime could not be computed. Do not judge the regime yourself.\n") + trailing_band_line(None, language, entry_regime, "KR")
     bull = regime in BULL_REGIMES
     summary = (context or {}).get("index_summary") or {}
     facts = []
@@ -37,19 +37,19 @@ def kr_live_regime_block(regime, context=None, language="ko", entry_regime=""):
         return (f"### 현재 시장 국면 (시스템 실시간 계산 — 우선 적용)\n"
                 f"{_KO_LABELS.get(regime, regime)}\n{facts}"
                 f"시장 국면은 이 값을 그대로 따르고 {mode}를 적용하세요. 매수 시점 시나리오의 시장 상황보다 우선합니다.\n"
-                + trailing_band_line(regime, language, entry_regime))
+                + trailing_band_line(regime, language, entry_regime, "KR"))
     mode = "A) bull-market mode" if bull else "B) bear/sideways mode"
     return (f"### Current Market Regime (LIVE, system-computed — authoritative)\n"
             f"{regime}\n{facts}"
             f"Use this value as the market regime and apply {mode}; it overrides the buy-time scenario.\n"
-            + trailing_band_line(regime, language, entry_regime))
+            + trailing_band_line(regime, language, entry_regime, "KR"))
 
 
-def trailing_band_line(regime, language="ko", entry_regime=""):
+def trailing_band_line(regime, language="ko", entry_regime="", market=""):
     """The trailing band the automatic exit uses for this regime and this position's buy-time regime
     (regime None = unavailable)."""
     ko = language == "ko"
-    act, drop = trail_params(regime or "", bool(regime), entry_regime)
+    act, drop = trail_params(regime or "", bool(regime), entry_regime, market)
     start = "" if act == TRAIL_ACTIVATION_PCT else (
         f"이 종목은 매수 시점 국면({entry_regime})이 강세가 아니어서 고점이 매수가 대비 +{act:g}% 이상이면 트레일링이 켜집니다. " if ko else
         f"This position was bought in a non-bull regime ({entry_regime}), so the trailing stop activates once the peak "

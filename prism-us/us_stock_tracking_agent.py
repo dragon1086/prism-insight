@@ -2566,7 +2566,7 @@ class USStockTrackingAgent:
             # (KR carries it in kr_live_regime_block).
             from prism_core.sell_regime_context import trailing_band_line
             live_regime_block += "\n" + trailing_band_line(
-                getattr(self, "_live_regime_cache", None), "en", _oneil_entry_regime(stock_data.get("scenario"), "US")).rstrip()
+                getattr(self, "_live_regime_cache", None), "en", _oneil_entry_regime(stock_data.get("scenario"), "US"), "US").rstrip()
 
             prompt_message = f"""
 Please make a sell/hold decision for the following US stock holding.
@@ -3004,7 +3004,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         if _ONEIL_FALLBACK_AVAILABLE:
             try:
                 live_regime = getattr(self, "_live_regime_cache", None)
-                inp = _oneil_from(stock_data, live_regime=live_regime)
+                inp = _oneil_from(stock_data, live_regime=live_regime, market="US")
                 should_sell, reason = _oneil_eval(inp)
                 logger.info(
                     f"{stock_data.get('ticker','')} O'Neil rule-based sell: "
