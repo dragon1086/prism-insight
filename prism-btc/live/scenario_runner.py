@@ -19,6 +19,7 @@ from live.scenario_runtime import ScenarioRuntime
 from live.shared_entry_coordinator import mutation_lock
 from live.entry_reservations import LockBusy
 from live.scenario_provenance import run_capture
+from live.scenario_protection_cycle import run_protection_cycle
 from live.scenario_ledger import forward_run
 
 
@@ -97,38 +98,10 @@ def _run_once(conn, broker, *, execute=False, protect_only=False,
         raise ValueError("calculated_review_flag_must_be_bool")
     if calculated_review and (not execute or protect_only):
         return {"status":"blocked","reason":"calculated_review_requires_execute","model_called":False}
+    if protect_only:
+        return run_protection_cycle(conn, broker)
     if getattr(broker,"environment",None)!="demo" or getattr(broker,"lane",None)!="MAIN":
         return {"status":"blocked","reason":"demo_main_required"}
-    if protect_only:
-        try:
-            with mutation_lock(conn):
-                evidence=broker.reconcile()
-                from live.scenario_outbox import enqueue
-                notices=evidence.get("notices",[]) if isinstance(evidence,dict) else []
-                if isinstance(notices,list):
-                    for notice in notices[:100]:
-                        conn.execute("SAVEPOINT protection_notice")
-                        try:
-                            enqueue(conn,notice["event_id"],notice)
-                            conn.execute("RELEASE protection_notice")
-                        except Exception:
-                            conn.execute("ROLLBACK TO protection_notice")
-                            conn.execute("RELEASE protection_notice")
-                    conn.commit()
-            if not isinstance(evidence,dict) or evidence.get("protection_confirmed") is not True:
-                return {"status":"blocked","reason":"protection_not_verified_by_scenario_adapter","model_called":False}
-            observation = evidence.get("observation")
-            verified_flat = (isinstance(observation, dict)
-                and observation.get("exchange_flat") is True
-                and observation.get("open_orders") == []
-                and observation.get("legacy_fenced") is False
-                and evidence.get("protection_status") == "verified_flat_no_exposure")
-            return {"status":"protection_checked","model_called":False,
-                    "verified_flat":verified_flat}
-        except LockBusy:
-            return {"status":"lock_busy","model_called":False}
-        except Exception:
-            return {"status":"blocked","reason":"protection_unconfirmed","model_called":False}
     if not execute:
         return {"status":"execution_disabled","reason":"explicit_activation_required"}
     retry_at, unreadable = None, False
@@ -139,7 +112,7 @@ def _run_once(conn, broker, *, execute=False, protect_only=False,
         except Exception:
             unreadable = True
     if unreadable or retry_at is not None and now < retry_at:
-        result = dict(_run_once(conn, broker, protect_only=True), model_deferred=True)
+        result = dict(run_protection_cycle(conn, broker), model_deferred=True)
         if result['status'] == 'protection_checked':
             result.update(status='blocked' if unreadable else 'model_cooldown',
                           reason='provider_retry_evidence_invalid' if unreadable else 'provider_requested_wait')

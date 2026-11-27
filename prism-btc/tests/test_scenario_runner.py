@@ -172,6 +172,26 @@ def test_independent_protection_queues_broker_alarm_without_model(tmp_path):
     c.close()
 
 
+def test_replay_protection_skips_operational_notice_queue(tmp_path):
+    from live.scenario_protection_cycle import reconcile_protection
+
+    conn = sqlite3.connect(tmp_path / 'state.db')
+    evidence = {
+        'protection_confirmed': True,
+        'notices': [{'event_id': 'p1', 'kind': 'PENDING', 'timestamp': 1000}],
+    }
+    broker = SimpleNamespace(environment='demo', lane='MAIN', reconcile=lambda: evidence)
+    try:
+        assert reconcile_protection(conn, broker) == evidence
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='llm_scenario_outbox'"
+        ).fetchone() is None
+        assert run_once(conn, broker, protect_only=True)['status'] == 'protection_checked'
+        assert conn.execute('SELECT event_id FROM llm_scenario_outbox').fetchall() == [('p1',)]
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize('reason', ['llm_output_contract_failed', 'llm_call_failed', 'llm_input_preparation_failed'])
 @pytest.mark.parametrize('recovery', [
     {'status':'wait'}, {'status':'intent_pending','reason':'awaiting_exact_evidence'}])

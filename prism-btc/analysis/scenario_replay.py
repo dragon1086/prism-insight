@@ -39,6 +39,7 @@ from analysis.scenario_calculated_replay import (
     ECONOMIC_PROFILES, REVIEW_PROFILES, RESEARCH_PROFILES, REJECTION_PROFILES,
 )
 from live.shared_entry_coordinator import mutation_lock
+from live.scenario_protection_cycle import reconcile_protection
 
 ROOT=Path(__file__).resolve().parents[2]
 POLICY_PROFILES = {
@@ -453,8 +454,7 @@ class Driver:
             else:
                 self.session.elapse(at);self.next_protect+=60000
                 try:
-                    with mutation_lock(self.conn):
-                        evidence=self.broker.reconcile()
+                    evidence=reconcile_protection(self.conn,self.broker)
                     self.protection["confirmed" if evidence.get("protection_confirmed") else "unconfirmed"]+=1
                 except Exception:
                     self.protection["failed"]+=1
