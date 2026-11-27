@@ -40,17 +40,12 @@ history; NOT tuned on our 156 trades). See tasks/market_pulse/00_VALIDATION_PLAN
     | Rally reset             | close < rally    | O'Neil standard                          |
     |                         | start low        |                                          |
 
-Distribution-day semantics are MIRRORED from the existing deterministic repo
-implementation, ``_count_distribution_days`` in
-``prism-us/cores/data_prefetch.py`` (lines ~1050-1107; constants
-DISTRIBUTION_WINDOW=25, DISTRIBUTION_DROP_PCT=0.2, DISTRIBUTION_RECOVERY_PCT=5.0
-at lines 994-996), which feeds ``index_summary.distribution_days`` in
-production. We reproduce its exact definition and dual expiry (25-session window
-+ 5%-recovery) so both code paths agree. The only intentional difference: this
-module never returns ``None`` on missing volume — instead a bar whose volume (or
-its predecessor's) is missing simply *cannot confirm* a DD and is not counted,
-which is the same downstream effect (DD unconfirmed) expressed as a state rather
-than a null. Per IBD, a price drop without a volume increase is NOT a
+This module is the only distribution-day counter. The report path
+(``index_summary.distribution_days`` in KR/US ``data_prefetch``) and the buy
+gate both read this machine's count through
+``cores.regime_policy.replay_distribution_days``, so the two numbers agree.
+A bar whose volume (or its predecessor's) is missing simply *cannot confirm* a
+DD and is not counted. Per IBD, a price drop without a volume increase is NOT a
 distribution day, so missing volume => "cannot confirm" => not a DD.
 
 Missing-volume handling summary:
@@ -97,11 +92,17 @@ PulseState = str  # semantic alias: one of UPTREND / UNDER_PRESSURE / CORRECTION
 
 @dataclass(frozen=True)
 class DailyBar:
-    """A single index daily bar. ``volume`` may be None when unavailable."""
+    """A single index daily bar. ``volume``/``high``/``low`` may be None when unavailable.
+
+    ``high``/``low`` are carried for candle-shape research only; the state
+    machine below reads ``close`` and ``volume`` and ignores them.
+    """
 
     date: str            # YYYY-MM-DD
     close: float
     volume: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
 
 
 def _count_distribution_days(

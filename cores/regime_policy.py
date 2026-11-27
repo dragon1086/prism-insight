@@ -357,23 +357,57 @@ def _load_root_cores(name: str):
 
 
 def _df_to_bars(df, close_col: str, vol_col: Optional[str], DailyBar):
-    """Convert an OHLCV frame to a chronological list of ``DailyBar``."""
+    """Convert an OHLCV frame to a chronological list of ``DailyBar``.
+
+    High/low are filled when the frame has them (KIS index frames: ``High``/``Low``);
+    a missing or non-positive value stays None.
+    """
     import pandas as pd
+
+    high_col = next((c for c in ("High", "high", "고가") if c in df.columns), None)
+    low_col = next((c for c in ("Low", "low", "저가") if c in df.columns), None)
+
+    def positive(row, col) -> Optional[float]:
+        if col is None:
+            return None
+        raw = row[col]
+        if raw is None or pd.isna(raw) or float(raw) <= 0:
+            return None
+        return float(raw)
 
     bars = []
     for idx, row in df.iterrows():
         c = float(row[close_col])
         if c <= 0:
             continue
-        v: Optional[float] = None
-        if vol_col is not None:
-            raw = row[vol_col]
-            if raw is not None and not pd.isna(raw):
-                v = float(raw)
-                if v <= 0:
-                    v = None
-        bars.append(DailyBar(date=idx.strftime("%Y-%m-%d"), close=c, volume=v))
+        bars.append(DailyBar(date=idx.strftime("%Y-%m-%d"), close=c, volume=positive(row, vol_col),
+                             high=positive(row, high_col), low=positive(row, low_col)))
     return bars
+
+
+def replay_distribution_days(bars, second_bars=None) -> Optional[int]:
+    """Live distribution-day count the buy gate sees, from index bars (pure, as-of).
+
+    Replays :class:`cores.market_pulse.MarketPulse` like :func:`get_market_pulse_detail`:
+    fewer than 30 bars => None; with a second index (US NASDAQ, dual mode) the smaller
+    count, a second index under 30 bars is ignored (#833). A primary index with no
+    volume at all is unknown (None), not zero distribution days.
+    """
+    MarketPulse = _load_root_cores("market_pulse").MarketPulse
+
+    def count(series) -> Optional[int]:
+        if not series or len(series) < 30:
+            return None
+        mp = MarketPulse()
+        for bar in series:
+            mp.feed(bar)
+        return int(mp.distribution_days)
+
+    if not bars or not any(b.volume for b in bars):
+        return None
+    first = count(bars)
+    second = count(second_bars) if first is not None else None
+    return first if second is None else min(first, second)
 
 
 def _fetch_kr_bars(DailyBar):
