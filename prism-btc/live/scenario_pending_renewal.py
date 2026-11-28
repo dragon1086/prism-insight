@@ -182,9 +182,12 @@ def offer(conn, state, context, children, now):
     return result
 
 
-def reject(conn, intent_id, reason, now):
+def reject(conn, intent_id, reason, now, *, failure_stage=None):
+    result = dict(status='REJECTED', reason=reason, checked_at=now)
+    if failure_stage is not None:
+        result['failure_stage'] = failure_stage
     conn.execute('INSERT OR IGNORE INTO llm_scenario_pending_renewals VALUES(?,?)',
-                 (intent_id, json.dumps(dict(status='REJECTED', reason=reason, checked_at=now))))
+                 (intent_id, json.dumps(result)))
     conn.commit()
 
 

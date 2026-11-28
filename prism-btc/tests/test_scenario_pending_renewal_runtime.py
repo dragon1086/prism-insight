@@ -393,9 +393,33 @@ def test_sql_notice_latency_past_old_expiry_rolls_back_entire_apply(tmp_path, mo
     assert r.tick()['status'] == 'intent_pending'
     lease = load(r.conn, r.state()['active'])
     assert lease['revision'] == 0
+    proof = json.loads(r.conn.execute('SELECT body FROM llm_scenario_pending_renewals').fetchone()[0])
+    assert proof['status'] == 'REJECTED'
+    assert proof['failure_stage'] == 'persist_lease'
     assert not r.conn.execute("SELECT 1 FROM llm_scenario_outbox WHERE kind='RESERVATION_RENEWED'").fetchone()
     latest = json.loads(r.conn.execute('SELECT evidence FROM llm_scenario_intents ORDER BY rowid LIMIT 1').fetchone()[0])
     assert latest['open_entries'][0]['expires_at'] == 1800000420
+
+
+def test_unknown_renewal_fault_exposes_stage_and_keeps_order(tmp_path, monkeypatch):
+    r, b, e, _, _ = renewal_runtime(tmp_path)
+    assert r.tick()['status'] == 'intent_pending'
+    old = load(r.conn, r.state()['active'])
+    writes = deepcopy(e.writes)
+
+    def fault(*args, **kwargs):
+        raise RuntimeError('untrusted internal evidence')
+
+    monkeypatch.setattr(b, '_preflight', fault)
+    e.now += 301
+    assert r.tick()['status'] == 'intent_pending'
+    proof = json.loads(r.conn.execute('SELECT body FROM llm_scenario_pending_renewals').fetchone()[0])
+    assert set(proof) == {'checked_at', 'status', 'reason', 'failure_stage'}
+    assert proof['status'] == 'REJECTED'
+    assert proof['reason'] == 'FRESH_REAPPROVAL_REJECTED'
+    assert proof['failure_stage'] == 'risk_check'
+    assert load(r.conn, r.state()['active']) == old
+    assert e.writes == writes
 
 
 def test_cancel_pending_is_not_an_untriggered_renewal_opportunity(tmp_path):
@@ -481,12 +505,20 @@ def test_other_adjust_child_does_not_inherit_original_lease(tmp_path):
 
 
 def test_executor_rechecks_input_age_after_slow_preflight(tmp_path, monkeypatch):
+    from utils.btc_review_references import read_tape
+
     r, b, e, _, _ = renewal_runtime(tmp_path)
     assert r.tick()['status'] == 'intent_pending'
     original = b._renew_pending
     def near_stale(payload, ident):
         row = r.conn.execute('SELECT slot,context FROM llm_scenario_decisions WHERE proposal IS NOT NULL ORDER BY slot DESC LIMIT 1').fetchone()
         context = json.loads(row[1])
+        # Freeze the referenced tape before changing only the executor's input age.
+        stored_tape, = r.conn.execute(
+            'SELECT body FROM llm_scenario_review_tapes WHERE slot=?', (row[0],)
+        ).fetchone()
+        exact_tape = read_tape(stored_tape, r.conn, row[0], decode_legacy=review_text)
+        r.conn.execute('UPDATE llm_scenario_review_tapes SET body=? WHERE slot=?', (exact_tape, row[0]))
         # Isolated executor boundary: captured input was 119s old on entry.
         context['input_captured_at'] = e.now - 119
         r.conn.execute('UPDATE llm_scenario_decisions SET context=? WHERE slot=?', (json.dumps(context), row[0]))
@@ -504,7 +536,10 @@ def test_executor_rechecks_input_age_after_slow_preflight(tmp_path, monkeypatch)
     assert r.tick()['status'] == 'intent_pending'
     assert e.now < 1800000420
     assert load(r.conn, r.state()['active'])['revision'] == 0
-    assert json.loads(r.conn.execute('SELECT body FROM llm_scenario_pending_renewals').fetchone()[0])['status'] == 'REJECTED'
+    proof = json.loads(r.conn.execute('SELECT body FROM llm_scenario_pending_renewals').fetchone()[0])
+    assert proof['status'] == 'REJECTED'
+    assert proof['reason'] == 'FRESH_REAPPROVAL_REJECTED'
+    assert proof['failure_stage'] == 'final_deadline'
 
 
 @pytest.mark.parametrize('fill_all', [False, True])
