@@ -894,6 +894,7 @@ class ScenarioExecution:
         previous = renewal.receipt(self.conn, intent_id)
         if previous:
             return previous
+        failure_stage = 'decision_proof'
         try:
             self._check_entry_convergence(payload)
             now = self.clock()
@@ -926,6 +927,7 @@ class ScenarioExecution:
                     or assessment.get('contract_id') != grant['contract_id']
                     or not 0 <= now - original_context['input_captured_at'] <= 120):
                 self._fail('pending_renewal_approval_unverified')
+            failure_stage = 'registered_contract'
             stored = self.conn.execute('SELECT body FROM llm_scenario_entry_contracts WHERE scenario_id=?',
                                        (active['scenario_id'],)).fetchone()
             if not stored or json.loads(stored[0]) != active.get('entry_contract'):
@@ -935,8 +937,10 @@ class ScenarioExecution:
                 if not registered_contract(self.conn, active):
                     self._fail('pending_renewal_original_contract_unverified')
                 stored_goal(self.conn, active['entry_contract'])
+            failure_stage = 'read_orders'
             for child in self.children(active['scenario_id']):
                 self._query_child(child)
+            failure_stage = 'refresh_offer'
             context = self.context()
             if context['account_version'] != original_context.get('account_version'):
                 self._fail('pending_renewal_approved_account_changed')
@@ -951,6 +955,7 @@ class ScenarioExecution:
             _, risk = compile_renewal({'offer_id': offered['offer_id']}, context)
             if risk != payload.get('risk'):
                 self._fail('pending_renewal_risk_changed')
+            failure_stage = 'verify_venue_orders'
             observed = self.capture_account()
             if observed['account_version'] != context['account_version']:
                 self._fail('pending_renewal_account_changed')
@@ -963,17 +968,20 @@ class ScenarioExecution:
                             or decimal(current.get('cumExecQty', -1)) != 0
                             or decimal(current.get('leavesQty', -1)) != decimal(child['request']['qty'])):
                         self._fail('pending_renewal_latest_order_changed')
+            failure_stage = 'risk_check'
             check = dict(scenario_id=active['scenario_id'], side=active['side'],
                          hard_stop=active['hard_stop'], entries=[])
             self._preflight(check, observed, self._instrument(), own, pending_renewal=True)
             # Fresh price may have crossed a trigger after the last child read.
             context.update(mark_price=observed['mark_price'], now=self.clock())
             compile_renewal({'offer_id': offered['offer_id']}, context)
+            failure_stage = 'final_deadline'
             applied_at = self.clock()
             if (not applied_at < payload['expires_at']
                     or not 0 <= applied_at - original_context['input_captured_at'] <= 120
                     or not 0 <= applied_at - observed['captured_at'] <= 10):
                 self._fail('pending_renewal_response_expired')
+            failure_stage = 'persist_lease'
             return renewal.apply(self.conn, active, grant, intent_id, applied_at, clock=self.clock,
                 approval_deadline=min(payload['expires_at'], original_context['input_captured_at'] + 120,
                                       observed['captured_at'] + 10))
@@ -981,7 +989,8 @@ class ScenarioExecution:
             self.conn.rollback()
             # No exchange mutation is performed by this path. Explicit rejection
             # leaves the old lease untouched; no automatic approval or retry.
-            renewal.reject(self.conn, intent_id, 'FRESH_REAPPROVAL_REJECTED', self.clock())
+            renewal.reject(self.conn, intent_id, 'FRESH_REAPPROVAL_REJECTED', self.clock(),
+                           failure_stage=failure_stage)
             return renewal.receipt(self.conn, intent_id)
 
     def execute(self,payload,intent_id):
